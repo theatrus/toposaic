@@ -2081,8 +2081,9 @@ export function TerrainStudio() {
                   onChange={(value) => updateBuildings("z_scale", value)}
                 />
                 <p className="color-note">
-                  Buildings use their own 3MF color material. 1× keeps true
-                  height against the map width. Higher values make small
+                  Buildings use exact mapped footprints, flat roofs, straight
+                  vertical walls, and their own 3MF color material. 1× keeps
+                  true height against the map width. Higher values make small
                   buildings easier to print. Tagged heights are used first,
                   then floor count, then an 8 m default.
                 </p>
