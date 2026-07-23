@@ -3119,6 +3119,18 @@ mod tests {
     use std::{collections::HashMap, io::Read};
 
     #[test]
+    fn accepts_the_full_relief_range() {
+        let mut spec = GenerationSpec {
+            relief_mm: 80.0,
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.relief_mm = 80.1;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
     fn shared_edges_are_identical_before_clearance() {
         let spec = GenerationSpec::default();
         let edge_samples = spec.samples_per_piece as usize;

@@ -633,10 +633,14 @@ function ReliefPreview({
     const scene = new THREE.Scene();
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
+    const rawHeightScale = (spec.relief_mm / spec.width_mm) * 4.2;
     const heightScale = Math.max(
       0.12,
-      Math.min(0.48, (spec.relief_mm / spec.width_mm) * 4.2),
+      rawHeightScale <= 0.48
+        ? rawHeightScale
+        : 0.48 + Math.log1p((rawHeightScale - 0.48) * 1.6) / 1.6,
     );
+    canvas.dataset.heightScale = heightScale.toFixed(4);
     const seedA = Math.sin((spec.center_lat * Math.PI) / 180) * 1.7;
     const seedB = Math.cos((spec.center_lon * Math.PI) / 180) * 1.3;
     const heightValues = Array.from(
@@ -921,20 +925,28 @@ function ReliefPreview({
     scene.add(fillLight);
 
     const camera = new THREE.PerspectiveCamera(36, 1, 0.01, 20);
+    const cameraScale = Math.max(1, heightScale * 1.5);
+    const defaultTarget: [number, number, number] = [
+      0,
+      heightScale * 0.35,
+      0,
+    ];
     const savedView = resetViewRef.current ? null : viewRef.current;
     if (savedView) {
       camera.position.fromArray(savedView.position);
     } else {
-      camera.position.set(0.92, 0.72, 1.08);
+      camera.position.set(
+        0.92 * cameraScale,
+        defaultTarget[1] + 0.72 * cameraScale,
+        1.08 * cameraScale,
+      );
     }
     const controls = new OrbitControls(camera, canvas);
-    controls.target.fromArray(
-      savedView?.target ?? [0, heightScale * 0.2, 0],
-    );
+    controls.target.fromArray(savedView?.target ?? defaultTarget);
     controls.enableDamping = false;
     controls.enablePan = false;
     controls.minDistance = 0.72;
-    controls.maxDistance = 3.1;
+    controls.maxDistance = 3.1 * cameraScale;
     controls.minPolarAngle = 0.12;
     controls.maxPolarAngle = Math.PI / 2 - 0.025;
     controls.rotateSpeed = 0.72;
@@ -1151,6 +1163,7 @@ function RangeField({
         </output>
       </span>
       <input
+        aria-label={label}
         type="range"
         min={min}
         max={max}
@@ -1631,7 +1644,7 @@ export function TerrainStudio() {
               value={spec.relief_mm}
               unit=" mm"
               min={3}
-              max={35}
+              max={80}
               step={1}
               onChange={(value) => update("relief_mm", value)}
             />

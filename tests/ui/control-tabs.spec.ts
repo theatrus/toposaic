@@ -26,6 +26,24 @@ test("switches between the reflowed control panels", async ({ page }) => {
   ).toBeVisible();
   await expect(generate).toHaveAttribute("form", "terrain-controls");
   await expect(page.getByLabel("Find a place")).toBeVisible();
+  const relief = page.getByRole("slider", { name: "Terrain relief" });
+  await expect(relief).toHaveAttribute("max", "80");
+  const initialHeightScale = Number(
+    await page
+      .getByLabel("Interactive 3D terrain preview")
+      .getAttribute("data-height-scale"),
+  );
+  await relief.fill("80");
+  await expect(relief).toHaveValue("80");
+  await expect
+    .poll(async () =>
+      Number(
+        await page
+          .getByLabel("Interactive 3D terrain preview")
+          .getAttribute("data-height-scale"),
+      ),
+    )
+    .toBeGreaterThan(initialHeightScale);
 
   await page.getByRole("tab", { name: "Surface" }).click();
   await expect(
