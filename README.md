@@ -146,9 +146,20 @@ attribution notices:
 
 Color manifests also record the ESA WorldCover tile and attribution:
 
-<https://worldcover2021.esa.int/download>
+<https://esa-worldcover.org/en/data-access>
 
-When road output is on, manifests also record the OpenStreetMap source and
+When OpenStreetMap overlays are on, manifests also record their source and
 attribution. Overpass responses use the same OS cache:
 
 <https://www.openstreetmap.org/copyright>
+
+Publicly shared prints, images, and generated files must retain the data-source
+credits recorded in their manifest or place those credits near the work. See
+[third-party licenses and data](THIRD_PARTY_NOTICES.md).
+
+## License
+
+Terrain Puzzle source code and documentation are licensed under the
+[Apache License 2.0](LICENSE). Third-party software, the bundled font, and map
+data keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [assets/fonts/OFL.txt](assets/fonts/OFL.txt).
