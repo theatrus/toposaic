@@ -2846,9 +2846,26 @@ fn build_polygon_shell(
     if points.len() < 3 {
         return Ok(MeshBuilder::default());
     }
-    let triangulation =
-        ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
-            .context(error_context)?;
+    let mut canonical_positions = HashMap::<(u64, u64), usize>::new();
+    let canonical_indices = points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            *canonical_positions
+                .entry((point.x.to_bits(), point.y.to_bits()))
+                .or_insert(index)
+        })
+        .collect::<Vec<_>>();
+    // Boolean clipping can repeat a vertex at a dense line junction.
+    constraints.retain(|[from, to]| canonical_indices[*from] != canonical_indices[*to]);
+    // Spade's strict loader panics on overlapping constraints. The accepted
+    // faces below define their own boundary walls, so a rejected overlap is safe.
+    let triangulation = ConstrainedDelaunayTriangulation::<Point2<f64>>::try_bulk_load_cdt(
+        points,
+        constraints,
+        |_| {},
+    )
+    .context(error_context)?;
     let mut output = MeshBuilder::default();
     let mut edge_uses = HashMap::<(usize, usize), (u32, [usize; 2])>::new();
     let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
@@ -4602,6 +4619,34 @@ mod tests {
         assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
         assert!(!flat.materials.contains(&SurfaceClass::Road));
         assert_watertight(&raised);
+    }
+
+    #[test]
+    fn polygon_shell_tolerates_repeated_and_overlapping_boundary_edges() {
+        let polygon = Polygon::new(
+            LineString::new(vec![
+                Coord { x: 0.0, y: 0.0 },
+                Coord { x: 4.0, y: 0.0 },
+                Coord { x: 4.0, y: 4.0 },
+                Coord { x: 2.0, y: 4.0 },
+                Coord { x: 4.0, y: 4.0 },
+                Coord { x: 0.0, y: 4.0 },
+                Coord { x: 0.0, y: 0.0 },
+            ]),
+            vec![],
+        );
+        let mesh = build_polygon_shell(
+            &polygon,
+            |_| 1.0,
+            |_| 1.2,
+            SurfaceClass::Road,
+            "test repeated boundary",
+        )
+        .unwrap()
+        .finish("Repeated boundary");
+
+        assert!(!mesh.triangles.is_empty());
+        assert_watertight(&mesh);
     }
 
     #[test]
