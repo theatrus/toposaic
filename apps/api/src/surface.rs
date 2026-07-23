@@ -10,6 +10,7 @@ use geotiff_reader::GeoTiffFile;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use terrain_core::{GenerationSpec, SurfaceClass, SurfaceField};
+use tracing::warn;
 
 use crate::cache;
 
@@ -127,40 +128,74 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
     if spec.color_output.enabled {
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if spec.color_output.osm_water_enabled {
-            let counts = paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
-            field.source.push_str(&format!(
-                "; waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                counts.lines, counts.areas
-            ));
+            match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+                Ok(counts) => append_source(
+                    &mut field.source,
+                    format!(
+                        "waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                        counts.lines, counts.areas
+                    ),
+                ),
+                Err(error) => {
+                    warn!(%error, "OpenStreetMap water unavailable; using WorldCover water");
+                    append_source(
+                        &mut field.source,
+                        "OpenStreetMap water unavailable; used WorldCover water only",
+                    );
+                }
+            }
         }
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
-        let counts = paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
-        if counts.roads > 0 {
-            field.source.push_str(&format!(
-                "; prominent roads: {} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                counts.roads
-            ));
-        } else {
-            field.source.push_str(&format!(
-                "; no prominent roads found; trail fallback: {} OpenStreetMap ways via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                counts.trails
-            ));
+        match paint_roads_or_trails(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+            Ok(counts) if counts.roads > 0 => append_source(
+                &mut field.source,
+                format!(
+                    "prominent roads: {} OpenStreetMap ways via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.roads
+                ),
+            ),
+            Ok(counts) => append_source(
+                &mut field.source,
+                format!(
+                    "no prominent roads found; trail fallback: {} OpenStreetMap ways via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.trails
+                ),
+            ),
+            Err(error) => {
+                warn!(%error, "OpenStreetMap roads unavailable; omitting route overlay");
+                append_source(
+                    &mut field.source,
+                    "OpenStreetMap roads unavailable; route overlay omitted",
+                );
+            }
         }
     }
     if spec.buildings.enabled {
-        let count = paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field)?;
-        let building_source = format!(
-            "buildings: {count} OpenStreetMap footprints via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}"
-        );
-        if field.source.is_empty() {
-            field.source = building_source;
-        } else {
-            field.source.push_str("; ");
-            field.source.push_str(&building_source);
+        match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+            Ok(count) => append_source(
+                &mut field.source,
+                format!(
+                    "buildings: {count} OpenStreetMap footprints via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}"
+                ),
+            ),
+            Err(error) => {
+                warn!(%error, "OpenStreetMap buildings unavailable; omitting buildings");
+                append_source(
+                    &mut field.source,
+                    "OpenStreetMap buildings unavailable; building overlay omitted",
+                );
+            }
         }
     }
     Ok(field)
+}
+
+fn append_source(source: &mut String, addition: impl AsRef<str>) {
+    if !source.is_empty() {
+        source.push_str("; ");
+    }
+    source.push_str(addition.as_ref());
 }
 
 fn normalized_osm_points(

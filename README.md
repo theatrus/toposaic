@@ -27,6 +27,9 @@ under the operating system's user cache directory. OpenStreetMap entries keep
 the raw response, so width, density, color, and visibility changes reuse the
 same download.
 
+If Overpass rejects an uncached optional request, generation continues without
+that OSM layer. WorldCover water and terrain output remain available.
+
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
 forest, rock, snow, and water colors. It also reads prominent roads from
