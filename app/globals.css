@@ -145,10 +145,42 @@ a {
 }
 
 .workspace {
+  --visual-height: 62%;
   display: grid;
-  gap: 14px;
-  grid-template-rows: minmax(300px, 1fr) minmax(280px, 38vh);
+  grid-template-rows:
+    minmax(180px, var(--visual-height))
+    14px
+    minmax(220px, 1fr);
   min-height: 0;
+}
+
+.workspace-resizer {
+  align-items: center;
+  cursor: row-resize;
+  display: flex;
+  justify-content: center;
+  min-height: 14px;
+  outline: none;
+  touch-action: none;
+}
+
+.workspace-resizer::before {
+  background: rgba(48, 64, 57, 0.28);
+  border-radius: 999px;
+  content: "";
+  height: 4px;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    width 140ms ease;
+  width: 92px;
+}
+
+.workspace-resizer:hover::before,
+.workspace-resizer:focus-visible::before {
+  background: var(--moss);
+  box-shadow: 0 0 0 3px rgba(47, 91, 64, 0.13);
+  width: 112px;
 }
 
 .visual-column {
@@ -1258,8 +1290,13 @@ fieldset.control-section .road-options {
   }
 
   .workspace {
+    gap: 14px;
     grid-template-rows: auto auto;
     margin-top: 16px;
+  }
+
+  .workspace-resizer {
+    display: none;
   }
 
   .visual-column {

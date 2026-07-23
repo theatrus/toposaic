@@ -68,6 +68,58 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByLabel("Find a place")).toBeVisible();
 });
 
+test("resizes the preview area to make room for controls", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const resizer = page.getByRole("separator", {
+    name: "Resize map and 3D preview",
+  });
+  const visualArea = page.locator(".visual-column");
+  const controls = page.locator("#terrain-controls");
+
+  await expect(resizer).toBeVisible();
+  await expect(resizer).toHaveAttribute("aria-orientation", "horizontal");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "62");
+
+  const initialVisualBounds = await visualArea.boundingBox();
+  const initialControlBounds = await controls.boundingBox();
+  expect(initialVisualBounds).not.toBeNull();
+  expect(initialControlBounds).not.toBeNull();
+
+  await resizer.focus();
+  await page.keyboard.press("Home");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "28");
+
+  const smallVisualBounds = await visualArea.boundingBox();
+  const largeControlBounds = await controls.boundingBox();
+  expect(smallVisualBounds).not.toBeNull();
+  expect(largeControlBounds).not.toBeNull();
+  expect(smallVisualBounds!.height).toBeLessThan(initialVisualBounds!.height);
+  expect(largeControlBounds!.height).toBeGreaterThan(
+    initialControlBounds!.height,
+  );
+
+  const resizerBounds = await resizer.boundingBox();
+  expect(resizerBounds).not.toBeNull();
+  if (!resizerBounds) return;
+  await page.mouse.move(
+    resizerBounds.x + resizerBounds.width / 2,
+    resizerBounds.y + resizerBounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    resizerBounds.x + resizerBounds.width / 2,
+    resizerBounds.y + 120,
+    { steps: 6 },
+  );
+  await page.mouse.up();
+
+  await expect
+    .poll(async () => Number(await resizer.getAttribute("aria-valuenow")))
+    .toBeGreaterThan(28);
+});
+
 test("rotates, zooms, and resets the interactive 3D preview", async ({
   page,
 }) => {

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
@@ -75,6 +76,11 @@ type Job = {
   error?: string | null;
   spec: GenerationSpec;
 };
+
+const DEFAULT_VISUAL_HEIGHT_PERCENT = 62;
+const MIN_VISUAL_HEIGHT_PERCENT = 28;
+const MAX_VISUAL_HEIGHT_PERCENT = 76;
+const VISUAL_HEIGHT_KEYBOARD_STEP = 4;
 
 type PreviewData = {
   width: number;
@@ -1177,6 +1183,9 @@ function RangeField({
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const [visualHeightPercent, setVisualHeightPercent] = useState(
+    DEFAULT_VISUAL_HEIGHT_PERCENT,
+  );
   const [activeSection, setActiveSection] = useState<
     "model" | "surface" | "buildings" | "tray" | "output"
   >("model");
@@ -1193,6 +1202,75 @@ export function TerrainStudio() {
   const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
   const [searchingPlaces, setSearchingPlaces] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const resizePointerRef = useRef<number | null>(null);
+
+  const setVisualHeightFromPointer = useCallback((clientY: number) => {
+    const bounds = workspaceRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.height === 0) return;
+    const nextPercent = ((clientY - bounds.top) / bounds.height) * 100;
+    setVisualHeightPercent(
+      Math.min(
+        MAX_VISUAL_HEIGHT_PERCENT,
+        Math.max(MIN_VISUAL_HEIGHT_PERCENT, nextPercent),
+      ),
+    );
+  }, []);
+
+  const resizePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      resizePointerRef.current = event.pointerId;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setVisualHeightFromPointer(event.clientY);
+    },
+    [setVisualHeightFromPointer],
+  );
+
+  const resizePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (resizePointerRef.current !== event.pointerId) return;
+      setVisualHeightFromPointer(event.clientY);
+    },
+    [setVisualHeightFromPointer],
+  );
+
+  const resizePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (resizePointerRef.current !== event.pointerId) return;
+      setVisualHeightFromPointer(event.clientY);
+      resizePointerRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [setVisualHeightFromPointer],
+  );
+
+  const resizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      let nextPercent: number | null = null;
+      if (event.key === "ArrowUp") {
+        nextPercent = visualHeightPercent - VISUAL_HEIGHT_KEYBOARD_STEP;
+      } else if (event.key === "ArrowDown") {
+        nextPercent = visualHeightPercent + VISUAL_HEIGHT_KEYBOARD_STEP;
+      } else if (event.key === "Home") {
+        nextPercent = MIN_VISUAL_HEIGHT_PERCENT;
+      } else if (event.key === "End") {
+        nextPercent = MAX_VISUAL_HEIGHT_PERCENT;
+      }
+      if (nextPercent === null) return;
+      event.preventDefault();
+      setVisualHeightPercent(
+        Math.min(
+          MAX_VISUAL_HEIGHT_PERCENT,
+          Math.max(MIN_VISUAL_HEIGHT_PERCENT, nextPercent),
+        ),
+      );
+    },
+    [visualHeightPercent],
+  );
 
   const update = useCallback(
     <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) => {
@@ -1475,7 +1553,15 @@ export function TerrainStudio() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div
+        className="workspace"
+        ref={workspaceRef}
+        style={
+          {
+            "--visual-height": `${visualHeightPercent}%`,
+          } as CSSProperties
+        }
+      >
         <section className="visual-column" aria-label="Place and model preview">
           <TerrainMap spec={spec} onCenterChange={onCenterChange} />
           <ReliefPreview
@@ -1484,6 +1570,32 @@ export function TerrainStudio() {
             previewState={previewState}
           />
         </section>
+
+        <div
+          aria-label="Resize map and 3D preview"
+          aria-orientation="horizontal"
+          aria-valuemax={MAX_VISUAL_HEIGHT_PERCENT}
+          aria-valuemin={MIN_VISUAL_HEIGHT_PERCENT}
+          aria-valuenow={Math.round(visualHeightPercent)}
+          aria-valuetext={`${Math.round(visualHeightPercent)}% preview height`}
+          className="workspace-resizer"
+          onDoubleClick={() =>
+            setVisualHeightPercent(DEFAULT_VISUAL_HEIGHT_PERCENT)
+          }
+          onKeyDown={resizeKeyDown}
+          onLostPointerCapture={() => {
+            resizePointerRef.current = null;
+          }}
+          onPointerCancel={() => {
+            resizePointerRef.current = null;
+          }}
+          onPointerDown={resizePointerDown}
+          onPointerMove={resizePointerMove}
+          onPointerUp={resizePointerUp}
+          role="separator"
+          tabIndex={0}
+          title="Drag to resize the map and 3D preview"
+        />
 
         <form className="controls" id="terrain-controls" onSubmit={submit}>
           <div className="panel-heading">
