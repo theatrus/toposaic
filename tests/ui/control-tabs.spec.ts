@@ -26,6 +26,21 @@ test("switches between the reflowed control panels", async ({ page }) => {
   ).toBeVisible();
   await expect(generate).toHaveAttribute("form", "terrain-controls");
   await expect(page.getByLabel("Find a place")).toBeVisible();
+  const pieceShape = page.getByRole("group", { name: "Piece shape" });
+  const preview = page.getByLabel("Interactive 3D terrain preview");
+  const straightGrid = pieceShape.getByRole("checkbox", {
+    name: /Straight piece sides/,
+  });
+  const interlockingTabs = pieceShape.getByRole("checkbox", {
+    name: /Interlocking tabs/,
+  });
+  await expect(straightGrid).not.toBeChecked();
+  await expect(interlockingTabs).toBeChecked();
+  await straightGrid.check();
+  await interlockingTabs.uncheck();
+  await expect(preview).toHaveAttribute("data-straight-piece-sides", "true");
+  await expect(preview).toHaveAttribute("data-puzzle-tabs", "false");
+  await expect(page.getByText("Separate pieces with plain cuts")).toBeVisible();
   const relief = page.getByRole("slider", { name: "Terrain relief" });
   await expect(relief).toHaveAttribute("max", "80");
   const initialHeightScale = Number(

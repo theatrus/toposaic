@@ -37,6 +37,8 @@ pub struct GenerationSpec {
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
     pub solid_model: bool,
+    pub straight_piece_sides: bool,
+    pub puzzle_tabs: bool,
     pub place_name: String,
     pub tray: TraySpec,
     pub buildings: BuildingSpec,
@@ -58,6 +60,8 @@ impl Default for GenerationSpec {
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
             solid_model: false,
+            straight_piece_sides: false,
+            puzzle_tabs: true,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
             buildings: BuildingSpec::default(),
@@ -2601,7 +2605,7 @@ fn piece_outline(
             bottom_left,
             bottom_right,
             shared_edge_pattern(0, row, column),
-            edge_sign(0, column, row, spec.rows),
+            puzzle_edge_sign(spec, 0, column, row, spec.rows),
             t,
             base_depth,
         ));
@@ -2612,7 +2616,7 @@ fn piece_outline(
             bottom_right,
             top_right,
             shared_edge_pattern(1, column + 1, row),
-            edge_sign(1, row, column + 1, spec.columns),
+            puzzle_edge_sign(spec, 1, row, column + 1, spec.columns),
             t,
             base_depth,
         ));
@@ -2623,7 +2627,7 @@ fn piece_outline(
             top_left,
             top_right,
             shared_edge_pattern(0, row + 1, column),
-            edge_sign(0, column, row + 1, spec.rows),
+            puzzle_edge_sign(spec, 0, column, row + 1, spec.rows),
             t,
             base_depth,
         ));
@@ -2634,7 +2638,7 @@ fn piece_outline(
             bottom_left,
             top_left,
             shared_edge_pattern(1, column, row),
-            edge_sign(1, row, column, spec.columns),
+            puzzle_edge_sign(spec, 1, row, column, spec.columns),
             t,
             base_depth,
         ));
@@ -2657,6 +2661,19 @@ struct EdgePattern {
 fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
     let piece_width = spec.width_mm / spec.columns as f32;
     let piece_height = spec.height_mm() / spec.rows as f32;
+    if spec.straight_piece_sides {
+        let x = if column == spec.columns {
+            spec.width_mm
+        } else {
+            column as f32 * piece_width
+        };
+        let y = if row == spec.rows {
+            spec.height_mm()
+        } else {
+            row as f32 * piece_height
+        };
+        return [x, y];
+    }
     let seed = ((row as u64) << 32) | column as u64;
     let x = if column == 0 {
         0.0
@@ -2673,6 +2690,20 @@ fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
         row as f32 * piece_height + (edge_noise(seed, 1) - 0.5) * piece_height * 0.18
     };
     [x, y]
+}
+
+fn puzzle_edge_sign(
+    spec: &GenerationSpec,
+    orientation: u64,
+    segment: u32,
+    line: u32,
+    line_count: u32,
+) -> f32 {
+    if spec.puzzle_tabs {
+        edge_sign(orientation, segment, line, line_count)
+    } else {
+        0.0
+    }
 }
 
 fn shared_edge_pattern(orientation: u64, line: u32, segment: u32) -> EdgePattern {
@@ -3242,23 +3273,66 @@ mod tests {
 
     #[test]
     fn shared_seam_keeps_the_requested_minimum_clearance() {
-        let spec = GenerationSpec::default();
-        let fitted_left = piece_outline(&spec, 1, 1, false).unwrap();
-        let fitted_right = piece_outline(&spec, 1, 2, false).unwrap();
+        for straight_piece_sides in [false, true] {
+            for puzzle_tabs in [false, true] {
+                let spec = GenerationSpec {
+                    straight_piece_sides,
+                    puzzle_tabs,
+                    ..GenerationSpec::default()
+                };
+                let fitted_left = piece_outline(&spec, 1, 1, false).unwrap();
+                let fitted_right = piece_outline(&spec, 1, 2, false).unwrap();
 
-        let gap = fitted_left
-            .iter()
-            .map(|point| point_outline_distance(*point, &fitted_right))
-            .chain(
-                fitted_right
+                let gap = fitted_left
                     .iter()
-                    .map(|point| point_outline_distance(*point, &fitted_left)),
-            )
-            .fold(f32::INFINITY, f32::min);
-        assert!(
-            (gap - spec.clearance_mm).abs() < 0.015,
-            "minimum shared clearance was {gap} mm"
-        );
+                    .map(|point| point_outline_distance(*point, &fitted_right))
+                    .chain(
+                        fitted_right
+                            .iter()
+                            .map(|point| point_outline_distance(*point, &fitted_left)),
+                    )
+                    .fold(f32::INFINITY, f32::min);
+                assert!(
+                    (gap - spec.clearance_mm).abs() < 0.015,
+                    "straight={straight_piece_sides}, tabs={puzzle_tabs}: minimum shared clearance was {gap} mm"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn straight_tabless_pieces_use_plain_rectangular_cuts() {
+        let spec = GenerationSpec {
+            straight_piece_sides: true,
+            puzzle_tabs: false,
+            ..GenerationSpec::default()
+        };
+        let piece_width = spec.width_mm / spec.columns as f32;
+        let piece_height = spec.height_mm() / spec.rows as f32;
+        let outline = piece_outline(&spec, 1, 1, true).unwrap();
+
+        for point in outline {
+            let on_vertical_edge = (point[0] - piece_width).abs() < 0.0001
+                || (point[0] - piece_width * 2.0).abs() < 0.0001;
+            let on_horizontal_edge = (point[1] - piece_height).abs() < 0.0001
+                || (point[1] - piece_height * 2.0).abs() < 0.0001;
+            assert!(on_vertical_edge || on_horizontal_edge, "{point:?}");
+        }
+    }
+
+    #[test]
+    fn every_piece_shape_mode_is_watertight() {
+        for straight_piece_sides in [false, true] {
+            for puzzle_tabs in [false, true] {
+                let spec = GenerationSpec {
+                    straight_piece_sides,
+                    puzzle_tabs,
+                    ..GenerationSpec::default()
+                };
+                let mesh = build_piece(&spec, None, None, 1, 1).unwrap();
+                assert_watertight(&mesh);
+            }
+        }
     }
 
     #[test]
@@ -3749,6 +3823,8 @@ mod tests {
         }))
         .unwrap();
         assert!(!spec.solid_model);
+        assert!(!spec.straight_piece_sides);
+        assert!(spec.puzzle_tabs);
         assert_eq!(spec.overlay_samples_per_piece, 112);
         assert_eq!(spec.place_name, "Mount Rainier");
         assert!(!spec.tray.enabled);

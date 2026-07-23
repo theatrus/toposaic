@@ -43,6 +43,9 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, />Output</);
   assert.match(html, /id="terrain-controls"/);
   assert.match(html, /Solid terrain/);
+  assert.match(html, /Straight piece sides/);
+  assert.match(html, /Interlocking tabs/);
+  assert.match(html, /tab-less pieces with plain cuts/);
   assert.match(html, /Shallow terrain tray/);
   assert.match(html, /Tray place label/);
   assert.match(html, /Mapped buildings/);

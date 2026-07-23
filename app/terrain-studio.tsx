@@ -28,6 +28,8 @@ type GenerationSpec = {
   samples_per_piece: number;
   overlay_samples_per_piece: number;
   solid_model: boolean;
+  straight_piece_sides: boolean;
+  puzzle_tabs: boolean;
   place_name: string;
   buildings: {
     enabled: boolean;
@@ -140,6 +142,8 @@ const initialSpec: GenerationSpec = {
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
   solid_model: false,
+  straight_piece_sides: false,
+  puzzle_tabs: true,
   place_name: "Mount Rainier",
   buildings: {
     enabled: false,
@@ -463,6 +467,15 @@ function sharedEdgePattern(
 function puzzleGridPoint(spec: GenerationSpec, row: number, column: number) {
   const pieceWidth = spec.width_mm / spec.columns;
   const pieceHeight = (spec.width_mm * spec.rows) / spec.columns / spec.rows;
+  if (spec.straight_piece_sides) {
+    return {
+      x: column === spec.columns ? spec.width_mm : column * pieceWidth,
+      y:
+        row === spec.rows
+          ? (spec.width_mm * spec.rows) / spec.columns
+          : row * pieceHeight,
+    };
+  }
   const seed = (BigInt(row) << 32n) | BigInt(column);
   const x =
     column === 0
@@ -862,7 +875,9 @@ function ReliefPreview({
           const start = puzzleGridPoint(spec, row, edgeColumn);
           const end = puzzleGridPoint(spec, row + 1, edgeColumn);
           const pattern = sharedEdgePattern(1, edgeColumn, row);
-          const sign = edgeSign(1, row, edgeColumn, spec.columns);
+          const sign = spec.puzzle_tabs
+            ? edgeSign(1, row, edgeColumn, spec.columns)
+            : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
             const t = step / 48;
@@ -894,7 +909,9 @@ function ReliefPreview({
           const start = puzzleGridPoint(spec, edgeRow, column);
           const end = puzzleGridPoint(spec, edgeRow, column + 1);
           const pattern = sharedEdgePattern(0, edgeRow, column);
-          const sign = edgeSign(0, column, edgeRow, spec.rows);
+          const sign = spec.puzzle_tabs
+            ? edgeSign(0, column, edgeRow, spec.rows)
+            : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
             const t = step / 48;
@@ -1053,6 +1070,8 @@ function ReliefPreview({
         className="relief-canvas"
         aria-label="Interactive 3D terrain preview"
         data-camera-moved="false"
+        data-puzzle-tabs={spec.puzzle_tabs}
+        data-straight-piece-sides={spec.straight_piece_sides}
         onKeyDown={keyboardOrbit}
         tabIndex={0}
       />
@@ -2031,7 +2050,11 @@ export function TerrainStudio() {
               </span>
               <span>
                 <strong>Jigsaw puzzle</strong>
-                <small>Separate interlocking pieces</small>
+                <small>
+                  {spec.puzzle_tabs
+                    ? "Separate interlocking pieces"
+                    : "Separate pieces with plain cuts"}
+                </small>
               </span>
             </button>
             <button
@@ -2127,10 +2150,42 @@ export function TerrainStudio() {
                   </small>
                 </div>
               </div>
+              <div
+                className="piece-shape-options"
+                role="group"
+                aria-label="Piece shape"
+              >
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={spec.straight_piece_sides}
+                    onChange={(event) =>
+                      update("straight_piece_sides", event.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>Straight piece sides</strong>
+                    <small>Align each cut instead of warping the grid</small>
+                  </span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={spec.puzzle_tabs}
+                    onChange={(event) =>
+                      update("puzzle_tabs", event.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>Interlocking tabs</strong>
+                    <small>Turn off for tab-less pieces with plain cuts</small>
+                  </span>
+                </label>
+              </div>
               {spec.width_mm / spec.columns < 10 && (
                 <p className="piece-warning">
                   These pieces are under 10 mm wide. Increase print width for
-                  stronger knobs and easier handling.
+                  stronger pieces and easier handling.
                 </p>
               )}
             </fieldset>

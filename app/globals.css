@@ -1090,6 +1090,42 @@ fieldset.control-section .road-options {
   font-size: 11px;
 }
 
+.piece-shape-options {
+  display: grid;
+  gap: 9px;
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr 1fr;
+}
+
+.piece-shape-options label {
+  align-items: center;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr;
+  padding: 10px;
+}
+
+.piece-shape-options input {
+  accent-color: var(--moss);
+}
+
+.piece-shape-options strong,
+.piece-shape-options small {
+  display: block;
+}
+
+.piece-shape-options strong {
+  font-size: 10px;
+}
+
+.piece-shape-options small {
+  color: var(--muted);
+  font-size: 8px;
+  margin-top: 3px;
+}
+
 .piece-custom small {
   color: var(--muted);
   font-size: 9px;
@@ -1344,6 +1380,10 @@ fieldset.control-section .road-options {
 
   .topbar-actions {
     gap: 8px;
+  }
+
+  .piece-shape-options {
+    grid-template-columns: 1fr;
   }
 
   .topbar-generate {
