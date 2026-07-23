@@ -1128,19 +1128,31 @@ fieldset.control-section .road-options {
   margin-top: 13px;
 }
 
-.downloads > a {
+.downloads > a,
+.downloads > button {
   align-items: center;
+  border: 0;
   background: var(--panel);
   color: var(--ink);
+  cursor: pointer;
   display: flex;
+  font-family: inherit;
   font-size: 10px;
   justify-content: space-between;
   padding: 9px 10px;
+  text-align: left;
   text-decoration: none;
+  width: 100%;
 }
 
-.downloads a:hover {
+.downloads a:hover,
+.downloads button:hover {
   text-decoration: underline;
+}
+
+.downloads button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .downloads small {
@@ -1160,8 +1172,15 @@ fieldset.control-section .road-options {
   margin-top: 8px;
 }
 
-.downloads details a {
+.downloads details a,
+.downloads details button {
+  background: none;
+  border: 0;
   color: var(--moss);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
 }
 
 @media (max-width: 1280px) {

@@ -13,4 +13,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 terrain-api = { path = "../apps/api" }
+terrain-core = { path = "../crates/terrain-core" }
+tokio.workspace = true
+uuid.workspace = true

@@ -108,8 +108,11 @@ type PlaceResult = {
   kind: string;
 };
 
+const IS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 const API_URL =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+  IS_TAURI
     ? "http://127.0.0.1:38787"
     : ((typeof process !== "undefined"
         ? process.env.NEXT_PUBLIC_TERRAIN_API_URL
@@ -904,6 +907,7 @@ export function TerrainStudio() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [savingArtifact, setSavingArtifact] = useState<string | null>(null);
   const [placeQuery, setPlaceQuery] = useState("");
   const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
@@ -1100,6 +1104,30 @@ export function TerrainStudio() {
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const saveDesktopArtifact = async (artifact: Artifact) => {
+    if (!job || !IS_TAURI) return;
+    setSavingArtifact(artifact.name);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const savedBytes = await invoke<number | null>("save_artifact", {
+        jobId: job.id,
+        artifactName: artifact.name,
+      });
+      if (savedBytes === null) return;
+      setMessage(`Saved ${artifact.name}.`);
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : `Could not save ${artifact.name}.`,
+      );
+    } finally {
+      setSavingArtifact(null);
     }
   };
 
@@ -1861,30 +1889,59 @@ export function TerrainStudio() {
                         artifact.name.endsWith(".3mf") ||
                         artifact.name === "manifest.json",
                     )
-                    .map((artifact) => (
-                      <a
-                        key={artifact.name}
-                        href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
-                      >
-                        <span>{artifact.name}</span>
-                        <small>
-                          {(artifact.bytes / 1024 / 1024).toFixed(1)} MB
-                        </small>
-                      </a>
-                    ))}
+                    .map((artifact) =>
+                      IS_TAURI ? (
+                        <button
+                          key={artifact.name}
+                          type="button"
+                          disabled={savingArtifact !== null}
+                          onClick={() => void saveDesktopArtifact(artifact)}
+                        >
+                          <span>{artifact.name}</span>
+                          <small>
+                            {savingArtifact === artifact.name
+                              ? "Choosing…"
+                              : `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`}
+                          </small>
+                        </button>
+                      ) : (
+                        <a
+                          key={artifact.name}
+                          href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
+                        >
+                          <span>{artifact.name}</span>
+                          <small>
+                            {(artifact.bytes / 1024 / 1024).toFixed(1)} MB
+                          </small>
+                        </a>
+                      ),
+                    )}
                   <details>
                     <summary>STL models</summary>
                     <div>
                       {job.artifacts
                         .filter((artifact) => artifact.name.endsWith(".stl"))
-                        .map((artifact) => (
-                          <a
-                            key={artifact.name}
-                            href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
-                          >
-                            {artifact.name}
-                          </a>
-                        ))}
+                        .map((artifact) =>
+                          IS_TAURI ? (
+                            <button
+                              key={artifact.name}
+                              type="button"
+                              disabled={savingArtifact !== null}
+                              onClick={() => void saveDesktopArtifact(artifact)}
+                            >
+                              {savingArtifact === artifact.name
+                                ? `Choosing ${artifact.name}…`
+                                : artifact.name}
+                            </button>
+                          ) : (
+                            <a
+                              key={artifact.name}
+                              href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
+                            >
+                              {artifact.name}
+                            </a>
+                          ),
+                        )}
                     </div>
                   </details>
                 </div>

@@ -124,7 +124,12 @@ npm run tauri build
 
 The desktop app keeps SQLite and generated jobs in its standard application
 data directory. Downloaded map inputs still use the shared OS cache described
-below.
+below. Each generated file opens a native Save As dialog, so the app does not
+drop files into Downloads without asking.
+
+GitHub Actions tests the shared code, then builds macOS app and DMG bundles plus
+Windows MSI and NSIS installers. Run artifacts contain each bundle. The macOS
+build uses an ad-hoc signature for now and is not notarized.
 
 ## Storage
 
