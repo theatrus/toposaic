@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -50,9 +51,11 @@ jobs:
           - label: macOS
             os: macos-latest
             bundles: app,dmg
+            arch: aarch64
           - label: Windows
             os: windows-latest
             bundles: msi,nsis
+            arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -68,15 +71,29 @@ jobs:
 
       - run: npm ci
 
-      - name: Build and upload bundle
+      - name: Read app version
+        shell: bash
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          printf 'APP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "v$APP_VERSION" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app version $APP_VERSION."
+            exit 1
+          fi
+
+      - name: Build bundle
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: npm run tauri
           args: --bundles ${{ matrix.bundles }}
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: toposaic-[platform]-[arch]-[bundle]
+          uploadWorkflowArtifacts: false
 
       - name: Verify Windows runtime requirements
         if: runner.os == 'Windows'
@@ -108,3 +125,132 @@ jobs:
           if ($imports -Match '(?i)(VCRUNTIME|MSVCP|CONCRT).*\.dll') {
             throw "The Windows executable needs a Visual C++ Redistributable runtime."
           }
+
+      - name: Stage macOS files
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="target/release/bundle/macos/TopoSaic.app"
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          if [[ ! -d "$app" ]]; then
+            echo "::error::TopoSaic.app was not built."
+            exit 1
+          fi
+          if [[ "${#dmgs[@]}" -ne 1 || ! -f "${dmgs[0]}" ]]; then
+            echo "::error::Expected one DMG, found ${#dmgs[@]}."
+            exit 1
+          fi
+          mkdir -p release-artifacts
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-${{ matrix.arch }}.app.zip"
+          cp "${dmgs[0]}" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-macos-${{ matrix.arch }}.dmg"
+
+      - name: Stage Windows files
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem "target\release\bundle\msi" -Filter *.msi)
+          $exe = @(Get-ChildItem "target\release\bundle\nsis" -Filter *.exe)
+          if ($msi.Count -ne 1) {
+            throw "Expected one MSI, found $($msi.Count)."
+          }
+          if ($exe.Count -ne 1) {
+            throw "Expected one NSIS executable, found $($exe.Count)."
+          }
+          New-Item -ItemType Directory -Force "release-artifacts" | Out-Null
+          Copy-Item $msi[0].FullName `
+            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.msi"
+          Copy-Item $exe[0].FullName `
+            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe"
+
+      - name: Upload macOS app archive
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-${{ matrix.arch }}.app.zip
+          path: release-artifacts/*.app.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload macOS disk image
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-${{ matrix.arch }}.dmg
+          path: release-artifacts/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Windows MSI
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.msi
+          path: release-artifacts/*.msi
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Windows executable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.exe
+          path: release-artifacts/*.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download installable files
+        uses: actions/download-artifact@v8
+        with:
+          pattern: TopoSaic-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Check release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-artifacts/*)
+          if [[ "${#files[@]}" -ne 4 ]]; then
+            echo "::error::Expected four release files, found ${#files[@]}."
+            printf '%s\n' "${files[@]}"
+            exit 1
+          fi
+          for suffix in .msi .exe .app.zip .dmg; do
+            matches=(release-artifacts/*"$suffix")
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "::error::Expected one $suffix file, found ${#matches[@]}."
+              exit 1
+            fi
+          done
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          files=(release-artifacts/*)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            flags=(--verify-tag --generate-notes --title "TopoSaic $tag")
+            if [[ "$tag" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$tag" "${files[@]}" "${flags[@]}"
+          fi

@@ -140,9 +140,12 @@ data directory. Downloaded map inputs still use the shared OS cache described
 below. Each generated file opens a native Save As dialog, so the app does not
 drop files into Downloads without asking.
 
-GitHub Actions tests the shared code, then builds macOS app and DMG bundles plus
-Windows MSI and NSIS installers. Run artifacts contain each bundle. The macOS
-build uses an ad-hoc signature for now and is not notarized.
+GitHub Actions tests the shared code, then builds four installable files:
+Windows `.msi` and `.exe` installers plus macOS `.app.zip` and `.dmg` bundles.
+Each file appears as its own workflow artifact. Pushing a version tag such as
+`v0.1.0` runs the same checks and attaches all four files to a GitHub Release.
+The tag must match the version in `src-tauri/tauri.conf.json`. The macOS build
+uses an ad-hoc signature for now and is not notarized.
 
 Windows builds use the Universal CRT that Windows 10 and 11 include and service.
 CI checks each executable's DLL imports and fails if it adds a `VCRUNTIME`,
