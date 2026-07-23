@@ -19,6 +19,7 @@ const WORLD_COVER_BASE_URL: &str =
 const WORLD_COVER_INFO_URL: &str = "https://worldcover2021.esa.int/download";
 const WORLD_COVER_ATTRIBUTION: &str = "© ESA WorldCover project / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium";
 const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
+const FALLBACK_OVERPASS_URL: &str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
 const PROMINENT_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
@@ -410,25 +411,40 @@ fn fetch_osm_response(
     let (bytes, should_cache) = match fs::read(&cache_path) {
         Ok(bytes) => (bytes, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let base_url =
-                env::var("OVERPASS_BASE_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.into());
             let client = Client::builder()
                 .user_agent("terrain-puzzle/0.1 (+https://github.com/theatrus/terrain-puzzle)")
                 .timeout(Duration::from_secs(45))
                 .build()
                 .context("build OpenStreetMap road client")?;
-            let bytes = client
-                .post(&base_url)
-                .form(&[("data", query)])
-                .send()
-                .with_context(|| format!("request {cache_prefix} from OpenStreetMap Overpass"))?
-                .error_for_status()
-                .with_context(|| {
-                    format!("OpenStreetMap Overpass rejected the {cache_prefix} request")
-                })?
-                .bytes()
-                .with_context(|| format!("read OpenStreetMap {cache_prefix} response"))?
-                .to_vec();
+            let configured_url = env::var("OVERPASS_BASE_URL").ok();
+            let urls = overpass_urls(configured_url.as_deref());
+            let mut failures = Vec::new();
+            let mut bytes = None;
+            for base_url in urls {
+                match client
+                    .post(base_url)
+                    .form(&[("data", query.as_str())])
+                    .send()
+                {
+                    Ok(response) if response.status().is_success() => match response.bytes() {
+                        Ok(response_bytes) => {
+                            bytes = Some(response_bytes.to_vec());
+                            break;
+                        }
+                        Err(error) => failures.push(format!("{base_url}: {error}")),
+                    },
+                    Ok(response) => {
+                        failures.push(format!("{base_url}: HTTP {}", response.status()))
+                    }
+                    Err(error) => failures.push(format!("{base_url}: {error}")),
+                }
+            }
+            let bytes = bytes.with_context(|| {
+                format!(
+                    "OpenStreetMap Overpass rejected the {cache_prefix} request ({})",
+                    failures.join("; ")
+                )
+            })?;
             (bytes, true)
         }
         Err(error) => {
@@ -443,6 +459,13 @@ fn fetch_osm_response(
             .with_context(|| format!("cache OpenStreetMap data {}", cache_path.display()))?;
     }
     Ok(response)
+}
+
+fn overpass_urls(configured_url: Option<&str>) -> Vec<&str> {
+    configured_url.map_or_else(
+        || vec![DEFAULT_OVERPASS_URL, FALLBACK_OVERPASS_URL],
+        |url| vec![url],
+    )
 }
 
 fn osm_cache_path(spec: &GenerationSpec, cache_dir: &Path, cache_prefix: &str) -> PathBuf {
@@ -830,6 +853,18 @@ mod tests {
         assert_eq!(
             osm_cache_path(&first, Path::new("/cache"), "roads"),
             osm_cache_path(&second, Path::new("/cache"), "roads")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_a_second_overpass_instance_unless_one_is_configured() {
+        assert_eq!(
+            overpass_urls(None),
+            vec![DEFAULT_OVERPASS_URL, FALLBACK_OVERPASS_URL]
+        );
+        assert_eq!(
+            overpass_urls(Some("http://127.0.0.1:1234/api/interpreter")),
+            vec!["http://127.0.0.1:1234/api/interpreter"]
         );
     }
 
