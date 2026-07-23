@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use geo::{Area, Buffer, Coord, LineString, Polygon};
+use geo::{Area, BooleanOps, Buffer, Contains, Coord, LineString, Point, Polygon};
 use serde::{Deserialize, Serialize};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use ttf_parser::{Face, OutlineBuilder};
@@ -21,6 +21,8 @@ const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
 const TRAY_CONTOUR_SURFACE_OFFSET_MM: f32 = 0.01;
 const VECTOR_BUCKET_COLUMNS: usize = 32;
 const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
+const ROAD_VECTOR_STEP_MM: f32 = 0.25;
+const ROAD_TERRAIN_EMBED_MM: f32 = 0.02;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -377,7 +379,6 @@ struct VectorSurfaceArea {
 struct SurfaceSample {
     class: SurfaceClass,
     building_height_m: f32,
-    bridge_elevation_m: Option<f32>,
 }
 
 impl SurfaceField {
@@ -460,11 +461,14 @@ impl SurfaceField {
             return;
         }
         let print_height_mm = print_width_mm * (self.height - 1) as f32 / (self.width - 1) as f32;
-        let smooth_points = smooth_surface_line(
-            &points
-                .iter()
-                .map(|point| [point[0] * print_width_mm, point[1] * print_height_mm])
-                .collect::<Vec<_>>(),
+        let smooth_points = resample_surface_line(
+            &smooth_surface_line(
+                &points
+                    .iter()
+                    .map(|point| [point[0] * print_width_mm, point[1] * print_height_mm])
+                    .collect::<Vec<_>>(),
+            ),
+            ROAD_VECTOR_STEP_MM,
         );
         let length_mm = smooth_points
             .windows(2)
@@ -717,39 +721,45 @@ impl SurfaceField {
         self.sample(u, v).class
     }
 
+    fn terrain_at(&self, u: f32, v: f32) -> SurfaceClass {
+        self.terrain_sample(u, v).class
+    }
+
     fn sample(&self, u: f32, v: f32) -> SurfaceSample {
+        self.sample_with_roads(u, v, true)
+    }
+
+    fn terrain_sample(&self, u: f32, v: f32) -> SurfaceSample {
+        self.sample_with_roads(u, v, false)
+    }
+
+    fn sample_with_roads(&self, u: f32, v: f32, include_roads: bool) -> SurfaceSample {
         let bucket = vector_bucket_index(u, v);
         let building_height_m = self.building_height_at_in_bucket(u, v, bucket);
         if building_height_m > 0.0 {
             return SurfaceSample {
                 class: SurfaceClass::Building,
                 building_height_m,
-                bridge_elevation_m: None,
             };
         }
         let line_indices = &self.vector_line_buckets[bucket];
         let mut has_road = false;
-        let mut bridge_elevation_m = None::<f32>;
-        for index in line_indices {
-            let line = &self.vector_lines[*index];
-            if line.class != SurfaceClass::Road {
-                continue;
-            }
-            let Some((_, progress)) = surface_line_projection(line, u, v) else {
-                continue;
-            };
-            has_road = true;
-            if let Some([start, end]) = line.bridge_elevations_m {
-                let elevation = start + (end - start) * progress;
-                bridge_elevation_m =
-                    Some(bridge_elevation_m.map_or(elevation, |current| current.max(elevation)));
+        if include_roads {
+            for index in line_indices {
+                let line = &self.vector_lines[*index];
+                if line.class != SurfaceClass::Road {
+                    continue;
+                }
+                if !surface_line_contains(line, u, v) {
+                    continue;
+                }
+                has_road = true;
             }
         }
         if has_road {
             return SurfaceSample {
                 class: SurfaceClass::Road,
                 building_height_m,
-                bridge_elevation_m,
             };
         }
         if let Some(class) = self.vector_area_buckets[bucket]
@@ -765,7 +775,6 @@ impl SurfaceField {
             return SurfaceSample {
                 class,
                 building_height_m,
-                bridge_elevation_m: None,
             };
         }
         if let Some(class) = self.vector_line_buckets[bucket]
@@ -779,7 +788,6 @@ impl SurfaceField {
             return SurfaceSample {
                 class,
                 building_height_m,
-                bridge_elevation_m: None,
             };
         }
         let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
@@ -787,7 +795,6 @@ impl SurfaceField {
         SurfaceSample {
             class: self.base_classes[y * self.width + x],
             building_height_m,
-            bridge_elevation_m: None,
         }
     }
 
@@ -905,14 +912,47 @@ fn smooth_surface_line(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     result
 }
 
+fn resample_surface_line(points: &[[f32; 2]], maximum_step_mm: f32) -> Vec<[f32; 2]> {
+    if points.len() < 2 {
+        return points.to_vec();
+    }
+    let mut result = Vec::new();
+    for segment in points.windows(2) {
+        let delta = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
+        let length = delta[0].hypot(delta[1]);
+        let samples = (length / maximum_step_mm.max(0.01)).ceil().max(1.0) as usize;
+        for sample in 0..samples {
+            let t = sample as f32 / samples as f32;
+            let point = [segment[0][0] + delta[0] * t, segment[0][1] + delta[1] * t];
+            if result
+                .last()
+                .is_none_or(|previous| distance_squared(*previous, point) > 0.000_001)
+            {
+                result.push(point);
+            }
+        }
+    }
+    result.push(*points.last().unwrap());
+    result
+}
+
 fn surface_line_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> Option<(f32, f32)> {
+    let radius_squared = (line.width_mm * 0.5).powi(2);
+    let nearest = surface_line_nearest_projection(line, u, v);
+    (nearest.0 <= radius_squared).then_some(nearest)
+}
+
+fn surface_line_progress(line: &VectorSurfaceLine, u: f32, v: f32) -> f32 {
+    surface_line_nearest_projection(line, u, v).1
+}
+
+fn surface_line_nearest_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> (f32, f32) {
     let point = [
         u.clamp(0.0, 1.0) * line.model_width_mm,
         v.clamp(0.0, 1.0) * line.model_height_mm,
     ];
-    let radius_squared = (line.width_mm * 0.5).powi(2);
     let mut traversed_mm = 0.0;
-    let mut closest = None::<(f32, f32)>;
+    let mut closest = (f32::INFINITY, 0.0);
     for segment in line.points_mm.windows(2) {
         let delta = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]];
         let length_squared = delta[0].powi(2) + delta[1].powi(2);
@@ -928,15 +968,15 @@ fn surface_line_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> Option<(
             segment[0][1] + delta[1] * amount,
         ];
         let distance = distance_squared(point, nearest);
-        if closest.is_none_or(|(best, _)| distance < best) {
-            closest = Some((
+        if distance < closest.0 {
+            closest = (
                 distance,
                 (traversed_mm + length * amount) / line.length_mm.max(f32::EPSILON),
-            ));
+            );
         }
         traversed_mm += length;
     }
-    closest.filter(|(distance, _)| *distance <= radius_squared)
+    closest
 }
 
 fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
@@ -1048,6 +1088,20 @@ impl MeshBuilder {
         }
     }
 
+    fn append_isolated(&mut self, other: MeshBuilder) {
+        let offset = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices);
+        self.triangles.extend(
+            other
+                .triangles
+                .into_iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        self.materials.extend(other.materials);
+    }
+}
+
+impl Mesh {
     fn append_isolated(&mut self, other: MeshBuilder) {
         let offset = self.vertices.len() as u32;
         self.vertices.extend(other.vertices);
@@ -2296,7 +2350,7 @@ fn build_piece(
         let assembled_y = position.y as f32 + origin_y;
         let u = assembled_x / assembled_width;
         let v = assembled_y / assembled_height;
-        let surface_sample = surface_field.map(|field| field.sample(u, v));
+        let surface_sample = surface_field.map(|field| field.terrain_sample(u, v));
         let building_height_m = surface_sample
             .map(|sample| sample.building_height_m)
             .unwrap_or(0.0);
@@ -2309,24 +2363,7 @@ fn build_piece(
             spec.center_lat,
             spec.center_lon,
         );
-        let terrain = match (
-            surface_sample.and_then(|sample| sample.bridge_elevation_m),
-            height_range,
-        ) {
-            (Some(elevation_m), Some((minimum, span))) => {
-                terrain.max(((elevation_m - minimum) / span).clamp(0.0, 1.0))
-            }
-            _ => terrain,
-        };
-        let road = surface_sample
-            .filter(|sample| {
-                spec.color_output.enabled
-                    && spec.color_output.roads_enabled
-                    && sample.class == SurfaceClass::Road
-            })
-            .map(|_| spec.color_output.road_height_mm)
-            .unwrap_or(0.0);
-        let z = spec.base_mm + spec.relief_mm * terrain + building + road;
+        let z = spec.base_mm + spec.relief_mm * terrain + building;
         vertices.push([position.x as f32, position.y as f32, z]);
         top_has_building.push(spec.buildings.enabled && building_height_m > 0.0);
     }
@@ -2363,7 +2400,7 @@ fn build_piece(
                     {
                         SurfaceClass::Building
                     } else {
-                        field.at(
+                        field.terrain_at(
                             (centroid[0] + origin_x) / assembled_width,
                             (centroid[1] + origin_y) / assembled_height,
                         )
@@ -2409,7 +2446,7 @@ fn build_piece(
         materials.push(SurfaceClass::Rock);
     }
 
-    Ok(Mesh {
+    let mut mesh = Mesh {
         name: if spec.solid_model {
             "Solid Terrain".into()
         } else {
@@ -2418,7 +2455,325 @@ fn build_piece(
         vertices,
         triangles,
         materials,
-    })
+    };
+    if spec.color_output.enabled
+        && spec.color_output.roads_enabled
+        && let Some(field) = surface_field
+    {
+        append_road_geometry(
+            &mut mesh,
+            spec,
+            field,
+            height_field,
+            height_range,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+    }
+    Ok(mesh)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_road_geometry(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    surface_field: &SurfaceField,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    piece_outline: &[[f32; 2]],
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<()> {
+    let piece_polygon = geo_polygon(piece_outline);
+    let piece_bounds = piece_outline.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |bounds, point| {
+            [
+                bounds[0].min(point[0] + origin_x),
+                bounds[1].min(point[1] + origin_y),
+                bounds[2].max(point[0] + origin_x),
+                bounds[3].max(point[1] + origin_y),
+            ]
+        },
+    );
+    for line in surface_field
+        .vector_lines
+        .iter()
+        .filter(|line| line.class == SurfaceClass::Road)
+    {
+        let half_width = line.width_mm * 0.5;
+        let line_bounds = line.points_mm.iter().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |bounds, point| {
+                [
+                    bounds[0].min(point[0] - half_width),
+                    bounds[1].min(point[1] - half_width),
+                    bounds[2].max(point[0] + half_width),
+                    bounds[3].max(point[1] + half_width),
+                ]
+            },
+        );
+        if !bounds_overlap(piece_bounds, line_bounds) {
+            continue;
+        }
+        let local_points = line
+            .points_mm
+            .iter()
+            .map(|point| Coord {
+                x: (point[0] - origin_x) as f64,
+                y: (point[1] - origin_y) as f64,
+            })
+            .collect::<Vec<_>>();
+        if local_points.len() < 2 {
+            continue;
+        }
+        let road_area = LineString::new(local_points).buffer(line.width_mm as f64 * 0.5);
+        let mut clipped = road_area.intersection(&piece_polygon);
+        if spec.buildings.enabled {
+            for building in surface_field
+                .vector_areas
+                .iter()
+                .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
+                .filter(|area| {
+                    let bounds = surface_area_bounds(&area.points);
+                    let assembled_bounds = [
+                        bounds[0] * assembled_width,
+                        bounds[1] * assembled_height,
+                        bounds[2] * assembled_width,
+                        bounds[3] * assembled_height,
+                    ];
+                    bounds_overlap(piece_bounds, assembled_bounds)
+                        && bounds_overlap(line_bounds, assembled_bounds)
+                })
+            {
+                let local_building = building
+                    .points
+                    .iter()
+                    .map(|point| {
+                        [
+                            point[0] * assembled_width - origin_x,
+                            point[1] * assembled_height - origin_y,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                clipped = clipped.difference(&geo_polygon(&local_building));
+            }
+        }
+        for polygon in clipped
+            .0
+            .iter()
+            .filter(|polygon| polygon.unsigned_area() > 0.000_01)
+        {
+            let road_mesh = build_road_polygon_shell(
+                polygon,
+                spec,
+                line,
+                height_field,
+                height_range,
+                origin_x,
+                origin_y,
+                assembled_width,
+                assembled_height,
+            )?;
+            mesh.append_isolated(road_mesh);
+        }
+    }
+    Ok(())
+}
+
+fn geo_polygon(points: &[[f32; 2]]) -> Polygon<f64> {
+    let mut coordinates = points
+        .iter()
+        .map(|point| Coord {
+            x: point[0] as f64,
+            y: point[1] as f64,
+        })
+        .collect::<Vec<_>>();
+    if coordinates.first() != coordinates.last()
+        && let Some(first) = coordinates.first().copied()
+    {
+        coordinates.push(first);
+    }
+    Polygon::new(LineString::new(coordinates), vec![])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_road_polygon_shell(
+    polygon: &Polygon<f64>,
+    spec: &GenerationSpec,
+    line: &VectorSurfaceLine,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<MeshBuilder> {
+    let rings = std::iter::once(polygon.exterior())
+        .chain(polygon.interiors())
+        .map(open_ring_points)
+        .filter(|ring| ring.len() >= 3)
+        .collect::<Vec<_>>();
+    let mut points = Vec::new();
+    let mut constraints = Vec::new();
+    for ring in &rings {
+        let start = points.len();
+        points.extend(
+            ring.iter()
+                .map(|point| Point2::new(point[0] as f64, point[1] as f64)),
+        );
+        constraints
+            .extend((0..ring.len()).map(|index| [start + index, start + (index + 1) % ring.len()]));
+    }
+    if points.len() < 3 {
+        return Ok(MeshBuilder::default());
+    }
+    let triangulation =
+        ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
+            .context("triangulate vector road ribbon")?;
+    let road_z = |point: [f32; 2]| {
+        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+        if let (Some([start, end]), Some((minimum, span))) =
+            (line.bridge_elevations_m, height_range)
+        {
+            let progress = surface_line_progress(line, u, v);
+            let elevation = start + (end - start) * progress;
+            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).clamp(0.0, 1.0)
+        } else {
+            spec.base_mm
+                + spec.relief_mm
+                    * normalized_height(
+                        height_field,
+                        height_range,
+                        u,
+                        v,
+                        spec.center_lat,
+                        spec.center_lon,
+                    )
+        }
+    };
+    let bottom = |point: [f32; 2]| road_z(point) - ROAD_TERRAIN_EMBED_MM;
+    let top = |point: [f32; 2]| road_z(point) + spec.color_output.road_height_mm;
+
+    let mut output = MeshBuilder::default();
+    let mut edge_uses = HashMap::<(usize, usize), (u32, [usize; 2])>::new();
+    let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
+    for face in triangulation.inner_faces() {
+        let face_vertices = face.vertices();
+        let face_points = face_vertices.map(|vertex| {
+            let point = vertex.position();
+            [point.x as f32, point.y as f32]
+        });
+        let centroid = Point::new(
+            face_points.iter().map(|point| point[0] as f64).sum::<f64>() / 3.0,
+            face_points.iter().map(|point| point[1] as f64).sum::<f64>() / 3.0,
+        );
+        if !polygon.contains(&centroid) {
+            continue;
+        }
+        let mut ordered = face_points;
+        let mut ordered_indices = face_vertices.map(|vertex| vertex.fix().index());
+        let area = (ordered[1][0] - ordered[0][0]) * (ordered[2][1] - ordered[0][1])
+            - (ordered[1][1] - ordered[0][1]) * (ordered[2][0] - ordered[0][0]);
+        if area < 0.0 {
+            ordered.swap(1, 2);
+            ordered_indices.swap(1, 2);
+        }
+        for (index, point) in ordered_indices.into_iter().zip(ordered) {
+            vertex_positions.insert(index, point);
+        }
+        for directed in [
+            [ordered_indices[0], ordered_indices[1]],
+            [ordered_indices[1], ordered_indices[2]],
+            [ordered_indices[2], ordered_indices[0]],
+        ] {
+            let key = if directed[0] < directed[1] {
+                (directed[0], directed[1])
+            } else {
+                (directed[1], directed[0])
+            };
+            let entry = edge_uses.entry(key).or_insert((0, directed));
+            entry.0 += 1;
+        }
+        output.triangle(
+            [ordered[0][0], ordered[0][1], top(ordered[0])],
+            [ordered[1][0], ordered[1][1], top(ordered[1])],
+            [ordered[2][0], ordered[2][1], top(ordered[2])],
+            SurfaceClass::Road,
+        );
+        output.triangle(
+            [ordered[0][0], ordered[0][1], bottom(ordered[0])],
+            [ordered[2][0], ordered[2][1], bottom(ordered[2])],
+            [ordered[1][0], ordered[1][1], bottom(ordered[1])],
+            SurfaceClass::Road,
+        );
+    }
+    for (_, [from, to]) in edge_uses.into_values().filter(|(uses, _)| *uses == 1) {
+        let start = vertex_positions[&from];
+        let end = vertex_positions[&to];
+        output.quad(
+            [start[0], start[1], bottom(start)],
+            [end[0], end[1], bottom(end)],
+            [end[0], end[1], top(end)],
+            [start[0], start[1], top(start)],
+            SurfaceClass::Road,
+        );
+    }
+    Ok(output)
+}
+
+fn open_ring_points(ring: &LineString<f64>) -> Vec<[f32; 2]> {
+    let mut points = ring
+        .0
+        .iter()
+        .map(|point| [point.x as f32, point.y as f32])
+        .collect::<Vec<_>>();
+    if points.len() > 1 && distance_squared(points[0], *points.last().unwrap()) < 0.000_000_01 {
+        points.pop();
+    }
+    points.dedup_by(|left, right| distance_squared(*left, *right) < 0.000_000_01);
+    simplify_closed_ring(points)
+}
+
+fn simplify_closed_ring(mut points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    loop {
+        if points.len() <= 3 {
+            return points;
+        }
+        let count = points.len();
+        let mut simplified = Vec::with_capacity(count);
+        for index in 0..count {
+            let previous = points[(index + count - 1) % count];
+            let point = points[index];
+            let next = points[(index + 1) % count];
+            let incoming = [point[0] - previous[0], point[1] - previous[1]];
+            let outgoing = [next[0] - point[0], next[1] - point[1]];
+            let continues_forward = incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0.0;
+            if !continues_forward || point_line_distance(point, previous, next) > 0.000_1 {
+                simplified.push(point);
+            }
+        }
+        if simplified.len() == points.len() || simplified.len() < 3 {
+            return points;
+        }
+        points = simplified;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2970,15 +3325,6 @@ fn build_preview(
             let surface_sample = surface_field.map(|field| field.sample(u, v));
             let terrain =
                 normalized_height(height_field, range, u, v, spec.center_lat, spec.center_lon);
-            let terrain = match (
-                surface_sample.and_then(|sample| sample.bridge_elevation_m),
-                range,
-            ) {
-                (Some(elevation_m), Some((minimum, span))) => {
-                    terrain.max(((elevation_m - minimum) / span).clamp(0.0, 1.0))
-                }
-                _ => terrain,
-            };
             let building = scaled_building_height_mm(
                 spec,
                 surface_sample
@@ -3242,7 +3588,10 @@ pub fn artifact_path(output_dir: &Path, name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::HashMap, io::Read};
+    use std::{
+        collections::{HashMap, HashSet},
+        io::Read,
+    };
 
     #[test]
     fn accepts_the_full_relief_range() {
@@ -4037,14 +4386,22 @@ mod tests {
     }
 
     #[test]
-    fn roads_raise_the_mesh_by_one_layer() {
-        let road_field = SurfaceField::new(3, 3, vec![SurfaceClass::Road; 9], "roads").unwrap();
+    fn roads_use_smooth_vector_ribbons_one_layer_above_terrain() {
+        let mut road_field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "roads").unwrap();
+        road_field.paint_polyline(
+            &[[0.1, 0.25], [0.5, 0.75], [0.9, 0.25]],
+            60.0,
+            1.0,
+            SurfaceClass::Road,
+        );
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
         let spec = GenerationSpec {
             width_mm: 60.0,
             rows: 2,
             columns: 2,
             samples_per_piece: 16,
             overlay_samples_per_piece: 32,
+            solid_model: true,
             color_output: ColorOutputSpec {
                 enabled: true,
                 roads_enabled: true,
@@ -4053,7 +4410,7 @@ mod tests {
             },
             ..GenerationSpec::default()
         };
-        let raised = build_piece(&spec, None, Some(&road_field), 0, 0).unwrap();
+        let raised = build_piece(&spec, Some(&height_field), Some(&road_field), 0, 0).unwrap();
         let flat = build_piece(
             &GenerationSpec {
                 color_output: ColorOutputSpec {
@@ -4062,23 +4419,76 @@ mod tests {
                 },
                 ..spec.clone()
             },
-            None,
+            Some(&height_field),
             Some(&road_field),
             0,
             0,
         )
         .unwrap();
-        let raised_top = raised
-            .vertices
+        let road_vertices = raised
+            .triangles
+            .iter()
+            .zip(&raised.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| raised.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        let minimum_z = road_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = road_vertices
             .iter()
             .map(|vertex| vertex[2])
             .fold(f32::NEG_INFINITY, f32::max);
-        let flat_top = flat
-            .vertices
-            .iter()
-            .map(|vertex| vertex[2])
-            .fold(f32::NEG_INFINITY, f32::max);
-        assert!((raised_top - flat_top - 0.2).abs() < 0.001);
+        assert!(road_field.vector_lines[0].points_mm.len() > 100);
+        assert!(road_vertices.len() > 100);
+        assert!((minimum_z - (spec.base_mm - ROAD_TERRAIN_EMBED_MM)).abs() < 0.001);
+        assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
+        assert!(!flat.materials.contains(&SurfaceClass::Road));
+        assert_watertight(&raised);
+    }
+
+    #[test]
+    fn vector_roads_stop_at_enabled_building_footprints() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "roads").unwrap();
+        field.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        field.paint_building(&[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]], 12.0);
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
+            if *material != SurfaceClass::Road {
+                continue;
+            }
+            let centroid = triangle
+                .map(|index| mesh.vertices[index as usize])
+                .iter()
+                .fold([0.0, 0.0], |sum, vertex| {
+                    [sum[0] + vertex[0] / 3.0, sum[1] + vertex[1] / 3.0]
+                });
+            assert!(
+                !(centroid[0] > 24.0
+                    && centroid[0] < 36.0
+                    && centroid[1] > 24.0
+                    && centroid[1] < 36.0),
+                "road triangle entered building at {centroid:?}"
+            );
+        }
+        assert_watertight(&mesh);
     }
 
     #[test]
@@ -4093,12 +4503,11 @@ mod tests {
         let mut bridge_field =
             SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "bridge").unwrap();
         bridge_field.paint_bridge_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, [100.0, 100.0]);
-        let mut road_field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "road").unwrap();
-        road_field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, SurfaceClass::Road);
         let spec = GenerationSpec {
             width_mm: 60.0,
             rows: 2,
             columns: 2,
+            solid_model: true,
             color_output: ColorOutputSpec {
                 enabled: true,
                 roads_enabled: true,
@@ -4107,12 +4516,33 @@ mod tests {
             ..GenerationSpec::default()
         };
 
-        let bridge = build_preview(&spec, Some(&height_field), Some(&bridge_field), 3);
-        let road = build_preview(&spec, Some(&height_field), Some(&road_field), 3);
-        let bridge_center = bridge["values"][4].as_f64().unwrap();
-        let road_center = road["values"][4].as_f64().unwrap();
-        assert!(bridge_center > 1.0);
-        assert!(road_center < 0.1);
+        let bridge = build_piece(&spec, Some(&height_field), Some(&bridge_field), 0, 0).unwrap();
+        let road_vertex_indices = bridge
+            .triangles
+            .iter()
+            .zip(&bridge.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .copied()
+            .collect::<HashSet<_>>();
+        let terrain_vertex_indices = bridge
+            .triangles
+            .iter()
+            .zip(&bridge.materials)
+            .filter(|(_, material)| **material != SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .copied()
+            .collect::<HashSet<_>>();
+        let minimum_deck_z = road_vertex_indices
+            .iter()
+            .map(|index| bridge.vertices[*index as usize][2])
+            .fold(f32::INFINITY, f32::min);
+        assert!(!road_vertex_indices.is_empty());
+        assert!(road_vertex_indices.is_disjoint(&terrain_vertex_indices));
+        assert!(minimum_deck_z > spec.base_mm + spec.relief_mm - 0.05);
+        let preview = build_preview(&spec, Some(&height_field), Some(&bridge_field), 3);
+        assert!(preview["values"][4].as_f64().unwrap() < 0.1);
+        assert_watertight(&bridge);
     }
 
     #[test]
