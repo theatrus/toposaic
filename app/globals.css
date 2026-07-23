@@ -119,14 +119,11 @@ a {
 }
 
 .brand-mark {
-  align-items: center;
-  background: var(--ink);
-  border-radius: 7px 13px 7px 13px;
-  color: var(--acid);
-  display: flex;
+  background: url("../src-tauri/icons/128x128.png") center / cover no-repeat;
+  border-radius: 9px;
+  display: block;
+  flex: 0 0 38px;
   height: 38px;
-  justify-content: center;
-  transform: rotate(-3deg);
   width: 38px;
 }
 

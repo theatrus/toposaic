@@ -1439,9 +1439,7 @@ export function TerrainStudio() {
     <main className="studio">
       <header className="topbar">
         <a className="brand" href="#" aria-label="TopoSaic home">
-          <span className="brand-mark" aria-hidden="true">
-            TS
-          </span>
+          <span className="brand-mark" aria-hidden="true" />
           <span>
             TopoSaic
             <small>Terrain Puzzle</small>

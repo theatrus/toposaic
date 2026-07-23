@@ -10,6 +10,17 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByRole("link", { name: "TopoSaic home" })).toContainText(
     "Terrain Puzzle",
   );
+  const brandIcon = page.locator(".brand-mark");
+  await expect(brandIcon).toHaveCSS("background-image", /url\(.+\)/);
+  const brandIconUrl = await brandIcon.evaluate((element) => {
+    const background = getComputedStyle(element).backgroundImage;
+    return background.match(/^url\(["']?(.*?)["']?\)$/)?.[1] ?? "";
+  });
+  expect(brandIconUrl).toBeTruthy();
+  const brandIconResponse = await page.request.get(
+    new URL(brandIconUrl, page.url()).href,
+  );
+  expect(brandIconResponse.ok()).toBe(true);
   await expect(
     page.getByRole("heading", { name: "Shape your terrain" }),
   ).toBeVisible();
