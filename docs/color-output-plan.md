@@ -36,7 +36,11 @@ motorway and trunk lines are wider, while secondary roads and links are
 narrower. Dense-road adjustment can reduce those widths toward a printable 0.4
 mm floor. If no visible prominent road crosses the model, the generator falls
 back to paths, footways, bridleways, tracks, and cycleways. Trails never appear
-on top of a road network.
+on top of a road network. A separate waterway coverage cutoff always keeps
+rivers and canals, then adds the longest streams while their estimated printed
+area stays within the chosen share of the model. The default is 12%. A 0%
+cutoff gives major waterways only, while 100% keeps every mapped stream. Lakes
+and other mapped water areas stay unchanged.
 
 The map is static, so snow means mapped snow or ice rather than current seasonal
 snow. WorldCover supplies broad water coverage while OpenStreetMap supplies

@@ -51,6 +51,7 @@ type GenerationSpec = {
     roads_enabled: boolean;
     adaptive_road_widths: boolean;
     osm_water_enabled: boolean;
+    waterway_coverage_percent: number;
     road_width_mm: number;
     road_height_mm: number;
     minimum_patch_mm: number;
@@ -150,6 +151,7 @@ const initialSpec: GenerationSpec = {
     roads_enabled: true,
     adaptive_road_widths: true,
     osm_water_enabled: true,
+    waterway_coverage_percent: 12,
     road_width_mm: 0.7,
     road_height_mm: 0.2,
     minimum_patch_mm: 1.2,
@@ -1328,6 +1330,26 @@ export function TerrainStudio() {
                     Adds smooth rivers, streams, canals, and mapped water areas
                   </small>
                 </div>
+                {spec.color_output.osm_water_enabled && (
+                  <RangeField
+                    label="Maximum waterway coverage"
+                    value={spec.color_output.waterway_coverage_percent}
+                    unit="%"
+                    min={0}
+                    max={100}
+                    step={1}
+                    onChange={(value) =>
+                      updateColor("waterway_coverage_percent", value)
+                    }
+                  />
+                )}
+                {spec.color_output.osm_water_enabled && (
+                  <p className="control-hint">
+                    Keeps rivers and canals, then adds the longest streams up to
+                    this share of the print surface. Set 0% for major waterways
+                    only or 100% for every mapped stream. Lakes are unchanged.
+                  </p>
+                )}
                 <div className="road-options">
                   <label className="color-toggle">
                     <input

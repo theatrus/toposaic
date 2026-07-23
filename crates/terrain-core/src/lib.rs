@@ -221,6 +221,7 @@ pub struct ColorOutputSpec {
     pub roads_enabled: bool,
     pub adaptive_road_widths: bool,
     pub osm_water_enabled: bool,
+    pub waterway_coverage_percent: f32,
     pub road_width_mm: f32,
     pub road_height_mm: f32,
     pub minimum_patch_mm: f32,
@@ -239,6 +240,7 @@ impl Default for ColorOutputSpec {
             roads_enabled: true,
             adaptive_road_widths: true,
             osm_water_enabled: true,
+            waterway_coverage_percent: 12.0,
             road_width_mm: 0.7,
             road_height_mm: 0.2,
             minimum_patch_mm: 1.2,
@@ -262,6 +264,9 @@ impl ColorOutputSpec {
         }
         if !(0.4..=5.0).contains(&self.road_width_mm) {
             bail!("road line width must be between 0.4 and 5 mm");
+        }
+        if !(0.0..=100.0).contains(&self.waterway_coverage_percent) {
+            bail!("waterway coverage cutoff must be between 0 and 100 percent");
         }
         if !(0.08..=0.4).contains(&self.road_height_mm) {
             bail!("road layer height must be between 0.08 and 0.4 mm");
@@ -3564,6 +3569,7 @@ mod tests {
         assert!(spec.color_output.roads_enabled);
         assert!(spec.color_output.adaptive_road_widths);
         assert!(spec.color_output.osm_water_enabled);
+        assert_eq!(spec.color_output.waterway_coverage_percent, 12.0);
         assert_eq!(spec.color_output.road_width_mm, 0.7);
         assert_eq!(spec.color_output.road_height_mm, 0.2);
     }

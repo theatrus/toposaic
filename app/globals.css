@@ -729,6 +729,13 @@ a {
   font-size: 9px;
 }
 
+.control-hint {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 4px 0 0;
+}
+
 .model-mode {
   border: 0;
   border-top: 1px solid var(--line);

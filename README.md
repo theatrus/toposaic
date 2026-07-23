@@ -50,6 +50,10 @@ color properties.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
 networks. OpenStreetMap water can be disabled without hiding WorldCover water.
+The waterway coverage cutoff always keeps rivers and canals, then keeps the
+longest streams until their estimated printed area reaches the chosen share of
+the model. Set it to 0% for major waterways only or 100% for every mapped
+stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
 Overlay detail is separate from the base terrain setting. It defaults to 112

@@ -81,12 +81,19 @@ struct RouteCounts {
 #[derive(Debug, Default)]
 struct WaterCounts {
     lines: usize,
+    available_lines: usize,
     areas: usize,
 }
 
 struct RouteFeature {
     points: Vec<[f32; 2]>,
     width_scale: f32,
+}
+
+struct WaterwayFeature {
+    points: Vec<[f32; 2]>,
+    width_scale: f32,
+    major: bool,
 }
 
 pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Result<SurfaceField> {
@@ -144,8 +151,11 @@ pub fn fetch_surface_field(spec: &GenerationSpec, map_cache_dir: &Path) -> Resul
                 Ok(counts) => append_source(
                     &mut field.source,
                     format!(
-                        "waterways: {} lines and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                        counts.lines, counts.areas
+                        "waterways: {} of {} lines after {:.0}% coverage cutoff and {} water areas from OpenStreetMap via Overpass API; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                        counts.lines,
+                        counts.available_lines,
+                        spec.color_output.waterway_coverage_percent,
+                        counts.areas
                     ),
                 ),
                 Err(error) => {
@@ -235,6 +245,7 @@ fn paint_water(
 ) -> Result<WaterCounts> {
     let water = fetch_osm_response(spec, cache_dir, "water", water_query(bounds))?;
     let mut counts = WaterCounts::default();
+    let mut lines = Vec::new();
     for way in water.elements {
         if is_water_area(&way.tags) {
             if way.geometry.len() >= 3 {
@@ -252,15 +263,72 @@ fn paint_water(
         let Some(width_scale) = waterway_width_scale(&way.tags) else {
             continue;
         };
+        lines.push(WaterwayFeature {
+            points: normalized_osm_points(&way, spec, bounds),
+            width_scale,
+            major: is_major_waterway(&way.tags),
+        });
+    }
+    counts.available_lines = lines.len();
+    let lines = select_waterway_features(spec, lines);
+    counts.lines = lines.len();
+    for line in lines {
         field.paint_polyline(
-            &normalized_osm_points(&way, spec, bounds),
+            &line.points,
             spec.width_mm,
-            (spec.color_output.road_width_mm * width_scale).max(0.6),
+            waterway_print_width(spec, &line),
             SurfaceClass::Water,
         );
-        counts.lines += 1;
     }
     Ok(counts)
+}
+
+fn select_waterway_features(
+    spec: &GenerationSpec,
+    features: Vec<WaterwayFeature>,
+) -> Vec<WaterwayFeature> {
+    if spec.color_output.waterway_coverage_percent >= 100.0 {
+        return features;
+    }
+    let coverage_budget =
+        spec.width_mm * spec.height_mm() * spec.color_output.waterway_coverage_percent / 100.0;
+    let (mut major, mut minor): (Vec<_>, Vec<_>) =
+        features.into_iter().partition(|feature| feature.major);
+    major.sort_by(|left, right| {
+        waterway_printed_area(spec, right).total_cmp(&waterway_printed_area(spec, left))
+    });
+    minor.sort_by(|left, right| {
+        waterway_printed_area(spec, right).total_cmp(&waterway_printed_area(spec, left))
+    });
+    let mut used_area = major
+        .iter()
+        .map(|feature| waterway_printed_area(spec, feature))
+        .sum::<f32>();
+    for feature in minor {
+        let area = waterway_printed_area(spec, &feature);
+        if used_area + area <= coverage_budget {
+            used_area += area;
+            major.push(feature);
+        }
+    }
+    major
+}
+
+fn waterway_printed_area(spec: &GenerationSpec, feature: &WaterwayFeature) -> f32 {
+    feature
+        .points
+        .windows(2)
+        .map(|points| {
+            let width = (points[1][0] - points[0][0]) * spec.width_mm;
+            let height = (points[1][1] - points[0][1]) * spec.height_mm();
+            width.hypot(height)
+        })
+        .sum::<f32>()
+        * waterway_print_width(spec, feature)
+}
+
+fn waterway_print_width(spec: &GenerationSpec, feature: &WaterwayFeature) -> f32 {
+    (spec.color_output.road_width_mm * feature.width_scale).max(0.6)
 }
 
 fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
@@ -614,6 +682,11 @@ fn waterway_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
     }
 }
 
+fn is_major_waterway(tags: &HashMap<String, String>) -> bool {
+    tags.get("waterway")
+        .is_some_and(|value| value == "river" || value == "canal")
+}
+
 fn is_water_area(tags: &HashMap<String, String>) -> bool {
     tags.get("natural").is_some_and(|value| value == "water")
         || tags
@@ -893,10 +966,40 @@ mod tests {
         let tags = |class: &str| HashMap::from([("waterway".into(), class.into())]);
         assert!(waterway_width_scale(&tags("river")) > waterway_width_scale(&tags("stream")));
         assert_eq!(waterway_width_scale(&tags("drain")), None);
+        assert!(is_major_waterway(&tags("river")));
+        assert!(is_major_waterway(&tags("canal")));
+        assert!(!is_major_waterway(&tags("stream")));
         assert!(is_water_area(&HashMap::from([(
             "natural".into(),
             "water".into()
         )])));
+    }
+
+    #[test]
+    fn waterway_cutoff_keeps_major_lines_and_limits_stream_coverage() {
+        let features = || {
+            let mut features = vec![WaterwayFeature {
+                points: vec![[0.0, 0.0], [1.0, 0.0]],
+                width_scale: 1.2,
+                major: true,
+            }];
+            features.extend((0..10).map(|index| WaterwayFeature {
+                points: vec![[0.0, index as f32 * 0.01], [1.0, index as f32 * 0.01]],
+                width_scale: 0.65,
+                major: false,
+            }));
+            features
+        };
+        let mut spec = GenerationSpec {
+            width_mm: 100.0,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.waterway_coverage_percent = 0.0;
+        assert_eq!(select_waterway_features(&spec, features()).len(), 1);
+        spec.color_output.waterway_coverage_percent = 3.0;
+        assert_eq!(select_waterway_features(&spec, features()).len(), 4);
+        spec.color_output.waterway_coverage_percent = 100.0;
+        assert_eq!(select_waterway_features(&spec, features()).len(), 11);
     }
 
     #[test]
@@ -906,6 +1009,7 @@ mod tests {
         second.color_output.road_width_mm = 0.4;
         second.color_output.adaptive_road_widths = false;
         second.color_output.osm_water_enabled = false;
+        second.color_output.waterway_coverage_percent = 3.0;
         assert_eq!(
             osm_cache_path(&first, Path::new("/cache"), "roads"),
             osm_cache_path(&second, Path::new("/cache"), "roads")

@@ -39,6 +39,8 @@ test("server-renders Terrain Puzzle Studio", async () => {
   assert.match(html, /Mapped buildings/);
   assert.match(html, /Render roads/);
   assert.match(html, /OpenStreetMap waterways/);
+  assert.match(html, /Maximum waterway coverage/);
+  assert.match(html, /major waterways only/);
   assert.match(html, /Thin dense road networks/);
   assert.match(html, /Overlay detail/);
   assert.match(html, /Road layer height/);
