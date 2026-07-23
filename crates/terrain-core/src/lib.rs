@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use geo::{Area, Buffer, Coord, LineString, Polygon};
 use serde::{Deserialize, Serialize};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -243,7 +244,7 @@ fn build_piece(
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
     let height_range = height_field.map(HeightField::range);
-    let outline = piece_outline(spec, row, column, false)
+    let outline = piece_outline(spec, row, column, false)?
         .into_iter()
         .map(|[x, y]| [x - origin_x, y - origin_y])
         .collect::<Vec<_>>();
@@ -375,7 +376,7 @@ fn piece_outline(
     row: u32,
     column: u32,
     exact_shared_edge: bool,
-) -> Vec<[f32; 2]> {
+) -> Result<Vec<[f32; 2]>> {
     let bottom_left = puzzle_grid_point(spec, row, column);
     let bottom_right = puzzle_grid_point(spec, row, column + 1);
     let top_right = puzzle_grid_point(spec, row + 1, column + 1);
@@ -432,9 +433,9 @@ fn piece_outline(
     }
 
     if !exact_shared_edge && spec.clearance_mm > 0.0 {
-        outline = inset_outline(&outline, spec.clearance_mm * 0.5);
+        outline = inset_outline(&outline, spec.clearance_mm * 0.5)?;
     }
-    outline
+    Ok(outline)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -558,27 +559,44 @@ fn jigsaw_edge(t: f32, pattern: EdgePattern) -> [f32; 2] {
     [point[0] + pattern.skew * point[1], point[1]]
 }
 
-fn inset_outline(outline: &[[f32; 2]], distance: f32) -> Vec<[f32; 2]> {
-    (0..outline.len())
-        .map(|index| {
-            let previous = outline[(index + outline.len() - 1) % outline.len()];
-            let point = outline[index];
-            let next = outline[(index + 1) % outline.len()];
-            let incoming = normalize_2d([point[0] - previous[0], point[1] - previous[1]]);
-            let outgoing = normalize_2d([next[0] - point[0], next[1] - point[1]]);
-            let normal_a = [-incoming[1], incoming[0]];
-            let normal_b = [-outgoing[1], outgoing[0]];
-            let sum = [normal_a[0] + normal_b[0], normal_a[1] + normal_b[1]];
-            let direction = normalize_2d(sum);
-            let shift = [direction[0] * distance, direction[1] * distance];
-            [point[0] + shift[0], point[1] + shift[1]]
+fn inset_outline(outline: &[[f32; 2]], distance: f32) -> Result<Vec<[f32; 2]>> {
+    let mut coordinates = outline
+        .iter()
+        .map(|point| Coord {
+            x: point[0] as f64,
+            y: point[1] as f64,
         })
-        .collect()
-}
+        .collect::<Vec<_>>();
+    coordinates.push(coordinates[0]);
 
-fn normalize_2d(vector: [f32; 2]) -> [f32; 2] {
-    let length = vector[0].hypot(vector[1]).max(f32::EPSILON);
-    [vector[0] / length, vector[1] / length]
+    let inset = Polygon::new(LineString::new(coordinates), vec![]).buffer(-(distance as f64));
+    let polygon = inset
+        .0
+        .into_iter()
+        .max_by(|first, second| first.unsigned_area().total_cmp(&second.unsigned_area()))
+        .context("clearance removed the puzzle-piece outline")?;
+    if !polygon.interiors().is_empty() {
+        bail!("clearance produced holes in the puzzle-piece outline");
+    }
+
+    let mut result = Vec::<[f32; 2]>::new();
+    for point in &polygon.exterior().0 {
+        let candidate = [point.x as f32, point.y as f32];
+        let is_duplicate = result.last().is_some_and(|previous| {
+            (previous[0] - candidate[0]).hypot(previous[1] - candidate[1]) < 0.000_01
+        });
+        if !is_duplicate {
+            result.push(candidate);
+        }
+    }
+    if result.len() > 1
+        && (result[0][0] - result[result.len() - 1][0])
+            .hypot(result[0][1] - result[result.len() - 1][1])
+            < 0.000_01
+    {
+        result.pop();
+    }
+    Ok(result)
 }
 
 fn cubic_bezier(
@@ -829,8 +847,8 @@ mod tests {
     fn shared_edges_are_identical_before_clearance() {
         let spec = GenerationSpec::default();
         let edge_samples = spec.samples_per_piece as usize;
-        let left_piece = piece_outline(&spec, 1, 1, true);
-        let right_piece = piece_outline(&spec, 1, 2, true);
+        let left_piece = piece_outline(&spec, 1, 1, true).unwrap();
+        let right_piece = piece_outline(&spec, 1, 2, true).unwrap();
         for point in &left_piece[edge_samples..edge_samples * 2] {
             let matching_distance = right_piece
                 .iter()
@@ -841,31 +859,24 @@ mod tests {
     }
 
     #[test]
-    fn clearance_is_split_evenly_across_a_shared_seam() {
+    fn shared_seam_keeps_the_requested_minimum_clearance() {
         let spec = GenerationSpec::default();
-        let edge_samples = spec.samples_per_piece as usize;
-        let fitted_left = piece_outline(&spec, 1, 1, false);
-        let fitted_right = piece_outline(&spec, 1, 2, false);
+        let fitted_left = piece_outline(&spec, 1, 1, false).unwrap();
+        let fitted_right = piece_outline(&spec, 1, 2, false).unwrap();
 
-        for &point in fitted_left
+        let gap = fitted_left
             .iter()
-            .take(edge_samples * 2 - 2)
-            .skip(edge_samples + 2)
-        {
-            let gap = (0..fitted_right.len())
-                .map(|index| {
-                    point_segment_distance(
-                        point,
-                        fitted_right[index],
-                        fitted_right[(index + 1) % fitted_right.len()],
-                    )
-                })
-                .fold(f32::INFINITY, f32::min);
-            assert!(
-                (gap - spec.clearance_mm).abs() < 0.015,
-                "clearance at shared point was {gap} mm"
-            );
-        }
+            .map(|point| point_outline_distance(*point, &fitted_right))
+            .chain(
+                fitted_right
+                    .iter()
+                    .map(|point| point_outline_distance(*point, &fitted_left)),
+            )
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (gap - spec.clearance_mm).abs() < 0.015,
+            "minimum shared clearance was {gap} mm"
+        );
     }
 
     #[test]
@@ -949,6 +960,54 @@ mod tests {
         assert!((first.skew - second.skew).abs() > 0.001);
     }
 
+    #[test]
+    fn all_supported_detail_levels_triangulate() {
+        for samples_per_piece in [64, 88, 104, 112, 128, 160] {
+            let spec = GenerationSpec {
+                samples_per_piece,
+                ..GenerationSpec::default()
+            };
+            for row in 0..spec.rows {
+                for column in 0..spec.columns {
+                    build_piece(&spec, None, row, column).unwrap_or_else(|error| {
+                        panic!("detail {samples_per_piece}, piece {row}-{column} failed: {error}")
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn high_detail_outlines_work_for_every_grid_size() {
+        for grid_size in 2..=8 {
+            let spec = GenerationSpec {
+                rows: grid_size,
+                columns: grid_size,
+                samples_per_piece: 160,
+                ..GenerationSpec::default()
+            };
+            for row in 0..spec.rows {
+                for column in 0..spec.columns {
+                    let outline = piece_outline(&spec, row, column, false).unwrap();
+                    let points = outline
+                        .iter()
+                        .map(|point| Point2::new(point[0] as f64, point[1] as f64))
+                        .collect::<Vec<_>>();
+                    let constraints = (0..outline.len())
+                        .map(|index| [index, (index + 1) % outline.len()])
+                        .collect::<Vec<_>>();
+                    ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(
+                        points,
+                        constraints,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("grid {grid_size}, piece {row}-{column} failed: {error}")
+                    });
+                }
+            }
+        }
+    }
+
     fn point_segment_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
         let segment = [end[0] - start[0], end[1] - start[1]];
         let length_squared = segment[0] * segment[0] + segment[1] * segment[1];
@@ -956,5 +1015,13 @@ mod tests {
             / length_squared.max(f32::EPSILON))
         .clamp(0.0, 1.0);
         (point[0] - start[0] - t * segment[0]).hypot(point[1] - start[1] - t * segment[1])
+    }
+
+    fn point_outline_distance(point: [f32; 2], outline: &[[f32; 2]]) -> f32 {
+        (0..outline.len())
+            .map(|index| {
+                point_segment_distance(point, outline[index], outline[(index + 1) % outline.len()])
+            })
+            .fold(f32::INFINITY, f32::min)
     }
 }

@@ -1,5 +1,6 @@
 use std::{
     env,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
@@ -310,20 +311,26 @@ async fn create_job(
 
     let worker_state = state.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(error) = run_job(&worker_state, &id, &spec) {
-            error!(job_id = %id, %error, "generation failed");
-            let _ = update_job(
-                &worker_state,
-                &id,
-                "failed",
-                100,
-                &[],
-                Some(&error.to_string()),
-            );
-        }
+        let failure = match catch_unwind(AssertUnwindSafe(|| run_job(&worker_state, &id, &spec))) {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(payload) => panic_message(payload),
+        };
+        error!(job_id = %id, error = %failure, "generation failed");
+        let _ = update_job(&worker_state, &id, "failed", 100, &[], Some(&failure));
     });
 
     Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        format!("mesh generation panicked: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("mesh generation panicked: {message}")
+    } else {
+        "mesh generation panicked".into()
+    }
 }
 
 async fn get_job(
@@ -526,5 +533,13 @@ mod tests {
             kind: "unknown".into(),
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn panic_payload_becomes_a_job_error() {
+        assert_eq!(
+            panic_message(Box::new("triangulation failed")),
+            "mesh generation panicked: triangulation failed"
+        );
     }
 }
