@@ -171,8 +171,43 @@ a {
 }
 
 .map-canvas {
+  cursor: grab;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  touch-action: none;
+}
+
+.map-canvas:active {
+  cursor: grabbing;
+}
+
+.map-tiles {
   inset: 0;
   position: absolute;
+}
+
+.map-tiles img {
+  height: 256px;
+  max-width: none;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
+  width: 256px;
+}
+
+.map-selection {
+  background: rgba(216, 251, 114, 0.16);
+  border: 3px dashed var(--acid);
+  box-shadow:
+    0 0 0 1px rgba(20, 32, 29, 0.4),
+    inset 0 0 30px rgba(216, 251, 114, 0.12);
+  left: 50%;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
 }
 
 .map-shell::after {
@@ -181,6 +216,7 @@ a {
   inset: 0;
   pointer-events: none;
   position: absolute;
+  z-index: 1;
 }
 
 .map-crosshair {
@@ -191,7 +227,7 @@ a {
   top: 50%;
   transform: translate(-50%, -50%);
   width: 30px;
-  z-index: 2;
+  z-index: 3;
 }
 
 .map-crosshair span {
@@ -224,6 +260,45 @@ a {
   padding: 11px 14px;
   position: absolute;
   text-transform: uppercase;
+  z-index: 4;
+}
+
+.map-zoom {
+  display: grid;
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  z-index: 4;
+}
+
+.map-zoom button {
+  align-items: center;
+  background: rgba(255, 254, 248, 0.94);
+  border: 1px solid rgba(20, 32, 29, 0.25);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  font-size: 20px;
+  height: 34px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 34px;
+}
+
+.map-zoom button + button {
+  border-top: 0;
+}
+
+.map-attribution {
+  background: rgba(255, 254, 248, 0.82);
+  bottom: 5px;
+  color: var(--ink);
+  font-size: 9px;
+  padding: 3px 5px;
+  position: absolute;
+  right: 5px;
+  text-decoration: none;
   z-index: 3;
 }
 
@@ -315,6 +390,113 @@ a {
   color: var(--muted);
   font-size: 11px;
   margin: 5px 0 0;
+}
+
+.place-search {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  position: relative;
+}
+
+.place-search > label {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.place-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.place-search-row input {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-radius: 0;
+  color: var(--ink);
+  font: inherit;
+  min-width: 0;
+  padding: 12px;
+}
+
+.place-search-row button {
+  background: var(--moss);
+  border: 1px solid var(--moss);
+  color: white;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 15px;
+}
+
+.place-search-row button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.place-search-message,
+.place-search-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
+
+.place-search-note a {
+  color: var(--moss);
+}
+
+.place-results {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  list-style: none;
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.place-results li + li {
+  border-top: 1px solid var(--line);
+}
+
+.place-results button {
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  display: block;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.place-results button:hover,
+.place-results button:focus-visible {
+  background: rgba(216, 251, 114, 0.24);
+}
+
+.place-results span,
+.place-results small {
+  display: block;
+}
+
+.place-results span {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.place-results small {
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 3px;
+  text-transform: capitalize;
 }
 
 .coordinate-row {
@@ -576,10 +758,6 @@ a {
 
 .downloads details a {
   color: var(--moss);
-}
-
-.maplibregl-ctrl-group {
-  border-radius: 0 !important;
 }
 
 @media (max-width: 1280px) {

@@ -1,12 +1,19 @@
 # Terrain Puzzle
 
 Terrain Puzzle is a local-first topographic puzzle generator. A Rust service
-samples worldwide elevation data, builds watertight interlocking pieces, and
-stores job state in SQLite. The web app lets you choose a place and tune the
-printable model.
+samples worldwide elevation data, builds watertight pieces with round jigsaw
+tabs and sockets, and stores job state in SQLite. The web app lets you choose a
+place and tune the printable model, including the mesh detail.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry and keeps a local tile cache under `data/dem-cache`.
+
+Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
+through the Rust service. Results are cached in SQLite and outbound requests
+are limited to one per second. Set `NOMINATIM_BASE_URL` to use another
+compatible service. Review the
+[public service policy](https://operations.osmfoundation.org/policies/nominatim/)
+before wider or commercial use.
 
 ## Requirements
 
@@ -52,7 +59,10 @@ npm test
   binary STL, and standards-based 3MF
 - `apps/api`: global elevation provider, Axum API, SQLite jobs, background
   generation, and downloads
-- `app`: map, relief preview, print controls, and job downloads
+- `app`: WebGL-free map, relief preview, print controls, and job downloads
+
+See [the color output plan](docs/color-output-plan.md) for the proposed
+rock–forest–snow 3MF workflow.
 
 ## Terrain data
 

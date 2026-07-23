@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -6,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,8 +36,8 @@ impl Default for GenerationSpec {
             columns: 3,
             base_mm: 2.4,
             relief_mm: 14.0,
-            clearance_mm: 0.22,
-            samples_per_piece: 28,
+            clearance_mm: 0.14,
+            samples_per_piece: 64,
         }
     }
 }
@@ -66,8 +68,8 @@ impl GenerationSpec {
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
         }
-        if !(8..=96).contains(&self.samples_per_piece) {
-            bail!("samples per piece must be between 8 and 96");
+        if !(16..=160).contains(&self.samples_per_piece) {
+            bail!("samples per piece must be between 16 and 160");
         }
         Ok(())
     }
@@ -182,7 +184,7 @@ fn generate_project_inner(
     let mut meshes = Vec::with_capacity((spec.rows * spec.columns) as usize);
     for row in 0..spec.rows {
         for column in 0..spec.columns {
-            meshes.push(build_piece(spec, height_field, row, column));
+            meshes.push(build_piece(spec, height_field, row, column)?);
         }
     }
 
@@ -201,7 +203,9 @@ fn generate_project_inner(
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     let preview_path = output_dir.join("preview.json");
-    let preview = build_preview(spec, height_field, 42);
+    let preview_size =
+        (spec.rows.max(spec.columns) * spec.samples_per_piece + 1).clamp(96, 160) as usize;
+    let preview = build_preview(spec, height_field, preview_size);
     fs::write(&preview_path, serde_json::to_vec(&preview)?)
         .with_context(|| format!("write {}", preview_path.display()))?;
     artifacts.push(file_artifact(&preview_path, "application/json")?);
@@ -230,10 +234,8 @@ fn build_piece(
     height_field: Option<&HeightField>,
     row: u32,
     column: u32,
-) -> Mesh {
+) -> Result<Mesh> {
     let samples = spec.samples_per_piece as usize;
-    let stride = samples + 1;
-    let top_count = stride * stride;
     let piece_width = spec.width_mm / spec.columns as f32;
     let piece_height = spec.height_mm() / spec.rows as f32;
     let origin_x = column as f32 * piece_width;
@@ -241,159 +243,384 @@ fn build_piece(
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
     let height_range = height_field.map(HeightField::range);
+    let outline = piece_outline(spec, row, column, false)
+        .into_iter()
+        .map(|[x, y]| [x - origin_x, y - origin_y])
+        .collect::<Vec<_>>();
+    let mut points = outline
+        .iter()
+        .map(|point| Point2::new(point[0] as f64, point[1] as f64))
+        .collect::<Vec<_>>();
+    let constraints = (0..outline.len())
+        .map(|index| [index, (index + 1) % outline.len()])
+        .collect::<Vec<_>>();
 
-    let mut vertices = Vec::with_capacity(top_count * 2);
-    for layer in 0..2 {
-        for y in 0..=samples {
-            let v = y as f32 / samples as f32;
-            for x in 0..=samples {
-                let u = x as f32 / samples as f32;
-                let [assembled_x, assembled_y] = map_piece_point(spec, row, column, u, v, false);
-                let local_x = assembled_x - origin_x;
-                let local_y = assembled_y - origin_y;
-                let z = if layer == 0 {
-                    spec.base_mm
-                        + spec.relief_mm
-                            * normalized_height(
-                                height_field,
-                                height_range,
-                                assembled_x / assembled_width,
-                                assembled_y / assembled_height,
-                                spec.center_lat,
-                                spec.center_lon,
-                            )
-                } else {
-                    0.0
-                };
-                vertices.push([local_x, local_y, z]);
+    let minimum_x = outline
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let maximum_x = outline
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let minimum_y = outline
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let maximum_y = outline
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let spacing = piece_width.min(piece_height) / samples as f32;
+    let grid_columns = ((maximum_x - minimum_x) / spacing).ceil() as usize;
+    let grid_rows = ((maximum_y - minimum_y) / spacing).ceil() as usize;
+    for grid_y in 0..grid_rows {
+        let y = minimum_y + (grid_y as f32 + 0.5) * spacing;
+        for grid_x in 0..grid_columns {
+            let x = minimum_x + (grid_x as f32 + 0.5) * spacing;
+            if point_in_polygon([x, y], &outline) {
+                points.push(Point2::new(x as f64, y as f64));
             }
         }
     }
 
-    let mut triangles = Vec::with_capacity(samples * samples * 4 + samples * 8);
-    for y in 0..samples {
-        for x in 0..samples {
-            let a = (y * stride + x) as u32;
-            let b = a + 1;
-            let c = a + stride as u32;
-            let d = c + 1;
-            triangles.push([a, b, d]);
-            triangles.push([a, d, c]);
-
-            let offset = top_count as u32;
-            triangles.push([offset + a, offset + d, offset + b]);
-            triangles.push([offset + a, offset + c, offset + d]);
+    let triangulation =
+        ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
+            .context("triangulate jigsaw piece")?;
+    let top_count = triangulation.num_vertices();
+    let mut vertices = Vec::with_capacity(top_count * 2);
+    for layer in 0..2 {
+        for vertex in triangulation.vertices() {
+            let position = vertex.position();
+            let assembled_x = position.x as f32 + origin_x;
+            let assembled_y = position.y as f32 + origin_y;
+            let z = if layer == 0 {
+                spec.base_mm
+                    + spec.relief_mm
+                        * normalized_height(
+                            height_field,
+                            height_range,
+                            assembled_x / assembled_width,
+                            assembled_y / assembled_height,
+                            spec.center_lat,
+                            spec.center_lon,
+                        )
+            } else {
+                0.0
+            };
+            vertices.push([position.x as f32, position.y as f32, z]);
         }
     }
 
-    let mut add_side = |a: usize, b: usize| {
-        let top_a = a as u32;
-        let top_b = b as u32;
-        let bottom_a = (top_count + a) as u32;
-        let bottom_b = (top_count + b) as u32;
-        triangles.push([top_a, bottom_b, top_b]);
-        triangles.push([top_a, bottom_a, bottom_b]);
-    };
-
-    for x in 0..samples {
-        add_side(x + 1, x);
-        let top_row = samples * stride;
-        add_side(top_row + x, top_row + x + 1);
+    let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
+    for face in triangulation.inner_faces() {
+        let face_vertices = face.vertices();
+        let positions = face_vertices.map(|vertex| vertex.position());
+        let centroid = [
+            ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
+            ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
+        ];
+        if !point_in_polygon(centroid, &outline) {
+            continue;
+        }
+        let mut top = face_vertices.map(|vertex| vertex.fix().index() as u32);
+        let area = (positions[1].x - positions[0].x) * (positions[2].y - positions[0].y)
+            - (positions[1].y - positions[0].y) * (positions[2].x - positions[0].x);
+        if area < 0.0 {
+            top.swap(1, 2);
+        }
+        top_triangles.push(top);
     }
-    for y in 0..samples {
-        add_side(y * stride, (y + 1) * stride);
-        add_side((y + 1) * stride + samples, y * stride + samples);
+
+    let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2])>::new();
+    for triangle in &top_triangles {
+        for directed in [
+            [triangle[0], triangle[1]],
+            [triangle[1], triangle[2]],
+            [triangle[2], triangle[0]],
+        ] {
+            let key = if directed[0] < directed[1] {
+                (directed[0], directed[1])
+            } else {
+                (directed[1], directed[0])
+            };
+            let entry = edge_uses.entry(key).or_insert((0, directed));
+            entry.0 += 1;
+        }
     }
 
-    Mesh {
+    let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
+    for top in top_triangles {
+        triangles.push(top);
+        triangles.push([
+            top[0] + top_count as u32,
+            top[2] + top_count as u32,
+            top[1] + top_count as u32,
+        ]);
+    }
+    for (_, [from, to]) in edge_uses.into_values().filter(|(uses, _)| *uses == 1) {
+        triangles.push([from, to + top_count as u32, to]);
+        triangles.push([from, from + top_count as u32, to + top_count as u32]);
+    }
+
+    Ok(Mesh {
         name: format!("Piece {}-{}", row + 1, column + 1),
         vertices,
         triangles,
-    }
+    })
 }
 
-fn map_piece_point(
+fn piece_outline(
     spec: &GenerationSpec,
     row: u32,
     column: u32,
-    u: f32,
-    v: f32,
     exact_shared_edge: bool,
-) -> [f32; 2] {
-    let piece_width = spec.width_mm / spec.columns as f32;
-    let piece_height = spec.height_mm() / spec.rows as f32;
-    let x0 = column as f32 * piece_width;
-    let x1 = x0 + piece_width;
-    let y0 = row as f32 * piece_height;
-    let y1 = y0 + piece_height;
-    let tab_depth = piece_width.min(piece_height) * 0.13;
+) -> Vec<[f32; 2]> {
+    let bottom_left = puzzle_grid_point(spec, row, column);
+    let bottom_right = puzzle_grid_point(spec, row, column + 1);
+    let top_right = puzzle_grid_point(spec, row + 1, column + 1);
+    let top_left = puzzle_grid_point(spec, row + 1, column);
+    let nominal_piece_size =
+        (spec.width_mm / spec.columns as f32).min(spec.height_mm() / spec.rows as f32);
+    let base_depth = nominal_piece_size * 0.18;
+    let edge_samples = spec.samples_per_piece.clamp(32, 128) as usize;
+    let mut outline = Vec::with_capacity(edge_samples * 4);
 
-    let left = [
-        x0 + vertical_edge_offset(row, column, spec.columns, v, tab_depth),
-        y0 + v * piece_height,
-    ];
-    let right = [
-        x1 + vertical_edge_offset(row, column + 1, spec.columns, v, tab_depth),
-        y0 + v * piece_height,
-    ];
-    let bottom = [
-        x0 + u * piece_width,
-        y0 + horizontal_edge_offset(column, row, spec.rows, u, tab_depth),
-    ];
-    let top = [
-        x0 + u * piece_width,
-        y1 + horizontal_edge_offset(column, row + 1, spec.rows, u, tab_depth),
-    ];
-
-    let bilinear = [x0 + u * piece_width, y0 + v * piece_height];
-    let mut point = [
-        (1.0 - u) * left[0] + u * right[0] + (1.0 - v) * bottom[0] + v * top[0] - bilinear[0],
-        (1.0 - u) * left[1] + u * right[1] + (1.0 - v) * bottom[1] + v * top[1] - bilinear[1],
-    ];
+    for index in 0..edge_samples {
+        let t = index as f32 / edge_samples as f32;
+        outline.push(puzzle_edge_point(
+            bottom_left,
+            bottom_right,
+            shared_edge_pattern(0, row, column),
+            edge_sign(column, row, spec.rows),
+            t,
+            base_depth,
+        ));
+    }
+    for index in 0..edge_samples {
+        let t = index as f32 / edge_samples as f32;
+        outline.push(puzzle_edge_point(
+            bottom_right,
+            top_right,
+            shared_edge_pattern(1, column + 1, row),
+            edge_sign(row, column + 1, spec.columns),
+            t,
+            base_depth,
+        ));
+    }
+    for index in 0..edge_samples {
+        let t = 1.0 - index as f32 / edge_samples as f32;
+        outline.push(puzzle_edge_point(
+            top_left,
+            top_right,
+            shared_edge_pattern(0, row + 1, column),
+            edge_sign(column, row + 1, spec.rows),
+            t,
+            base_depth,
+        ));
+    }
+    for index in 0..edge_samples {
+        let t = 1.0 - index as f32 / edge_samples as f32;
+        outline.push(puzzle_edge_point(
+            bottom_left,
+            top_left,
+            shared_edge_pattern(1, column, row),
+            edge_sign(row, column, spec.columns),
+            t,
+            base_depth,
+        ));
+    }
 
     if !exact_shared_edge && spec.clearance_mm > 0.0 {
-        let center_x = (x0 + x1) * 0.5;
-        let center_y = (y0 + y1) * 0.5;
-        let scale_x = ((piece_width - spec.clearance_mm) / piece_width).max(0.95);
-        let scale_y = ((piece_height - spec.clearance_mm) / piece_height).max(0.95);
-        point[0] = center_x + (point[0] - center_x) * scale_x;
-        point[1] = center_y + (point[1] - center_y) * scale_y;
+        outline = inset_outline(&outline, spec.clearance_mm * 0.5);
     }
-    point
+    outline
 }
 
-fn vertical_edge_offset(row: u32, edge_column: u32, columns: u32, t: f32, depth: f32) -> f32 {
-    if edge_column == 0 || edge_column == columns {
-        return 0.0;
+#[derive(Debug, Clone, Copy)]
+struct EdgePattern {
+    center: f32,
+    radius_along: f32,
+    depth_scale: f32,
+    skew: f32,
+}
+
+fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
+    let piece_width = spec.width_mm / spec.columns as f32;
+    let piece_height = spec.height_mm() / spec.rows as f32;
+    let seed = ((row as u64) << 32) | column as u64;
+    let x = if column == 0 {
+        0.0
+    } else if column == spec.columns {
+        spec.width_mm
+    } else {
+        column as f32 * piece_width + (edge_noise(seed, 0) - 0.5) * piece_width * 0.18
+    };
+    let y = if row == 0 {
+        0.0
+    } else if row == spec.rows {
+        spec.height_mm()
+    } else {
+        row as f32 * piece_height + (edge_noise(seed, 1) - 0.5) * piece_height * 0.18
+    };
+    [x, y]
+}
+
+fn shared_edge_pattern(orientation: u64, line: u32, segment: u32) -> EdgePattern {
+    let seed = orientation.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (line as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
+        ^ (segment as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
+    EdgePattern {
+        center: 0.43 + edge_noise(seed, 2) * 0.14,
+        radius_along: 0.105 + edge_noise(seed, 3) * 0.05,
+        depth_scale: 0.78 + edge_noise(seed, 4) * 0.47,
+        skew: (edge_noise(seed, 5) - 0.5) * 0.09,
     }
-    let sign = if (row + edge_column).is_multiple_of(2) {
+}
+
+fn edge_noise(seed: u64, lane: u64) -> f32 {
+    let mut value = seed ^ lane.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    ((value >> 40) as u32) as f32 / 16_777_215.0
+}
+
+fn edge_sign(segment: u32, line: u32, line_count: u32) -> f32 {
+    if line == 0 || line == line_count {
+        0.0
+    } else if (segment + line).is_multiple_of(2) {
         1.0
     } else {
         -1.0
-    };
-    sign * depth * tab_profile(t)
+    }
 }
 
-fn horizontal_edge_offset(column: u32, edge_row: u32, rows: u32, t: f32, depth: f32) -> f32 {
-    if edge_row == 0 || edge_row == rows {
-        return 0.0;
-    }
-    let sign = if (column + edge_row).is_multiple_of(2) {
-        1.0
+fn puzzle_edge_point(
+    start: [f32; 2],
+    end: [f32; 2],
+    pattern: EdgePattern,
+    sign: f32,
+    t: f32,
+    base_depth: f32,
+) -> [f32; 2] {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length = delta[0].hypot(delta[1]).max(f32::EPSILON);
+    let tangent = [delta[0] / length, delta[1] / length];
+    let normal = [-tangent[1], tangent[0]];
+    let [along, offset] = if sign == 0.0 {
+        [t, 0.0]
     } else {
-        -1.0
+        jigsaw_edge(t, pattern)
     };
-    sign * depth * tab_profile(t)
+    let depth = base_depth * pattern.depth_scale;
+    [
+        start[0] + delta[0] * along + normal[0] * sign * depth * offset,
+        start[1] + delta[1] * along + normal[1] * sign * depth * offset,
+    ]
 }
 
-fn tab_profile(t: f32) -> f32 {
-    const START: f32 = 0.22;
-    const END: f32 = 0.78;
-    if !(START..=END).contains(&t) {
-        return 0.0;
+fn jigsaw_edge(t: f32, pattern: EdgePattern) -> [f32; 2] {
+    let circle_start = [pattern.center - 0.866_025_4 * pattern.radius_along, 0.04];
+    let circle_end = [pattern.center + 0.866_025_4 * pattern.radius_along, 0.04];
+    let join_start = pattern.center - pattern.radius_along - 0.065;
+    let join_end = pattern.center + pattern.radius_along + 0.065;
+    let point = if t < 0.25 {
+        [t / 0.25 * join_start, 0.0]
+    } else if t < 0.35 {
+        cubic_bezier(
+            [join_start, 0.0],
+            [join_start + 0.04, -0.05],
+            [circle_start[0] + 0.028, 0.04],
+            circle_start,
+            (t - 0.25) / 0.1,
+        )
+    } else if t <= 0.65 {
+        let phase = (t - 0.35) / 0.3;
+        let angle = (210.0 - phase * 240.0_f32).to_radians();
+        [
+            pattern.center + angle.cos() * pattern.radius_along,
+            0.36 + angle.sin() * 0.64,
+        ]
+    } else if t < 0.75 {
+        cubic_bezier(
+            circle_end,
+            [circle_end[0] - 0.028, 0.04],
+            [join_end - 0.04, -0.05],
+            [join_end, 0.0],
+            (t - 0.65) / 0.1,
+        )
+    } else {
+        [join_end + (t - 0.75) / 0.25 * (1.0 - join_end), 0.0]
+    };
+    [point[0] + pattern.skew * point[1], point[1]]
+}
+
+fn inset_outline(outline: &[[f32; 2]], distance: f32) -> Vec<[f32; 2]> {
+    (0..outline.len())
+        .map(|index| {
+            let previous = outline[(index + outline.len() - 1) % outline.len()];
+            let point = outline[index];
+            let next = outline[(index + 1) % outline.len()];
+            let incoming = normalize_2d([point[0] - previous[0], point[1] - previous[1]]);
+            let outgoing = normalize_2d([next[0] - point[0], next[1] - point[1]]);
+            let normal_a = [-incoming[1], incoming[0]];
+            let normal_b = [-outgoing[1], outgoing[0]];
+            let sum = [normal_a[0] + normal_b[0], normal_a[1] + normal_b[1]];
+            let direction = normalize_2d(sum);
+            let shift = [direction[0] * distance, direction[1] * distance];
+            [point[0] + shift[0], point[1] + shift[1]]
+        })
+        .collect()
+}
+
+fn normalize_2d(vector: [f32; 2]) -> [f32; 2] {
+    let length = vector[0].hypot(vector[1]).max(f32::EPSILON);
+    [vector[0] / length, vector[1] / length]
+}
+
+fn cubic_bezier(
+    start: [f32; 2],
+    control_a: [f32; 2],
+    control_b: [f32; 2],
+    end: [f32; 2],
+    t: f32,
+) -> [f32; 2] {
+    let inverse = 1.0 - t;
+    let weights = [
+        inverse.powi(3),
+        3.0 * inverse.powi(2) * t,
+        3.0 * inverse * t.powi(2),
+        t.powi(3),
+    ];
+    [
+        start[0] * weights[0]
+            + control_a[0] * weights[1]
+            + control_b[0] * weights[2]
+            + end[0] * weights[3],
+        start[1] * weights[0]
+            + control_a[1] * weights[1]
+            + control_b[1] * weights[2]
+            + end[1] * weights[3],
+    ]
+}
+
+fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let a = polygon[current];
+        let b = polygon[previous];
+        let crosses = (a[1] > point[1]) != (b[1] > point[1])
+            && point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0];
+        if crosses {
+            inside = !inside;
+        }
+        previous = current;
     }
-    let phase = (t - START) / (END - START);
-    (std::f32::consts::PI * phase).sin().powi(2)
+    inside
 }
 
 fn terrain_height(u: f32, v: f32, lat: f64, lon: f64) -> f32 {
@@ -601,18 +828,49 @@ mod tests {
     #[test]
     fn shared_edges_are_identical_before_clearance() {
         let spec = GenerationSpec::default();
-        for sample in 0..=32 {
-            let t = sample as f32 / 32.0;
-            let left = map_piece_point(&spec, 1, 1, 1.0, t, true);
-            let right = map_piece_point(&spec, 1, 2, 0.0, t, true);
-            assert!((left[0] - right[0]).abs() < 0.0001);
-            assert!((left[1] - right[1]).abs() < 0.0001);
+        let edge_samples = spec.samples_per_piece as usize;
+        let left_piece = piece_outline(&spec, 1, 1, true);
+        let right_piece = piece_outline(&spec, 1, 2, true);
+        for point in &left_piece[edge_samples..edge_samples * 2] {
+            let matching_distance = right_piece
+                .iter()
+                .map(|candidate| (candidate[0] - point[0]).hypot(candidate[1] - point[1]))
+                .fold(f32::INFINITY, f32::min);
+            assert!(matching_distance < 0.0001);
+        }
+    }
+
+    #[test]
+    fn clearance_is_split_evenly_across_a_shared_seam() {
+        let spec = GenerationSpec::default();
+        let edge_samples = spec.samples_per_piece as usize;
+        let fitted_left = piece_outline(&spec, 1, 1, false);
+        let fitted_right = piece_outline(&spec, 1, 2, false);
+
+        for &point in fitted_left
+            .iter()
+            .take(edge_samples * 2 - 2)
+            .skip(edge_samples + 2)
+        {
+            let gap = (0..fitted_right.len())
+                .map(|index| {
+                    point_segment_distance(
+                        point,
+                        fitted_right[index],
+                        fitted_right[(index + 1) % fitted_right.len()],
+                    )
+                })
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                (gap - spec.clearance_mm).abs() < 0.015,
+                "clearance at shared point was {gap} mm"
+            );
         }
     }
 
     #[test]
     fn generated_piece_is_watertight() {
-        let mesh = build_piece(&GenerationSpec::default(), None, 0, 0);
+        let mesh = build_piece(&GenerationSpec::default(), None, 0, 0).unwrap();
         let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
         for triangle in &mesh.triangles {
             for edge in [
@@ -628,7 +886,12 @@ mod tests {
                 *edges.entry(ordered).or_default() += 1;
             }
         }
-        assert!(edges.values().all(|uses| *uses == 2));
+        let bad_edges = edges
+            .iter()
+            .filter(|(_, uses)| **uses != 2)
+            .take(12)
+            .collect::<Vec<_>>();
+        assert!(bad_edges.is_empty(), "non-manifold edges: {bad_edges:?}");
     }
 
     #[test]
@@ -642,7 +905,7 @@ mod tests {
         let spec = GenerationSpec {
             rows: 2,
             columns: 2,
-            samples_per_piece: 8,
+            samples_per_piece: 16,
             ..GenerationSpec::default()
         };
         let manifest = generate_project(&spec, &output_dir).unwrap();
@@ -660,5 +923,38 @@ mod tests {
         );
 
         std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn jigsaw_edge_has_overhanging_round_head() {
+        let pattern = shared_edge_pattern(0, 1, 0);
+        assert_eq!(jigsaw_edge(0.1, pattern)[1], 0.0);
+        assert!(jigsaw_edge(0.5, pattern)[1] > 0.99);
+        assert!(jigsaw_edge(0.4, pattern)[0] < jigsaw_edge(0.35, pattern)[0]);
+        assert!(jigsaw_edge(0.6, pattern)[0] > jigsaw_edge(0.65, pattern)[0]);
+    }
+
+    #[test]
+    fn puzzle_grid_and_edge_patterns_vary() {
+        let spec = GenerationSpec::default();
+        let nominal = spec.width_mm / spec.columns as f32;
+        let interior = puzzle_grid_point(&spec, 1, 1);
+        assert!((interior[0] - nominal).abs() > 0.01);
+        assert!((interior[1] - nominal).abs() > 0.01);
+
+        let first = shared_edge_pattern(0, 1, 0);
+        let second = shared_edge_pattern(0, 1, 1);
+        assert!((first.center - second.center).abs() > 0.001);
+        assert!((first.depth_scale - second.depth_scale).abs() > 0.001);
+        assert!((first.skew - second.skew).abs() > 0.001);
+    }
+
+    fn point_segment_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
+        let segment = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = segment[0] * segment[0] + segment[1] * segment[1];
+        let t = (((point[0] - start[0]) * segment[0] + (point[1] - start[1]) * segment[1])
+            / length_squared.max(f32::EPSILON))
+        .clamp(0.0, 1.0);
+        (point[0] - start[0] - t * segment[0]).hypot(point[1] - start[1] - t * segment[1])
     }
 }

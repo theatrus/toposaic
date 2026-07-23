@@ -1,12 +1,9 @@
 "use client";
 
-import maplibregl, {
-  type GeoJSONSource,
-  type Map as MapLibreMap,
-} from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  FormEvent,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -49,6 +46,14 @@ type PreviewData = {
   columns: number;
 };
 
+type PlaceResult = {
+  display_name: string;
+  latitude: number;
+  longitude: number;
+  category: string;
+  kind: string;
+};
+
 const API_URL =
   process.env.NEXT_PUBLIC_TERRAIN_API_URL ?? "http://127.0.0.1:8787";
 
@@ -61,32 +66,39 @@ const initialSpec: GenerationSpec = {
   columns: 3,
   base_mm: 2.4,
   relief_mm: 14,
-  clearance_mm: 0.22,
-  samples_per_piece: 28,
+  clearance_mm: 0.14,
+  samples_per_piece: 64,
 };
 
-function selectionPolygon(spec: GenerationSpec) {
-  const halfLat = spec.ground_span_km / 2 / 110.574;
-  const longitudeScale = Math.max(
-    20,
-    111.32 * Math.cos((spec.center_lat * Math.PI) / 180),
+const TILE_SIZE = 256;
+const MAX_MERCATOR_LATITUDE = 85.05112878;
+
+function projectToWorld(longitude: number, latitude: number, zoom: number) {
+  const scale = TILE_SIZE * 2 ** zoom;
+  const clampedLatitude = Math.max(
+    -MAX_MERCATOR_LATITUDE,
+    Math.min(MAX_MERCATOR_LATITUDE, latitude),
   );
-  const halfLon = spec.ground_span_km / 2 / longitudeScale;
+  const sine = Math.sin((clampedLatitude * Math.PI) / 180);
   return {
-    type: "Feature" as const,
-    properties: {},
-    geometry: {
-      type: "Polygon" as const,
-      coordinates: [
-        [
-          [spec.center_lon - halfLon, spec.center_lat - halfLat],
-          [spec.center_lon + halfLon, spec.center_lat - halfLat],
-          [spec.center_lon + halfLon, spec.center_lat + halfLat],
-          [spec.center_lon - halfLon, spec.center_lat + halfLat],
-          [spec.center_lon - halfLon, spec.center_lat - halfLat],
-        ],
-      ],
-    },
+    x: ((longitude + 180) / 360) * scale,
+    y:
+      (0.5 - Math.log((1 + sine) / (1 - sine)) / (4 * Math.PI)) *
+      scale,
+  };
+}
+
+function unprojectFromWorld(x: number, y: number, zoom: number) {
+  const scale = TILE_SIZE * 2 ** zoom;
+  const longitude = ((((x / scale) * 360) % 360) + 360) % 360 - 180;
+  const mercatorY = Math.PI * (1 - (2 * y) / scale);
+  const latitude = (Math.atan(Math.sinh(mercatorY)) * 180) / Math.PI;
+  return {
+    longitude,
+    latitude: Math.max(
+      -MAX_MERCATOR_LATITUDE,
+      Math.min(MAX_MERCATOR_LATITUDE, latitude),
+    ),
   };
 }
 
@@ -98,96 +110,351 @@ function TerrainMap({
   onCenterChange: (longitude: number, latitude: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<MapLibreMap | null>(null);
-  const callbackRef = useRef(onCenterChange);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    worldX: number;
+    worldY: number;
+  } | null>(null);
+  const [zoom, setZoom] = useState(9);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [tilesLoaded, setTilesLoaded] = useState(false);
 
   useEffect(() => {
-    callbackRef.current = onCenterChange;
-  }, [onCenterChange]);
-
-  useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      center: [spec.center_lon, spec.center_lat],
-      zoom: 9,
-      attributionControl: false,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-            tileSize: 256,
-            attribution: "© OpenStreetMap contributors",
-          },
-        },
-        layers: [{ id: "osm", type: "raster", source: "osm" }],
-      },
-    });
-    map.addControl(
-      new maplibregl.NavigationControl({ showCompass: false }),
-      "top-right",
-    );
-    map.addControl(
-      new maplibregl.AttributionControl({ compact: true }),
-      "bottom-right",
-    );
-    map.on("load", () => {
-      map.addSource("selection", {
-        type: "geojson",
-        data: selectionPolygon(spec),
-      });
-      map.addLayer({
-        id: "selection-fill",
-        type: "fill",
-        source: "selection",
-        paint: {
-          "fill-color": "#d8fb72",
-          "fill-opacity": 0.18,
-        },
-      });
-      map.addLayer({
-        id: "selection-outline",
-        type: "line",
-        source: "selection",
-        paint: {
-          "line-color": "#d8fb72",
-          "line-width": 3,
-          "line-dasharray": [2, 1.5],
-        },
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setSize({
+        width: Math.round(entry.contentRect.width),
+        height: Math.round(entry.contentRect.height),
       });
     });
-    map.on("moveend", () => {
-      const center = map.getCenter();
-      callbackRef.current(center.lng, center.lat);
-    });
-    mapRef.current = map;
-    return () => {
-      map.remove();
-      mapRef.current = null;
-    };
-    // The map owns its center after setup.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    observer.observe(container);
+    return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    const source = mapRef.current?.getSource("selection") as
-      | GeoJSONSource
-      | undefined;
-    source?.setData(selectionPolygon(spec));
-  }, [spec]);
+  const worldCenter = useMemo(
+    () => projectToWorld(spec.center_lon, spec.center_lat, zoom),
+    [spec.center_lat, spec.center_lon, zoom],
+  );
+  const tiles = useMemo(() => {
+    if (!size.width || !size.height) return [];
+    const firstX =
+      Math.floor((worldCenter.x - size.width / 2) / TILE_SIZE) - 1;
+    const lastX =
+      Math.floor((worldCenter.x + size.width / 2) / TILE_SIZE) + 1;
+    const firstY =
+      Math.floor((worldCenter.y - size.height / 2) / TILE_SIZE) - 1;
+    const lastY =
+      Math.floor((worldCenter.y + size.height / 2) / TILE_SIZE) + 1;
+    const tileCount = 2 ** zoom;
+    const visibleTiles = [];
+    for (let tileY = firstY; tileY <= lastY; tileY += 1) {
+      if (tileY < 0 || tileY >= tileCount) continue;
+      for (let tileX = firstX; tileX <= lastX; tileX += 1) {
+        const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
+        visibleTiles.push({
+          key: `${zoom}/${tileX}/${tileY}`,
+          url: `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${tileY}.png`,
+          left: tileX * TILE_SIZE - worldCenter.x + size.width / 2,
+          top: tileY * TILE_SIZE - worldCenter.y + size.height / 2,
+        });
+      }
+    }
+    return visibleTiles;
+  }, [size, worldCenter, zoom]);
+
+  const metresPerPixel =
+    (156543.03392 *
+      Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
+    2 ** zoom;
+  const selectionSize = Math.max(
+    18,
+    Math.min(
+      Math.min(size.width, size.height) * 0.82,
+      (spec.ground_span_km * 1000) / metresPerPixel,
+    ),
+  );
+
+  const moveToWorld = useCallback(
+    (worldX: number, worldY: number) =>
+      unprojectFromWorld(worldX, worldY, zoom),
+    [zoom],
+  );
+
+  const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      worldX: worldCenter.x,
+      worldY: worldCenter.y,
+    };
+  };
+
+  const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const next = moveToWorld(
+      drag.worldX - (event.clientX - drag.startX),
+      drag.worldY - (event.clientY - drag.startY),
+    );
+    onCenterChange(next.longitude, next.latitude);
+  };
+
+  const pointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    const next = moveToWorld(
+      drag.worldX - (event.clientX - drag.startX),
+      drag.worldY - (event.clientY - drag.startY),
+    );
+    onCenterChange(next.longitude, next.latitude);
+  };
+
+  const wheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setZoom((current) =>
+      Math.max(2, Math.min(15, current + (event.deltaY < 0 ? 1 : -1))),
+    );
+  };
 
   return (
     <div className="map-shell">
-      <div ref={containerRef} className="map-canvas" aria-label="Terrain map" />
+      <div
+        ref={containerRef}
+        className="map-canvas"
+        aria-label="Terrain map. Drag to choose a place."
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerUp={pointerUp}
+        onPointerCancel={() => {
+          dragRef.current = null;
+        }}
+        onWheel={wheel}
+        role="application"
+      >
+        <div className="map-tiles" aria-hidden="true">
+          {tiles.map((tile) => (
+            // Map tiles must load from their source without image optimization.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              alt=""
+              draggable={false}
+              key={tile.key}
+              onLoad={() => setTilesLoaded(true)}
+              src={tile.url}
+              style={{ left: tile.left, top: tile.top }}
+            />
+          ))}
+        </div>
+        <div
+          className="map-selection"
+          style={{ height: selectionSize, width: selectionSize }}
+        />
+      </div>
+      <div className="map-zoom" aria-label="Map zoom">
+        <button
+          type="button"
+          aria-label="Zoom in"
+          onClick={() => setZoom((current) => Math.min(15, current + 1))}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          onClick={() => setZoom((current) => Math.max(2, current - 1))}
+        >
+          −
+        </button>
+      </div>
       <div className="map-crosshair" aria-hidden="true">
         <span />
         <span />
       </div>
-      <div className="map-instruction">Move the map to choose a place</div>
+      <div className="map-instruction">
+        {tilesLoaded ? "Drag the map to choose a place" : "Loading map tiles…"}
+      </div>
+      <a
+        className="map-attribution"
+        href="https://www.openstreetmap.org/copyright"
+        target="_blank"
+        rel="noreferrer"
+      >
+        © OpenStreetMap
+      </a>
     </div>
   );
+}
+
+function cubicBezier(
+  start: [number, number],
+  controlA: [number, number],
+  controlB: [number, number],
+  end: [number, number],
+  t: number,
+) {
+  const inverse = 1 - t;
+  const weights = [
+    inverse ** 3,
+    3 * inverse ** 2 * t,
+    3 * inverse * t ** 2,
+    t ** 3,
+  ];
+  return {
+    along:
+      start[0] * weights[0] +
+      controlA[0] * weights[1] +
+      controlB[0] * weights[2] +
+      end[0] * weights[3],
+    offset:
+      start[1] * weights[0] +
+      controlA[1] * weights[1] +
+      controlB[1] * weights[2] +
+      end[1] * weights[3],
+  };
+}
+
+type EdgePattern = {
+  center: number;
+  radiusAlong: number;
+  depthScale: number;
+  skew: number;
+};
+
+function edgeNoise(seed: bigint, lane: bigint) {
+  let value = BigInt.asUintN(
+    64,
+    seed ^ BigInt.asUintN(64, lane * 0xd6e8feb86659fd93n),
+  );
+  value ^= value >> 30n;
+  value = BigInt.asUintN(64, value * 0xbf58476d1ce4e5b9n);
+  value ^= value >> 27n;
+  value = BigInt.asUintN(64, value * 0x94d049bb133111ebn);
+  value ^= value >> 31n;
+  return Number(value >> 40n) / 16777215;
+}
+
+function sharedEdgePattern(
+  orientation: number,
+  line: number,
+  segment: number,
+): EdgePattern {
+  const seed =
+    BigInt.asUintN(64, BigInt(orientation) * 0x9e3779b97f4a7c15n) ^
+    BigInt.asUintN(64, BigInt(line) * 0xbf58476d1ce4e5b9n) ^
+    BigInt.asUintN(64, BigInt(segment) * 0x94d049bb133111ebn);
+  return {
+    center: 0.43 + edgeNoise(seed, 2n) * 0.14,
+    radiusAlong: 0.105 + edgeNoise(seed, 3n) * 0.05,
+    depthScale: 0.78 + edgeNoise(seed, 4n) * 0.47,
+    skew: (edgeNoise(seed, 5n) - 0.5) * 0.09,
+  };
+}
+
+function puzzleGridPoint(spec: GenerationSpec, row: number, column: number) {
+  const pieceWidth = spec.width_mm / spec.columns;
+  const pieceHeight = (spec.width_mm * spec.rows) / spec.columns / spec.rows;
+  const seed = (BigInt(row) << 32n) | BigInt(column);
+  const x =
+    column === 0
+      ? 0
+      : column === spec.columns
+        ? spec.width_mm
+        : column * pieceWidth +
+          (edgeNoise(seed, 0n) - 0.5) * pieceWidth * 0.18;
+  const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
+  const y =
+    row === 0
+      ? 0
+      : row === spec.rows
+        ? modelHeight
+        : row * pieceHeight +
+          (edgeNoise(seed, 1n) - 0.5) * pieceHeight * 0.18;
+  return { x, y };
+}
+
+function edgeSign(segment: number, line: number, lineCount: number) {
+  if (line === 0 || line === lineCount) return 0;
+  return (segment + line) % 2 === 0 ? 1 : -1;
+}
+
+function jigsawEdge(t: number, pattern: EdgePattern) {
+  const circleStart: [number, number] = [
+    pattern.center - 0.8660254 * pattern.radiusAlong,
+    0.04,
+  ];
+  const circleEnd: [number, number] = [
+    pattern.center + 0.8660254 * pattern.radiusAlong,
+    0.04,
+  ];
+  const joinStart = pattern.center - pattern.radiusAlong - 0.065;
+  const joinEnd = pattern.center + pattern.radiusAlong + 0.065;
+  let point;
+  if (t < 0.25) {
+    point = { along: (t / 0.25) * joinStart, offset: 0 };
+  } else if (t < 0.35) {
+    point = cubicBezier(
+      [joinStart, 0],
+      [joinStart + 0.04, -0.05],
+      [circleStart[0] + 0.028, 0.04],
+      circleStart,
+      (t - 0.25) / 0.1,
+    );
+  } else if (t <= 0.65) {
+    const phase = (t - 0.35) / 0.3;
+    const angle = ((210 - phase * 240) * Math.PI) / 180;
+    point = {
+      along: pattern.center + Math.cos(angle) * pattern.radiusAlong,
+      offset: 0.36 + Math.sin(angle) * 0.64,
+    };
+  } else if (t < 0.75) {
+    point = cubicBezier(
+      circleEnd,
+      [circleEnd[0] - 0.028, 0.04],
+      [joinEnd - 0.04, -0.05],
+      [joinEnd, 0],
+      (t - 0.65) / 0.1,
+    );
+  } else {
+    point = {
+      along: joinEnd + ((t - 0.75) / 0.25) * (1 - joinEnd),
+      offset: 0,
+    };
+  }
+  return {
+    along: point.along + pattern.skew * point.offset,
+    offset: point.offset,
+  };
+}
+
+function puzzleEdgePoint(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  pattern: EdgePattern,
+  sign: number,
+  t: number,
+  baseDepth: number,
+) {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const length = Math.max(Number.EPSILON, Math.hypot(deltaX, deltaY));
+  const edge = sign === 0 ? { along: t, offset: 0 } : jigsawEdge(t, pattern);
+  const depth = baseDepth * pattern.depthScale;
+  return {
+    x:
+      start.x +
+      deltaX * edge.along -
+      (deltaY / length) * sign * depth * edge.offset,
+    y:
+      start.y +
+      deltaY * edge.along +
+      (deltaX / length) * sign * depth * edge.offset,
+  };
 }
 
 function ReliefPreview({
@@ -247,6 +514,25 @@ function ReliefPreview({
       points.push(row);
     }
 
+    const projectedPoint = (u: number, v: number) => {
+      const sampleX = Math.max(0, Math.min(samples - 1, u * (samples - 1)));
+      const sampleY = Math.max(0, Math.min(samples - 1, v * (samples - 1)));
+      const x0 = Math.floor(sampleX);
+      const y0 = Math.floor(sampleY);
+      const x1 = Math.min(samples - 1, x0 + 1);
+      const y1 = Math.min(samples - 1, y0 + 1);
+      const tx = sampleX - x0;
+      const ty = sampleY - y0;
+      const blend = (key: "x" | "y" | "z") => {
+        const bottom =
+          points[y0][x0][key] * (1 - tx) + points[y0][x1][key] * tx;
+        const top =
+          points[y1][x0][key] * (1 - tx) + points[y1][x1][key] * tx;
+        return bottom * (1 - ty) + top * ty;
+      };
+      return { x: blend("x"), y: blend("y"), z: blend("z") };
+    };
+
     for (let y = samples - 2; y >= 0; y -= 1) {
       for (let x = 0; x < samples - 1; x += 1) {
         const a = points[y][x];
@@ -266,26 +552,63 @@ function ReliefPreview({
     }
 
     context.strokeStyle = "rgba(15, 25, 23, 0.72)";
-    context.lineWidth = 1.4;
-    for (let column = 1; column < spec.columns; column += 1) {
-      const u = column / spec.columns;
-      context.beginPath();
-      for (let y = 0; y < samples; y += 1) {
-        const point = points[y][Math.round(u * (samples - 1))];
-        if (y === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
+    context.lineWidth = 1.7;
+    const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
+    const baseDepth =
+      Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.18;
+    for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
+      for (let row = 0; row < spec.rows; row += 1) {
+        const start = puzzleGridPoint(spec, row, edgeColumn);
+        const end = puzzleGridPoint(spec, row + 1, edgeColumn);
+        const pattern = sharedEdgePattern(1, edgeColumn, row);
+        const sign = edgeSign(row, edgeColumn, spec.columns);
+        context.beginPath();
+        for (let step = 0; step <= 64; step += 1) {
+          const t = step / 64;
+          const edgePoint = puzzleEdgePoint(
+            start,
+            end,
+            pattern,
+            sign,
+            t,
+            baseDepth,
+          );
+          const point = projectedPoint(
+            edgePoint.x / spec.width_mm,
+            edgePoint.y / modelHeight,
+          );
+          if (step === 0) context.moveTo(point.x, point.y);
+          else context.lineTo(point.x, point.y);
+        }
+        context.stroke();
       }
-      context.stroke();
     }
-    for (let row = 1; row < spec.rows; row += 1) {
-      const v = row / spec.rows;
-      context.beginPath();
-      for (let x = 0; x < samples; x += 1) {
-        const point = points[Math.round(v * (samples - 1))][x];
-        if (x === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
+    for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
+      for (let column = 0; column < spec.columns; column += 1) {
+        const start = puzzleGridPoint(spec, edgeRow, column);
+        const end = puzzleGridPoint(spec, edgeRow, column + 1);
+        const pattern = sharedEdgePattern(0, edgeRow, column);
+        const sign = edgeSign(column, edgeRow, spec.rows);
+        context.beginPath();
+        for (let step = 0; step <= 64; step += 1) {
+          const t = step / 64;
+          const edgePoint = puzzleEdgePoint(
+            start,
+            end,
+            pattern,
+            sign,
+            t,
+            baseDepth,
+          );
+          const point = projectedPoint(
+            edgePoint.x / spec.width_mm,
+            edgePoint.y / modelHeight,
+          );
+          if (step === 0) context.moveTo(point.x, point.y);
+          else context.lineTo(point.x, point.y);
+        }
+        context.stroke();
       }
-      context.stroke();
     }
   }, [preview, spec]);
 
@@ -293,7 +616,10 @@ function ReliefPreview({
     <div className="relief-shell">
       <canvas ref={canvasRef} className="relief-canvas" />
       <div className="preview-label">
-        <span>{preview ? "Generated terrain" : "Fast shape preview"}</span>
+        <span>
+          {preview ? "Generated terrain" : "Fast shape preview"} ·{" "}
+          {spec.samples_per_piece} samples/piece
+        </span>
         <strong>
           {spec.columns} × {spec.rows} pieces
         </strong>
@@ -346,6 +672,10 @@ export function TerrainStudio() {
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [placeQuery, setPlaceQuery] = useState("");
+  const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
+  const [placeMessage, setPlaceMessage] = useState<string | null>(null);
+  const [searchingPlaces, setSearchingPlaces] = useState(false);
 
   const update = useCallback(
     <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) =>
@@ -360,6 +690,46 @@ export function TerrainStudio() {
       center_lon: Number(longitude.toFixed(5)),
     }));
   }, []);
+
+  const searchPlaces = async () => {
+    const query = placeQuery.trim();
+    if (query.length < 2) {
+      setPlaceMessage("Enter at least two characters.");
+      setPlaceResults([]);
+      return;
+    }
+    setSearchingPlaces(true);
+    setPlaceMessage(null);
+    try {
+      const response = await fetch(
+        `${API_URL}/api/places?q=${encodeURIComponent(query)}`,
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Place search failed");
+      }
+      const results = payload as PlaceResult[];
+      setPlaceResults(results);
+      if (results.length === 0) {
+        setPlaceMessage("No matching places found.");
+      }
+    } catch (error) {
+      setPlaceResults([]);
+      setPlaceMessage(
+        error instanceof Error ? error.message : "Place search failed.",
+      );
+    } finally {
+      setSearchingPlaces(false);
+    }
+  };
+
+  const choosePlace = (place: PlaceResult) => {
+    onCenterChange(place.longitude, place.latitude);
+    setPlaceQuery(place.display_name);
+    setPlaceResults([]);
+    setPlaceMessage(`Map moved to ${place.display_name.split(",")[0]}.`);
+    setPreview(null);
+  };
 
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
@@ -468,6 +838,64 @@ export function TerrainStudio() {
             </div>
           </div>
 
+          <div className="place-search">
+            <label htmlFor="place-search-input">Find a place</label>
+            <div className="place-search-row">
+              <input
+                id="place-search-input"
+                type="search"
+                value={placeQuery}
+                placeholder="Mountain, park, city…"
+                onChange={(event) => setPlaceQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchPlaces();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={searchingPlaces}
+                onClick={() => void searchPlaces()}
+              >
+                {searchingPlaces ? "Searching…" : "Search"}
+              </button>
+            </div>
+            {placeMessage && (
+              <p className="place-search-message" role="status">
+                {placeMessage}
+              </p>
+            )}
+            {placeResults.length > 0 && (
+              <ul className="place-results" aria-label="Place search results">
+                {placeResults.map((place) => (
+                  <li
+                    key={`${place.latitude}-${place.longitude}-${place.display_name}`}
+                  >
+                    <button type="button" onClick={() => choosePlace(place)}>
+                      <span>{place.display_name}</span>
+                      <small>
+                        {place.category} · {place.kind.replaceAll("_", " ")}
+                      </small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="place-search-note">
+              Submit-only search sends public place names to{" "}
+              <a
+                href="https://www.openstreetmap.org/copyright"
+                target="_blank"
+                rel="noreferrer"
+              >
+                OpenStreetMap
+              </a>
+              . Do not enter private information.
+            </p>
+          </div>
+
           <div className="coordinate-row">
             <label>
               Latitude
@@ -521,11 +949,20 @@ export function TerrainStudio() {
             onChange={(value) => update("relief_mm", value)}
           />
           <RangeField
+            label="Mesh detail"
+            value={spec.samples_per_piece}
+            unit=" samples/piece"
+            min={32}
+            max={128}
+            step={8}
+            onChange={(value) => update("samples_per_piece", value)}
+          />
+          <RangeField
             label="Fit clearance"
             value={spec.clearance_mm}
             unit=" mm"
             min={0}
-            max={0.6}
+            max={0.4}
             step={0.02}
             onChange={(value) => update("clearance_mm", value)}
           />

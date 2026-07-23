@@ -8,4 +8,5 @@ license.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+spade.workspace = true
 zip.workspace = true
