@@ -16,6 +16,9 @@ const TRAY_FONT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/AtkinsonHyperlegible-Regular.ttf"
 ));
+const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
+const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
+const TRAY_CONTOUR_SURFACE_OFFSET_MM: f32 = 0.01;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -649,6 +652,18 @@ impl MeshBuilder {
             materials: self.materials,
         }
     }
+
+    fn append_isolated(&mut self, other: MeshBuilder) {
+        let offset = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices);
+        self.triangles.extend(
+            other
+                .triangles
+                .into_iter()
+                .map(|triangle| triangle.map(|index| index + offset)),
+        );
+        self.materials.extend(other.materials);
+    }
 }
 
 fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
@@ -703,31 +718,27 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     let z_coordinates = [0.0, rim_z];
 
     let height_range = height_field.map(HeightField::range);
+    let contour_paths = trace_tray_contours(
+        spec,
+        height_field,
+        height_range,
+        &inner_x,
+        &inner_y,
+        inner_x0,
+        inner_y0,
+        inner_width,
+        inner_height,
+    );
     let mut mesh = MeshBuilder::default();
 
     for y in inner_y.windows(2) {
         for x in inner_x.windows(2) {
-            let u0 = (x[0] - inner_x0) / inner_width;
-            let u1 = (x[1] - inner_x0) / inner_width;
-            let v0 = (y[0] - inner_y0) / inner_height;
-            let v1 = (y[1] - inner_y0) / inner_height;
-            let bands = [
-                contour_band(spec, height_field, height_range, u0, v0),
-                contour_band(spec, height_field, height_range, u1, v0),
-                contour_band(spec, height_field, height_range, u1, v1),
-                contour_band(spec, height_field, height_range, u0, v1),
-            ];
-            let material = if bands.iter().any(|band| *band != bands[0]) {
-                SurfaceClass::Forest
-            } else {
-                SurfaceClass::Rock
-            };
             mesh.quad(
                 [x[0], y[0], floor_z],
                 [x[1], y[0], floor_z],
                 [x[1], y[1], floor_z],
                 [x[0], y[1], floor_z],
-                material,
+                SurfaceClass::Rock,
             );
         }
     }
@@ -865,27 +876,448 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         let next = boundary[(index + 1) % boundary.len()];
         mesh.triangle(center, next, current, SurfaceClass::Rock);
     }
+    for path in &contour_paths {
+        add_contour_ribbon(
+            &mut mesh,
+            path,
+            floor_z - TRAY_CONTOUR_INLAY_MM,
+            floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
+        );
+    }
     label.add_embossed_shapes(&mut mesh, rim_z)?;
 
     Ok(mesh.finish("terrain-tray"))
 }
 
-fn contour_band(
+#[derive(Debug, Clone)]
+struct ContourPath {
+    points: Vec<[f32; 2]>,
+    closed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContourSegment {
+    start: [f32; 2],
+    end: [f32; 2],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_tray_contours(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
     height_range: Option<(f32, f32)>,
-    u: f32,
-    v: f32,
-) -> u32 {
-    (normalized_height(
-        height_field,
-        height_range,
-        u,
-        v,
-        spec.center_lat,
-        spec.center_lon,
-    ) * spec.tray.contour_count as f32)
-        .floor() as u32
+    x_coordinates: &[f32],
+    y_coordinates: &[f32],
+    origin_x: f32,
+    origin_y: f32,
+    width: f32,
+    height: f32,
+) -> Vec<ContourPath> {
+    let columns = x_coordinates.len();
+    let rows = y_coordinates.len();
+    let values = y_coordinates
+        .iter()
+        .flat_map(|y| {
+            x_coordinates.iter().map(move |x| {
+                normalized_height(
+                    height_field,
+                    height_range,
+                    (*x - origin_x) / width,
+                    (*y - origin_y) / height,
+                    spec.center_lat,
+                    spec.center_lon,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let contour_count = spec.tray.contour_count as usize;
+    let mut level_segments = vec![Vec::new(); contour_count];
+
+    for row in 0..rows - 1 {
+        for column in 0..columns - 1 {
+            let points = [
+                [x_coordinates[column], y_coordinates[row]],
+                [x_coordinates[column + 1], y_coordinates[row]],
+                [x_coordinates[column + 1], y_coordinates[row + 1]],
+                [x_coordinates[column], y_coordinates[row + 1]],
+            ];
+            let cell_values = [
+                values[row * columns + column],
+                values[row * columns + column + 1],
+                values[(row + 1) * columns + column + 1],
+                values[(row + 1) * columns + column],
+            ];
+            let minimum = cell_values.iter().copied().fold(f32::INFINITY, f32::min);
+            let maximum = cell_values
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let first_level = ((minimum * contour_count as f32).floor() as usize).max(1);
+            let last_level =
+                ((maximum * contour_count as f32).ceil() as usize).min(contour_count - 1);
+            if first_level > last_level {
+                continue;
+            }
+            for (level_index, segments) in level_segments
+                .iter_mut()
+                .enumerate()
+                .take(last_level + 1)
+                .skip(first_level)
+            {
+                let level = level_index as f32 / contour_count as f32 + 0.000_001;
+                add_triangle_contour_segment(
+                    [points[0], points[1], points[2]],
+                    [cell_values[0], cell_values[1], cell_values[2]],
+                    level,
+                    segments,
+                );
+                add_triangle_contour_segment(
+                    [points[0], points[2], points[3]],
+                    [cell_values[0], cell_values[2], cell_values[3]],
+                    level,
+                    segments,
+                );
+            }
+        }
+    }
+
+    level_segments
+        .into_iter()
+        .flat_map(stitch_contour_segments)
+        .filter(|path| path.points.len() > 2)
+        .map(smooth_contour_path)
+        .collect()
+}
+
+fn add_triangle_contour_segment(
+    points: [[f32; 2]; 3],
+    values: [f32; 3],
+    level: f32,
+    output: &mut Vec<ContourSegment>,
+) {
+    let mut intersections = Vec::with_capacity(2);
+    for [start, end] in [[0, 1], [1, 2], [2, 0]] {
+        let start_above = values[start] >= level;
+        let end_above = values[end] >= level;
+        if start_above == end_above {
+            continue;
+        }
+        let amount = ((level - values[start]) / (values[end] - values[start])).clamp(0.0, 1.0);
+        let point = [
+            points[start][0] + (points[end][0] - points[start][0]) * amount,
+            points[start][1] + (points[end][1] - points[start][1]) * amount,
+        ];
+        if intersections
+            .last()
+            .is_none_or(|last| distance_squared(*last, point) > 0.000_000_01)
+        {
+            intersections.push(point);
+        }
+    }
+    if intersections.len() == 2
+        && distance_squared(intersections[0], intersections[1]) > 0.000_000_01
+    {
+        output.push(ContourSegment {
+            start: intersections[0],
+            end: intersections[1],
+        });
+    }
+}
+
+fn contour_point_key(point: [f32; 2]) -> (i64, i64) {
+    (
+        (point[0] * 1_000.0).round() as i64,
+        (point[1] * 1_000.0).round() as i64,
+    )
+}
+
+fn stitch_contour_segments(segments: Vec<ContourSegment>) -> Vec<ContourPath> {
+    let mut adjacency = HashMap::<(i64, i64), Vec<(usize, bool)>>::new();
+    for (index, segment) in segments.iter().enumerate() {
+        adjacency
+            .entry(contour_point_key(segment.start))
+            .or_default()
+            .push((index, false));
+        adjacency
+            .entry(contour_point_key(segment.end))
+            .or_default()
+            .push((index, true));
+    }
+    let mut visited = vec![false; segments.len()];
+    let mut result = Vec::new();
+
+    let start_order = (0..segments.len())
+        .filter(|index| {
+            let segment = segments[*index];
+            adjacency
+                .get(&contour_point_key(segment.start))
+                .is_some_and(|edges| edges.len() != 2)
+                || adjacency
+                    .get(&contour_point_key(segment.end))
+                    .is_some_and(|edges| edges.len() != 2)
+        })
+        .chain(0..segments.len())
+        .collect::<Vec<_>>();
+    for start_index in start_order {
+        if visited[start_index] {
+            continue;
+        }
+        let segment = segments[start_index];
+        let start_at_end = adjacency
+            .get(&contour_point_key(segment.start))
+            .is_some_and(|edges| edges.len() == 2)
+            && adjacency
+                .get(&contour_point_key(segment.end))
+                .is_some_and(|edges| edges.len() != 2);
+        let first_point = if start_at_end {
+            segment.end
+        } else {
+            segment.start
+        };
+        let mut points = vec![first_point];
+        let mut current_index = start_index;
+        let mut enter_at_end = start_at_end;
+        let mut closed = false;
+
+        loop {
+            visited[current_index] = true;
+            let current = segments[current_index];
+            let next_point = if enter_at_end {
+                current.start
+            } else {
+                current.end
+            };
+            if contour_point_key(next_point) == contour_point_key(first_point) && points.len() > 2 {
+                closed = true;
+                break;
+            }
+            points.push(next_point);
+            let next_key = contour_point_key(next_point);
+            let direction = unit_vector([
+                next_point[0] - points[points.len() - 2][0],
+                next_point[1] - points[points.len() - 2][1],
+            ]);
+            let next = adjacency.get(&next_key).and_then(|edges| {
+                edges
+                    .iter()
+                    .copied()
+                    .filter(|(index, _)| !visited[*index])
+                    .max_by(|first, second| {
+                        let score = |candidate: &(usize, bool)| {
+                            let segment = segments[candidate.0];
+                            let destination = if candidate.1 {
+                                segment.start
+                            } else {
+                                segment.end
+                            };
+                            let candidate_direction = unit_vector([
+                                destination[0] - next_point[0],
+                                destination[1] - next_point[1],
+                            ]);
+                            direction[0] * candidate_direction[0]
+                                + direction[1] * candidate_direction[1]
+                        };
+                        score(first).total_cmp(&score(second))
+                    })
+            });
+            let Some((next_index, next_at_end)) = next else {
+                break;
+            };
+            current_index = next_index;
+            enter_at_end = next_at_end;
+        }
+        if points.len() > 2 {
+            result.push(ContourPath { points, closed });
+        }
+    }
+    result
+}
+
+fn smooth_contour_path(path: ContourPath) -> ContourPath {
+    if path.points.len() < 4 {
+        return path;
+    }
+    let mut points = Vec::new();
+    let segment_count = if path.closed {
+        path.points.len()
+    } else {
+        path.points.len() - 1
+    };
+    for index in 0..segment_count {
+        let control = |offset: isize| {
+            let raw_index = index as isize + offset;
+            if path.closed {
+                path.points[raw_index.rem_euclid(path.points.len() as isize) as usize]
+            } else {
+                path.points[raw_index.clamp(0, path.points.len() as isize - 1) as usize]
+            }
+        };
+        let controls = [control(-1), control(0), control(1), control(2)];
+        for sample in 0..4 {
+            let t = sample as f32 / 4.0;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let weights = [
+                (1.0 - 3.0 * t + 3.0 * t2 - t3) / 6.0,
+                (4.0 - 6.0 * t2 + 3.0 * t3) / 6.0,
+                (1.0 + 3.0 * t + 3.0 * t2 - 3.0 * t3) / 6.0,
+                t3 / 6.0,
+            ];
+            points.push([
+                controls
+                    .iter()
+                    .zip(weights)
+                    .map(|(point, weight)| point[0] * weight)
+                    .sum(),
+                controls
+                    .iter()
+                    .zip(weights)
+                    .map(|(point, weight)| point[1] * weight)
+                    .sum(),
+            ]);
+        }
+    }
+    if !path.closed {
+        points.push(*path.points.last().unwrap());
+    }
+    let mut spaced_points = Vec::with_capacity(points.len());
+    for point in points {
+        if spaced_points
+            .last()
+            .is_none_or(|last| distance_squared(*last, point) >= 0.000_4)
+        {
+            spaced_points.push(point);
+        }
+    }
+    if path.closed
+        && spaced_points.len() > 2
+        && distance_squared(spaced_points[0], *spaced_points.last().unwrap()) < 0.000_4
+    {
+        spaced_points.pop();
+    }
+    ContourPath {
+        points: spaced_points,
+        closed: path.closed,
+    }
+}
+
+fn add_contour_ribbon(output: &mut MeshBuilder, path: &ContourPath, bottom_z: f32, top_z: f32) {
+    if path.points.len() < 2 {
+        return;
+    }
+    let half_width = TRAY_CONTOUR_WIDTH_MM * 0.5;
+    let mut left = Vec::with_capacity(path.points.len());
+    let mut right = Vec::with_capacity(path.points.len());
+    for index in 0..path.points.len() {
+        let point = path.points[index];
+        let previous = if index > 0 {
+            path.points[index - 1]
+        } else if path.closed {
+            path.points[path.points.len() - 1]
+        } else {
+            point
+        };
+        let next = if index + 1 < path.points.len() {
+            path.points[index + 1]
+        } else if path.closed {
+            path.points[0]
+        } else {
+            point
+        };
+        let incoming = unit_vector([point[0] - previous[0], point[1] - previous[1]]);
+        let outgoing = unit_vector([next[0] - point[0], next[1] - point[1]]);
+        let incoming = if incoming == [0.0, 0.0] {
+            outgoing
+        } else {
+            incoming
+        };
+        let outgoing = if outgoing == [0.0, 0.0] {
+            incoming
+        } else {
+            outgoing
+        };
+        let incoming_normal = [-incoming[1], incoming[0]];
+        let outgoing_normal = [-outgoing[1], outgoing[0]];
+        let normal_sum = [
+            incoming_normal[0] + outgoing_normal[0],
+            incoming_normal[1] + outgoing_normal[1],
+        ];
+        let miter = if normal_sum == [0.0, 0.0] {
+            outgoing_normal
+        } else {
+            unit_vector(normal_sum)
+        };
+        let denominator = (miter[0] * outgoing_normal[0] + miter[1] * outgoing_normal[1]).abs();
+        let miter_length = (half_width / denominator.max(0.25)).min(half_width * 2.0);
+        let offset = [miter[0] * miter_length, miter[1] * miter_length];
+        left.push([point[0] + offset[0], point[1] + offset[1]]);
+        right.push([point[0] - offset[0], point[1] - offset[1]]);
+    }
+
+    let segment_count = if path.closed {
+        path.points.len()
+    } else {
+        path.points.len() - 1
+    };
+    let mut mesh = MeshBuilder::default();
+    for index in 0..segment_count {
+        let next = (index + 1) % path.points.len();
+        mesh.quad(
+            [left[index][0], left[index][1], top_z],
+            [right[index][0], right[index][1], top_z],
+            [right[next][0], right[next][1], top_z],
+            [left[next][0], left[next][1], top_z],
+            SurfaceClass::Forest,
+        );
+        mesh.quad(
+            [left[next][0], left[next][1], bottom_z],
+            [right[next][0], right[next][1], bottom_z],
+            [right[index][0], right[index][1], bottom_z],
+            [left[index][0], left[index][1], bottom_z],
+            SurfaceClass::Forest,
+        );
+        mesh.quad(
+            [left[index][0], left[index][1], bottom_z],
+            [left[next][0], left[next][1], bottom_z],
+            [left[next][0], left[next][1], top_z],
+            [left[index][0], left[index][1], top_z],
+            SurfaceClass::Forest,
+        );
+        mesh.quad(
+            [right[next][0], right[next][1], bottom_z],
+            [right[index][0], right[index][1], bottom_z],
+            [right[index][0], right[index][1], top_z],
+            [right[next][0], right[next][1], top_z],
+            SurfaceClass::Forest,
+        );
+    }
+    if !path.closed {
+        let last = path.points.len() - 1;
+        mesh.quad(
+            [right[0][0], right[0][1], bottom_z],
+            [left[0][0], left[0][1], bottom_z],
+            [left[0][0], left[0][1], top_z],
+            [right[0][0], right[0][1], top_z],
+            SurfaceClass::Forest,
+        );
+        mesh.quad(
+            [left[last][0], left[last][1], bottom_z],
+            [right[last][0], right[last][1], bottom_z],
+            [right[last][0], right[last][1], top_z],
+            [left[last][0], left[last][1], top_z],
+            SurfaceClass::Forest,
+        );
+    }
+    output.append_isolated(mesh);
+}
+
+fn unit_vector(vector: [f32; 2]) -> [f32; 2] {
+    let length = vector[0].hypot(vector[1]);
+    if length <= f32::EPSILON {
+        [0.0, 0.0]
+    } else {
+        [vector[0] / length, vector[1] / length]
+    }
 }
 
 fn regular_coordinates(start: f32, end: f32, maximum_step: f32) -> Vec<f32> {
@@ -2354,6 +2786,74 @@ mod tests {
     }
 
     #[test]
+    fn tray_contours_are_continuous_spline_ribbons() {
+        let size = 9;
+        let values = (0..size)
+            .flat_map(|y| {
+                (0..size).map(move |x| {
+                    let dx = x as f32 - 4.0;
+                    let dy = y as f32 - 4.0;
+                    32.0 - dx * dx - dy * dy
+                })
+            })
+            .collect::<Vec<_>>();
+        let height = HeightField::new(size, size, values, "radial-test").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            tray: TraySpec {
+                contour_count: 8,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let coordinates = regular_coordinates(0.0, 60.0, 0.35);
+        let paths = trace_tray_contours(
+            &spec,
+            Some(&height),
+            Some(height.range()),
+            &coordinates,
+            &coordinates,
+            0.0,
+            0.0,
+            60.0,
+            60.0,
+        );
+        let longest_path = paths
+            .iter()
+            .max_by_key(|path| path.points.len())
+            .expect("radial terrain should produce contour paths");
+        assert!(
+            paths.iter().any(|path| path.closed),
+            "radial terrain should produce closed contour loops"
+        );
+        assert!(longest_path.points.len() > 100);
+        assert!(
+            longest_path
+                .points
+                .windows(2)
+                .all(|points| { distance_squared(points[0], points[1]).sqrt() < 0.4 })
+        );
+        let curved_turns = longest_path
+            .points
+            .windows(3)
+            .filter(|points| {
+                let incoming =
+                    unit_vector([points[1][0] - points[0][0], points[1][1] - points[0][1]]);
+                let outgoing =
+                    unit_vector([points[2][0] - points[1][0], points[2][1] - points[1][1]]);
+                incoming[0] * outgoing[0] + incoming[1] * outgoing[1] < 0.999_99
+            })
+            .count();
+        assert!(curved_turns > 20);
+
+        let mut builder = MeshBuilder::default();
+        for path in &paths {
+            add_contour_ribbon(&mut builder, path, 1.4, 1.61);
+        }
+        assert_watertight(&builder.finish("spline-contours"));
+    }
+
+    #[test]
     fn tray_exports_separate_stl_and_color_3mf() {
         let output_dir =
             std::env::temp_dir().join(format!("terrain-tray-core-test-{}", std::process::id()));
@@ -2739,7 +3239,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_contour_grid_uses_submillimetre_cells() {
+    fn tray_contour_sampling_uses_submillimetre_steps() {
         let coordinates = regular_coordinates(0.0, 180.0, 0.35);
         let largest = coordinates
             .windows(2)

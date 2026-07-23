@@ -7,11 +7,12 @@ place and tune the printable model, including the mesh detail and surface
 colors.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
-flat well shows fine equal-height contour lines. Raised text on the front top
-lip shows the chosen place name, latitude, and longitude in smooth vector
-letterforms. Controls set the tray clearance, rim, floor, line count, and three
-print colors. The bundled Atkinson Hyperlegible font keeps the label shape the
-same on every OS and remains under its included SIL Open Font License.
+flat well shows smooth, continuous equal-height contour lines as fine color
+inlays. Raised text on the front top lip shows the chosen place name, latitude,
+and longitude in smooth vector letterforms. Controls set the tray clearance,
+rim, floor, line count, and three print colors. The bundled Atkinson
+Hyperlegible font keeps the label shape the same on every OS and remains under
+its included SIL Open Font License.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with a straight outer edge and no puzzle seams. It keeps the full source
