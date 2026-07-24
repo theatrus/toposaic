@@ -128,6 +128,10 @@ a {
   text-transform: uppercase;
 }
 
+.brand small span {
+  color: var(--ink);
+}
+
 .brand-mark {
   background: url("../src-tauri/icons/128x128.png") center / cover no-repeat;
   border-radius: 9px;
@@ -135,6 +139,75 @@ a {
   flex: 0 0 38px;
   height: 38px;
   width: 38px;
+}
+
+.update-notice {
+  align-items: center;
+  background: #edf5d0;
+  border: 1px solid #c6d59b;
+  display: flex;
+  gap: 10px;
+  min-height: 40px;
+  padding: 6px 8px 6px 11px;
+}
+
+.update-notice.recommended {
+  background: #f7efd2;
+  border-color: #d9c783;
+}
+
+.update-notice.required {
+  background: #fae2d8;
+  border-color: #ddac96;
+}
+
+.update-notice > span {
+  display: grid;
+  gap: 2px;
+}
+
+.update-notice strong {
+  font-size: 11px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.update-notice small {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.update-notice a,
+.update-notice button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 760;
+  padding: 5px 3px;
+  text-transform: uppercase;
+}
+
+.update-notice a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.update-notice button {
+  color: var(--muted);
+}
+
+.update-notice button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.update-notice a:focus-visible,
+.update-notice button:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
 }
 
 .build-state {
@@ -1755,6 +1828,10 @@ fieldset.control-section .road-options {
   .relief-shell {
     min-height: 430px;
   }
+
+  .update-notice small {
+    display: none;
+  }
 }
 
 @media (max-width: 560px) {
@@ -1772,6 +1849,19 @@ fieldset.control-section .road-options {
 
   .topbar-actions {
     gap: 8px;
+  }
+
+  .update-notice {
+    gap: 5px;
+    padding: 5px 6px;
+  }
+
+  .update-notice strong {
+    font-size: 9px;
+  }
+
+  .update-notice button {
+    display: none;
   }
 
   .piece-shape-options {

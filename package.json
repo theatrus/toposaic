@@ -13,12 +13,14 @@
     "desktop:dev": "vite --config vite.desktop.config.ts",
     "desktop:build": "vite build --config vite.desktop.config.ts",
     "tauri": "tauri",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "test:ui": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern target --ignore-pattern .next"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",

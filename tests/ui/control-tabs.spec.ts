@@ -1,4 +1,23 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { isVersionNewer } from "../../app/versioning";
+
+const appVersion = JSON.parse(
+  readFileSync(
+    new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+    "utf8",
+  ),
+).version as string;
+const [appMajor, appMinor] = appVersion.split(".").map(Number);
+const newerVersion = `${appMajor}.${appMinor + 1}.0`;
+
+test("compares stable and prerelease app versions", () => {
+  expect(isVersionNewer("v0.2.0", "0.1.9")).toBe(true);
+  expect(isVersionNewer("v0.1.10", "0.1.9")).toBe(true);
+  expect(isVersionNewer("v0.1.0", "0.1.0-beta.2")).toBe(true);
+  expect(isVersionNewer("v0.1.0-beta.2", "0.1.0")).toBe(false);
+  expect(isVersionNewer("not-a-version", "0.1.0")).toBe(false);
+});
 
 test("switches between the reflowed control panels", async ({ page }) => {
   await page.goto("/");
@@ -9,6 +28,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   );
   await expect(page.getByRole("link", { name: "TopoSaic home" })).toContainText(
     "Terrain Puzzle",
+  );
+  await expect(page.getByRole("link", { name: "TopoSaic home" })).toContainText(
+    `v${appVersion}`,
   );
   const brandIcon = page.locator(".brand-mark");
   await expect(brandIcon).toHaveCSS("background-image", /url\(.+\)/);
@@ -163,6 +185,124 @@ test("uses the selected elevation source for live previews", async ({
   await expect(
     page.getByRole("link", { name: "Mapterhorn elevation tiles" }),
   ).toHaveAttribute("href", "https://mapterhorn.com/attribution");
+});
+
+test("shows and dismisses a newer desktop release notice", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+  await page.route(
+    "https://api.github.com/repos/theatrus/toposaic/releases/latest",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          draft: false,
+          prerelease: false,
+          tag_name: `v${newerVersion}`,
+          html_url: `https://github.com/theatrus/toposaic/releases/tag/v${newerVersion}`,
+        }),
+      });
+    },
+  );
+  await page.route(
+    "https://toposaic.com/releases/notice.json",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: 1,
+          version: appVersion,
+          release_url:
+            "https://github.com/theatrus/toposaic/releases/tag/" +
+            `v${appVersion}`,
+          urgency: "normal",
+        }),
+      });
+    },
+  );
+  await page.route("http://127.0.0.1:38787/api/preview", async (route) => {
+    await route.abort();
+  });
+
+  await page.goto("/");
+
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: `v${newerVersion} available` });
+  await expect(notice).toContainText(`Current v${appVersion}`);
+  await expect(notice.getByRole("link", { name: "Download" })).toHaveAttribute(
+    "href",
+    `https://github.com/theatrus/toposaic/releases/tag/v${newerVersion}`,
+  );
+  await notice
+    .getByRole("button", {
+      name: `Dismiss v${newerVersion} update notice`,
+    })
+    .click();
+  await expect(notice).toBeHidden();
+});
+
+test("prefers a newer valid TopoSaic site notice", async ({ page }) => {
+  const siteVersion = `${appMajor}.${appMinor + 2}.0`;
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+  await page.route(
+    "https://api.github.com/repos/theatrus/toposaic/releases/latest",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          draft: false,
+          prerelease: false,
+          tag_name: `v${newerVersion}`,
+          html_url:
+            "https://github.com/theatrus/toposaic/releases/tag/" +
+            `v${newerVersion}`,
+        }),
+      });
+    },
+  );
+  await page.route(
+    "https://toposaic.com/releases/notice.json",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: 1,
+          version: siteVersion,
+          release_url:
+            "https://github.com/theatrus/toposaic/releases/tag/" +
+            `v${siteVersion}`,
+          summary: "New terrain tools.",
+          urgency: "recommended",
+          minimum_supported_version: appVersion,
+          published_at: "2026-07-24T18:00:00Z",
+        }),
+      });
+    },
+  );
+  await page.route("http://127.0.0.1:38787/api/preview", async (route) => {
+    await route.abort();
+  });
+
+  await page.goto("/");
+
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: `v${siteVersion} available` });
+  await expect(notice).toBeVisible();
+  await expect(notice.getByRole("link", { name: "Download" })).toHaveAttribute(
+    "href",
+    `https://github.com/theatrus/toposaic/releases/tag/v${siteVersion}`,
+  );
 });
 
 test("resizes the preview area to make room for controls", async ({ page }) => {

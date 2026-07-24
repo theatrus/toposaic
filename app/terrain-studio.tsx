@@ -14,6 +14,18 @@ import {
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import {
+  APP_VERSION,
+  RELEASES_URL,
+  type AvailableUpdate,
+  fetchAvailableUpdate,
+  signedUpdateFallback,
+} from "./releases";
+import {
+  checkSignedUpdateVersion,
+  downloadAndInstallSignedUpdate,
+} from "./desktop-updater";
+import { displayVersion, isVersionNewer } from "./versioning";
 
 type GenerationSpec = {
   center_lat: number;
@@ -1326,6 +1338,20 @@ function RangeField({
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const [appVersion, setAppVersion] = useState(APP_VERSION);
+  const [availableUpdate, setAvailableUpdate] =
+    useState<AvailableUpdate | null>(null);
+  const [signedUpdateVersion, setSignedUpdateVersion] = useState<string | null>(
+    null,
+  );
+  const [updateInstallState, setUpdateInstallState] = useState<
+    | { phase: "idle" }
+    | { phase: "checking" }
+    | { phase: "downloading"; percent: number | null }
+    | { phase: "installing" }
+    | { phase: "error"; message: string }
+  >({ phase: "idle" });
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [visualHeightPercent, setVisualHeightPercent] = useState(
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
@@ -1350,6 +1376,46 @@ export function TerrainStudio() {
   const [searchingPlaces, setSearchingPlaces] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const resizePointerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const controller = new AbortController();
+
+    void (async () => {
+      let installedVersion = APP_VERSION;
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        installedVersion = await getVersion();
+      } catch {
+        // The bundled config remains a safe fallback if the app API is unavailable.
+      }
+      if (controller.signal.aborted) return;
+      setAppVersion(installedVersion);
+
+      const [noticeResult, signedResult] = await Promise.allSettled([
+        fetchAvailableUpdate(installedVersion, controller.signal),
+        checkSignedUpdateVersion(),
+      ]);
+      if (controller.signal.aborted) return;
+
+      const notice =
+        noticeResult.status === "fulfilled" ? noticeResult.value : null;
+      const signedVersion =
+        signedResult.status === "fulfilled" ? signedResult.value : null;
+      setSignedUpdateVersion(signedVersion);
+      if (
+        signedVersion &&
+        isVersionNewer(signedVersion, installedVersion) &&
+        (!notice || isVersionNewer(signedVersion, notice.version))
+      ) {
+        setAvailableUpdate(signedUpdateFallback(signedVersion));
+      } else {
+        setAvailableUpdate(notice);
+      }
+    })();
+
+    return () => controller.abort();
+  }, []);
 
   const setVisualHeightFromPointer = useCallback((clientY: number) => {
     const bounds = workspaceRef.current?.getBoundingClientRect();
@@ -1763,6 +1829,32 @@ export function TerrainStudio() {
     }
   };
 
+  const installUpdate = async () => {
+    setUpdateInstallState({ phase: "checking" });
+    try {
+      const installedVersion = await downloadAndInstallSignedUpdate(
+        (progress) => {
+          setUpdateInstallState(
+            progress.phase === "installing"
+              ? { phase: "installing" }
+              : {
+                  phase: "downloading",
+                  percent: progress.percent,
+                },
+          );
+        },
+      );
+      if (!installedVersion) {
+        throw new Error("The signed update is no longer available.");
+      }
+    } catch {
+      setUpdateInstallState({
+        phase: "error",
+        message: "Install failed. You can still download the release.",
+      });
+    }
+  };
+
   const saveDesktopArtifact = async (artifact: Artifact) => {
     if (!job || !IS_TAURI) return;
     setArtifactFeedback({ name: artifact.name, state: "saving" });
@@ -1888,6 +1980,28 @@ export function TerrainStudio() {
   const generationActive =
     job !== null && ["queued", "running"].includes(job.status);
   const cancellationActive = generationActive || canceling;
+  const signedUpdateReady =
+    availableUpdate !== null &&
+    signedUpdateVersion !== null &&
+    displayVersion(availableUpdate.version) ===
+      displayVersion(signedUpdateVersion);
+  const updateBusy = ["checking", "downloading", "installing"].includes(
+    updateInstallState.phase,
+  );
+  const updateStatus =
+    updateInstallState.phase === "checking"
+      ? "Checking signed package…"
+      : updateInstallState.phase === "downloading"
+        ? updateInstallState.percent === null
+          ? "Downloading update…"
+          : `Downloading ${updateInstallState.percent}%…`
+        : updateInstallState.phase === "installing"
+          ? "Installing and restarting…"
+          : updateInstallState.phase === "error"
+            ? updateInstallState.message
+            : availableUpdate?.urgency === "required"
+              ? "This version is no longer supported."
+              : `Current ${displayVersion(appVersion)}`;
   const previewState = generatedPreview
     ? "generated"
     : elevationPreview
@@ -1903,10 +2017,62 @@ export function TerrainStudio() {
           <span className="brand-mark" aria-hidden="true" />
           <span>
             TopoSaic
-            <small>Terrain Puzzle</small>
+            <small>
+              Terrain Puzzle · <span>{displayVersion(appVersion)}</span>
+            </small>
           </span>
         </a>
         <div className="topbar-actions">
+          {availableUpdate && !updateDismissed && (
+            <aside
+              className={`update-notice ${availableUpdate.urgency}`}
+              role="status"
+            >
+              <span>
+                <strong>
+                  {displayVersion(availableUpdate.version)} available
+                </strong>
+                <small>{updateStatus}</small>
+              </span>
+              {signedUpdateReady ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={updateBusy}
+                    onClick={() => void installUpdate()}
+                  >
+                    {updateBusy ? "Working…" : "Install"}
+                  </button>
+                  <a
+                    href={availableUpdate.url || RELEASES_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Notes
+                  </a>
+                </>
+              ) : (
+                <a
+                  href={availableUpdate.url || RELEASES_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Download
+                </a>
+              )}
+              {!updateBusy && (
+                <button
+                  type="button"
+                  aria-label={`Dismiss ${displayVersion(
+                    availableUpdate.version,
+                  )} update notice`}
+                  onClick={() => setUpdateDismissed(true)}
+                >
+                  Later
+                </button>
+              )}
+            </aside>
+          )}
           <div className={`build-state ${job?.status ?? "idle"}`}>
             <span />
             {job ? statusLabel : "Local engine · SQLite"}
