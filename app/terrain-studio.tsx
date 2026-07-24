@@ -173,7 +173,7 @@ const initialSpec: GenerationSpec = {
   rows: 10,
   columns: 10,
   base_mm: 2.4,
-  relief_mm: 42,
+  relief_mm: 28,
   elevation_datum_m: null,
   elevation_m_per_mm: null,
   adjacent_columns: 1,

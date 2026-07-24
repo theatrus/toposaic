@@ -98,7 +98,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
       .getByLabel("Interactive 3D terrain preview")
       .getAttribute("data-base-scale"),
   );
-  expect(initialHeightScale).toBeCloseTo(42 / 180, 4);
+  expect(initialHeightScale).toBeCloseTo(28 / 180, 4);
   expect(initialBaseScale).toBeCloseTo(2.4 / 180, 4);
   await relief.fill("80");
   await expect(relief).toHaveValue("80");
