@@ -26,6 +26,7 @@ const ROAD_VECTOR_STEP_MM: f32 = 0.25;
 const OVERLAY_TERRAIN_EMBED_MM: f32 = 0.02;
 const BUILDING_GROUND_STEP_MM: f32 = 0.25;
 const MAX_PARALLEL_PIECES: usize = 8;
+const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,8 +125,12 @@ impl GenerationSpec {
             (None, None) => {}
             _ => bail!("elevation datum and scale must be set together"),
         }
-        if !(1..=4).contains(&self.adjacent_columns) || !(1..=4).contains(&self.adjacent_rows) {
-            bail!("adjacent grid columns and rows must each be between 1 and 4");
+        if !(1..=MAX_ADJACENT_GRID_SIDE).contains(&self.adjacent_columns)
+            || !(1..=MAX_ADJACENT_GRID_SIDE).contains(&self.adjacent_rows)
+        {
+            bail!(
+                "adjacent grid columns and rows must each be between 1 and {MAX_ADJACENT_GRID_SIDE}"
+            );
         }
         if self.adjacent_tile_column >= self.adjacent_columns
             || self.adjacent_tile_row >= self.adjacent_rows
@@ -199,6 +204,7 @@ impl BuildingSpec {
 #[serde(default)]
 pub struct TraySpec {
     pub enabled: bool,
+    pub individual_tiles: bool,
     pub tray_color: String,
     pub contour_color: String,
     pub label_color: String,
@@ -215,6 +221,7 @@ impl Default for TraySpec {
     fn default() -> Self {
         Self {
             enabled: false,
+            individual_tiles: false,
             tray_color: "#252822".into(),
             contour_color: "#E7E4D8".into(),
             label_color: "#F4F3EC".into(),
@@ -255,8 +262,12 @@ impl TraySpec {
         if !(5..=60).contains(&self.contour_count) {
             bail!("tray contour count must be between 5 and 60");
         }
-        if !(1..=4).contains(&self.segment_columns) || !(1..=4).contains(&self.segment_rows) {
-            bail!("tray segment columns and rows must each be between 1 and 4");
+        if !(1..=MAX_ADJACENT_GRID_SIDE).contains(&self.segment_columns)
+            || !(1..=MAX_ADJACENT_GRID_SIDE).contains(&self.segment_rows)
+        {
+            bail!(
+                "tray segment columns and rows must each be between 1 and {MAX_ADJACENT_GRID_SIDE}"
+            );
         }
         Ok(())
     }
@@ -1503,11 +1514,12 @@ fn build_tray_segments(
     if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
         return Ok(vec![build_tray(spec, height_field)?]);
     }
+    let contour_paths = tray_contour_paths(spec, height_field);
     let mut segments =
         Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
     for row in 0..spec.tray.segment_rows {
         for column in 0..spec.tray.segment_columns {
-            segments.push(build_tray_segment(spec, height_field, row, column)?);
+            segments.push(build_tray_segment(spec, &contour_paths, row, column)?);
         }
     }
     Ok(segments)
@@ -1515,7 +1527,7 @@ fn build_tray_segments(
 
 fn build_tray_segment(
     spec: &GenerationSpec,
-    height_field: Option<&HeightField>,
+    contour_paths: &[ContourPath],
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
@@ -1530,14 +1542,36 @@ fn build_tray_segment(
     let inner_y1 = inner_y0 + inner_height;
     let floor_z = tray.floor_mm;
     let rim_z = tray.floor_mm + tray.rim_height_mm;
-    let outline = tray_segment_outline(
-        outer_width,
-        outer_height,
-        tray.segment_rows,
-        tray.segment_columns,
-        row,
-        column,
-    );
+    let segment_grid = TraySegmentGrid {
+        size: [outer_width, outer_height],
+        terrain_bounds: [
+            inner_x0 + tray.clearance_mm,
+            inner_y0 + tray.clearance_mm,
+            inner_x1 - tray.clearance_mm,
+            inner_y1 - tray.clearance_mm,
+        ],
+        rows: tray.segment_rows,
+        columns: tray.segment_columns,
+        interlocks: spec.adjacent_interlocks,
+        clearance_mm: if spec.adjacent_interlocks {
+            spec.clearance_mm
+        } else {
+            0.0
+        },
+    };
+    let outline = tray_segment_outline(segment_grid, row, column);
+    let minimum_x = outline
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let maximum_x = outline
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let minimum_y = outline
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
     let segment_polygon = geo_polygon(&outline);
     let inner_polygon = rectangle_polygon(inner_x0, inner_y0, inner_x1, inner_y1);
     let floor_polygons = segment_polygon.intersection(&inner_polygon).0;
@@ -1559,15 +1593,22 @@ fn build_tray_segment(
         &mut mesh,
         &floor_polygons,
         [inner_x0, inner_y0, inner_x1, inner_y1],
+        0.0,
         floor_z,
-        None,
     );
     add_segment_outer_walls(
         &mut mesh,
         &rim_polygons,
         [inner_x0, inner_y0, inner_x1, inner_y1],
+        0.0,
+        floor_z,
+    );
+    add_segment_outer_walls(
+        &mut mesh,
+        &rim_polygons,
+        [inner_x0, inner_y0, inner_x1, inner_y1],
+        floor_z,
         rim_z,
-        Some(floor_z),
     );
     add_segment_inner_walls(
         &mut mesh,
@@ -1577,22 +1618,8 @@ fn build_tray_segment(
         rim_z,
     );
 
-    let x_coordinates = regular_coordinates(inner_x0, inner_x1, 0.35);
-    let y_coordinates = regular_coordinates(inner_y0, inner_y1, 0.35);
-    let height_range = height_range_for_spec(spec, height_field);
-    let contour_paths = trace_tray_contours(
-        spec,
-        height_field,
-        height_range,
-        &x_coordinates,
-        &y_coordinates,
-        inner_x0,
-        inner_y0,
-        inner_width,
-        inner_height,
-    );
     for path in contour_paths {
-        for clipped in clip_contour_path(&path, &segment_polygon) {
+        for clipped in clip_contour_path(path, &segment_polygon) {
             add_contour_ribbon(
                 &mut mesh,
                 &clipped,
@@ -1603,25 +1630,17 @@ fn build_tray_segment(
     }
 
     if row == 0 {
-        let segment_width = outer_width / tray.segment_columns as f32;
+        let segment_width = maximum_x - minimum_x;
         let label_margin = 8.0_f32.min(segment_width * 0.2);
         let mut label = tray_label(
             spec,
             (segment_width - label_margin * 2.0).max(12.0),
             tray.rim_width_mm,
         )?;
-        label.origin_x += column as f32 * segment_width + label_margin;
+        label.origin_x += minimum_x + label_margin;
         label.add_embossed_shapes(&mut mesh, rim_z)?;
     }
 
-    let minimum_x = outline
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let minimum_y = outline
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
     let mut result = mesh.finish(format!("terrain-tray-r{}-c{}", row + 1, column + 1));
     for vertex in &mut result.vertices {
         vertex[0] -= minimum_x;
@@ -1630,18 +1649,67 @@ fn build_tray_segment(
     Ok(result)
 }
 
-fn tray_segment_outline(
-    width: f32,
-    height: f32,
+fn tray_contour_paths(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> Vec<ContourPath> {
+    let tray = &spec.tray;
+    let inner_width = spec.width_mm + tray.clearance_mm * 2.0;
+    let inner_height = spec.height_mm() + tray.clearance_mm * 2.0;
+    let inner_x0 = tray.rim_width_mm;
+    let inner_y0 = tray.rim_width_mm;
+    let inner_x1 = inner_x0 + inner_width;
+    let inner_y1 = inner_y0 + inner_height;
+    let x_coordinates = regular_coordinates(inner_x0, inner_x1, 0.35);
+    let y_coordinates = regular_coordinates(inner_y0, inner_y1, 0.35);
+    trace_tray_contours(
+        spec,
+        height_field,
+        height_range_for_spec(spec, height_field),
+        &x_coordinates,
+        &y_coordinates,
+        inner_x0,
+        inner_y0,
+        inner_width,
+        inner_height,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct TraySegmentGrid {
+    size: [f32; 2],
+    terrain_bounds: [f32; 4],
     rows: u32,
     columns: u32,
-    row: u32,
-    column: u32,
-) -> Vec<[f32; 2]> {
-    let x0 = column as f32 * width / columns as f32;
-    let x1 = (column + 1) as f32 * width / columns as f32;
-    let y0 = row as f32 * height / rows as f32;
-    let y1 = (row + 1) as f32 * height / rows as f32;
+    interlocks: bool,
+    clearance_mm: f32,
+}
+
+fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f32; 2]> {
+    let [width, height] = grid.size;
+    let [terrain_x0, terrain_y0, terrain_x1, terrain_y1] = grid.terrain_bounds;
+    let rows = grid.rows;
+    let columns = grid.columns;
+    let x0 = if column == 0 {
+        0.0
+    } else {
+        terrain_x0 + (terrain_x1 - terrain_x0) * column as f32 / columns as f32
+    };
+    let x1 = if column + 1 == columns {
+        width
+    } else {
+        terrain_x0 + (terrain_x1 - terrain_x0) * (column + 1) as f32 / columns as f32
+    };
+    let y0 = if row == 0 {
+        0.0
+    } else {
+        terrain_y0 + (terrain_y1 - terrain_y0) * row as f32 / rows as f32
+    };
+    let y1 = if row + 1 == rows {
+        height
+    } else {
+        terrain_y0 + (terrain_y1 - terrain_y0) * (row + 1) as f32 / rows as f32
+    };
     let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     let nominal_size = ((x1 - x0).min(y1 - y0)).max(1.0);
     let base_depth = nominal_size * 0.12;
@@ -1651,43 +1719,82 @@ fn tray_segment_outline(
             corners[0],
             corners[1],
             shared_edge_pattern(0, row, column),
-            edge_sign(0, column, row, rows),
+            if grid.interlocks {
+                edge_sign(0, column, row, rows)
+            } else {
+                0.0
+            },
             false,
+            if row > 0 {
+                [0.0, grid.clearance_mm * 0.5]
+            } else {
+                [0.0, 0.0]
+            },
         ),
         (
             corners[1],
             corners[2],
             shared_edge_pattern(1, column + 1, row),
-            edge_sign(1, row, column + 1, columns),
+            if grid.interlocks {
+                edge_sign(1, row, column + 1, columns)
+            } else {
+                0.0
+            },
             false,
+            if column + 1 < columns {
+                [-grid.clearance_mm * 0.5, 0.0]
+            } else {
+                [0.0, 0.0]
+            },
         ),
         (
             corners[3],
             corners[2],
             shared_edge_pattern(0, row + 1, column),
-            edge_sign(0, column, row + 1, rows),
+            if grid.interlocks {
+                edge_sign(0, column, row + 1, rows)
+            } else {
+                0.0
+            },
             true,
+            if row + 1 < rows {
+                [0.0, -grid.clearance_mm * 0.5]
+            } else {
+                [0.0, 0.0]
+            },
         ),
         (
             corners[0],
             corners[3],
             shared_edge_pattern(1, column, row),
-            edge_sign(1, row, column, columns),
+            if grid.interlocks {
+                edge_sign(1, row, column, columns)
+            } else {
+                0.0
+            },
             true,
+            if column > 0 {
+                [grid.clearance_mm * 0.5, 0.0]
+            } else {
+                [0.0, 0.0]
+            },
         ),
     ];
     let mut outline = Vec::with_capacity(samples * 4);
-    for (start, end, pattern, sign, reverse) in edges {
+    for (start, end, pattern, sign, reverse, clearance_shift) in edges {
         for index in 0..samples {
             let t = index as f32 / samples as f32;
-            outline.push(puzzle_edge_point(
+            let mut point = puzzle_edge_point(
                 start,
                 end,
                 pattern,
                 sign,
                 if reverse { 1.0 - t } else { t },
                 base_depth,
-            ));
+            );
+            point[0] += clearance_shift[0];
+            point[1] += clearance_shift[1];
+            outline.push(point);
         }
     }
     outline
@@ -1783,8 +1890,8 @@ fn add_segment_outer_walls(
     mesh: &mut MeshBuilder,
     polygons: &[Polygon<f64>],
     inner: [f32; 4],
-    top_z: f32,
-    split_z: Option<f32>,
+    lower_z: f32,
+    upper_z: f32,
 ) {
     let [x0, y0, x1, y1] = inner;
     let on_inner_boundary = |a: [f32; 2], b: [f32; 2]| {
@@ -1799,19 +1906,13 @@ fn add_segment_outer_walls(
                 let a = [edge[0].x as f32, edge[0].y as f32];
                 let b = [edge[1].x as f32, edge[1].y as f32];
                 if !on_inner_boundary(a, b) {
-                    let levels = split_z
-                        .filter(|split| *split > 0.0 && *split < top_z)
-                        .map(|split| vec![0.0, split, top_z])
-                        .unwrap_or_else(|| vec![0.0, top_z]);
-                    for levels in levels.windows(2) {
-                        mesh.quad(
-                            [a[0], a[1], levels[0]],
-                            [b[0], b[1], levels[0]],
-                            [b[0], b[1], levels[1]],
-                            [a[0], a[1], levels[1]],
-                            SurfaceClass::Rock,
-                        );
-                    }
+                    mesh.quad(
+                        [a[0], a[1], lower_z],
+                        [b[0], b[1], lower_z],
+                        [b[0], b[1], upper_z],
+                        [a[0], a[1], upper_z],
+                        SurfaceClass::Rock,
+                    );
                 }
             }
         }
@@ -2795,6 +2896,51 @@ pub fn generate_project_with_fields_cancellable(
     )
 }
 
+pub fn generate_tray_artifacts(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    output_dir: &Path,
+) -> Result<Vec<Artifact>> {
+    if !spec.tray.enabled {
+        return Ok(Vec::new());
+    }
+    spec.tray.validate()?;
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create tray output directory {}", output_dir.display()))?;
+
+    let mut tray_spec = spec.clone();
+    tray_spec.solid_model = true;
+    tray_spec.color_output.enabled = true;
+    tray_spec.color_output.rock_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.forest_color = spec.tray.contour_color.clone();
+    tray_spec.color_output.snow_color = spec.tray.label_color.clone();
+    tray_spec.color_output.water_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.road_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.building_color = spec.tray.tray_color.clone();
+
+    let tray_meshes = build_tray_segments(spec, height_field)?;
+    let mut artifacts = Vec::with_capacity(tray_meshes.len() * 2);
+    for (index, tray_mesh) in tray_meshes.iter().enumerate() {
+        let row = index as u32 / spec.tray.segment_columns;
+        let column = index as u32 % spec.tray.segment_columns;
+        let suffix = if tray_meshes.len() == 1 {
+            String::new()
+        } else {
+            format!("-r{:02}-c{:02}", row + 1, column + 1)
+        };
+        let tray_stl_path = output_dir.join(format!("terrain-tray{suffix}.stl"));
+        write_binary_stl(tray_mesh, &tray_stl_path)?;
+        artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
+
+        let tray_3mf_path = output_dir.join(format!("terrain-tray{suffix}.3mf"));
+        let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
+        tray_writer.write_mesh(tray_mesh)?;
+        tray_writer.finish()?;
+        artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
+    }
+    Ok(artifacts)
+}
+
 pub fn build_height_preview(
     spec: &GenerationSpec,
     height_field: &HeightField,
@@ -2898,34 +3044,7 @@ fn generate_project_inner(
 
     if spec.tray.enabled {
         ensure_generation_active(is_cancelled)?;
-        let mut tray_spec = spec.clone();
-        tray_spec.solid_model = true;
-        tray_spec.color_output.enabled = true;
-        tray_spec.color_output.rock_color = spec.tray.tray_color.clone();
-        tray_spec.color_output.forest_color = spec.tray.contour_color.clone();
-        tray_spec.color_output.snow_color = spec.tray.label_color.clone();
-        tray_spec.color_output.water_color = spec.tray.tray_color.clone();
-        tray_spec.color_output.road_color = spec.tray.tray_color.clone();
-        tray_spec.color_output.building_color = spec.tray.tray_color.clone();
-        let tray_meshes = build_tray_segments(spec, height_field)?;
-        for (index, tray_mesh) in tray_meshes.iter().enumerate() {
-            let row = index as u32 / spec.tray.segment_columns;
-            let column = index as u32 % spec.tray.segment_columns;
-            let suffix = if tray_meshes.len() == 1 {
-                String::new()
-            } else {
-                format!("-r{:02}-c{:02}", row + 1, column + 1)
-            };
-            let tray_stl_path = output_dir.join(format!("terrain-tray{suffix}.stl"));
-            write_binary_stl(tray_mesh, &tray_stl_path)?;
-            artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
-
-            let tray_3mf_path = output_dir.join(format!("terrain-tray{suffix}.3mf"));
-            let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
-            tray_writer.write_mesh(tray_mesh)?;
-            tray_writer.finish()?;
-            artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
-        }
+        artifacts.extend(generate_tray_artifacts(spec, height_field, output_dir)?);
     }
     on_progress(0.95)?;
 
@@ -4609,6 +4728,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_adjacent_grids_up_to_twelve_by_twelve() {
+        let mut spec = GenerationSpec {
+            adjacent_columns: 12,
+            adjacent_rows: 12,
+            adjacent_tile_column: 11,
+            adjacent_tile_row: 11,
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.adjacent_columns = 13;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
     fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
         let spec = GenerationSpec {
             elevation_datum_m: Some(50.0),
@@ -4727,6 +4861,20 @@ mod tests {
             left.iter()
                 .filter(|point| point[1] < 0.001)
                 .all(|point| point[1].abs() < 0.001)
+        );
+
+        let plain = solid_outline(
+            &GenerationSpec {
+                adjacent_interlocks: false,
+                ..left_spec
+            },
+            96,
+        )
+        .unwrap();
+        assert!(
+            plain[plain.len() / 4..plain.len() / 2]
+                .iter()
+                .all(|point| (point[0] - right_spec.width_mm).abs() < 0.0001)
         );
     }
 
@@ -4880,6 +5028,7 @@ mod tests {
             rows: 2,
             columns: 2,
             place_name: "Test".into(),
+            adjacent_interlocks: true,
             tray: TraySpec {
                 enabled: true,
                 segment_columns: 2,
@@ -4901,6 +5050,29 @@ mod tests {
         assert_eq!(segments.len(), 4);
         for segment in &segments {
             assert_watertight(segment);
+            let curved_cut_walls = segment
+                .triangles
+                .iter()
+                .filter(|triangle| {
+                    let vertices = triangle.map(|index| segment.vertices[index as usize]);
+                    let minimum_z = vertices
+                        .iter()
+                        .map(|vertex| vertex[2])
+                        .fold(f32::INFINITY, f32::min);
+                    let maximum_z = vertices
+                        .iter()
+                        .map(|vertex| vertex[2])
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    minimum_z < 0.001
+                        && (maximum_z - spec.tray.floor_mm).abs() < 0.001
+                        && (0..3).any(|index| {
+                            let a = vertices[index];
+                            let b = vertices[(index + 1) % 3];
+                            (a[0] - b[0]).abs() > 0.001 && (a[1] - b[1]).abs() > 0.001
+                        })
+                })
+                .count();
+            assert!(curved_cut_walls > 20);
         }
         let output_dir = std::env::temp_dir().join(format!(
             "toposaic-segmented-tray-test-{}",
@@ -4922,19 +5094,68 @@ mod tests {
         assert!(output_dir.join("terrain-tray-r02-c02.stl").is_file());
         fs::remove_dir_all(&output_dir).unwrap();
 
-        let first = tray_segment_outline(80.0, 80.0, 2, 2, 0, 0);
-        let second = tray_segment_outline(80.0, 80.0, 2, 2, 0, 1);
-        let shared_gap = first
+        let tabbed_grid = TraySegmentGrid {
+            size: [80.0, 80.0],
+            terrain_bounds: [8.0, 8.0, 72.0, 72.0],
+            rows: 2,
+            columns: 2,
+            interlocks: true,
+            clearance_mm: 0.14,
+        };
+        let first = tray_segment_outline(tabbed_grid, 0, 0);
+        let second = tray_segment_outline(tabbed_grid, 0, 1);
+        let first_shared = &first[96..192];
+        let second_shared = &second[288..384];
+        assert!(
+            first_shared
+                .iter()
+                .any(|point| (point[0] - 40.0).abs() > 1.0)
+        );
+        let shared_clearance = first_shared
             .iter()
-            .filter(|point| point[0] > 30.0)
-            .flat_map(|point| {
-                second
+            .skip(2)
+            .take(first_shared.len() - 4)
+            .map(|point| {
+                second_shared
                     .iter()
-                    .filter(move |candidate| candidate[0] < 50.0)
-                    .map(move |candidate| (point[0] - candidate[0]).hypot(point[1] - candidate[1]))
+                    .map(|candidate| (point[0] - candidate[0]).hypot(point[1] - candidate[1]))
+                    .fold(f32::INFINITY, f32::min)
             })
             .fold(f32::INFINITY, f32::min);
-        assert!(shared_gap < 0.001);
+        assert!((0.1..=0.2).contains(&shared_clearance));
+
+        let straight = tray_segment_outline(
+            TraySegmentGrid {
+                interlocks: false,
+                clearance_mm: 0.0,
+                ..tabbed_grid
+            },
+            0,
+            0,
+        );
+        assert!(
+            straight[96..192]
+                .iter()
+                .all(|point| (point[0] - 40.0).abs() < 0.0001)
+        );
+
+        let four_across = tray_segment_outline(
+            TraySegmentGrid {
+                size: [110.0, 80.0],
+                terrain_bounds: [5.0, 8.0, 105.0, 72.0],
+                rows: 1,
+                columns: 4,
+                interlocks: false,
+                clearance_mm: 0.0,
+            },
+            0,
+            0,
+        );
+        assert!(
+            four_across[96..192]
+                .iter()
+                .all(|point| (point[0] - 30.0).abs() < 0.0001)
+        );
     }
 
     #[test]

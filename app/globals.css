@@ -663,8 +663,7 @@ fieldset.control-section .road-options {
 
 .model-controls .place-search,
 .model-controls .place-label-field,
-.model-controls .coordinate-row,
-.model-controls .adjacent-tiles {
+.model-controls .coordinate-adjacent-row {
   grid-column: 1 / -1;
 }
 
@@ -779,11 +778,18 @@ fieldset.control-section .road-options {
   text-transform: capitalize;
 }
 
+.coordinate-adjacent-row {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
+  margin-bottom: 10px;
+}
+
 .coordinate-row {
   display: grid;
   gap: 10px;
   grid-template-columns: 1fr 1fr;
-  margin-bottom: 10px;
 }
 
 .coordinate-row label {
@@ -814,7 +820,6 @@ fieldset.control-section .road-options {
 
 .adjacent-tiles {
   border: 1px solid var(--line);
-  margin-bottom: 10px;
   padding: 8px;
 }
 
@@ -897,16 +902,14 @@ fieldset.control-section .road-options {
   text-transform: uppercase;
 }
 
-.adjacent-grid label,
-.tray-segments label {
+.adjacent-grid label {
   color: var(--muted);
   font-size: 7px;
   font-weight: 650;
   text-transform: uppercase;
 }
 
-.adjacent-grid select,
-.tray-segments select {
+.adjacent-grid select {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--ink);
@@ -947,29 +950,29 @@ fieldset.control-section .road-options {
   color: var(--moss);
 }
 
-.tray-segments {
-  align-items: end;
+.tray-chunk-toggle {
+  align-items: center;
   border: 1px solid var(--line);
   display: flex;
-  gap: 7px;
+  gap: 8px;
   grid-column: 1 / -1;
   padding: 9px;
 }
 
-.tray-segments > div {
-  margin-right: auto;
+.tray-chunk-toggle input {
+  accent-color: var(--moss);
 }
 
-.tray-segments strong,
-.tray-segments small {
+.tray-chunk-toggle strong,
+.tray-chunk-toggle small {
   display: block;
 }
 
-.tray-segments strong {
+.tray-chunk-toggle strong {
   font-size: 10px;
 }
 
-.tray-segments small {
+.tray-chunk-toggle small {
   color: var(--muted);
   font-size: 8px;
   margin-top: 3px;
@@ -1716,6 +1719,10 @@ fieldset.control-section .road-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .coordinate-adjacent-row {
+    grid-template-columns: 1fr;
+  }
+
   .map-shell,
   .relief-shell {
     min-height: 430px;
@@ -1785,11 +1792,6 @@ fieldset.control-section .road-options {
 
   .adjacent-grid {
     margin-left: 0;
-  }
-
-  .tray-segments {
-    align-items: stretch;
-    flex-wrap: wrap;
   }
 
   .piece-grid {

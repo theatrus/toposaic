@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     body::Body,
@@ -24,7 +24,8 @@ use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use terrain_core::{
-    Artifact, GenerationSpec, artifact_path, generate_project_with_fields_cancellable,
+    Artifact, GenerationSpec, HeightField, artifact_path, generate_project_with_fields_cancellable,
+    generate_tray_artifacts,
 };
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, time::sleep};
 use tower_http::{
@@ -635,6 +636,7 @@ fn run_adjacent_grid_job(
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
     let mut artifacts = Vec::new();
     let mut tile_manifest = Vec::with_capacity(tile_count);
+    let mut mosaic_tray_names = Vec::new();
     let mesh_progress = AtomicI64::new(40);
 
     for (index, (tile_spec, height_field)) in tiles.iter().zip(height_fields.iter()).enumerate() {
@@ -651,8 +653,15 @@ fn run_adjacent_grid_job(
         } else {
             None
         };
+        let mut terrain_spec = tile_spec.clone();
+        if !spec.tray.individual_tiles {
+            terrain_spec.tray.enabled = false;
+        } else {
+            terrain_spec.tray.segment_columns = 1;
+            terrain_spec.tray.segment_rows = 1;
+        }
         let manifest = generate_project_with_fields_cancellable(
-            tile_spec,
+            &terrain_spec,
             height_field,
             surface_field.as_ref(),
             &tile_dir,
@@ -660,7 +669,7 @@ fn run_adjacent_grid_job(
             &|fraction| {
                 ensure_job_active(cancellation)?;
                 let combined = (index as f32 + fraction) / tile_count as f32;
-                let progress = (40.0 + combined * 59.0).round() as i64;
+                let progress = (40.0 + combined * 49.0).round() as i64;
                 let previous = mesh_progress.fetch_max(progress, Ordering::AcqRel);
                 if progress > previous {
                     update_job(state, id, "running", progress, &[], None)?;
@@ -684,20 +693,21 @@ fn run_adjacent_grid_job(
         )?;
 
         let mut tray_names = Vec::new();
-        for tray_artifact in manifest.artifacts.iter().filter(|artifact| {
-            artifact.name.starts_with("terrain-tray") && artifact.name.ends_with(".3mf")
-        }) {
+        for tray_artifact in manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.name.starts_with("terrain-tray"))
+        {
             let segment = tray_artifact
                 .name
                 .strip_prefix("terrain-tray")
-                .and_then(|name| name.strip_suffix(".3mf"))
                 .unwrap_or_default();
-            let name = format!("tray-tile-r{:02}-c{:02}{segment}.3mf", row + 1, column + 1);
+            let name = format!("tray-tile-r{:02}-c{:02}{segment}", row + 1, column + 1);
             copy_grid_artifact(
                 &tile_dir.join(&tray_artifact.name),
                 &output_dir.join(&name),
                 &name,
-                "model/3mf",
+                &tray_artifact.media_type,
                 &mut artifacts,
             )?;
             tray_names.push(name);
@@ -724,6 +734,31 @@ fn run_adjacent_grid_job(
             .with_context(|| format!("remove temporary tile directory {}", tile_dir.display()))?;
     }
 
+    if spec.tray.enabled && !spec.tray.individual_tiles {
+        ensure_job_active(cancellation)?;
+        update_job(state, id, "running", 90, &[], None)?;
+        let mosaic_height =
+            stitch_height_fields(&height_fields, spec.adjacent_rows, spec.adjacent_columns)?;
+        let mosaic_spec = mosaic_tray_spec(spec);
+        let tray_dir = output_dir.join(".mosaic-tray");
+        for tray_artifact in generate_tray_artifacts(&mosaic_spec, Some(&mosaic_height), &tray_dir)?
+        {
+            let name = tray_artifact
+                .name
+                .replacen("terrain-tray", "mosaic-tray", 1);
+            copy_grid_artifact(
+                &tray_dir.join(&tray_artifact.name),
+                &output_dir.join(&name),
+                &name,
+                &tray_artifact.media_type,
+                &mut artifacts,
+            )?;
+            mosaic_tray_names.push(name);
+        }
+        fs::remove_dir_all(&tray_dir)
+            .with_context(|| format!("remove temporary tray directory {}", tray_dir.display()))?;
+    }
+
     let manifest_name = "manifest.json";
     let manifest_path = output_dir.join(manifest_name);
     fs::write(
@@ -737,6 +772,7 @@ fn run_adjacent_grid_job(
                 "elevation_m_per_mm": tiles[0].elevation_m_per_mm,
             },
             "tiles": tile_manifest,
+            "mosaic_trays": mosaic_tray_names,
         }))?,
     )?;
     artifacts.push(local_artifact(
@@ -771,6 +807,55 @@ fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
             })
         })
         .collect()
+}
+
+fn mosaic_tray_spec(spec: &GenerationSpec) -> GenerationSpec {
+    let mut mosaic = spec.clone();
+    mosaic.width_mm *= spec.adjacent_columns as f32;
+    mosaic.rows *= spec.adjacent_rows;
+    mosaic.columns *= spec.adjacent_columns;
+    mosaic.ground_span_km *= spec.adjacent_columns as f64;
+    mosaic.adjacent_tile_column = 0;
+    mosaic.adjacent_tile_row = 0;
+    mosaic.tray.individual_tiles = false;
+    mosaic.tray.segment_columns = spec.adjacent_columns;
+    mosaic.tray.segment_rows = spec.adjacent_rows;
+    mosaic
+}
+
+fn stitch_height_fields(fields: &[HeightField], rows: u32, columns: u32) -> Result<HeightField> {
+    if rows == 0 || columns == 0 || fields.len() != (rows * columns) as usize {
+        bail!("height fields do not match the adjacent tray grid");
+    }
+    let tile_width = fields[0].width;
+    let tile_height = fields[0].height;
+    if fields
+        .iter()
+        .any(|field| field.width != tile_width || field.height != tile_height)
+    {
+        bail!("adjacent height fields must use matching sample dimensions");
+    }
+    let width = columns as usize * (tile_width - 1) + 1;
+    let height = rows as usize * (tile_height - 1) + 1;
+    let mut sums = vec![0.0_f32; width * height];
+    let mut counts = vec![0_u8; width * height];
+    for (tile_index, field) in fields.iter().enumerate() {
+        let tile_row = tile_index / columns as usize;
+        let tile_column = tile_index % columns as usize;
+        let x_offset = tile_column * (tile_width - 1);
+        let y_offset = tile_row * (tile_height - 1);
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let output = (y_offset + y) * width + x_offset + x;
+                sums[output] += field.values_m[y * tile_width + x];
+                counts[output] += 1;
+            }
+        }
+    }
+    for (value, count) in sums.iter_mut().zip(counts) {
+        *value /= f32::from(count);
+    }
+    HeightField::new(width, height, sums, "stitched adjacent elevation grid")
 }
 
 fn normalize_longitude(longitude: f64) -> f64 {
@@ -1052,5 +1137,36 @@ mod tests {
         assert!(tiles[3].center_lat < tiles[0].center_lat);
         assert_eq!(tiles[5].adjacent_tile_column, 2);
         assert_eq!(tiles[5].adjacent_tile_row, 1);
+    }
+
+    #[test]
+    fn mosaic_tray_follows_the_adjacent_tile_grid() {
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 4,
+            columns: 5,
+            adjacent_columns: 3,
+            adjacent_rows: 2,
+            adjacent_interlocks: true,
+            ..GenerationSpec::default()
+        };
+        let tray = mosaic_tray_spec(&spec);
+
+        assert_eq!(tray.width_mm, 300.0);
+        assert_eq!(tray.rows, 8);
+        assert_eq!(tray.columns, 15);
+        assert_eq!(tray.tray.segment_rows, 2);
+        assert_eq!(tray.tray.segment_columns, 3);
+        assert!(tray.adjacent_interlocks);
+    }
+
+    #[test]
+    fn stitched_tray_height_field_averages_shared_samples() {
+        let left = HeightField::new(2, 2, vec![1.0, 2.0, 3.0, 4.0], "left").unwrap();
+        let right = HeightField::new(2, 2, vec![4.0, 5.0, 6.0, 7.0], "right").unwrap();
+        let stitched = stitch_height_fields(&[left, right], 1, 2).unwrap();
+
+        assert_eq!((stitched.width, stitched.height), (3, 2));
+        assert_eq!(stitched.values_m, vec![1.0, 3.0, 5.0, 3.0, 5.0, 7.0]);
     }
 }

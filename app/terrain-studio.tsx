@@ -44,6 +44,7 @@ type GenerationSpec = {
   };
   tray: {
     enabled: boolean;
+    individual_tiles: boolean;
     tray_color: string;
     contour_color: string;
     label_color: string;
@@ -178,6 +179,7 @@ const initialSpec: GenerationSpec = {
   },
   tray: {
     enabled: true,
+    individual_tiles: false,
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",
@@ -211,6 +213,7 @@ const initialSpec: GenerationSpec = {
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
+const ADJACENT_GRID_SIZES = Array.from({ length: 12 }, (_, index) => index + 1);
 const MIN_MAP_ZOOM = 2;
 const MAX_MAP_ZOOM = 15;
 const MIN_GROUND_SPAN_KM = 1;
@@ -2076,130 +2079,142 @@ export function TerrainStudio() {
               </p>
             </div>
 
-            <div className="coordinate-row">
-              <label>
-                Latitude
-                <input
-                  type="number"
-                  step="0.00001"
-                  value={spec.center_lat}
-                  onChange={(event) =>
-                    update("center_lat", Number(event.target.value))
-                  }
-                />
-              </label>
-              <label>
-                Longitude
-                <input
-                  type="number"
-                  step="0.00001"
-                  value={spec.center_lon}
-                  onChange={(event) =>
-                    update("center_lon", Number(event.target.value))
-                  }
-                />
-              </label>
-            </div>
-            <div
-              className="adjacent-tiles"
-              role="group"
-              aria-label="Adjacent tiles"
-            >
-              <div className="adjacent-heading">
-                <strong>Adjacent tiles</strong>
-                <button
-                  type="button"
-                  onClick={heightFrameLocked ? unlockHeightFrame : lockHeightFrame}
-                >
-                  {heightFrameLocked ? "Unlock height" : "Lock height"}
-                </button>
-              </div>
-              <div className="adjacent-compact-row">
-                <div className="adjacent-actions" aria-label="Move one tile">
-                  {(["north", "west", "east", "south"] as const).map(
-                    (direction) => (
-                      <button
-                        type="button"
-                        key={direction}
-                        aria-label={`Move ${direction} one tile`}
-                        title={`Move ${direction} one tile`}
-                        onClick={() => moveToAdjacentTile(direction)}
-                      >
-                        <span aria-hidden="true">
-                          {direction === "north"
-                            ? "↑"
-                            : direction === "south"
-                              ? "↓"
-                              : direction === "east"
-                                ? "→"
-                                : "←"}
-                        </span>
-                      </button>
-                    ),
-                  )}
-                </div>
-                <div className="adjacent-grid" aria-label="Auto-adjacent grid">
-                  <span>Auto grid</span>
-                  <label>
-                    Across
-                    <select
-                      value={spec.adjacent_columns}
-                      onChange={(event) =>
-                        update("adjacent_columns", Number(event.target.value))
-                      }
-                    >
-                      {[1, 2, 3, 4].map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <span aria-hidden="true">×</span>
-                  <label>
-                    Down
-                    <select
-                      value={spec.adjacent_rows}
-                      onChange={(event) =>
-                        update("adjacent_rows", Number(event.target.value))
-                      }
-                    >
-                      {[1, 2, 3, 4].map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              </div>
-              {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
-                <label className="adjacent-interlock-toggle">
+            <div className="coordinate-adjacent-row">
+              <div className="coordinate-row">
+                <label>
+                  Latitude
                   <input
-                    type="checkbox"
-                    checked={spec.adjacent_interlocks}
+                    type="number"
+                    step="0.00001"
+                    value={spec.center_lat}
                     onChange={(event) =>
-                      update("adjacent_interlocks", event.target.checked)
+                      update("center_lat", Number(event.target.value))
                     }
                   />
-                  Add matching tabs and sockets only on shared tile edges
                 </label>
-              )}
-              <p
-                className={`height-frame-status${
-                  heightFrameLocked && !heightFrameCompatible ? " warning" : ""
-                }`}
-                role={heightFrameLocked && !heightFrameCompatible ? "alert" : "status"}
+                <label>
+                  Longitude
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={spec.center_lon}
+                    onChange={(event) =>
+                      update("center_lon", Number(event.target.value))
+                    }
+                  />
+                </label>
+              </div>
+              <div
+                className="adjacent-tiles"
+                role="group"
+                aria-label="Adjacent tiles"
               >
-                {heightFrameLocked && !heightFrameCompatible
-                  ? `This tile drops below the shared ${spec.elevation_datum_m?.toFixed(
-                      1,
-                    )} m datum. Lower the datum and regenerate earlier tiles.`
-                  : heightFrameLocked
-                    ? `Shared datum ${spec.elevation_datum_m?.toFixed(
+                <div className="adjacent-heading">
+                  <strong>Adjacent tiles</strong>
+                  <button
+                    type="button"
+                    onClick={
+                      heightFrameLocked ? unlockHeightFrame : lockHeightFrame
+                    }
+                  >
+                    {heightFrameLocked ? "Unlock height" : "Lock height"}
+                  </button>
+                </div>
+                <div className="adjacent-compact-row">
+                  <div className="adjacent-actions" aria-label="Move one tile">
+                    {(["north", "west", "east", "south"] as const).map(
+                      (direction) => (
+                        <button
+                          type="button"
+                          key={direction}
+                          aria-label={`Move ${direction} one tile`}
+                          title={`Move ${direction} one tile`}
+                          onClick={() => moveToAdjacentTile(direction)}
+                        >
+                          <span aria-hidden="true">
+                            {direction === "north"
+                              ? "↑"
+                              : direction === "south"
+                                ? "↓"
+                                : direction === "east"
+                                  ? "→"
+                                  : "←"}
+                          </span>
+                        </button>
+                      ),
+                    )}
+                  </div>
+                  <div className="adjacent-grid" aria-label="Auto-adjacent grid">
+                    <span>Auto grid</span>
+                    <label>
+                      Across
+                      <select
+                        value={spec.adjacent_columns}
+                        onChange={(event) =>
+                          update("adjacent_columns", Number(event.target.value))
+                        }
+                      >
+                        {ADJACENT_GRID_SIZES.map((value) => (
+                          <option key={value}>{value}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <span aria-hidden="true">×</span>
+                    <label>
+                      Down
+                      <select
+                        value={spec.adjacent_rows}
+                        onChange={(event) =>
+                          update("adjacent_rows", Number(event.target.value))
+                        }
+                      >
+                        {ADJACENT_GRID_SIZES.map((value) => (
+                          <option key={value}>{value}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
+                  <label className="adjacent-interlock-toggle">
+                    <input
+                      type="checkbox"
+                      checked={spec.adjacent_interlocks}
+                      onChange={(event) =>
+                        update("adjacent_interlocks", event.target.checked)
+                      }
+                    />
+                    Interlock adjacent tile and tray edges
+                  </label>
+                )}
+                <p
+                  className={`height-frame-status${
+                    heightFrameLocked && !heightFrameCompatible
+                      ? " warning"
+                      : ""
+                  }`}
+                  role={
+                    heightFrameLocked && !heightFrameCompatible
+                      ? "alert"
+                      : "status"
+                  }
+                >
+                  {heightFrameLocked && !heightFrameCompatible
+                    ? `This tile drops below the shared ${spec.elevation_datum_m?.toFixed(
                         1,
-                      )} m · ${spec.elevation_m_per_mm?.toFixed(1)} m/mm`
-                    : spec.adjacent_columns > 1 || spec.adjacent_rows > 1
-                      ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the north-west corner. The grid shares one height frame.`
-                      : "Auto height fits one tile; manual neighbors may form a step."}
-              </p>
-              {adjacentMessage && <p className="adjacent-message">{adjacentMessage}</p>}
+                      )} m datum. Lower the datum and regenerate earlier tiles.`
+                    : heightFrameLocked
+                      ? `Shared datum ${spec.elevation_datum_m?.toFixed(
+                          1,
+                        )} m · ${spec.elevation_m_per_mm?.toFixed(1)} m/mm`
+                      : spec.adjacent_columns > 1 || spec.adjacent_rows > 1
+                        ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the north-west corner. The grid shares one height frame.`
+                        : "Auto height fits one tile; manual neighbors may form a step."}
+                </p>
+                {adjacentMessage && (
+                  <p className="adjacent-message">{adjacentMessage}</p>
+                )}
+              </div>
             </div>
             <label className="place-label-field">
               Tray place label
@@ -2796,51 +2811,29 @@ export function TerrainStudio() {
                   step={1}
                   onChange={(value) => updateTray("contour_count", value)}
                 />
-                <div
-                  className="tray-segments"
-                  role="group"
-                  aria-label="Interlocking tray segments"
-                >
-                  <div>
-                    <strong>Interlocking tray segments</strong>
-                    <small>Split a large tray into print-bed-sized parts.</small>
-                  </div>
-                  <label>
-                    Across
-                    <select
-                      value={spec.tray.segment_columns}
+                {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
+                  <label className="tray-chunk-toggle">
+                    <input
+                      type="checkbox"
+                      checked={spec.tray.individual_tiles}
                       onChange={(event) =>
-                        updateTray(
-                          "segment_columns",
-                          Number(event.target.value),
-                        )
+                        updateTray("individual_tiles", event.target.checked)
                       }
-                    >
-                      {[1, 2, 3, 4].map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
+                    />
+                    <span>
+                      <strong>Separate framed trays</strong>
+                      <small>
+                        Make one complete tray per terrain tile instead of one
+                        joined mosaic tray.
+                      </small>
+                    </span>
                   </label>
-                  <span aria-hidden="true">×</span>
-                  <label>
-                    Down
-                    <select
-                      value={spec.tray.segment_rows}
-                      onChange={(event) =>
-                        updateTray("segment_rows", Number(event.target.value))
-                      }
-                    >
-                      {[1, 2, 3, 4].map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+                )}
                 <p className="color-note">
                   The color 3MF prints contour lines on the flat tray floor and
                   the place name, latitude, and longitude as raised shapes on
-                  the top front lip. Split trays use matching jigsaw seams. The
-                  job also includes a plain STL.
+                  the top front lip. Mosaic trays follow the terrain grid and
+                  its shared-edge setting. The job also includes a plain STL.
                 </p>
               </>
             )}

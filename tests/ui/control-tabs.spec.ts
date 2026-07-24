@@ -125,13 +125,6 @@ test("switches between the reflowed control panels", async ({ page }) => {
     name: "Shallow terrain tray",
   });
   await expect(trayControls).toBeVisible();
-  const traySegments = trayControls.getByRole("group", {
-    name: "Interlocking tray segments",
-  });
-  await traySegments.getByLabel("Across").selectOption("2");
-  await traySegments.getByLabel("Down").selectOption("2");
-  await expect(traySegments.getByLabel("Across")).toHaveValue("2");
-  await expect(traySegments.getByLabel("Down")).toHaveValue("2");
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
@@ -294,14 +287,32 @@ test("locks a height frame when moving to an adjacent tile", async ({
   await expect(page.getByText(/manual neighbors may form a step/)).toBeVisible();
 
   const autoGrid = page.getByLabel("Auto-adjacent grid");
-  await autoGrid.getByLabel("Across").selectOption("3");
-  await autoGrid.getByLabel("Down").selectOption("2");
-  await expect(page.getByText(/6 terrain 3MF files/)).toBeVisible();
+  const latitudeBounds = await page.getByLabel("Latitude").boundingBox();
+  const adjacentBounds = await page
+    .getByRole("group", { name: "Adjacent tiles" })
+    .boundingBox();
+  expect(latitudeBounds).not.toBeNull();
+  expect(adjacentBounds).not.toBeNull();
+  expect(adjacentBounds!.x).toBeGreaterThan(latitudeBounds!.x);
+  expect(adjacentBounds!.y).toBeLessThan(
+    latitudeBounds!.y + latitudeBounds!.height,
+  );
+  await autoGrid.getByLabel("Across").selectOption("8");
+  await autoGrid.getByLabel("Down").selectOption("6");
+  await expect(page.getByText(/48 terrain 3MF files/)).toBeVisible();
   const tileInterlocks = page.getByRole("checkbox", {
-    name: /matching tabs and sockets/,
+    name: /Interlock adjacent tile and tray edges/,
   });
   await tileInterlocks.check();
   await expect(tileInterlocks).toBeChecked();
+
+  await page.getByRole("tab", { name: "Tray" }).click();
+  const separateTrays = page.getByRole("checkbox", {
+    name: /Separate framed trays/,
+  });
+  await expect(separateTrays).toBeVisible();
+  await separateTrays.check();
+  await expect(separateTrays).toBeChecked();
 });
 
 test("rotates, zooms, and resets the interactive 3D preview", async ({
