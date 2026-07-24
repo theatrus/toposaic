@@ -4406,7 +4406,7 @@ dependencies = [
 
 [[package]]
 name = "terrain-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "terrain-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "geo",
@@ -4748,7 +4748,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "toposaic-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "tauri",
