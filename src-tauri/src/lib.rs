@@ -71,8 +71,12 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 app.handle().plugin(tauri_plugin_process::init())?;
-                app.handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                if let Err(error) = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    eprintln!("Updater checks are unavailable: {error}");
+                }
             }
 
             let app_handle = app.handle().clone();
