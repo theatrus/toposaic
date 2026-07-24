@@ -65,8 +65,10 @@ cuts it into matching tray parts, and exports each part as its own STL and color
 tray joins; the full mosaic keeps a flat outside border. A separate-trays option
 instead makes one complete framed tray for each terrain tile.
 
-The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
-registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input
+The elevation provider reads Mapzen Terrarium tiles by default. A Mapterhorn
+option uses 512 px WebP Terrarium tiles with regional elevation data up to zoom
+17 and falls back to lower-zoom Mapterhorn tiles outside that coverage. The
+service caches elevation, ESA WorldCover, and OpenStreetMap input
 under the operating system's user cache directory. OpenStreetMap entries keep
 the raw response, so width, density, color, and visibility changes reuse the
 same download.
@@ -214,10 +216,10 @@ Downloaded map inputs use the standard per-user cache path:
 - Linux: `$XDG_CACHE_HOME/toposaic` or `~/.cache/toposaic`
 - Windows: `%LOCALAPPDATA%\theatrus\toposaic\cache`
 
-Set `TERRAIN_CACHE_DIR` to override that path. The cache keeps elevation PNG
-tiles, full ESA WorldCover GeoTIFF tiles, and OpenStreetMap route responses.
-Writes use a temporary file and an atomic rename, so a stopped download does
-not leave a valid-looking partial tile.
+Set `TERRAIN_CACHE_DIR` to override that path. The cache keeps Mapzen elevation
+PNGs, Mapterhorn elevation WebPs, full ESA WorldCover GeoTIFF tiles, and
+OpenStreetMap route responses. Writes use a temporary file and an atomic rename,
+so a stopped download does not leave a valid-looking partial tile.
 
 The browser uses `NEXT_PUBLIC_TERRAIN_API_URL` when set. See `.env.example`.
 
@@ -245,10 +247,19 @@ checks behind the rock–forest–snow–water–road 3MF workflow.
 ## Terrain data
 
 Mapzen Terrain Tiles combine several regional and global public elevation
-sources. Generated manifests record the source and link to the required
-attribution notices:
+sources:
 
 <https://github.com/tilezen/joerd/blob/master/docs/attribution.md>
+
+Mapterhorn provides a 30 m global layer and higher-detail regional sources. Its
+tiles and source-specific credits are listed here:
+
+<https://mapterhorn.com/data-access/>
+
+<https://mapterhorn.com/attribution/>
+
+Generated manifests record the selected source, requested and used zooms,
+fallback policy, and attribution link.
 
 Color manifests also record the ESA WorldCover tile and attribution:
 

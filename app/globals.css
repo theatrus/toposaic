@@ -663,8 +663,36 @@ fieldset.control-section .road-options {
 
 .model-controls .place-search,
 .model-controls .place-label-field,
-.model-controls .coordinate-adjacent-row {
+.model-controls .coordinate-adjacent-row,
+.model-controls .elevation-source-field {
   grid-column: 1 / -1;
+}
+
+.elevation-source-field {
+  color: var(--muted);
+  display: grid;
+  font-size: 9px;
+  font-weight: 700;
+  gap: 5px;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.elevation-source-field select {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  padding: 10px;
+  text-transform: none;
+}
+
+.elevation-source-field small {
+  font-size: 9px;
+  font-weight: 450;
+  line-height: 1.45;
+  text-transform: none;
 }
 
 .model-controls .range-field {

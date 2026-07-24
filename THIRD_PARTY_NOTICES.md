@@ -66,6 +66,10 @@ project.
   source-specific credit requirements. Use the attribution recorded in the
   generated manifest and consult
   <https://github.com/tilezen/joerd/blob/master/docs/attribution.md>.
+- Mapterhorn terrain tiles combine open elevation sources under several
+  source-specific licenses. Use the attribution recorded in the generated
+  manifest and consult <https://mapterhorn.com/attribution/>. Data access and
+  tile format details are at <https://mapterhorn.com/data-access/>.
 
 When a physical print or static image is shared publicly, place the required
 credits near the work or in its packaging or accompanying documentation. Do

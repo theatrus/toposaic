@@ -14,7 +14,7 @@ chrono = { version = "0.4", features = ["serde"] }
 directories = "6"
 geo = "0.33"
 geotiff-reader = { version = "0.7", default-features = false, features = ["cog"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rayon = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }

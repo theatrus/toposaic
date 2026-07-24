@@ -18,6 +18,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 type GenerationSpec = {
   center_lat: number;
   center_lon: number;
+  elevation_source: "mapzen" | "mapterhorn";
   ground_span_km: number;
   width_mm: number;
   rows: number;
@@ -153,6 +154,7 @@ const API_URL =
 const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
   center_lon: -121.7603,
+  elevation_source: "mapzen",
   ground_span_km: 18,
   width_mm: 180,
   rows: 10,
@@ -1587,6 +1589,7 @@ export function TerrainStudio() {
         ...initialSpec,
         center_lat: spec.center_lat,
         center_lon: spec.center_lon,
+        elevation_source: spec.elevation_source,
         ground_span_km: spec.ground_span_km,
         width_mm: spec.width_mm,
         base_mm: spec.base_mm,
@@ -1629,6 +1632,7 @@ export function TerrainStudio() {
     spec.center_lon,
     spec.elevation_datum_m,
     spec.elevation_m_per_mm,
+    spec.elevation_source,
     spec.ground_span_km,
     spec.relief_mm,
     spec.width_mm,
@@ -2216,6 +2220,27 @@ export function TerrainStudio() {
                 )}
               </div>
             </div>
+            <label className="elevation-source-field">
+              Elevation tiles
+              <select
+                value={spec.elevation_source}
+                onChange={(event) =>
+                  update(
+                    "elevation_source",
+                    event.target.value as GenerationSpec["elevation_source"],
+                  )
+                }
+              >
+                <option value="mapzen">Mapzen · global coverage</option>
+                <option value="mapterhorn">
+                  Mapterhorn · higher detail where available
+                </option>
+              </select>
+              <small>
+                Mapterhorn uses 512 px Terrarium tiles and falls back to its
+                global layer outside regional high-detail coverage.
+              </small>
+            </label>
             <label className="place-label-field">
               Tray place label
               <input
@@ -2851,11 +2876,17 @@ export function TerrainStudio() {
             <span>Print source</span>
             <strong>
               <a
-                href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
+                href={
+                  spec.elevation_source === "mapterhorn"
+                    ? "https://mapterhorn.com/attribution"
+                    : "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
+                }
                 target="_blank"
                 rel="noreferrer"
               >
-                Global Mapzen elevation tiles
+                {spec.elevation_source === "mapterhorn"
+                  ? "Mapterhorn elevation tiles"
+                  : "Global Mapzen elevation tiles"}
               </a>
             </strong>
             {spec.color_output.enabled && (
