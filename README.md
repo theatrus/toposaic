@@ -47,6 +47,23 @@ sampling grid while limiting the single mesh to a safe detail level.
 
 Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
+The model controls also set the minimum solid thickness under the lowest
+terrain point. North, south, east, and west buttons move the selection by one
+full tile. The first move locks the elevation datum and vertical scale, so the
+same real elevation prints at the same Z height on each tile. If a later tile
+drops below that datum, TopoSaic warns that the shared datum must move down and
+that earlier tiles must be regenerated.
+Auto grid mode starts at the current north-west tile and exports up to a 12×12
+set. Each terrain tile gets its own 3MF print pass, while the full set uses one
+elevation datum and vertical scale. Optional external tabs and sockets join
+shared tile edges. Tile bounds stay on a straight grid, and the outside border
+stays flat.
+
+An auto-grid tray follows the same tile layout. TopoSaic builds one outer frame,
+cuts it into matching tray parts, and exports each part as its own STL and color
+3MF. The shared-edge option adds matching tabs and sockets to both terrain and
+tray joins; the full mosaic keeps a flat outside border. A separate-trays option
+instead makes one complete framed tray for each terrain tile.
 
 The elevation provider reads Mapzen Terrarium tiles from the AWS Open Data
 registry. The service caches elevation, ESA WorldCover, and OpenStreetMap input

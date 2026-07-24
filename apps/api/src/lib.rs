@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicI64, Ordering},
@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     body::Body,
@@ -24,7 +24,8 @@ use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use terrain_core::{
-    Artifact, GenerationSpec, artifact_path, generate_project_with_fields_cancellable,
+    Artifact, GenerationSpec, HeightField, artifact_path, generate_project_with_fields_cancellable,
+    generate_tray_artifacts,
 };
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, time::sleep};
 use tower_http::{
@@ -503,6 +504,9 @@ fn run_job(
     spec: &GenerationSpec,
     cancellation: &AtomicBool,
 ) -> Result<()> {
+    if spec.adjacent_columns > 1 || spec.adjacent_rows > 1 {
+        return run_adjacent_grid_job(state, id, spec, cancellation);
+    }
     let job_started = Instant::now();
     ensure_job_active(cancellation)?;
     update_job(state, id, "running", 8, &[], None)?;
@@ -578,6 +582,305 @@ fn run_job(
         "generation complete"
     );
     Ok(())
+}
+
+fn run_adjacent_grid_job(
+    state: &AppState,
+    id: &str,
+    spec: &GenerationSpec,
+    cancellation: &AtomicBool,
+) -> Result<()> {
+    let job_started = Instant::now();
+    let mut tiles = adjacent_tile_specs(spec);
+    let tile_count = tiles.len();
+    ensure_job_active(cancellation)?;
+    update_job(state, id, "running", 8, &[], None)?;
+
+    let mut height_fields = Vec::with_capacity(tile_count);
+    let mut last_elevation_progress = 8;
+    for (index, tile_spec) in tiles.iter().enumerate() {
+        let height_field = elevation::fetch_height_field_with_progress(
+            tile_spec,
+            &state.map_cache_dir.join("elevation"),
+            |fraction| {
+                ensure_job_active(cancellation)?;
+                let combined = (index as f32 + fraction) / tile_count as f32;
+                let progress = elevation_job_progress(combined);
+                if progress > last_elevation_progress {
+                    update_job(state, id, "running", progress, &[], None)?;
+                    last_elevation_progress = progress;
+                }
+                Ok(())
+            },
+        )?;
+        height_fields.push(height_field);
+    }
+
+    if spec.elevation_datum_m.is_none() {
+        let (minimum, maximum) = height_fields.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), field| {
+                let (field_minimum, field_maximum) = field.elevation_bounds();
+                (minimum.min(field_minimum), maximum.max(field_maximum))
+            },
+        );
+        let metres_per_mm = (maximum - minimum).max(1.0) / spec.relief_mm;
+        for tile in &mut tiles {
+            tile.elevation_datum_m = Some(minimum);
+            tile.elevation_m_per_mm = Some(metres_per_mm);
+        }
+    }
+
+    let output_dir = state.jobs_dir.join(id);
+    fs::create_dir_all(&output_dir)
+        .with_context(|| format!("create output directory {}", output_dir.display()))?;
+    let mut artifacts = Vec::new();
+    let mut tile_manifest = Vec::with_capacity(tile_count);
+    let mut mosaic_tray_names = Vec::new();
+    let mesh_progress = AtomicI64::new(40);
+
+    for (index, (tile_spec, height_field)) in tiles.iter().zip(height_fields.iter()).enumerate() {
+        ensure_job_active(cancellation)?;
+        let row = index as u32 / spec.adjacent_columns;
+        let column = index as u32 % spec.adjacent_columns;
+        let tile_dir = output_dir.join(format!(".tile-{}-{}", row + 1, column + 1));
+        let surface_field = if tile_spec.color_output.enabled || tile_spec.buildings.enabled {
+            Some(surface::fetch_surface_field(
+                tile_spec,
+                height_field,
+                &state.map_cache_dir,
+            )?)
+        } else {
+            None
+        };
+        let mut terrain_spec = tile_spec.clone();
+        if !spec.tray.individual_tiles {
+            terrain_spec.tray.enabled = false;
+        } else {
+            terrain_spec.tray.segment_columns = 1;
+            terrain_spec.tray.segment_rows = 1;
+        }
+        let manifest = generate_project_with_fields_cancellable(
+            &terrain_spec,
+            height_field,
+            surface_field.as_ref(),
+            &tile_dir,
+            &|| cancellation.load(Ordering::Acquire),
+            &|fraction| {
+                ensure_job_active(cancellation)?;
+                let combined = (index as f32 + fraction) / tile_count as f32;
+                let progress = (40.0 + combined * 49.0).round() as i64;
+                let previous = mesh_progress.fetch_max(progress, Ordering::AcqRel);
+                if progress > previous {
+                    update_job(state, id, "running", progress, &[], None)?;
+                }
+                Ok(())
+            },
+        )?;
+
+        let terrain_source = if tile_spec.solid_model {
+            "terrain-solid.3mf"
+        } else {
+            "toposaic.3mf"
+        };
+        let terrain_name = format!("terrain-r{:02}-c{:02}.3mf", row + 1, column + 1);
+        copy_grid_artifact(
+            &tile_dir.join(terrain_source),
+            &output_dir.join(&terrain_name),
+            &terrain_name,
+            "model/3mf",
+            &mut artifacts,
+        )?;
+
+        let mut tray_names = Vec::new();
+        for tray_artifact in manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.name.starts_with("terrain-tray"))
+        {
+            let segment = tray_artifact
+                .name
+                .strip_prefix("terrain-tray")
+                .unwrap_or_default();
+            let name = format!("tray-tile-r{:02}-c{:02}{segment}", row + 1, column + 1);
+            copy_grid_artifact(
+                &tile_dir.join(&tray_artifact.name),
+                &output_dir.join(&name),
+                &name,
+                &tray_artifact.media_type,
+                &mut artifacts,
+            )?;
+            tray_names.push(name);
+        }
+        if index == 0 {
+            copy_grid_artifact(
+                &tile_dir.join("preview.json"),
+                &output_dir.join("preview.json"),
+                "preview.json",
+                "application/json",
+                &mut artifacts,
+            )?;
+        }
+        tile_manifest.push(serde_json::json!({
+            "row": row + 1,
+            "column": column + 1,
+            "center_lat": tile_spec.center_lat,
+            "center_lon": tile_spec.center_lon,
+            "terrain": terrain_name,
+            "trays": tray_names,
+            "source": manifest.terrain_source,
+        }));
+        fs::remove_dir_all(&tile_dir)
+            .with_context(|| format!("remove temporary tile directory {}", tile_dir.display()))?;
+    }
+
+    if spec.tray.enabled && !spec.tray.individual_tiles {
+        ensure_job_active(cancellation)?;
+        update_job(state, id, "running", 90, &[], None)?;
+        let mosaic_height =
+            stitch_height_fields(&height_fields, spec.adjacent_rows, spec.adjacent_columns)?;
+        let mosaic_spec = mosaic_tray_spec(spec);
+        let tray_dir = output_dir.join(".mosaic-tray");
+        for tray_artifact in generate_tray_artifacts(&mosaic_spec, Some(&mosaic_height), &tray_dir)?
+        {
+            let name = tray_artifact
+                .name
+                .replacen("terrain-tray", "mosaic-tray", 1);
+            copy_grid_artifact(
+                &tray_dir.join(&tray_artifact.name),
+                &output_dir.join(&name),
+                &name,
+                &tray_artifact.media_type,
+                &mut artifacts,
+            )?;
+            mosaic_tray_names.push(name);
+        }
+        fs::remove_dir_all(&tray_dir)
+            .with_context(|| format!("remove temporary tray directory {}", tray_dir.display()))?;
+    }
+
+    let manifest_name = "manifest.json";
+    let manifest_path = output_dir.join(manifest_name);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "generator": format!("toposaic/{}", env!("CARGO_PKG_VERSION")),
+            "layout": "north-west anchor, rows run south and columns run east",
+            "spec": spec,
+            "shared_height_frame": {
+                "elevation_datum_m": tiles[0].elevation_datum_m,
+                "elevation_m_per_mm": tiles[0].elevation_m_per_mm,
+            },
+            "tiles": tile_manifest,
+            "mosaic_trays": mosaic_tray_names,
+        }))?,
+    )?;
+    artifacts.push(local_artifact(
+        &manifest_path,
+        manifest_name,
+        "application/json",
+    )?);
+    update_job(state, id, "complete", 100, &artifacts, None)?;
+    info!(
+        job_id = %id,
+        tiles = tile_count,
+        elapsed_ms = job_started.elapsed().as_millis() as u64,
+        "adjacent grid generation complete"
+    );
+    Ok(())
+}
+
+fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
+    let latitude_step = spec.ground_span_km / 110.574;
+    let longitude_scale = (111.32 * spec.center_lat.to_radians().cos().abs()).max(20.0);
+    let longitude_step = spec.ground_span_km / longitude_scale;
+    (0..spec.adjacent_rows)
+        .flat_map(|row| {
+            (0..spec.adjacent_columns).map(move |column| {
+                let mut tile = spec.clone();
+                tile.center_lat = (spec.center_lat - row as f64 * latitude_step).max(-85.0);
+                tile.center_lon =
+                    normalize_longitude(spec.center_lon + column as f64 * longitude_step);
+                tile.adjacent_tile_column = column;
+                tile.adjacent_tile_row = row;
+                tile
+            })
+        })
+        .collect()
+}
+
+fn mosaic_tray_spec(spec: &GenerationSpec) -> GenerationSpec {
+    let mut mosaic = spec.clone();
+    mosaic.width_mm *= spec.adjacent_columns as f32;
+    mosaic.rows *= spec.adjacent_rows;
+    mosaic.columns *= spec.adjacent_columns;
+    mosaic.ground_span_km *= spec.adjacent_columns as f64;
+    mosaic.adjacent_tile_column = 0;
+    mosaic.adjacent_tile_row = 0;
+    mosaic.tray.individual_tiles = false;
+    mosaic.tray.segment_columns = spec.adjacent_columns;
+    mosaic.tray.segment_rows = spec.adjacent_rows;
+    mosaic
+}
+
+fn stitch_height_fields(fields: &[HeightField], rows: u32, columns: u32) -> Result<HeightField> {
+    if rows == 0 || columns == 0 || fields.len() != (rows * columns) as usize {
+        bail!("height fields do not match the adjacent tray grid");
+    }
+    let tile_width = fields[0].width;
+    let tile_height = fields[0].height;
+    if fields
+        .iter()
+        .any(|field| field.width != tile_width || field.height != tile_height)
+    {
+        bail!("adjacent height fields must use matching sample dimensions");
+    }
+    let width = columns as usize * (tile_width - 1) + 1;
+    let height = rows as usize * (tile_height - 1) + 1;
+    let mut sums = vec![0.0_f32; width * height];
+    let mut counts = vec![0_u8; width * height];
+    for (tile_index, field) in fields.iter().enumerate() {
+        let tile_row = tile_index / columns as usize;
+        let tile_column = tile_index % columns as usize;
+        let x_offset = tile_column * (tile_width - 1);
+        let y_offset = tile_row * (tile_height - 1);
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let output = (y_offset + y) * width + x_offset + x;
+                sums[output] += field.values_m[y * tile_width + x];
+                counts[output] += 1;
+            }
+        }
+    }
+    for (value, count) in sums.iter_mut().zip(counts) {
+        *value /= f32::from(count);
+    }
+    HeightField::new(width, height, sums, "stitched adjacent elevation grid")
+}
+
+fn normalize_longitude(longitude: f64) -> f64 {
+    (longitude + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn copy_grid_artifact(
+    source: &Path,
+    destination: &Path,
+    name: &str,
+    media_type: &str,
+    artifacts: &mut Vec<Artifact>,
+) -> Result<()> {
+    fs::copy(source, destination)
+        .with_context(|| format!("copy {} to {}", source.display(), destination.display()))?;
+    artifacts.push(local_artifact(destination, name, media_type)?);
+    Ok(())
+}
+
+fn local_artifact(path: &Path, name: &str, media_type: &str) -> Result<Artifact> {
+    Ok(Artifact {
+        name: name.to_owned(),
+        media_type: media_type.to_owned(),
+        bytes: fs::metadata(path)?.len(),
+    })
 }
 
 fn ensure_job_active(cancellation: &AtomicBool) -> Result<()> {
@@ -813,5 +1116,57 @@ mod tests {
         assert_eq!(mesh_job_progress(0.0), 65);
         assert_eq!(mesh_job_progress(0.5), 82);
         assert_eq!(mesh_job_progress(1.0), 99);
+    }
+
+    #[test]
+    fn adjacent_grid_uses_the_current_tile_as_its_north_west_anchor() {
+        let spec = GenerationSpec {
+            center_lat: 46.0,
+            center_lon: -121.0,
+            ground_span_km: 10.0,
+            adjacent_columns: 3,
+            adjacent_rows: 2,
+            ..GenerationSpec::default()
+        };
+        let tiles = adjacent_tile_specs(&spec);
+
+        assert_eq!(tiles.len(), 6);
+        assert_eq!(tiles[0].center_lat, spec.center_lat);
+        assert_eq!(tiles[0].center_lon, spec.center_lon);
+        assert!(tiles[1].center_lon > tiles[0].center_lon);
+        assert!(tiles[3].center_lat < tiles[0].center_lat);
+        assert_eq!(tiles[5].adjacent_tile_column, 2);
+        assert_eq!(tiles[5].adjacent_tile_row, 1);
+    }
+
+    #[test]
+    fn mosaic_tray_follows_the_adjacent_tile_grid() {
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 4,
+            columns: 5,
+            adjacent_columns: 3,
+            adjacent_rows: 2,
+            adjacent_interlocks: true,
+            ..GenerationSpec::default()
+        };
+        let tray = mosaic_tray_spec(&spec);
+
+        assert_eq!(tray.width_mm, 300.0);
+        assert_eq!(tray.rows, 8);
+        assert_eq!(tray.columns, 15);
+        assert_eq!(tray.tray.segment_rows, 2);
+        assert_eq!(tray.tray.segment_columns, 3);
+        assert!(tray.adjacent_interlocks);
+    }
+
+    #[test]
+    fn stitched_tray_height_field_averages_shared_samples() {
+        let left = HeightField::new(2, 2, vec![1.0, 2.0, 3.0, 4.0], "left").unwrap();
+        let right = HeightField::new(2, 2, vec![4.0, 5.0, 6.0, 7.0], "right").unwrap();
+        let stitched = stitch_height_fields(&[left, right], 1, 2).unwrap();
+
+        assert_eq!((stitched.width, stitched.height), (3, 2));
+        assert_eq!(stitched.values_m, vec![1.0, 3.0, 5.0, 3.0, 5.0, 7.0]);
     }
 }
