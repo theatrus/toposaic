@@ -511,11 +511,14 @@ test("locks a height frame and maps a super-tile grid", async ({
   await expect(superTileControls.getByLabel("Across")).toHaveValue("9");
   await expect(superTileControls.getByLabel("Down")).toHaveValue("7");
   await expect(page.locator(".map-selection")).toHaveCount(63);
-  await expect(
-    page.getByRole("group", {
-      name: "Super-tile map: 9 across by 7 down, anchored at center tile",
-    }),
-  ).toBeVisible();
+  const centeredMapGrid = page.getByRole("group", {
+    name: "Super-tile map: 9 across by 7 down, anchored at center tile",
+  });
+  await expect(centeredMapGrid).toHaveAttribute(
+    "data-super-tile-columns",
+    "9",
+  );
+  await expect(centeredMapGrid).toHaveAttribute("data-super-tile-rows", "7");
   const centeredMapTile = page.locator(
     '.map-selection.current[data-super-tile-row="4"][data-super-tile-column="5"]',
   );
