@@ -26,6 +26,10 @@ test("switches between the reflowed control panels", async ({ page }) => {
   ).toBeVisible();
   await expect(generate).toHaveAttribute("form", "terrain-controls");
   await expect(page.getByLabel("Find a place")).toBeVisible();
+  const elevationSource = page.getByLabel("Elevation tiles");
+  await expect(elevationSource).toHaveValue("mapzen");
+  await elevationSource.selectOption("mapterhorn");
+  await expect(elevationSource).toHaveValue("mapterhorn");
   const modelType = page.getByRole("group", { name: "Model type" });
   const puzzleModel = modelType.getByRole("button", {
     name: /Jigsaw puzzle/,
@@ -128,9 +132,37 @@ test("switches between the reflowed control panels", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Mapterhorn elevation tiles" }),
+  ).toHaveAttribute("href", "https://mapterhorn.com/attribution");
 
   await page.getByRole("tab", { name: "Model" }).click();
   await expect(page.getByLabel("Find a place")).toBeVisible();
+});
+
+test("uses the selected elevation source for live previews", async ({
+  page,
+}) => {
+  const previewSources: string[] = [];
+  await page.route(
+    "http://127.0.0.1:8787/api/preview",
+    async (route, request) => {
+      previewSources.push(request.postDataJSON().elevation_source);
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+    },
+  );
+  await page.goto("/");
+
+  await expect.poll(() => previewSources).toContain("mapzen");
+  await page.getByLabel("Elevation tiles").selectOption("mapterhorn");
+  await expect.poll(() => previewSources).toContain("mapterhorn");
+
+  await page.getByRole("tab", { name: "Output" }).click();
+  await expect(
+    page.getByRole("link", { name: "Mapterhorn elevation tiles" }),
+  ).toHaveAttribute("href", "https://mapterhorn.com/attribution");
 });
 
 test("resizes the preview area to make room for controls", async ({ page }) => {

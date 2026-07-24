@@ -33,6 +33,7 @@ const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 pub struct GenerationSpec {
     pub center_lat: f64,
     pub center_lon: f64,
+    pub elevation_source: ElevationSource,
     pub ground_span_km: f64,
     pub width_mm: f32,
     pub rows: u32,
@@ -63,6 +64,7 @@ impl Default for GenerationSpec {
         Self {
             center_lat: 46.8523,
             center_lon: -121.7603,
+            elevation_source: ElevationSource::Mapzen,
             ground_span_km: 18.0,
             width_mm: 180.0,
             rows: 3,
@@ -173,6 +175,14 @@ impl GenerationSpec {
     fn uses_color_materials(&self) -> bool {
         self.color_output.enabled || self.buildings.enabled
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElevationSource {
+    #[default]
+    Mapzen,
+    Mapterhorn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5648,6 +5658,7 @@ mod tests {
             }
         }))
         .unwrap();
+        assert_eq!(spec.elevation_source, ElevationSource::Mapzen);
         assert!(!spec.solid_model);
         assert!(!spec.straight_piece_sides);
         assert!(spec.puzzle_tabs);
