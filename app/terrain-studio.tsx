@@ -48,6 +48,7 @@ type GenerationSpec = {
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
+  fine_dem_detail: boolean;
   solid_model: boolean;
   straight_piece_sides: boolean;
   puzzle_tabs: boolean;
@@ -185,6 +186,7 @@ const initialSpec: GenerationSpec = {
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
+  fine_dem_detail: false,
   solid_model: false,
   straight_piece_sides: false,
   puzzle_tabs: true,
@@ -228,11 +230,13 @@ const initialSpec: GenerationSpec = {
 };
 
 const AUTO_DETAIL_REFERENCE_SPAN_KM = 18;
-const MAX_TERRAIN_SAMPLES_PER_PIECE = 160;
-const MAX_OVERLAY_SAMPLES_PER_PIECE = 192;
+const MAX_ASSEMBLED_SAMPLES = 1024;
+const MAX_FINE_DEM_ASSEMBLED_SAMPLES = 2048;
+const FINE_DEM_TARGET_RESOLUTION_M = 0.25;
+const FINE_DEM_MAX_SPAN_KM = 2;
 const DETAIL_SAMPLE_STEP = 8;
 
-function scaledDetailSamples(
+function scaledTotalSamples(
   base: number,
   groundSpanKm: number,
   maximum: number,
@@ -246,20 +250,56 @@ function scaledDetailSamples(
   return Math.min(maximum, Math.max(base, scaled));
 }
 
-function terrainSamplesPerPiece(spec: GenerationSpec) {
-  return scaledDetailSamples(
-    spec.samples_per_piece,
-    spec.ground_span_km,
-    MAX_TERRAIN_SAMPLES_PER_PIECE,
+function meshPieceCount(spec: GenerationSpec) {
+  return spec.solid_model ? 1 : Math.max(spec.rows, spec.columns);
+}
+
+function samplesPerPieceForTotal(total: number, pieceCount: number) {
+  return (
+    Math.ceil(Math.ceil(total / Math.max(1, pieceCount)) / DETAIL_SAMPLE_STEP) *
+    DETAIL_SAMPLE_STEP
   );
 }
 
-function overlaySamplesPerPiece(spec: GenerationSpec) {
-  return scaledDetailSamples(
-    spec.overlay_samples_per_piece,
+function terrainSamplesPerPiece(spec: GenerationSpec) {
+  const pieceCount = meshPieceCount(spec);
+  const baseTotal = spec.solid_model
+    ? spec.samples_per_piece * 4
+    : spec.samples_per_piece * pieceCount;
+  let total = scaledTotalSamples(
+    baseTotal,
     spec.ground_span_km,
-    MAX_OVERLAY_SAMPLES_PER_PIECE,
+    MAX_ASSEMBLED_SAMPLES,
   );
+  if (
+    spec.fine_dem_detail &&
+    spec.elevation_source === "mapterhorn" &&
+    spec.ground_span_km <= FINE_DEM_MAX_SPAN_KM
+  ) {
+    total = Math.max(
+      total,
+      Math.min(
+        MAX_FINE_DEM_ASSEMBLED_SAMPLES,
+        Math.ceil(
+          (spec.ground_span_km * 1000) / FINE_DEM_TARGET_RESOLUTION_M,
+        ),
+      ),
+    );
+  }
+  return samplesPerPieceForTotal(total, pieceCount);
+}
+
+function overlaySamplesPerPiece(spec: GenerationSpec) {
+  const pieceCount = meshPieceCount(spec);
+  const baseTotal = spec.solid_model
+    ? spec.overlay_samples_per_piece
+    : spec.overlay_samples_per_piece * pieceCount;
+  const total = scaledTotalSamples(
+    baseTotal,
+    spec.ground_span_km,
+    MAX_ASSEMBLED_SAMPLES,
+  );
+  return samplesPerPieceForTotal(total, pieceCount);
 }
 
 function effectiveMeshSamples(spec: GenerationSpec) {
@@ -268,18 +308,19 @@ function effectiveMeshSamples(spec: GenerationSpec) {
     spec.color_output.enabled || spec.buildings.enabled
       ? overlaySamplesPerPiece(spec)
       : 0;
-  if (spec.solid_model) {
-    return Math.max(96, Math.min(terrain * 2, 256), overlay);
-  }
   return Math.max(terrain, overlay);
+}
+
+function assembledMeshSamples(spec: GenerationSpec) {
+  return effectiveMeshSamples(spec) * meshPieceCount(spec);
 }
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
 const ADJACENT_GRID_SIZES = Array.from({ length: 12 }, (_, index) => index + 1);
 const MIN_MAP_ZOOM = 2;
-const MAX_MAP_ZOOM = 15;
-const MIN_GROUND_SPAN_KM = 1;
+const MAX_MAP_ZOOM = 17;
+const MIN_GROUND_SPAN_KM = 0.25;
 const MAX_GROUND_SPAN_KM = 80;
 
 function oddSuperTileSize(value: number) {
@@ -526,7 +567,7 @@ function TerrainMap({
   );
   const groundSpanLabel = Number.isInteger(spec.ground_span_km)
     ? spec.ground_span_km.toFixed(0)
-    : spec.ground_span_km.toFixed(1);
+    : spec.ground_span_km.toFixed(2).replace(/0$/, "");
   const anchorRow =
     spec.super_tile_anchor === "center"
       ? Math.floor(superTileRows / 2)
@@ -594,7 +635,7 @@ function TerrainMap({
         return;
       }
       setZoom(nextZoom);
-      onGroundSpanChange(Math.round(nextGroundSpan));
+      onGroundSpanChange(Math.round(nextGroundSpan * 4) / 4);
     },
     [onGroundSpanChange, spec.ground_span_km, zoom],
   );
@@ -1475,7 +1516,7 @@ function ReliefPreview({
           ·{" "}
           {spec.solid_model
             ? `${effectiveMeshSamples(spec)} mesh samples`
-            : `${effectiveMeshSamples(spec)} effective samples/piece`}
+            : `${assembledMeshSamples(spec)} mesh samples across model`}
         </span>
         <strong>
           {spec.solid_model
@@ -2660,6 +2701,24 @@ export function TerrainStudio() {
                 global layer outside regional high-detail coverage.
               </small>
             </label>
+            {spec.elevation_source === "mapterhorn" && (
+              <label className="adjacent-interlock-toggle fine-dem-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.fine_dem_detail}
+                  disabled={spec.ground_span_km > FINE_DEM_MAX_SPAN_KM}
+                  onChange={(event) =>
+                    update("fine_dem_detail", event.target.checked)
+                  }
+                />
+                Use finest available DEM detail
+                <small>
+                  {spec.ground_span_km > FINE_DEM_MAX_SPAN_KM
+                    ? "Zoom to 2 km or less to enable the fine-detail budget."
+                    : "Sample available Mapterhorn tiles down to a 0.25 m target, with a 2,048-sample model cap. This can make large files."}
+                </small>
+              </label>
+            )}
             <label className="place-label-field">
               Tray place label
               <input
@@ -2715,9 +2774,9 @@ export function TerrainStudio() {
               label="Ground span"
               value={spec.ground_span_km}
               unit=" km"
-              min={1}
+              min={0.25}
               max={80}
-              step={1}
+              step={0.25}
               onChange={(value) => update("ground_span_km", value)}
             />
             <RangeField
@@ -2751,7 +2810,7 @@ export function TerrainStudio() {
               label="Mesh detail"
               value={spec.samples_per_piece}
               unit={spec.solid_model ? "" : " samples/piece"}
-              displayValue={`${spec.samples_per_piece} base · ${effectiveMeshSamples(spec)} effective${spec.solid_model ? "" : "/piece"}`}
+              displayValue={`${spec.samples_per_piece} base · ${assembledMeshSamples(spec)} across model`}
               min={32}
               max={128}
               step={8}
@@ -2762,7 +2821,7 @@ export function TerrainStudio() {
                 label="Overlay detail"
                 value={spec.overlay_samples_per_piece}
                 unit=" samples/piece"
-                displayValue={`${spec.overlay_samples_per_piece} base · ${overlaySamplesPerPiece(spec)} effective/piece`}
+                displayValue={`${spec.overlay_samples_per_piece} base · ${overlaySamplesPerPiece(spec) * meshPieceCount(spec)} across model`}
                 min={64}
                 max={192}
                 step={8}

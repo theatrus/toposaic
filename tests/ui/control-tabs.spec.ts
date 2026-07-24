@@ -52,6 +52,16 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(elevationSource).toHaveValue("mapzen");
   await elevationSource.selectOption("mapterhorn");
   await expect(elevationSource).toHaveValue("mapterhorn");
+  const fineDemDetail = page.getByRole("checkbox", {
+    name: /Use finest available DEM detail/,
+  });
+  await expect(fineDemDetail).toBeVisible();
+  await expect(fineDemDetail).toBeDisabled();
+  await page.getByRole("slider", { name: "Ground span" }).fill("2");
+  await expect(fineDemDetail).toBeEnabled();
+  await expect(fineDemDetail).not.toBeChecked();
+  await fineDemDetail.check();
+  await expect(fineDemDetail).toBeChecked();
   const modelType = page.getByRole("group", { name: "Model type" });
   const puzzleModel = modelType.getByRole("button", {
     name: /Jigsaw puzzle/,
@@ -393,6 +403,8 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   await page.goto("/");
 
   const groundSpan = page.getByRole("slider", { name: "Ground span" });
+  await expect(groundSpan).toHaveAttribute("min", "0.25");
+  await expect(groundSpan).toHaveAttribute("step", "0.25");
   const selection = page.locator(".map-selection");
   await expect(selection).toHaveAttribute(
     "aria-label",
@@ -402,7 +414,7 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   expect(initialBounds).not.toBeNull();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
   await expect(
-    page.getByText("64 base · 112 effective/piece", { exact: true }),
+    page.getByText("64 base · 1040 across model", { exact: true }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Zoom in" }).click();
@@ -413,10 +425,10 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   );
   await expect(selection).toHaveAttribute("data-map-zoom", "10");
   await expect(
-    page.getByText("64 base · 192 effective/piece", { exact: true }),
+    page.getByText("64 base · 1040 across model", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("112 base · 192 effective/piece", { exact: true }),
+    page.getByText("112 base · 1040 across model", { exact: true }),
   ).toBeVisible();
 
   const zoomedBounds = await selection.boundingBox();

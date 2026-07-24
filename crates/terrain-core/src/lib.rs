@@ -30,6 +30,10 @@ const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
 const MAX_TERRAIN_SAMPLES_PER_PIECE: u32 = 160;
 const MAX_OVERLAY_SAMPLES_PER_PIECE: u32 = 192;
+const MAX_ASSEMBLED_SAMPLES: u32 = 1_024;
+const MAX_FINE_DEM_ASSEMBLED_SAMPLES: u32 = 2_048;
+const FINE_DEM_TARGET_RESOLUTION_M: f64 = 0.25;
+const FINE_DEM_MAX_SPAN_KM: f64 = 2.0;
 const DETAIL_SAMPLE_STEP: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +59,7 @@ pub struct GenerationSpec {
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
+    pub fine_dem_detail: bool,
     pub solid_model: bool,
     pub straight_piece_sides: bool,
     pub puzzle_tabs: bool,
@@ -87,6 +92,7 @@ impl Default for GenerationSpec {
             clearance_mm: 0.14,
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
+            fine_dem_detail: false,
             solid_model: false,
             straight_piece_sides: false,
             puzzle_tabs: true,
@@ -106,8 +112,8 @@ impl GenerationSpec {
         if !(-180.0..=180.0).contains(&self.center_lon) {
             bail!("center longitude must be between -180 and 180 degrees");
         }
-        if !(0.5..=250.0).contains(&self.ground_span_km) {
-            bail!("ground span must be between 0.5 and 250 km");
+        if !(0.25..=250.0).contains(&self.ground_span_km) {
+            bail!("ground span must be between 0.25 and 250 km");
         }
         if !(60.0..=500.0).contains(&self.width_mm) {
             bail!("model width must be between 60 and 500 mm");
@@ -187,23 +193,68 @@ impl GenerationSpec {
     }
 
     pub fn terrain_samples_per_piece(&self) -> u32 {
-        scale_detail_samples(
-            self.samples_per_piece,
-            self.ground_span_km,
-            MAX_TERRAIN_SAMPLES_PER_PIECE,
-        )
+        let piece_count = self.mesh_piece_count();
+        let base_total = if self.solid_model {
+            self.samples_per_piece.saturating_mul(4)
+        } else {
+            self.samples_per_piece.saturating_mul(piece_count)
+        };
+        let mut total =
+            scale_detail_samples(base_total, self.ground_span_km, MAX_ASSEMBLED_SAMPLES);
+        if self.fine_dem_detail_active() {
+            let fine_total =
+                (self.ground_span_km * 1_000.0 / FINE_DEM_TARGET_RESOLUTION_M).ceil() as u32;
+            total = total.max(fine_total.min(MAX_FINE_DEM_ASSEMBLED_SAMPLES));
+        }
+        samples_per_piece_for_total(total, piece_count)
     }
 
     pub fn overlay_samples_per_piece(&self) -> u32 {
-        scale_detail_samples(
-            self.overlay_samples_per_piece,
-            self.ground_span_km,
-            MAX_OVERLAY_SAMPLES_PER_PIECE,
+        let piece_count = self.mesh_piece_count();
+        let base_total = if self.solid_model {
+            self.overlay_samples_per_piece
+        } else {
+            self.overlay_samples_per_piece.saturating_mul(piece_count)
+        };
+        let total = scale_detail_samples(base_total, self.ground_span_km, MAX_ASSEMBLED_SAMPLES);
+        samples_per_piece_for_total(total, piece_count)
+    }
+
+    pub fn assembled_terrain_samples(&self) -> u32 {
+        self.terrain_samples_per_piece()
+            .saturating_mul(self.mesh_piece_count())
+    }
+
+    pub fn assembled_overlay_samples(&self) -> u32 {
+        self.overlay_samples_per_piece()
+            .saturating_mul(self.mesh_piece_count())
+    }
+
+    pub fn sample_grid_dimensions(&self, samples_per_piece: u32) -> (usize, usize) {
+        let columns = if self.solid_model { 1 } else { self.columns };
+        let rows = if self.solid_model { 1 } else { self.rows };
+        (
+            (columns * samples_per_piece + 1) as usize,
+            (rows * samples_per_piece + 1) as usize,
         )
+    }
+
+    pub fn fine_dem_detail_active(&self) -> bool {
+        self.fine_dem_detail
+            && self.elevation_source == ElevationSource::Mapterhorn
+            && self.ground_span_km <= FINE_DEM_MAX_SPAN_KM
     }
 
     fn uses_color_materials(&self) -> bool {
         self.color_output.enabled || self.buildings.enabled
+    }
+
+    fn mesh_piece_count(&self) -> u32 {
+        if self.solid_model {
+            1
+        } else {
+            self.rows.max(self.columns)
+        }
     }
 }
 
@@ -213,7 +264,15 @@ fn scale_detail_samples(base: u32, ground_span_km: f64, maximum: u32) -> u32 {
     scaled
         .div_ceil(DETAIL_SAMPLE_STEP)
         .saturating_mul(DETAIL_SAMPLE_STEP)
-        .clamp(base, maximum)
+        .max(base)
+        .min(maximum)
+}
+
+fn samples_per_piece_for_total(total: u32, piece_count: u32) -> u32 {
+    total
+        .div_ceil(piece_count.max(1))
+        .div_ceil(DETAIL_SAMPLE_STEP)
+        .saturating_mul(DETAIL_SAMPLE_STEP)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1236,6 +1295,14 @@ impl HeightField {
                 },
             );
         (minimum, maximum)
+    }
+
+    pub fn samples_per_piece(&self, spec: &GenerationSpec) -> usize {
+        if spec.solid_model {
+            return (self.width - 1).min(self.height - 1);
+        }
+        ((self.width - 1) / spec.columns.max(1) as usize)
+            .min((self.height - 1) / spec.rows.max(1) as usize)
     }
 }
 
@@ -3167,12 +3234,12 @@ fn build_piece_with_height_range(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let base_samples = if spec.solid_model {
-        (spec.terrain_samples_per_piece() * 2).clamp(96, 256) as usize
-    } else {
-        spec.terrain_samples_per_piece() as usize
-    };
-    let samples = base_samples.max(spec.effective_samples_per_piece() as usize);
+    let base_samples = spec.terrain_samples_per_piece() as usize;
+    let requested_samples = base_samples.max(spec.effective_samples_per_piece() as usize);
+    let samples = height_field
+        .map(|field| requested_samples.min(field.samples_per_piece(spec)))
+        .unwrap_or(requested_samples)
+        .max(16);
     let piece_width = if spec.solid_model {
         spec.width_mm
     } else {
@@ -6125,15 +6192,64 @@ mod tests {
 
         spec.ground_span_km = 9.0;
         assert_eq!(spec.terrain_samples_per_piece(), 128);
-        assert_eq!(spec.overlay_samples_per_piece(), 192);
+        assert_eq!(spec.overlay_samples_per_piece(), 224);
 
         spec.ground_span_km = 4.5;
-        assert_eq!(spec.terrain_samples_per_piece(), 160);
-        assert_eq!(spec.overlay_samples_per_piece(), 192);
+        assert_eq!(spec.terrain_samples_per_piece(), 256);
+        assert_eq!(spec.overlay_samples_per_piece(), 344);
 
         spec.ground_span_km = 36.0;
         assert_eq!(spec.terrain_samples_per_piece(), 64);
         assert_eq!(spec.overlay_samples_per_piece(), 112);
+    }
+
+    #[test]
+    fn assembled_detail_cap_does_not_grow_with_piece_count() {
+        let spec = GenerationSpec {
+            rows: 10,
+            columns: 10,
+            ground_span_km: 9.0,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        assert_eq!(spec.terrain_samples_per_piece(), 104);
+        assert_eq!(spec.overlay_samples_per_piece(), 104);
+        assert_eq!(spec.assembled_terrain_samples(), 1_040);
+        assert_eq!(spec.effective_samples_per_piece(), 104);
+    }
+
+    #[test]
+    fn solid_and_fine_dem_modes_get_explicit_total_budgets() {
+        let mut solid = GenerationSpec {
+            solid_model: true,
+            ground_span_km: 9.0,
+            ..GenerationSpec::default()
+        };
+        assert_eq!(solid.assembled_terrain_samples(), 512);
+        assert_eq!(solid.sample_grid_dimensions(512), (513, 513));
+
+        solid.ground_span_km = 0.5;
+        solid.elevation_source = ElevationSource::Mapterhorn;
+        solid.fine_dem_detail = true;
+        assert_eq!(solid.assembled_terrain_samples(), 2_000);
+
+        solid.elevation_source = ElevationSource::Mapzen;
+        assert_eq!(solid.assembled_terrain_samples(), 1_024);
+
+        solid.elevation_source = ElevationSource::Mapterhorn;
+        solid.ground_span_km = 3.0;
+        assert_eq!(solid.assembled_terrain_samples(), 1_024);
+
+        let puzzle = GenerationSpec {
+            rows: 8,
+            columns: 10,
+            ..GenerationSpec::default()
+        };
+        assert_eq!(puzzle.sample_grid_dimensions(64), (641, 513));
     }
 
     #[test]

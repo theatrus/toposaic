@@ -1087,6 +1087,16 @@ fieldset.control-section .road-options {
   accent-color: var(--moss);
 }
 
+.fine-dem-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+}
+
+.fine-dem-toggle small {
+  grid-column: 2;
+  line-height: 1.35;
+}
+
 .height-frame-status,
 .adjacent-message {
   color: var(--muted);

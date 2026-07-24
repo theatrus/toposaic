@@ -14,6 +14,8 @@ use crate::cache;
 
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const SOURCE_SAMPLES_PER_MESH_INTERVAL: f64 = 2.0;
+const FINE_DEM_TARGET_RESOLUTION_M: f64 = 0.25;
+const DETAIL_SAMPLE_STEP: u32 = 8;
 
 #[derive(Debug, Clone, Copy)]
 struct ElevationProvider {
@@ -89,9 +91,8 @@ pub fn fetch_height_field_with_progress(
     cache_dir: &Path,
     on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<HeightField> {
-    let samples = spec.effective_samples_per_piece();
-    let sample_width = (spec.columns * samples + 1) as usize;
-    let sample_height = (spec.rows * samples + 1) as usize;
+    let samples = available_samples_per_piece(spec, cache_dir)?;
+    let (sample_width, sample_height) = spec.sample_grid_dimensions(samples);
     fetch_height_field_at_size(spec, cache_dir, sample_width, sample_height, on_progress)
 }
 
@@ -113,10 +114,7 @@ fn fetch_height_field_at_size(
 ) -> Result<HeightField> {
     let provider = ElevationProvider::for_source(spec.elevation_source);
     let requested_zoom = choose_zoom(spec, sample_width.max(sample_height), provider);
-    let client = Client::builder()
-        .user_agent("toposaic/0.1 (+local terrain mesh generator)")
-        .timeout(Duration::from_secs(20))
-        .build()?;
+    let client = elevation_client()?;
     let mut tiles = HashMap::new();
     let mut missing_tiles = HashSet::new();
     let half_lat = spec.ground_span_km / 2.0 / 110.574;
@@ -149,6 +147,84 @@ fn fetch_height_field_at_size(
 
     let source = provider.source_description(requested_zoom, &sampler.used_zooms);
     HeightField::new(sample_width, sample_height, values_m, source)
+}
+
+fn elevation_client() -> Result<Client> {
+    Client::builder()
+        .user_agent("toposaic/0.1 (+local terrain mesh generator)")
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("build elevation HTTP client")
+}
+
+fn available_samples_per_piece(spec: &GenerationSpec, cache_dir: &Path) -> Result<u32> {
+    let requested = spec.effective_samples_per_piece();
+    if !spec.fine_dem_detail_active() {
+        return Ok(requested);
+    }
+
+    let provider = ElevationProvider::for_source(spec.elevation_source);
+    let client = elevation_client()?;
+    let used_zoom = highest_available_zoom_at_center(spec, cache_dir, &client, provider)?;
+    Ok(samples_per_piece_for_available_zoom(
+        spec, requested, used_zoom, provider,
+    ))
+}
+
+fn samples_per_piece_for_available_zoom(
+    spec: &GenerationSpec,
+    requested: u32,
+    used_zoom: u8,
+    provider: ElevationProvider,
+) -> u32 {
+    let delivered_resolution_m = source_resolution_m(spec.center_lat, used_zoom, provider);
+    let useful_resolution_m = delivered_resolution_m.max(FINE_DEM_TARGET_RESOLUTION_M);
+    let useful_total = (spec.ground_span_km * 1_000.0 / useful_resolution_m).ceil() as u32;
+    let piece_count = if spec.solid_model {
+        1
+    } else {
+        spec.rows.max(spec.columns)
+    };
+    let useful_per_piece = useful_total
+        .div_ceil(piece_count)
+        .div_ceil(DETAIL_SAMPLE_STEP)
+        .saturating_mul(DETAIL_SAMPLE_STEP);
+    let mut standard_spec = spec.clone();
+    standard_spec.fine_dem_detail = false;
+    let standard = standard_spec.effective_samples_per_piece();
+    requested.min(useful_per_piece.max(standard))
+}
+
+fn highest_available_zoom_at_center(
+    spec: &GenerationSpec,
+    cache_dir: &Path,
+    client: &Client,
+    provider: ElevationProvider,
+) -> Result<u8> {
+    for zoom in (provider.minimum_zoom..=provider.maximum_zoom).rev() {
+        let location = tile_location(provider.tile_size, zoom, spec.center_lon, spec.center_lat);
+        if load_tile(
+            client,
+            cache_dir,
+            provider,
+            zoom,
+            location.tile_x,
+            location.tile_y,
+        )?
+        .is_some()
+        {
+            return Ok(zoom);
+        }
+    }
+    bail!(
+        "{} has no elevation tile at the selected center",
+        provider.name
+    )
+}
+
+fn source_resolution_m(latitude: f64, zoom: u8, provider: ElevationProvider) -> f64 {
+    EARTH_CIRCUMFERENCE_M * latitude.to_radians().cos().abs().max(0.1)
+        / (f64::from(provider.tile_size) * f64::from(1_u32 << zoom))
 }
 
 fn choose_zoom(spec: &GenerationSpec, samples: usize, provider: ElevationProvider) -> u8 {
@@ -266,7 +342,6 @@ struct TileLocation {
     pixel_y: u32,
 }
 
-#[cfg(test)]
 fn tile_location(tile_size: u32, zoom: u8, longitude: f64, latitude: f64) -> TileLocation {
     let (global_x, global_y) = global_pixel_position(tile_size, zoom, longitude, latitude);
     let tile_count = 1_u32 << zoom;
@@ -433,6 +508,32 @@ mod tests {
             / (f64::from(provider.tile_size) * f64::from(1_u32 << zoom));
 
         assert!(source_interval_m <= mesh_interval_m / SOURCE_SAMPLES_PER_MESH_INTERVAL);
+    }
+
+    #[test]
+    fn fine_detail_tracks_the_available_tile_grid_without_exceeding_quarter_metre_target() {
+        let provider = ElevationProvider::for_source(ElevationSource::Mapterhorn);
+        let mut spec = GenerationSpec {
+            center_lat: 75.0,
+            ground_span_km: 0.5,
+            elevation_source: ElevationSource::Mapterhorn,
+            fine_dem_detail: true,
+            solid_model: true,
+            ..GenerationSpec::default()
+        };
+        let requested = spec.effective_samples_per_piece();
+        assert_eq!(requested, 2_000);
+        assert_eq!(
+            samples_per_piece_for_available_zoom(&spec, requested, 17, provider),
+            2_000
+        );
+
+        spec.center_lat = 46.8523;
+        let rainier = samples_per_piece_for_available_zoom(&spec, requested, 17, provider);
+        assert!((1_200..2_000).contains(&rainier));
+
+        let fallback = samples_per_piece_for_available_zoom(&spec, requested, 13, provider);
+        assert_eq!(fallback, 1_024);
     }
 
     #[test]
