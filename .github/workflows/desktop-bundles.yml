@@ -114,7 +114,7 @@ jobs:
           args: --bundles ${{ matrix.bundles }}
           uploadWorkflowArtifacts: false
 
-      - name: Verify Windows runtime requirements
+      - name: Verify Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -143,6 +143,23 @@ jobs:
           $imports
           if ($imports -Match '(?i)(VCRUNTIME|MSVCP|CONCRT).*\.dll') {
             throw "The Windows executable needs a Visual C++ Redistributable runtime."
+          }
+
+          $headers = & $dumpbin.FullName /HEADERS `
+            "target\release\toposaic-desktop.exe" 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "dumpbin could not inspect the Windows executable headers."
+          }
+          $subsystem = [regex]::Match(
+            $headers,
+            '(?im)^\s*[0-9A-F.]+\s+subsystem\s+\((?<name>[^)]+)\)\s*$'
+          )
+          if (-not $subsystem.Success) {
+            throw "Could not read the Windows executable subsystem."
+          }
+          $subsystem.Value
+          if ($subsystem.Groups['name'].Value -ne 'Windows GUI') {
+            throw "The Windows executable would open a console window."
           }
 
       - name: Stage Windows files

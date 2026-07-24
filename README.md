@@ -191,8 +191,9 @@ chmod +x TopoSaic-*-linux-x86_64.AppImage
 Windows builds use the Universal CRT that Windows 10 and 11 include and service.
 CI checks each executable's DLL imports and fails if it adds a `VCRUNTIME`,
 `MSVCP`, or `CONCRT` dependency that would need a Visual C++ Redistributable
-install. The installers download Microsoft's WebView2 bootstrapper only when
-the system does not already have WebView2.
+install. It also checks that release executables use the Windows GUI subsystem,
+so the app does not open a console window. The installers download Microsoft's
+WebView2 bootstrapper only when the system does not already have WebView2.
 
 ## Storage
 
