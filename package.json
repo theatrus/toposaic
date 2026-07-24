@@ -1,6 +1,6 @@
 {
   "name": "toposaic-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "private": true,
   "engines": {
@@ -21,7 +21,7 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "next": "16.2.6",
+    "next": "16.2.11",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "three": "^0.185.1"
