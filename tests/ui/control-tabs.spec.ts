@@ -79,8 +79,10 @@ test("switches between the reflowed control panels", async ({ page }) => {
   expect(Math.abs(puzzleModelBounds!.y - solidModelBounds!.y)).toBeLessThan(2);
   await solidModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeHidden();
+  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
   await puzzleModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeVisible();
+  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
   const pieceShape = page.getByRole("group", { name: "Piece shape" });
   const preview = page.getByLabel("Interactive 3D terrain preview");
   const straightGrid = pieceShape.getByRole("checkbox", {
@@ -413,8 +415,20 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   const initialBounds = await selection.boundingBox();
   expect(initialBounds).not.toBeNull();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
+  const meshDetail = page.getByRole("radiogroup", { name: "Mesh detail" });
   await expect(
-    page.getByText("64 base · 1040 across model", { exact: true }),
+    meshDetail.getByRole("radio", { name: /Standard/ }),
+  ).toHaveAttribute("aria-checked", "true");
+  await meshDetail.getByRole("radio", { name: /Ultra/ }).click();
+  await expect(
+    meshDetail.getByRole("radio", { name: /Ultra/ }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByText(/2048 across · about 8\.8 m ground spacing/),
+  ).toBeVisible();
+  await meshDetail.getByRole("radio", { name: /Standard/ }).click();
+  await expect(
+    page.getByText(/640 across · about 28\.1 m ground spacing/),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Zoom in" }).click();
@@ -425,10 +439,7 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   );
   await expect(selection).toHaveAttribute("data-map-zoom", "10");
   await expect(
-    page.getByText("64 base · 1040 across model", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("112 base · 1040 across model", { exact: true }),
+    page.getByText(/640 across · about 14\.1 m ground spacing/),
   ).toBeVisible();
 
   const zoomedBounds = await selection.boundingBox();

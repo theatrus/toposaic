@@ -48,6 +48,8 @@ type GenerationSpec = {
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
+  mesh_samples_across: number;
+  overlay_samples_across: number;
   fine_dem_detail: boolean;
   solid_model: boolean;
   straight_piece_sides: boolean;
@@ -186,6 +188,8 @@ const initialSpec: GenerationSpec = {
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
+  mesh_samples_across: 640,
+  overlay_samples_across: 640,
   fine_dem_detail: false,
   solid_model: false,
   straight_piece_sides: false,
@@ -229,48 +233,26 @@ const initialSpec: GenerationSpec = {
   },
 };
 
-const AUTO_DETAIL_REFERENCE_SPAN_KM = 18;
-const MAX_ASSEMBLED_SAMPLES = 1024;
 const MAX_FINE_DEM_ASSEMBLED_SAMPLES = 2048;
 const FINE_DEM_TARGET_RESOLUTION_M = 0.25;
 const FINE_DEM_MAX_SPAN_KM = 2;
-const DETAIL_SAMPLE_STEP = 8;
-
-function scaledTotalSamples(
-  base: number,
-  groundSpanKm: number,
-  maximum: number,
-) {
-  const scale = Math.max(
-    1,
-    AUTO_DETAIL_REFERENCE_SPAN_KM / Math.max(0.5, groundSpanKm),
-  );
-  const scaled =
-    Math.ceil((base * scale) / DETAIL_SAMPLE_STEP) * DETAIL_SAMPLE_STEP;
-  return Math.min(maximum, Math.max(base, scaled));
-}
+const MESH_QUALITY_OPTIONS = [
+  { label: "Draft", samples: 384, note: "Fast export" },
+  { label: "Standard", samples: 640, note: "Most prints" },
+  { label: "High", samples: 1024, note: "Fine FDM" },
+  { label: "Ultra", samples: 2048, note: "0.2 mm or resin" },
+] as const;
 
 function meshPieceCount(spec: GenerationSpec) {
   return spec.solid_model ? 1 : Math.max(spec.rows, spec.columns);
 }
 
 function samplesPerPieceForTotal(total: number, pieceCount: number) {
-  return (
-    Math.ceil(Math.ceil(total / Math.max(1, pieceCount)) / DETAIL_SAMPLE_STEP) *
-    DETAIL_SAMPLE_STEP
-  );
+  return Math.ceil(total / Math.max(1, pieceCount));
 }
 
-function terrainSamplesPerPiece(spec: GenerationSpec) {
-  const pieceCount = meshPieceCount(spec);
-  const baseTotal = spec.solid_model
-    ? spec.samples_per_piece * 4
-    : spec.samples_per_piece * pieceCount;
-  let total = scaledTotalSamples(
-    baseTotal,
-    spec.ground_span_km,
-    MAX_ASSEMBLED_SAMPLES,
-  );
+function terrainSamplesAcross(spec: GenerationSpec) {
+  let total = spec.mesh_samples_across;
   if (
     spec.fine_dem_detail &&
     spec.elevation_source === "mapterhorn" &&
@@ -286,20 +268,19 @@ function terrainSamplesPerPiece(spec: GenerationSpec) {
       ),
     );
   }
-  return samplesPerPieceForTotal(total, pieceCount);
+  return total;
+}
+
+function terrainSamplesPerPiece(spec: GenerationSpec) {
+  return samplesPerPieceForTotal(
+    terrainSamplesAcross(spec),
+    meshPieceCount(spec),
+  );
 }
 
 function overlaySamplesPerPiece(spec: GenerationSpec) {
   const pieceCount = meshPieceCount(spec);
-  const baseTotal = spec.solid_model
-    ? spec.overlay_samples_per_piece
-    : spec.overlay_samples_per_piece * pieceCount;
-  const total = scaledTotalSamples(
-    baseTotal,
-    spec.ground_span_km,
-    MAX_ASSEMBLED_SAMPLES,
-  );
-  return samplesPerPieceForTotal(total, pieceCount);
+  return samplesPerPieceForTotal(spec.overlay_samples_across, pieceCount);
 }
 
 function effectiveMeshSamples(spec: GenerationSpec) {
@@ -312,7 +293,19 @@ function effectiveMeshSamples(spec: GenerationSpec) {
 }
 
 function assembledMeshSamples(spec: GenerationSpec) {
-  return effectiveMeshSamples(spec) * meshPieceCount(spec);
+  const overlays =
+    spec.color_output.enabled || spec.buildings.enabled
+      ? spec.overlay_samples_across
+      : 0;
+  return Math.max(terrainSamplesAcross(spec), overlays);
+}
+
+function groundMeshSpacing(spec: GenerationSpec) {
+  return (spec.ground_span_km * 1000) / assembledMeshSamples(spec);
+}
+
+function formatGroundSpacing(metres: number) {
+  return metres < 1 ? metres.toFixed(2) : metres.toFixed(1);
 }
 
 const TILE_SIZE = 256;
@@ -1724,6 +1717,15 @@ export function TerrainStudio() {
     },
     [],
   );
+  const setMeshQuality = useCallback((samples: number) => {
+    setGeneratedPreview(null);
+    setSpec((current) => ({
+      ...current,
+      mesh_samples_across: samples,
+      overlay_samples_across: samples,
+      fine_dem_detail: samples === 2048 ? false : current.fine_dem_detail,
+    }));
+  }, []);
   const updateColor = useCallback(
     <Key extends keyof GenerationSpec["color_output"]>(
       key: Key,
@@ -1919,6 +1921,9 @@ export function TerrainStudio() {
         relief_mm: spec.relief_mm,
         samples_per_piece: spec.samples_per_piece,
         overlay_samples_per_piece: spec.overlay_samples_per_piece,
+        mesh_samples_across: spec.mesh_samples_across,
+        overlay_samples_across: spec.overlay_samples_across,
+        fine_dem_detail: spec.fine_dem_detail,
         elevation_datum_m: spec.elevation_datum_m,
         elevation_m_per_mm: spec.elevation_m_per_mm,
         color_output: {
@@ -1958,8 +1963,11 @@ export function TerrainStudio() {
     spec.elevation_datum_m,
     spec.elevation_m_per_mm,
     spec.elevation_source,
+    spec.fine_dem_detail,
     spec.ground_span_km,
+    spec.mesh_samples_across,
     spec.overlay_samples_per_piece,
+    spec.overlay_samples_across,
     spec.relief_mm,
     spec.samples_per_piece,
     spec.width_mm,
@@ -2706,16 +2714,21 @@ export function TerrainStudio() {
                 <input
                   type="checkbox"
                   checked={spec.fine_dem_detail}
-                  disabled={spec.ground_span_km > FINE_DEM_MAX_SPAN_KM}
+                  disabled={
+                    spec.ground_span_km > FINE_DEM_MAX_SPAN_KM ||
+                    spec.mesh_samples_across === 2048
+                  }
                   onChange={(event) =>
                     update("fine_dem_detail", event.target.checked)
                   }
                 />
                 Use finest available DEM detail
                 <small>
-                  {spec.ground_span_km > FINE_DEM_MAX_SPAN_KM
-                    ? "Zoom to 2 km or less to enable the fine-detail budget."
-                    : "Sample available Mapterhorn tiles down to a 0.25 m target, with a 2,048-sample model cap. This can make large files."}
+                  {spec.mesh_samples_across === 2048
+                    ? "Ultra already uses the maximum 2,048-sample budget."
+                    : spec.ground_span_km > FINE_DEM_MAX_SPAN_KM
+                      ? "Zoom to 2 km or less to enable the fine-detail budget."
+                      : "Increase the selected budget toward a 0.25 m target when Mapterhorn has finer tiles, up to 2,048 samples."}
                 </small>
               </label>
             )}
@@ -2806,30 +2819,44 @@ export function TerrainStudio() {
               step={0.2}
               onChange={(value) => update("base_mm", value)}
             />
-            <RangeField
-              label="Mesh detail"
-              value={spec.samples_per_piece}
-              unit={spec.solid_model ? "" : " samples/piece"}
-              displayValue={`${spec.samples_per_piece} base · ${assembledMeshSamples(spec)} across model`}
-              min={32}
-              max={128}
-              step={8}
-              onChange={(value) => update("samples_per_piece", value)}
-            />
-            {(spec.color_output.enabled || spec.buildings.enabled) && (
-              <RangeField
-                label="Overlay detail"
-                value={spec.overlay_samples_per_piece}
-                unit=" samples/piece"
-                displayValue={`${spec.overlay_samples_per_piece} base · ${overlaySamplesPerPiece(spec) * meshPieceCount(spec)} across model`}
-                min={64}
-                max={192}
-                step={8}
-                onChange={(value) =>
-                  update("overlay_samples_per_piece", value)
-                }
-              />
-            )}
+            <fieldset className="mesh-quality">
+              <legend>
+                Mesh detail
+                <span>
+                  {assembledMeshSamples(spec)} across · about{" "}
+                  {formatGroundSpacing(groundMeshSpacing(spec))} m ground
+                  spacing
+                </span>
+              </legend>
+              <div role="radiogroup" aria-label="Mesh detail">
+                {MESH_QUALITY_OPTIONS.map((option) => (
+                  <button
+                    key={option.samples}
+                    type="button"
+                    role="radio"
+                    aria-checked={
+                      spec.mesh_samples_across === option.samples
+                    }
+                    className={
+                      spec.mesh_samples_across === option.samples
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() => setMeshQuality(option.samples)}
+                  >
+                    <strong>{option.label}</strong>
+                    <span>{option.samples}</span>
+                    <small>{option.note}</small>
+                  </button>
+                ))}
+              </div>
+              {spec.mesh_samples_across === 2048 && (
+                <p>
+                  Ultra produces about four times as many surface triangles as
+                  High and can make large 3MF files.
+                </p>
+              )}
+            </fieldset>
             {!spec.solid_model && (
               <RangeField
                 label="Fit clearance"

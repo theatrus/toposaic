@@ -779,6 +779,69 @@ fieldset.control-section .road-options {
   margin: 7px 0;
 }
 
+.mesh-quality {
+  border: 0;
+  grid-column: span 3;
+  margin: 7px 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.mesh-quality legend {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  font-weight: 660;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.mesh-quality legend span {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.mesh-quality > div {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 9px;
+}
+
+.mesh-quality button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  text-align: left;
+}
+
+.mesh-quality button:hover,
+.mesh-quality button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: white;
+}
+
+.mesh-quality button span,
+.mesh-quality button small {
+  color: currentColor;
+  font-size: 8px;
+  opacity: 0.68;
+}
+
+.mesh-quality > p {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.4;
+  margin: 5px 0 0;
+}
+
 .place-search {
   border-bottom: 0;
   margin-bottom: 10px;
@@ -1870,6 +1933,10 @@ fieldset.control-section .road-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .mesh-quality {
+    grid-column: span 2;
+  }
+
   .model-mode {
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1951,6 +2018,20 @@ fieldset.control-section .road-options {
 
   .model-controls {
     grid-template-columns: 1fr;
+  }
+
+  .mesh-quality {
+    grid-column: span 1;
+  }
+
+  .mesh-quality > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mesh-quality legend {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 
   fieldset.control-section {

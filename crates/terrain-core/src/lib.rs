@@ -30,7 +30,9 @@ const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
 const MAX_TERRAIN_SAMPLES_PER_PIECE: u32 = 160;
 const MAX_OVERLAY_SAMPLES_PER_PIECE: u32 = 192;
-const MAX_ASSEMBLED_SAMPLES: u32 = 1_024;
+const MIN_ASSEMBLED_SAMPLES: u32 = 256;
+const MAX_STANDARD_ASSEMBLED_SAMPLES: u32 = 1_024;
+const MAX_ASSEMBLED_SAMPLES: u32 = 2_048;
 const MAX_FINE_DEM_ASSEMBLED_SAMPLES: u32 = 2_048;
 const FINE_DEM_TARGET_RESOLUTION_M: f64 = 0.25;
 const FINE_DEM_MAX_SPAN_KM: f64 = 2.0;
@@ -59,6 +61,8 @@ pub struct GenerationSpec {
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
+    pub mesh_samples_across: Option<u32>,
+    pub overlay_samples_across: Option<u32>,
     pub fine_dem_detail: bool,
     pub solid_model: bool,
     pub straight_piece_sides: bool,
@@ -92,6 +96,8 @@ impl Default for GenerationSpec {
             clearance_mm: 0.14,
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
+            mesh_samples_across: None,
+            overlay_samples_across: None,
             fine_dem_detail: false,
             solid_model: false,
             straight_piece_sides: false,
@@ -167,6 +173,20 @@ impl GenerationSpec {
                 "overlay samples per piece must be between 32 and {MAX_OVERLAY_SAMPLES_PER_PIECE}"
             );
         }
+        if self.mesh_samples_across.is_some_and(|samples| {
+            !(MIN_ASSEMBLED_SAMPLES..=MAX_ASSEMBLED_SAMPLES).contains(&samples)
+        }) {
+            bail!(
+                "assembled mesh samples must be between {MIN_ASSEMBLED_SAMPLES} and {MAX_ASSEMBLED_SAMPLES}"
+            );
+        }
+        if self.overlay_samples_across.is_some_and(|samples| {
+            !(MIN_ASSEMBLED_SAMPLES..=MAX_ASSEMBLED_SAMPLES).contains(&samples)
+        }) {
+            bail!(
+                "assembled overlay samples must be between {MIN_ASSEMBLED_SAMPLES} and {MAX_ASSEMBLED_SAMPLES}"
+            );
+        }
         if self.place_name.trim().is_empty() || self.place_name.chars().count() > 48 {
             bail!("place label must contain between 1 and 48 characters");
         }
@@ -194,13 +214,20 @@ impl GenerationSpec {
 
     pub fn terrain_samples_per_piece(&self) -> u32 {
         let piece_count = self.mesh_piece_count();
-        let base_total = if self.solid_model {
-            self.samples_per_piece.saturating_mul(4)
+        let mut total = if let Some(samples) = self.mesh_samples_across {
+            samples
         } else {
-            self.samples_per_piece.saturating_mul(piece_count)
+            let base_total = if self.solid_model {
+                self.samples_per_piece.saturating_mul(4)
+            } else {
+                self.samples_per_piece.saturating_mul(piece_count)
+            };
+            scale_detail_samples(
+                base_total,
+                self.ground_span_km,
+                MAX_STANDARD_ASSEMBLED_SAMPLES,
+            )
         };
-        let mut total =
-            scale_detail_samples(base_total, self.ground_span_km, MAX_ASSEMBLED_SAMPLES);
         if self.fine_dem_detail_active() {
             let fine_total =
                 (self.ground_span_km * 1_000.0 / FINE_DEM_TARGET_RESOLUTION_M).ceil() as u32;
@@ -211,12 +238,20 @@ impl GenerationSpec {
 
     pub fn overlay_samples_per_piece(&self) -> u32 {
         let piece_count = self.mesh_piece_count();
-        let base_total = if self.solid_model {
-            self.overlay_samples_per_piece
+        let total = if let Some(samples) = self.overlay_samples_across {
+            samples
         } else {
-            self.overlay_samples_per_piece.saturating_mul(piece_count)
+            let base_total = if self.solid_model {
+                self.overlay_samples_per_piece
+            } else {
+                self.overlay_samples_per_piece.saturating_mul(piece_count)
+            };
+            scale_detail_samples(
+                base_total,
+                self.ground_span_km,
+                MAX_STANDARD_ASSEMBLED_SAMPLES,
+            )
         };
-        let total = scale_detail_samples(base_total, self.ground_span_km, MAX_ASSEMBLED_SAMPLES);
         samples_per_piece_for_total(total, piece_count)
     }
 
@@ -243,6 +278,7 @@ impl GenerationSpec {
         self.fine_dem_detail
             && self.elevation_source == ElevationSource::Mapterhorn
             && self.ground_span_km <= FINE_DEM_MAX_SPAN_KM
+            && self.mesh_samples_across != Some(MAX_ASSEMBLED_SAMPLES)
     }
 
     fn uses_color_materials(&self) -> bool {
@@ -269,10 +305,7 @@ fn scale_detail_samples(base: u32, ground_span_km: f64, maximum: u32) -> u32 {
 }
 
 fn samples_per_piece_for_total(total: u32, piece_count: u32) -> u32 {
-    total
-        .div_ceil(piece_count.max(1))
-        .div_ceil(DETAIL_SAMPLE_STEP)
-        .saturating_mul(DETAIL_SAMPLE_STEP)
+    total.div_ceil(piece_count.max(1))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6196,7 +6229,7 @@ mod tests {
 
         spec.ground_span_km = 4.5;
         assert_eq!(spec.terrain_samples_per_piece(), 256);
-        assert_eq!(spec.overlay_samples_per_piece(), 344);
+        assert_eq!(spec.overlay_samples_per_piece(), 342);
 
         spec.ground_span_km = 36.0;
         assert_eq!(spec.terrain_samples_per_piece(), 64);
@@ -6213,13 +6246,15 @@ mod tests {
                 enabled: true,
                 ..ColorOutputSpec::default()
             },
+            mesh_samples_across: Some(1_024),
+            overlay_samples_across: Some(1_024),
             ..GenerationSpec::default()
         };
 
-        assert_eq!(spec.terrain_samples_per_piece(), 104);
-        assert_eq!(spec.overlay_samples_per_piece(), 104);
-        assert_eq!(spec.assembled_terrain_samples(), 1_040);
-        assert_eq!(spec.effective_samples_per_piece(), 104);
+        assert_eq!(spec.terrain_samples_per_piece(), 103);
+        assert_eq!(spec.overlay_samples_per_piece(), 103);
+        assert_eq!(spec.assembled_terrain_samples(), 1_030);
+        assert_eq!(spec.effective_samples_per_piece(), 103);
     }
 
     #[test]
@@ -6227,10 +6262,12 @@ mod tests {
         let mut solid = GenerationSpec {
             solid_model: true,
             ground_span_km: 9.0,
+            mesh_samples_across: Some(640),
+            overlay_samples_across: Some(640),
             ..GenerationSpec::default()
         };
-        assert_eq!(solid.assembled_terrain_samples(), 512);
-        assert_eq!(solid.sample_grid_dimensions(512), (513, 513));
+        assert_eq!(solid.assembled_terrain_samples(), 640);
+        assert_eq!(solid.sample_grid_dimensions(640), (641, 641));
 
         solid.ground_span_km = 0.5;
         solid.elevation_source = ElevationSource::Mapterhorn;
@@ -6238,18 +6275,28 @@ mod tests {
         assert_eq!(solid.assembled_terrain_samples(), 2_000);
 
         solid.elevation_source = ElevationSource::Mapzen;
-        assert_eq!(solid.assembled_terrain_samples(), 1_024);
+        assert_eq!(solid.assembled_terrain_samples(), 640);
 
         solid.elevation_source = ElevationSource::Mapterhorn;
         solid.ground_span_km = 3.0;
-        assert_eq!(solid.assembled_terrain_samples(), 1_024);
+        assert_eq!(solid.assembled_terrain_samples(), 640);
 
         let puzzle = GenerationSpec {
             rows: 8,
             columns: 10,
+            mesh_samples_across: Some(640),
+            overlay_samples_across: Some(640),
             ..GenerationSpec::default()
         };
         assert_eq!(puzzle.sample_grid_dimensions(64), (641, 513));
+        assert_eq!(puzzle.assembled_terrain_samples(), 640);
+
+        let ultra = GenerationSpec {
+            mesh_samples_across: Some(2_048),
+            overlay_samples_across: Some(2_048),
+            ..GenerationSpec::default()
+        };
+        ultra.validate().unwrap();
     }
 
     #[test]

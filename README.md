@@ -138,11 +138,13 @@ stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
-does not multiply the terrain density. Normal generation uses at most about
-1,024 samples across the model. Overlay detail remains separate from the base
-terrain setting, while vector roads, waterways, and building edges add local
-points where they need them. Generated browser previews use up to 384 samples
-across the assembled map.
+does not multiply the terrain density and solid terrain matches puzzle output.
+Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across
+the model. Ultra creates about four times as many surface triangles as High and
+best suits 0.2 mm nozzles, resin printing, or small high-detail terrain areas.
+Vector roads, waterways, and building edges add local points where they need
+them. Generated browser previews use up to 384 samples across the assembled
+map.
 
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z

@@ -68,7 +68,9 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
   assert.match(html, /Thin dense road networks/);
-  assert.match(html, /Overlay detail/);
+  assert.match(html, /Mesh detail/);
+  assert.match(html, /Standard/);
+  assert.match(html, /Ultra/);
   assert.match(html, /Road layer height/);
   assert.match(html, /Bridge structure/);
   assert.match(html, /Floating bridge thickness/);
