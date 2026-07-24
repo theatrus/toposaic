@@ -15,6 +15,10 @@ import {
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  previewInitialCameraPosition,
+  previewWorldX,
+} from "./preview-orientation";
+import {
   APP_VERSION,
   RELEASES_URL,
   type AvailableUpdate,
@@ -1127,13 +1131,13 @@ function ReliefPreview({
       const u = x / Math.max(1, sampleWidth - 1);
       const v = y / Math.max(1, sampleHeight - 1);
       positions.push(
-        u - 0.5,
+        previewWorldX(u),
         heightValues[y * sampleWidth + x] * heightScale,
         v - 0.5,
       );
       colors.push(color.r, color.g, color.b);
       const normal = normalAt(x, y);
-      normals.push(normal.x, normal.y, normal.z);
+      normals.push(-normal.x, normal.y, normal.z);
     };
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
@@ -1143,11 +1147,11 @@ function ReliefPreview({
           : undefined;
         const color = new THREE.Color(classColor(surfaceClass));
         addVertex(x, y, color);
-        addVertex(x, y + 1, color);
-        addVertex(x + 1, y, color);
         addVertex(x + 1, y, color);
         addVertex(x, y + 1, color);
+        addVertex(x + 1, y, color);
         addVertex(x + 1, y + 1, color);
+        addVertex(x, y + 1, color);
       }
     }
 
@@ -1191,7 +1195,7 @@ function ReliefPreview({
     });
     const pointOnTerrain = (u: number, v: number) =>
       new THREE.Vector3(
-        u - 0.5,
+        previewWorldX(u),
         heightAt(u, v) * heightScale + 0.0025,
         v - 0.5,
       );
@@ -1316,10 +1320,8 @@ function ReliefPreview({
     if (savedView) {
       camera.position.fromArray(savedView.position);
     } else {
-      camera.position.set(
-        0.92 * cameraScale,
-        defaultTarget[1] + 0.72 * cameraScale,
-        1.08 * cameraScale,
+      camera.position.fromArray(
+        previewInitialCameraPosition(cameraScale, defaultTarget[1]),
       );
     }
     const controls = new OrbitControls(camera, canvas);

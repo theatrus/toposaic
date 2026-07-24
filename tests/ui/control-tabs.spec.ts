@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import {
+  previewInitialCameraPosition,
+  previewWorldX,
+} from "../../app/preview-orientation";
 import { isVersionNewer } from "../../app/versioning";
 
 const appVersion = JSON.parse(
@@ -17,6 +21,16 @@ test("compares stable and prerelease app versions", () => {
   expect(isVersionNewer("v0.1.0", "0.1.0-beta.2")).toBe(true);
   expect(isVersionNewer("v0.1.0-beta.2", "0.1.0")).toBe(false);
   expect(isVersionNewer("not-a-version", "0.1.0")).toBe(false);
+});
+
+test("keeps east and west in the expected preview positions", () => {
+  expect(previewWorldX(1)).toBeLessThan(previewWorldX(0));
+});
+
+test("starts the preview camera south of the terrain", () => {
+  const [, cameraY, cameraZ] = previewInitialCameraPosition(2, 0.4);
+  expect(cameraY).toBeGreaterThan(0.4);
+  expect(cameraZ).toBeLessThan(0);
 });
 
 test("switches between the reflowed control panels", async ({ page }) => {
