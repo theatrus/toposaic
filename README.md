@@ -2,6 +2,8 @@
 
 *Terrain Puzzle*
 
+The name TopoSaic is a portmanteau of *topographic mosaic*.
+
 TopoSaic is a local-first topographic puzzle generator. A Rust service
 samples worldwide elevation data, builds watertight pieces with round jigsaw
 tabs and sockets, and stores job state in SQLite. The web app lets you choose a
