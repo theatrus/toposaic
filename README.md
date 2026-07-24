@@ -12,26 +12,46 @@ colors.
 
 ## Download
 
-Download the latest desktop build from
-[TopoSaic Releases](https://github.com/theatrus/toposaic/releases):
+The current desktop release is
+[TopoSaic v0.2.0](https://github.com/theatrus/toposaic/releases/tag/v0.2.0).
 
-- Windows x64: `.exe` setup or `.msi` installer
-- macOS Apple silicon: `.dmg` disk image or `.app.zip` application archive
-- Linux x86-64: portable `.AppImage`
+| Platform | Downloads |
+| --- | --- |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
-tickets. On Linux, make the AppImage executable with `chmod +x` before opening
-it.
+tickets. Windows installers use the GUI subsystem and do not open a terminal
+window. On Linux, make the AppImage executable with `chmod +x` before opening
+it. See [all releases](https://github.com/theatrus/toposaic/releases) for older
+builds.
 
 ## Screenshots
 
 ![TopoSaic light workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
 
-*Choose a place beside a live, rotatable preview, then shape the model below.*
+*Choose a place beside a live, rotatable preview. The lower workspace starts
+larger and can be resized with the horizontal divider.*
+
+![TopoSaic model controls showing compact model choices and a four-by-three adjacent tile grid](docs/images/toposaic-model-controls.png)
+
+*Move by one tile or export a straight 4×3 mosaic under one shared height
+frame. Optional tabs join both terrain tiles and matching tray sections.*
 
 ![TopoSaic light workspace showing terrain colors, mapped water and road controls, and bridge structure choices](docs/images/toposaic-surface-controls.png)
 
-*Tune print colors, mapped layers, road detail, and bridge structure in place.*
+*Tune print colors, mapped water, road width and height, dense-network thinning,
+and floating or supported bridges in place.*
+
+![A generated Mount Rainier color 3MF opened in Bambu Studio](docs/images/toposaic-3mf-bambu-studio.jpg)
+
+*The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
+road, and building materials ready for a color print.*
+
+Version 0.2 adds signed update notices, Mapterhorn elevation tiles, resizable
+map and preview space, synchronized map zoom and ground span, adjacent `N×M`
+super-tile exports, shared height frames, and matching split trays.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
@@ -48,22 +68,28 @@ sampling grid while limiting the single mesh to a safe detail level.
 Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
 The model controls also set the minimum solid thickness under the lowest
-terrain point. North, south, east, and west buttons move the selection by one
-full tile. The first move locks the elevation datum and vertical scale, so the
-same real elevation prints at the same Z height on each tile. If a later tile
-drops below that datum, TopoSaic warns that the shared datum must move down and
-that earlier tiles must be regenerated.
-Auto grid mode starts at the current north-west tile and exports up to a 12×12
-set. Each terrain tile gets its own 3MF print pass, while the full set uses one
-elevation datum and vertical scale. Optional external tabs and sockets join
-shared tile edges. Tile bounds stay on a straight grid, and the outside border
-stays flat.
+terrain point.
 
-An auto-grid tray follows the same tile layout. TopoSaic builds one outer frame,
-cuts it into matching tray parts, and exports each part as its own STL and color
-3MF. The shared-edge option adds matching tabs and sockets to both terrain and
-tray joins; the full mosaic keeps a flat outside border. A separate-trays option
-instead makes one complete framed tray for each terrain tile.
+## Super-tile mode
+
+Super-tile mode makes terrain sets larger than one printer's build plate. It
+starts at the current north-west tile and exports a grid of up to 12×12 print
+passes. Each terrain tile gets its own color 3MF, while every tile uses the same
+elevation datum and vertical scale. Straight tile bounds keep the grid aligned.
+Optional external tabs and sockets join shared edges, and the full set keeps a
+flat outside border.
+
+The tray follows the same grid. TopoSaic makes one outer frame, then splits it
+into matching printable tray parts. Joined inner edges have no walls. Each part
+exports as its own STL and color 3MF, with optional matching tabs and sockets.
+The separate-trays option instead gives each terrain tile its own complete
+framed tray.
+
+North, south, east, and west buttons move the selection by one full tile. The
+first move locks the elevation datum and vertical scale, so the same real
+elevation prints at the same Z height on each tile. If a later tile drops below
+that datum, TopoSaic warns that the shared datum must move down and that earlier
+tiles must be regenerated.
 
 The elevation provider reads Mapzen Terrarium tiles by default. A Mapterhorn
 option uses 512 px WebP Terrarium tiles with regional elevation data up to zoom
