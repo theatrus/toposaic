@@ -187,6 +187,10 @@ data directory. Downloaded map inputs still use the shared OS cache described
 below. Each generated file opens a native Save As dialog, so the app does not
 drop files into Downloads without asking.
 
+The header shows the installed app version. On launch, desktop builds check the
+latest stable GitHub release and show a dismissible download notice when a
+newer version is available. The check sends no project or location data.
+
 Tagged releases provide five desktop files: Windows `.msi` and `.exe`
 installers, macOS `.app.zip` and `.dmg` bundles, and a Linux `.AppImage`. The
 tag must match the version in `src-tauri/tauri.conf.json`.

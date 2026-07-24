@@ -26,6 +26,12 @@ async function render() {
 }
 
 test("server-renders TopoSaic", async () => {
+  const appConfig = JSON.parse(
+    await readFile(
+      new URL("../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,7 +39,13 @@ test("server-renders TopoSaic", async () => {
   const html = await response.text();
   assert.match(html, /<title>TopoSaic — Terrain Puzzle<\/title>/i);
   assert.match(html, />TopoSaic</);
-  assert.match(html, /<small>Terrain Puzzle<\/small>/);
+  assert.match(
+    html,
+    new RegExp(
+      `Terrain Puzzle ·.*v${appConfig.version.replaceAll(".", "\\.")}`,
+      "s",
+    ),
+  );
   assert.match(html, /Shape your terrain/);
   assert.match(html, /role="tablist"/);
   assert.match(html, />Model</);

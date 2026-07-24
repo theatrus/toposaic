@@ -14,6 +14,12 @@ import {
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import {
+  APP_VERSION,
+  type AvailableUpdate,
+  fetchAvailableUpdate,
+} from "./releases";
+import { displayVersion } from "./versioning";
 
 type GenerationSpec = {
   center_lat: number;
@@ -1326,6 +1332,10 @@ function RangeField({
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const [appVersion, setAppVersion] = useState(APP_VERSION);
+  const [availableUpdate, setAvailableUpdate] =
+    useState<AvailableUpdate | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [visualHeightPercent, setVisualHeightPercent] = useState(
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
@@ -1350,6 +1360,37 @@ export function TerrainStudio() {
   const [searchingPlaces, setSearchingPlaces] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const resizePointerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const controller = new AbortController();
+
+    void (async () => {
+      let installedVersion = APP_VERSION;
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        installedVersion = await getVersion();
+      } catch {
+        // The bundled config remains a safe fallback if the app API is unavailable.
+      }
+      if (controller.signal.aborted) return;
+      setAppVersion(installedVersion);
+
+      try {
+        const update = await fetchAvailableUpdate(
+          installedVersion,
+          controller.signal,
+        );
+        if (!controller.signal.aborted) setAvailableUpdate(update);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setAvailableUpdate(null);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, []);
 
   const setVisualHeightFromPointer = useCallback((clientY: number) => {
     const bounds = workspaceRef.current?.getBoundingClientRect();
@@ -1903,10 +1944,34 @@ export function TerrainStudio() {
           <span className="brand-mark" aria-hidden="true" />
           <span>
             TopoSaic
-            <small>Terrain Puzzle</small>
+            <small>
+              Terrain Puzzle · <span>{displayVersion(appVersion)}</span>
+            </small>
           </span>
         </a>
         <div className="topbar-actions">
+          {availableUpdate && !updateDismissed && (
+            <aside className="update-notice" role="status">
+              <span>
+                <strong>
+                  {displayVersion(availableUpdate.version)} available
+                </strong>
+                <small>Current {displayVersion(appVersion)}</small>
+              </span>
+              <a href={availableUpdate.url} target="_blank" rel="noreferrer">
+                Download
+              </a>
+              <button
+                type="button"
+                aria-label={`Dismiss ${displayVersion(
+                  availableUpdate.version,
+                )} update notice`}
+                onClick={() => setUpdateDismissed(true)}
+              >
+                Later
+              </button>
+            </aside>
+          )}
           <div className={`build-state ${job?.status ?? "idle"}`}>
             <span />
             {job ? statusLabel : "Local engine · SQLite"}
