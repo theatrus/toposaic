@@ -227,6 +227,53 @@ const initialSpec: GenerationSpec = {
   },
 };
 
+const AUTO_DETAIL_REFERENCE_SPAN_KM = 18;
+const MAX_TERRAIN_SAMPLES_PER_PIECE = 160;
+const MAX_OVERLAY_SAMPLES_PER_PIECE = 192;
+const DETAIL_SAMPLE_STEP = 8;
+
+function scaledDetailSamples(
+  base: number,
+  groundSpanKm: number,
+  maximum: number,
+) {
+  const scale = Math.max(
+    1,
+    AUTO_DETAIL_REFERENCE_SPAN_KM / Math.max(0.5, groundSpanKm),
+  );
+  const scaled =
+    Math.ceil((base * scale) / DETAIL_SAMPLE_STEP) * DETAIL_SAMPLE_STEP;
+  return Math.min(maximum, Math.max(base, scaled));
+}
+
+function terrainSamplesPerPiece(spec: GenerationSpec) {
+  return scaledDetailSamples(
+    spec.samples_per_piece,
+    spec.ground_span_km,
+    MAX_TERRAIN_SAMPLES_PER_PIECE,
+  );
+}
+
+function overlaySamplesPerPiece(spec: GenerationSpec) {
+  return scaledDetailSamples(
+    spec.overlay_samples_per_piece,
+    spec.ground_span_km,
+    MAX_OVERLAY_SAMPLES_PER_PIECE,
+  );
+}
+
+function effectiveMeshSamples(spec: GenerationSpec) {
+  const terrain = terrainSamplesPerPiece(spec);
+  const overlay =
+    spec.color_output.enabled || spec.buildings.enabled
+      ? overlaySamplesPerPiece(spec)
+      : 0;
+  if (spec.solid_model) {
+    return Math.max(96, Math.min(terrain * 2, 256), overlay);
+  }
+  return Math.max(terrain, overlay);
+}
+
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
 const ADJACENT_GRID_SIZES = Array.from({ length: 12 }, (_, index) => index + 1);
@@ -1427,24 +1474,8 @@ function ReliefPreview({
                 : "Fast shape preview"}{" "}
           ·{" "}
           {spec.solid_model
-            ? `${Math.max(
-                96,
-                Math.min(
-                  Math.max(
-                    spec.samples_per_piece * 2,
-                    spec.color_output.enabled || spec.buildings.enabled
-                      ? spec.overlay_samples_per_piece
-                      : 0,
-                  ),
-                  256,
-                ),
-              )} mesh samples`
-            : `${Math.max(
-                spec.samples_per_piece,
-                spec.color_output.enabled || spec.buildings.enabled
-                  ? spec.overlay_samples_per_piece
-                  : 0,
-              )} samples/piece`}
+            ? `${effectiveMeshSamples(spec)} mesh samples`
+            : `${effectiveMeshSamples(spec)} effective samples/piece`}
         </span>
         <strong>
           {spec.solid_model
@@ -1460,6 +1491,7 @@ function RangeField({
   label,
   value,
   unit,
+  displayValue,
   min,
   max,
   step,
@@ -1468,6 +1500,7 @@ function RangeField({
   label: string;
   value: number;
   unit: string;
+  displayValue?: string;
   min: number;
   max: number;
   step: number;
@@ -1477,10 +1510,7 @@ function RangeField({
     <label className="range-field">
       <span>
         {label}
-        <output>
-          {value}
-          {unit}
-        </output>
+        <output>{displayValue ?? `${value}${unit}`}</output>
       </span>
       <input
         aria-label={label}
@@ -1846,6 +1876,8 @@ export function TerrainStudio() {
         width_mm: spec.width_mm,
         base_mm: spec.base_mm,
         relief_mm: spec.relief_mm,
+        samples_per_piece: spec.samples_per_piece,
+        overlay_samples_per_piece: spec.overlay_samples_per_piece,
         elevation_datum_m: spec.elevation_datum_m,
         elevation_m_per_mm: spec.elevation_m_per_mm,
         color_output: {
@@ -1886,7 +1918,9 @@ export function TerrainStudio() {
     spec.elevation_m_per_mm,
     spec.elevation_source,
     spec.ground_span_km,
+    spec.overlay_samples_per_piece,
     spec.relief_mm,
+    spec.samples_per_piece,
     spec.width_mm,
   ]);
 
@@ -2717,6 +2751,7 @@ export function TerrainStudio() {
               label="Mesh detail"
               value={spec.samples_per_piece}
               unit={spec.solid_model ? "" : " samples/piece"}
+              displayValue={`${spec.samples_per_piece} base · ${effectiveMeshSamples(spec)} effective${spec.solid_model ? "" : "/piece"}`}
               min={32}
               max={128}
               step={8}
@@ -2727,6 +2762,7 @@ export function TerrainStudio() {
                 label="Overlay detail"
                 value={spec.overlay_samples_per_piece}
                 unit=" samples/piece"
+                displayValue={`${spec.overlay_samples_per_piece} base · ${overlaySamplesPerPiece(spec)} effective/piece`}
                 min={64}
                 max={192}
                 step={8}

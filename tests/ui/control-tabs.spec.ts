@@ -401,6 +401,9 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   const initialBounds = await selection.boundingBox();
   expect(initialBounds).not.toBeNull();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
+  await expect(
+    page.getByText("64 base · 112 effective/piece", { exact: true }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Zoom in" }).click();
   await expect(groundSpan).toHaveValue("9");
@@ -409,6 +412,12 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
     "Selected terrain area: 9 km square",
   );
   await expect(selection).toHaveAttribute("data-map-zoom", "10");
+  await expect(
+    page.getByText("64 base · 192 effective/piece", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("112 base · 192 effective/piece", { exact: true }),
+  ).toBeVisible();
 
   const zoomedBounds = await selection.boundingBox();
   expect(zoomedBounds).not.toBeNull();

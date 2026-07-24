@@ -27,6 +27,10 @@ const OVERLAY_TERRAIN_EMBED_MM: f32 = 0.02;
 const BUILDING_GROUND_STEP_MM: f32 = 0.25;
 const MAX_PARALLEL_PIECES: usize = 8;
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
+const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
+const MAX_TERRAIN_SAMPLES_PER_PIECE: u32 = 160;
+const MAX_OVERLAY_SAMPLES_PER_PIECE: u32 = 192;
+const DETAIL_SAMPLE_STEP: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -149,11 +153,13 @@ impl GenerationSpec {
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
         }
-        if !(16..=160).contains(&self.samples_per_piece) {
-            bail!("samples per piece must be between 16 and 160");
+        if !(16..=MAX_TERRAIN_SAMPLES_PER_PIECE).contains(&self.samples_per_piece) {
+            bail!("samples per piece must be between 16 and {MAX_TERRAIN_SAMPLES_PER_PIECE}");
         }
-        if !(32..=192).contains(&self.overlay_samples_per_piece) {
-            bail!("overlay samples per piece must be between 32 and 192");
+        if !(32..=MAX_OVERLAY_SAMPLES_PER_PIECE).contains(&self.overlay_samples_per_piece) {
+            bail!(
+                "overlay samples per piece must be between 32 and {MAX_OVERLAY_SAMPLES_PER_PIECE}"
+            );
         }
         if self.place_name.trim().is_empty() || self.place_name.chars().count() > 48 {
             bail!("place label must contain between 1 and 48 characters");
@@ -173,15 +179,41 @@ impl GenerationSpec {
 
     pub fn effective_samples_per_piece(&self) -> u32 {
         if self.uses_color_materials() {
-            self.samples_per_piece.max(self.overlay_samples_per_piece)
+            self.terrain_samples_per_piece()
+                .max(self.overlay_samples_per_piece())
         } else {
-            self.samples_per_piece
+            self.terrain_samples_per_piece()
         }
+    }
+
+    pub fn terrain_samples_per_piece(&self) -> u32 {
+        scale_detail_samples(
+            self.samples_per_piece,
+            self.ground_span_km,
+            MAX_TERRAIN_SAMPLES_PER_PIECE,
+        )
+    }
+
+    pub fn overlay_samples_per_piece(&self) -> u32 {
+        scale_detail_samples(
+            self.overlay_samples_per_piece,
+            self.ground_span_km,
+            MAX_OVERLAY_SAMPLES_PER_PIECE,
+        )
     }
 
     fn uses_color_materials(&self) -> bool {
         self.color_output.enabled || self.buildings.enabled
     }
+}
+
+fn scale_detail_samples(base: u32, ground_span_km: f64, maximum: u32) -> u32 {
+    let scale = (AUTO_DETAIL_REFERENCE_SPAN_KM / ground_span_km.max(0.5)).max(1.0);
+    let scaled = (f64::from(base) * scale).ceil() as u32;
+    scaled
+        .div_ceil(DETAIL_SAMPLE_STEP)
+        .saturating_mul(DETAIL_SAMPLE_STEP)
+        .clamp(base, maximum)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3136,9 +3168,9 @@ fn build_piece_with_height_range(
     column: u32,
 ) -> Result<Mesh> {
     let base_samples = if spec.solid_model {
-        (spec.samples_per_piece * 2).clamp(96, 256) as usize
+        (spec.terrain_samples_per_piece() * 2).clamp(96, 256) as usize
     } else {
-        spec.samples_per_piece as usize
+        spec.terrain_samples_per_piece() as usize
     };
     let samples = base_samples.max(spec.effective_samples_per_piece() as usize);
     let piece_width = if spec.solid_model {
@@ -3171,8 +3203,14 @@ fn build_piece_with_height_range(
     .into_iter()
     .map(|[x, y]| [x - origin_x, y - origin_y])
     .collect::<Vec<_>>();
-    let spacing = piece_width.min(piece_height) / samples as f32;
-    let outline = densify_outline_for_triangulation(&outline, spacing);
+    let outline_samples = if spec.solid_model {
+        samples
+    } else {
+        spec.samples_per_piece as usize
+    };
+    let terrain_spacing = piece_width.min(piece_height) / samples as f32;
+    let boundary_spacing = piece_width.min(piece_height) / outline_samples as f32;
+    let outline = densify_outline_for_triangulation(&outline, boundary_spacing);
     let mut points = outline
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
@@ -3214,15 +3252,15 @@ fn build_piece_with_height_range(
             origin_y,
             assembled_width,
             assembled_height,
-            spacing,
+            terrain_spacing,
         );
     }
-    let grid_columns = ((maximum_x - minimum_x) / spacing).ceil() as usize;
-    let grid_rows = ((maximum_y - minimum_y) / spacing).ceil() as usize;
+    let grid_columns = ((maximum_x - minimum_x) / terrain_spacing).ceil() as usize;
+    let grid_rows = ((maximum_y - minimum_y) / terrain_spacing).ceil() as usize;
     for grid_y in 0..grid_rows {
-        let y = minimum_y + (grid_y as f32 + 0.5) * spacing;
+        let y = minimum_y + (grid_y as f32 + 0.5) * terrain_spacing;
         for grid_x in 0..grid_columns {
-            let x = minimum_x + (grid_x as f32 + 0.5) * spacing;
+            let x = minimum_x + (grid_x as f32 + 0.5) * terrain_spacing;
             if point_in_polygon([x, y], &outline) {
                 push_unique_triangulation_point(&mut points, &mut point_keys, [x, y]);
             }
@@ -6077,6 +6115,25 @@ mod tests {
         assert_eq!(spec.effective_samples_per_piece(), 112);
         spec.overlay_samples_per_piece = 48;
         assert_eq!(spec.effective_samples_per_piece(), 64);
+    }
+
+    #[test]
+    fn close_views_raise_mesh_detail_with_safe_caps() {
+        let mut spec = GenerationSpec::default();
+        assert_eq!(spec.terrain_samples_per_piece(), 64);
+        assert_eq!(spec.overlay_samples_per_piece(), 112);
+
+        spec.ground_span_km = 9.0;
+        assert_eq!(spec.terrain_samples_per_piece(), 128);
+        assert_eq!(spec.overlay_samples_per_piece(), 192);
+
+        spec.ground_span_km = 4.5;
+        assert_eq!(spec.terrain_samples_per_piece(), 160);
+        assert_eq!(spec.overlay_samples_per_piece(), 192);
+
+        spec.ground_span_km = 36.0;
+        assert_eq!(spec.terrain_samples_per_piece(), 64);
+        assert_eq!(spec.overlay_samples_per_piece(), 112);
     }
 
     #[test]

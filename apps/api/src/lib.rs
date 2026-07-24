@@ -383,8 +383,9 @@ async fn create_preview(
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
     let cache_dir = state.map_cache_dir.join("elevation");
     let preview = tokio::task::spawn_blocking(move || {
-        let height_field = elevation::fetch_preview_height_field(&spec, &cache_dir, 64)?;
-        terrain_core::build_height_preview(&spec, &height_field, 64)
+        let samples = spec.terrain_samples_per_piece().clamp(64, 128) as usize;
+        let height_field = elevation::fetch_preview_height_field(&spec, &cache_dir, samples)?;
+        terrain_core::build_height_preview(&spec, &height_field, samples)
     })
     .await
     .map_err(internal_error)?
