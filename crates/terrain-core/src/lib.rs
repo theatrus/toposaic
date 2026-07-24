@@ -71,7 +71,7 @@ impl Default for GenerationSpec {
             rows: 3,
             columns: 3,
             base_mm: 2.4,
-            relief_mm: 14.0,
+            relief_mm: 28.0,
             elevation_datum_m: None,
             elevation_m_per_mm: None,
             adjacent_columns: 1,
