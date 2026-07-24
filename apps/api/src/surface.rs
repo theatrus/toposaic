@@ -103,9 +103,11 @@ pub fn fetch_surface_field(
     height_field: &HeightField,
     map_cache_dir: &Path,
 ) -> Result<SurfaceField> {
-    let samples = spec.effective_samples_per_piece();
-    let width = (spec.columns * samples + 1) as usize;
-    let height = (spec.rows * samples + 1) as usize;
+    let samples = spec
+        .effective_samples_per_piece()
+        .min(height_field.samples_per_piece(spec) as u32)
+        .max(16);
+    let (width, height) = spec.sample_grid_dimensions(samples);
     let bounds = bounds_for(spec);
     let mut classes = vec![SurfaceClass::Rock; width * height];
     let mut source = String::new();

@@ -96,11 +96,14 @@ tiles must be regenerated.
 
 The elevation provider reads Mapzen Terrarium tiles by default. A Mapterhorn
 option uses 512 px WebP Terrarium tiles with regional elevation data up to zoom
-17 and falls back to lower-zoom Mapterhorn tiles outside that coverage. The
-service caches elevation, ESA WorldCover, and OpenStreetMap input
-under the operating system's user cache directory. OpenStreetMap entries keep
-the raw response, so width, density, color, and visibility changes reuse the
-same download.
+17 and falls back to lower-zoom Mapterhorn tiles outside that coverage. For
+areas up to 2 km wide, the optional finest-detail mode probes the available
+Mapterhorn level and targets 0.25 m samples. It never exceeds 2,048 samples
+across the model and does not add mesh points beyond the tile detail it finds.
+The service caches elevation, ESA WorldCover, and OpenStreetMap input under the
+operating system's user cache directory. OpenStreetMap entries keep the raw
+response, so width, density, color, and visibility changes reuse the same
+download.
 
 For uncached requests, the service tries a second public Overpass instance when
 the first rejects or cannot serve the request. If both fail, generation
@@ -134,11 +137,14 @@ the model. Set it to 0% for major waterways only or 100% for every mapped
 stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
-Overlay detail is separate from the base terrain setting. It defaults to 112
-samples per piece and can rise to 192, giving roads, buildings, water, snow,
-forest, and rock boundaries a finer mesh without forcing the same setting on
-plain terrain jobs. Generated browser previews use up to 384 samples across the
-assembled map.
+Mesh detail uses one budget across the assembled model, so adding puzzle pieces
+does not multiply the terrain density and solid terrain matches puzzle output.
+Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across
+the model. Ultra creates about four times as many surface triangles as High and
+best suits 0.2 mm nozzles, resin printing, or small high-detail terrain areas.
+Vector roads, waterways, and building edges add local points where they need
+them. Generated browser previews use up to 384 samples across the assembled
+map.
 
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z

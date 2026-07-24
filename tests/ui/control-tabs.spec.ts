@@ -52,6 +52,16 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(elevationSource).toHaveValue("mapzen");
   await elevationSource.selectOption("mapterhorn");
   await expect(elevationSource).toHaveValue("mapterhorn");
+  const fineDemDetail = page.getByRole("checkbox", {
+    name: /Use finest available DEM detail/,
+  });
+  await expect(fineDemDetail).toBeVisible();
+  await expect(fineDemDetail).toBeDisabled();
+  await page.getByRole("slider", { name: "Ground span" }).fill("2");
+  await expect(fineDemDetail).toBeEnabled();
+  await expect(fineDemDetail).not.toBeChecked();
+  await fineDemDetail.check();
+  await expect(fineDemDetail).toBeChecked();
   const modelType = page.getByRole("group", { name: "Model type" });
   const puzzleModel = modelType.getByRole("button", {
     name: /Jigsaw puzzle/,
@@ -69,8 +79,10 @@ test("switches between the reflowed control panels", async ({ page }) => {
   expect(Math.abs(puzzleModelBounds!.y - solidModelBounds!.y)).toBeLessThan(2);
   await solidModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeHidden();
+  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
   await puzzleModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeVisible();
+  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
   const pieceShape = page.getByRole("group", { name: "Piece shape" });
   const preview = page.getByLabel("Interactive 3D terrain preview");
   const straightGrid = pieceShape.getByRole("checkbox", {
@@ -393,6 +405,8 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   await page.goto("/");
 
   const groundSpan = page.getByRole("slider", { name: "Ground span" });
+  await expect(groundSpan).toHaveAttribute("min", "0.25");
+  await expect(groundSpan).toHaveAttribute("step", "0.25");
   const selection = page.locator(".map-selection");
   await expect(selection).toHaveAttribute(
     "aria-label",
@@ -401,6 +415,21 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   const initialBounds = await selection.boundingBox();
   expect(initialBounds).not.toBeNull();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
+  const meshDetail = page.getByRole("radiogroup", { name: "Mesh detail" });
+  await expect(
+    meshDetail.getByRole("radio", { name: /Standard/ }),
+  ).toHaveAttribute("aria-checked", "true");
+  await meshDetail.getByRole("radio", { name: /Ultra/ }).click();
+  await expect(
+    meshDetail.getByRole("radio", { name: /Ultra/ }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByText(/2048 across · about 8\.8 m ground spacing/),
+  ).toBeVisible();
+  await meshDetail.getByRole("radio", { name: /Standard/ }).click();
+  await expect(
+    page.getByText(/640 across · about 28\.1 m ground spacing/),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Zoom in" }).click();
   await expect(groundSpan).toHaveValue("9");
@@ -409,6 +438,9 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
     "Selected terrain area: 9 km square",
   );
   await expect(selection).toHaveAttribute("data-map-zoom", "10");
+  await expect(
+    page.getByText(/640 across · about 14\.1 m ground spacing/),
+  ).toBeVisible();
 
   const zoomedBounds = await selection.boundingBox();
   expect(zoomedBounds).not.toBeNull();
