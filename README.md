@@ -17,10 +17,9 @@ Download the latest desktop build from
 - macOS Apple silicon: `.dmg` disk image or `.app.zip` application archive
 - Linux x86-64: portable `.AppImage`
 
-Release and trusted `main` macOS builds use a Developer ID signature, Apple
-notarization, and stapled tickets. Pull-request bundles use an ad-hoc signature
-and never receive signing credentials. On Linux, make the AppImage executable
-with `chmod +x` before opening it.
+macOS releases use a Developer ID signature, Apple notarization, and stapled
+tickets. On Linux, make the AppImage executable with `chmod +x` before opening
+it.
 
 ## Screenshots
 
@@ -167,28 +166,9 @@ data directory. Downloaded map inputs still use the shared OS cache described
 below. Each generated file opens a native Save As dialog, so the app does not
 drop files into Downloads without asking.
 
-GitHub Actions tests the shared code, then builds five desktop files: Windows
-`.msi` and `.exe` installers, macOS `.app.zip` and `.dmg` bundles, and a Linux
-`.AppImage`.
-Each file appears as its own workflow artifact. Pushing a version tag such as
-`v0.1.0` runs the same checks and attaches all five files to a GitHub Release.
-The tag must match the version in `src-tauri/tauri.conf.json`. The macOS build
-from a trusted push is Developer ID signed, notarized by Apple, stapled, and
-checked with Gatekeeper before upload. Pull-request macOS bundles remain
-ad-hoc signed and cannot read the protected signing secrets.
-
-The trusted macOS job uses a protected GitHub environment named `signing` with
-these environment secrets:
-
-- `APPLE_BUILD_CERTIFICATE`: base64-encoded Developer ID Application `.p12`
-- `APPLE_BUILD_CERTIFICATE_PASSWORD`: password for that `.p12`
-- `KEYCHAIN_PASSWORD`: password for the temporary CI keychain
-- `APPLE_API_ISSUER`: App Store Connect team API issuer ID
-- `APPLE_API_KEY`: App Store Connect team API key ID
-- `APPLE_API_KEY_PRIVATE`: base64-encoded `AuthKey_<KEY_ID>.p8`
-
-The workflow deletes its temporary keychain, certificate, and API key even when
-the build fails.
+Tagged releases provide five desktop files: Windows `.msi` and `.exe`
+installers, macOS `.app.zip` and `.dmg` bundles, and a Linux `.AppImage`. The
+tag must match the version in `src-tauri/tauri.conf.json`.
 
 On Linux, make the downloaded AppImage executable before opening it:
 
