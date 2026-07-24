@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use geo::{Area, BooleanOps, Buffer, Centroid, Contains, Coord, LineString, Point, Polygon};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use ttf_parser::{Face, OutlineBuilder};
@@ -24,6 +25,7 @@ const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS
 const ROAD_VECTOR_STEP_MM: f32 = 0.25;
 const OVERLAY_TERRAIN_EMBED_MM: f32 = 0.02;
 const BUILDING_GROUND_STEP_MM: f32 = 0.25;
+const MAX_PARALLEL_PIECES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -880,14 +882,28 @@ impl SurfaceField {
     }
 
     fn coverage(&self) -> [f32; 6] {
-        let mut counts = [0_usize; 6];
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let u = x as f32 / (self.width - 1) as f32;
-                let v = y as f32 / (self.height - 1) as f32;
-                counts[self.at(u, v).material_index() as usize] += 1;
-            }
-        }
+        let counts = (0..self.classes.len())
+            .into_par_iter()
+            .fold(
+                || [0_usize; 6],
+                |mut counts, index| {
+                    let x = index % self.width;
+                    let y = index / self.width;
+                    let u = x as f32 / (self.width - 1) as f32;
+                    let v = y as f32 / (self.height - 1) as f32;
+                    counts[self.at(u, v).material_index() as usize] += 1;
+                    counts
+                },
+            )
+            .reduce(
+                || [0_usize; 6],
+                |mut total, counts| {
+                    for (total, count) in total.iter_mut().zip(counts) {
+                        *total += count;
+                    }
+                    total
+                },
+            );
         let total = self.classes.len() as f32;
         counts.map(|count| count as f32 * 100.0 / total)
     }
@@ -1088,12 +1104,23 @@ impl HeightField {
     }
 
     fn range(&self) -> (f32, f32) {
-        let minimum = self.values_m.iter().copied().fold(f32::INFINITY, f32::min);
-        let maximum = self
+        let (minimum, maximum) = self
             .values_m
-            .iter()
+            .par_iter()
             .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
+            .fold(
+                || (f32::INFINITY, f32::NEG_INFINITY),
+                |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+            )
+            .reduce(
+                || (f32::INFINITY, f32::NEG_INFINITY),
+                |(left_minimum, left_maximum), (right_minimum, right_maximum)| {
+                    (
+                        left_minimum.min(right_minimum),
+                        left_maximum.max(right_maximum),
+                    )
+                },
+            );
         (minimum, (maximum - minimum).max(1.0))
     }
 }
@@ -2356,33 +2383,56 @@ fn generate_project_inner(
     };
 
     let mut artifacts = Vec::new();
+    let height_range = height_field.map(HeightField::range);
     let project_path = output_dir.join(if spec.solid_model {
         "terrain-solid.3mf"
     } else {
         "toposaic.3mf"
     });
     let mut project_writer = ThreeMfWriter::new(spec, &project_path)?;
-    for index in 0..object_count {
-        let row = if spec.solid_model {
-            0
-        } else {
-            index as u32 / spec.columns
-        };
-        let column = if spec.solid_model {
-            0
-        } else {
-            index as u32 % spec.columns
-        };
-        let mesh = build_piece(spec, height_field, surface_field, row, column)?;
-        let name = if spec.solid_model {
-            "terrain-solid.stl".into()
-        } else {
-            format!("piece-{}-{}.stl", row + 1, column + 1)
-        };
-        let path = output_dir.join(&name);
-        write_binary_stl(&mesh, &path)?;
-        artifacts.push(file_artifact(&path, "model/stl")?);
-        project_writer.write_mesh(&mesh)?;
+    let piece_batch_size = object_count
+        .min(rayon::current_num_threads())
+        .clamp(1, MAX_PARALLEL_PIECES);
+    for batch_start in (0..object_count).step_by(piece_batch_size) {
+        let batch_end = (batch_start + piece_batch_size).min(object_count);
+        let pieces = (batch_start..batch_end)
+            .into_par_iter()
+            .map(|index| -> Result<(Mesh, Artifact)> {
+                let row = if spec.solid_model {
+                    0
+                } else {
+                    index as u32 / spec.columns
+                };
+                let column = if spec.solid_model {
+                    0
+                } else {
+                    index as u32 % spec.columns
+                };
+                let mesh = build_piece_with_height_range(
+                    spec,
+                    height_field,
+                    height_range,
+                    surface_field,
+                    row,
+                    column,
+                )
+                .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
+                let name = if spec.solid_model {
+                    "terrain-solid.stl".into()
+                } else {
+                    format!("piece-{}-{}.stl", row + 1, column + 1)
+                };
+                let path = output_dir.join(&name);
+                write_binary_stl(&mesh, &path)?;
+                let artifact = file_artifact(&path, "model/stl")?;
+                Ok((mesh, artifact))
+            })
+            .collect::<Vec<_>>();
+        for piece in pieces {
+            let (mesh, artifact) = piece?;
+            artifacts.push(artifact);
+            project_writer.write_mesh(&mesh)?;
+        }
     }
     project_writer.finish()?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
@@ -2440,9 +2490,22 @@ fn preview_sample_count(spec: &GenerationSpec) -> usize {
     (spec.rows.max(spec.columns) * spec.effective_samples_per_piece() + 1).clamp(96, 384) as usize
 }
 
+#[cfg(test)]
 fn build_piece(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
+    surface_field: Option<&SurfaceField>,
+    row: u32,
+    column: u32,
+) -> Result<Mesh> {
+    let height_range = height_field.map(HeightField::range);
+    build_piece_with_height_range(spec, height_field, height_range, surface_field, row, column)
+}
+
+fn build_piece_with_height_range(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
     surface_field: Option<&SurfaceField>,
     row: u32,
     column: u32,
@@ -2475,7 +2538,6 @@ fn build_piece(
     };
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
-    let height_range = height_field.map(HeightField::range);
     let outline = if spec.solid_model {
         solid_outline(spec, samples)
     } else {
@@ -3675,11 +3737,12 @@ fn build_preview(
     surface_field: Option<&SurfaceField>,
     size: usize,
 ) -> serde_json::Value {
-    let mut heights = Vec::with_capacity(size * size);
-    let mut surface_classes = surface_field.map(|_| Vec::with_capacity(size * size));
     let range = height_field.map(HeightField::range);
-    for y in 0..size {
-        for x in 0..size {
+    let samples = (0..size * size)
+        .into_par_iter()
+        .map(|index| {
+            let x = index % size;
+            let y = index / size;
             let u = x as f32 / (size - 1) as f32;
             let v = y as f32 / (size - 1) as f32;
             let surface_sample = surface_field.map(|field| field.sample(u, v));
@@ -3700,10 +3763,18 @@ fn build_preview(
                 .map(|_| spec.color_output.road_height_mm)
                 .unwrap_or(0.0)
                 / spec.relief_mm.max(f32::EPSILON);
-            heights.push(terrain + building + road);
-            if let (Some(sample), Some(classes)) = (surface_sample, surface_classes.as_mut()) {
-                classes.push(sample.class.material_index());
-            }
+            (
+                terrain + building + road,
+                surface_sample.map(|sample| sample.class.material_index()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut heights = Vec::with_capacity(samples.len());
+    let mut surface_classes = surface_field.map(|_| Vec::with_capacity(samples.len()));
+    for (height, surface_class) in samples {
+        heights.push(height);
+        if let (Some(class), Some(classes)) = (surface_class, surface_classes.as_mut()) {
+            classes.push(class);
         }
     }
     let mut preview = serde_json::json!({
@@ -4302,8 +4373,14 @@ mod tests {
                 .artifacts
                 .iter()
                 .filter(|artifact| artifact.name.ends_with(".stl"))
-                .count(),
-            4
+                .map(|artifact| artifact.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "piece-1-1.stl",
+                "piece-1-2.stl",
+                "piece-2-1.stl",
+                "piece-2-2.stl",
+            ]
         );
 
         std::fs::remove_dir_all(output_dir).unwrap();
@@ -4867,6 +4944,43 @@ mod tests {
         );
         assert_eq!(values.last().and_then(serde_json::Value::as_f64), Some(1.0));
         assert!(preview.get("surface_classes").is_none());
+    }
+
+    #[test]
+    fn parallel_preview_keeps_stable_sample_order() {
+        let spec = GenerationSpec::default();
+        let height =
+            HeightField::new(3, 3, (0..9).map(|value| value as f32).collect(), "height").unwrap();
+        let surface = SurfaceField::new(
+            3,
+            3,
+            [
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Snow,
+                SurfaceClass::Water,
+                SurfaceClass::Road,
+                SurfaceClass::Building,
+                SurfaceClass::Snow,
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+            ]
+            .to_vec(),
+            "surface",
+        )
+        .unwrap();
+        let single_threaded = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| build_preview(&spec, Some(&height), Some(&surface), 64));
+        let parallel = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| build_preview(&spec, Some(&height), Some(&surface), 64));
+
+        assert_eq!(single_threaded, parallel);
     }
 
     #[test]

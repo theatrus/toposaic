@@ -112,6 +112,15 @@ job replaces it with the detailed generated preview. The preview is a lit 3D
 height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or use the
 plus and minus keys to zoom.
 
+Mesh generation uses Rayon to build separate puzzle pieces and their STL files
+in parallel. It keeps 3MF archive writes, downloads, cache writes, and SQLite
+work in order. No more than eight piece meshes stay in memory at once. Set
+`RAYON_NUM_THREADS` to cap CPU use. A repeatable release-mode mesh check is:
+
+```bash
+cargo run --release -p terrain-core --example profile_generation -- 6 6 96
+```
+
 ## Requirements
 
 - Rust 1.96 or newer
