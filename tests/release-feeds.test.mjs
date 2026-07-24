@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildReleaseFeeds } from "../scripts/release-feeds.mjs";
+
+test("normal desktop bundles include a valid updater configuration", async () => {
+  const config = JSON.parse(
+    await readFile(
+      new URL("../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+
+  assert.ok(config.plugins.updater.pubkey);
+  assert.deepEqual(config.plugins.updater.endpoints, [
+    "https://toposaic.com/releases/updater.json",
+    "https://github.com/theatrus/toposaic/releases/latest/download/updater.json",
+  ]);
+  assert.equal(config.plugins.updater.windows.installMode, "passive");
+});
 
 test("builds Tauri and website feeds from inline signatures", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "toposaic-feeds-"));

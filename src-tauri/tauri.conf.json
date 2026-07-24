@@ -25,6 +25,18 @@
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:38787 https://api.github.com https://toposaic.com; img-src 'self' data: https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4MTAwMjdCRDI5NDM2RDAKUldUUU5wVFNld0lRbU1yNUlmSTU2M3c3Q0NQbjBjNi92V3lqdjZ6ckNBa0lvQkp6eHhiRHgvQ1MK",
+      "endpoints": [
+        "https://toposaic.com/releases/updater.json",
+        "https://github.com/theatrus/toposaic/releases/latest/download/updater.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
