@@ -76,6 +76,14 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(fineDemDetail).not.toBeChecked();
   await fineDemDetail.check();
   await expect(fineDemDetail).toBeChecked();
+  const mapCenter = page.getByRole("group", { name: "Map center" });
+  const superTileMode = page.getByRole("group", { name: "Super-tile mode" });
+  await expect(mapCenter).toHaveCSS("border-top-style", "solid");
+  const mapCenterBounds = await mapCenter.boundingBox();
+  const superTileBounds = await superTileMode.boundingBox();
+  expect(mapCenterBounds).not.toBeNull();
+  expect(superTileBounds).not.toBeNull();
+  expect(Math.abs(mapCenterBounds!.y - superTileBounds!.y)).toBeLessThan(2);
   const modelType = page.getByRole("group", { name: "Model type" });
   const puzzleModel = modelType.getByRole("button", {
     name: /Jigsaw puzzle/,
@@ -91,6 +99,13 @@ test("switches between the reflowed control panels", async ({ page }) => {
   expect(puzzleModelBounds!.height).toBeLessThan(64);
   expect(puzzleModelBounds!.width).toBeLessThan(340);
   expect(Math.abs(puzzleModelBounds!.y - solidModelBounds!.y)).toBeLessThan(2);
+  const pieceLayout = page.getByRole("group", { name: "Piece layout" });
+  const modelTypeBounds = await modelType.boundingBox();
+  const pieceLayoutBounds = await pieceLayout.boundingBox();
+  expect(modelTypeBounds).not.toBeNull();
+  expect(pieceLayoutBounds).not.toBeNull();
+  expect(modelTypeBounds!.y).toBeLessThan(pieceLayoutBounds!.y);
+  await expect(page.getByLabel("Place name")).toBeHidden();
   await solidModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeHidden();
   await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
@@ -204,6 +219,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
     name: "Shallow terrain tray",
   });
   await expect(trayControls).toBeVisible();
+  await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
