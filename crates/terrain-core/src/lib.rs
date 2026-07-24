@@ -142,7 +142,7 @@ impl GenerationSpec {
             bail!("super-tile position must be inside its grid");
         }
         if self.super_tile_anchor == SuperTileAnchor::Center
-            && (self.adjacent_columns % 2 == 0 || self.adjacent_rows % 2 == 0)
+            && (self.adjacent_columns.is_multiple_of(2) || self.adjacent_rows.is_multiple_of(2))
         {
             bail!("center-anchored super-tile grids require odd column and row counts");
         }
