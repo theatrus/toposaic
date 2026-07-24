@@ -151,6 +151,16 @@ a {
   padding: 6px 8px 6px 11px;
 }
 
+.update-notice.recommended {
+  background: #f7efd2;
+  border-color: #d9c783;
+}
+
+.update-notice.required {
+  background: #fae2d8;
+  border-color: #ddac96;
+}
+
 .update-notice > span {
   display: grid;
   gap: 2px;
@@ -187,6 +197,11 @@ a {
 
 .update-notice button {
   color: var(--muted);
+}
+
+.update-notice button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .update-notice a:focus-visible,

@@ -51,6 +51,7 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     needs: test
+    environment: signing
     strategy:
       fail-fast: false
       matrix:
@@ -105,13 +106,40 @@ jobs:
             exit 1
           fi
 
-      - name: Build bundle
+      - name: Write updater build config
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TOPOSAIC_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          node scripts/write-updater-config.mjs \
+            "$RUNNER_TEMP/toposaic-updater.json"
+
+      - name: Build unsigned bundle
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: npm run tauri
           args: --bundles ${{ matrix.bundles }}
+          uploadWorkflowArtifacts: false
+
+      - name: Build signed update bundle
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npm run tauri
+          args: >-
+            --bundles ${{ matrix.bundles }}
+            --config ${{ runner.temp }}/toposaic-updater.json
           uploadWorkflowArtifacts: false
 
       - name: Verify Windows executable
@@ -174,11 +202,18 @@ jobs:
           if ($exe.Count -ne 1) {
             throw "Expected one NSIS executable, found $($exe.Count)."
           }
+          if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
+            $exeSig = Get-Item "$($exe[0].FullName).sig"
+          }
           New-Item -ItemType Directory -Force "release-artifacts" | Out-Null
           Copy-Item $msi[0].FullName `
             "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.msi"
           Copy-Item $exe[0].FullName `
             "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe"
+          if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
+            Copy-Item $exeSig.FullName `
+              "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe.sig"
+          }
 
       - name: Stage Linux file
         if: runner.os == 'Linux'
@@ -196,6 +231,11 @@ jobs:
             "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
           chmod +x \
             "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test -s "${appimages[0]}.sig"
+            cp "${appimages[0]}.sig" \
+              "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage.sig"
+          fi
 
       - name: Upload Windows MSI
         if: runner.os == 'Windows'
@@ -221,6 +261,24 @@ jobs:
         with:
           name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage
           path: release-artifacts/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Windows updater signature
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.exe.sig
+          path: release-artifacts/*.exe.sig
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Linux updater signature
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage.sig
+          path: release-artifacts/*.AppImage.sig
           if-no-files-found: error
           compression-level: 0
 
@@ -334,6 +392,18 @@ jobs:
             exit 1
           fi
 
+      - name: Write updater build config
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TOPOSAIC_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          node scripts/write-updater-config.mjs \
+            "$RUNNER_TEMP/toposaic-updater.json"
+
       - name: Import Developer ID certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_BUILD_CERTIFICATE }}
@@ -391,6 +461,7 @@ jobs:
           printf 'APPLE_API_KEY_PATH=%s\n' "$key_path" >> "$GITHUB_ENV"
 
       - name: Build signed and notarized macOS bundle
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -399,6 +470,22 @@ jobs:
         with:
           tauriScript: npm run tauri
           args: --bundles app,dmg
+          uploadWorkflowArtifacts: false
+
+      - name: Build signed and notarized macOS update bundle
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npm run tauri
+          args: >-
+            --bundles app,dmg
+            --config ${{ runner.temp }}/toposaic-updater.json
           uploadWorkflowArtifacts: false
 
       - name: Notarize and staple disk image
@@ -446,6 +533,15 @@ jobs:
             "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.app.zip"
           cp "${dmgs[0]}" \
             "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.dmg"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            updater="target/release/bundle/macos/TopoSaic.app.tar.gz"
+            test -s "$updater"
+            test -s "$updater.sig"
+            cp "$updater" \
+              "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.app.tar.gz"
+            cp "$updater.sig" \
+              "release-artifacts/TopoSaic-${APP_VERSION}-macos-aarch64.app.tar.gz.sig"
+          fi
 
       - name: Upload signed macOS app archive
         uses: actions/upload-artifact@v7
@@ -460,6 +556,17 @@ jobs:
         with:
           name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64.dmg
           path: release-artifacts/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload signed macOS updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-macos-aarch64-updater
+          path: |
+            release-artifacts/*.app.tar.gz
+            release-artifacts/*.app.tar.gz.sig
           if-no-files-found: error
           compression-level: 0
 
@@ -496,19 +603,41 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(release-artifacts/*)
-          if [[ "${#files[@]}" -ne 5 ]]; then
-            echo "::error::Expected five release files, found ${#files[@]}."
-            printf '%s\n' "${files[@]}"
-            exit 1
-          fi
-          for suffix in .msi .exe .app.zip .dmg .AppImage; do
-            matches=(release-artifacts/*"$suffix")
-            if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "::error::Expected one $suffix file, found ${#matches[@]}."
+          version="${GITHUB_REF_NAME#v}"
+          required=(
+            "TopoSaic-${version}-windows-x64.msi"
+            "TopoSaic-${version}-windows-x64.exe"
+            "TopoSaic-${version}-windows-x64.exe.sig"
+            "TopoSaic-${version}-macos-aarch64.app.zip"
+            "TopoSaic-${version}-macos-aarch64.dmg"
+            "TopoSaic-${version}-macos-aarch64.app.tar.gz"
+            "TopoSaic-${version}-macos-aarch64.app.tar.gz.sig"
+            "TopoSaic-${version}-linux-x86_64.AppImage"
+            "TopoSaic-${version}-linux-x86_64.AppImage.sig"
+          )
+          for file in "${required[@]}"; do
+            if [[ ! -s "release-artifacts/$file" ]]; then
+              echo "::error::Missing release file $file."
               exit 1
             fi
           done
+
+      - name: Build release feeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          published_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          node scripts/release-feeds.mjs \
+            release-artifacts \
+            "$version" \
+            "$GITHUB_REF_NAME" \
+            "$published_at"
+          node -e '
+            for (const file of ["updater.json", "notice.json"]) {
+              JSON.parse(require("node:fs").readFileSync(`release-artifacts/${file}`, "utf8"));
+            }
+          '
 
       - name: Create or update GitHub Release
         env:
