@@ -2525,29 +2525,36 @@ export function TerrainStudio() {
             </div>
 
             <div className="coordinate-adjacent-row">
-              <div className="coordinate-row">
-                <label>
-                  Latitude
-                  <input
-                    type="number"
-                    step="0.00001"
-                    value={spec.center_lat}
-                    onChange={(event) =>
-                      update("center_lat", Number(event.target.value))
-                    }
-                  />
-                </label>
-                <label>
-                  Longitude
-                  <input
-                    type="number"
-                    step="0.00001"
-                    value={spec.center_lon}
-                    onChange={(event) =>
-                      update("center_lon", Number(event.target.value))
-                    }
-                  />
-                </label>
+              <div
+                className="coordinate-box"
+                role="group"
+                aria-label="Map center"
+              >
+                <strong>Map center</strong>
+                <div className="coordinate-row">
+                  <label>
+                    Latitude
+                    <input
+                      type="number"
+                      step="0.00001"
+                      value={spec.center_lat}
+                      onChange={(event) =>
+                        update("center_lat", Number(event.target.value))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Longitude
+                    <input
+                      type="number"
+                      step="0.00001"
+                      value={spec.center_lon}
+                      onChange={(event) =>
+                        update("center_lon", Number(event.target.value))
+                      }
+                    />
+                  </label>
+                </div>
               </div>
               <div
                 className="adjacent-tiles"
@@ -2734,56 +2741,6 @@ export function TerrainStudio() {
                 </small>
               </label>
             )}
-            <label className="place-label-field">
-              Tray place label
-              <input
-                type="text"
-                maxLength={48}
-                required
-                value={spec.place_name}
-                onChange={(event) => update("place_name", event.target.value)}
-              />
-              <small>The tray adds the coordinates after this name.</small>
-            </label>
-
-            <div
-              className="model-mode"
-              role="group"
-              aria-label="Model type"
-            >
-              <strong className="model-mode-label">Model type</strong>
-              <button
-                type="button"
-                className={!spec.solid_model ? "active" : ""}
-                onClick={() => update("solid_model", false)}
-              >
-                <span className="mode-mark puzzle-mark" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>
-                  <strong>Jigsaw puzzle</strong>
-                  <small>
-                    {spec.puzzle_tabs
-                      ? "Separate interlocking pieces"
-                      : "Separate pieces with plain cuts"}
-                  </small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className={spec.solid_model ? "active" : ""}
-                onClick={() => update("solid_model", true)}
-              >
-                <span className="mode-mark solid-mark" aria-hidden="true" />
-                <span>
-                  <strong>Solid terrain</strong>
-                  <small>One watertight model, no cuts</small>
-                </span>
-              </button>
-            </div>
 
             <RangeField
               label="Ground span"
@@ -3135,6 +3092,46 @@ export function TerrainStudio() {
             )}
           </fieldset>
 
+          <div
+            className="model-mode"
+            role="group"
+            aria-label="Model type"
+            hidden={activeSection !== "model"}
+          >
+            <strong className="model-mode-label">Model type</strong>
+            <button
+              type="button"
+              className={!spec.solid_model ? "active" : ""}
+              onClick={() => update("solid_model", false)}
+            >
+              <span className="mode-mark puzzle-mark" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+              <span>
+                <strong>Jigsaw puzzle</strong>
+                <small>
+                  {spec.puzzle_tabs
+                    ? "Separate interlocking pieces"
+                    : "Separate pieces with plain cuts"}
+                </small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={spec.solid_model ? "active" : ""}
+              onClick={() => update("solid_model", true)}
+            >
+              <span className="mode-mark solid-mark" aria-hidden="true" />
+              <span>
+                <strong>Solid terrain</strong>
+                <small>One watertight model, no cuts</small>
+              </span>
+            </button>
+          </div>
+
           {!spec.solid_model && (
             <fieldset className="piece-grid" hidden={activeSection !== "model"}>
               <legend>Piece layout</legend>
@@ -3277,6 +3274,17 @@ export function TerrainStudio() {
                 <span>{spec.tray.enabled ? "On" : "Off"}</span>
               </label>
             </div>
+            <label className="place-label-field">
+              Place name
+              <input
+                type="text"
+                maxLength={48}
+                required
+                value={spec.place_name}
+                onChange={(event) => update("place_name", event.target.value)}
+              />
+              <small>The tray adds the coordinates after this name.</small>
+            </label>
             {spec.tray.enabled && (
               <>
                 <div className="color-swatches">

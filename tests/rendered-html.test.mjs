@@ -59,7 +59,8 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Interlocking tabs/);
   assert.match(html, /tab-less pieces with plain cuts/);
   assert.match(html, /Shallow terrain tray/);
-  assert.match(html, /Tray place label/);
+  assert.match(html, /Map center/);
+  assert.match(html, /Place name/);
   assert.match(html, /Selected terrain area: 18 km square/);
   assert.match(html, /Mapped buildings/);
   assert.match(html, /Building color/);
