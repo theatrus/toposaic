@@ -41,6 +41,7 @@ type GenerationSpec = {
   elevation_m_per_mm: number | null;
   adjacent_columns: number;
   adjacent_rows: number;
+  super_tile_anchor: "top_left" | "center";
   adjacent_interlocks: boolean;
   adjacent_tile_column: number;
   adjacent_tile_row: number;
@@ -177,6 +178,7 @@ const initialSpec: GenerationSpec = {
   elevation_m_per_mm: null,
   adjacent_columns: 1,
   adjacent_rows: 1,
+  super_tile_anchor: "top_left",
   adjacent_interlocks: false,
   adjacent_tile_column: 0,
   adjacent_tile_row: 0,
@@ -233,6 +235,11 @@ const MAX_MAP_ZOOM = 15;
 const MIN_GROUND_SPAN_KM = 1;
 const MAX_GROUND_SPAN_KM = 80;
 
+function oddSuperTileSize(value: number) {
+  if (value % 2 === 1) return value;
+  return value >= 12 ? 11 : value + 1;
+}
+
 type AdjacentDirection = "north" | "south" | "east" | "west";
 
 function adjacentCenter(
@@ -256,6 +263,37 @@ function adjacentCenter(
   return {
     latitude: Math.max(-85, Math.min(85, nextLatitude)),
     longitude: ((((nextLongitude + 180) % 360) + 360) % 360) - 180,
+  };
+}
+
+function superTileCenter(
+  latitude: number,
+  longitude: number,
+  groundSpanKm: number,
+  row: number,
+  column: number,
+  rows: number,
+  columns: number,
+  anchor: GenerationSpec["super_tile_anchor"],
+) {
+  const latitudeStep = groundSpanKm / 110.574;
+  const longitudeScale = Math.max(
+    20,
+    111.32 * Math.abs(Math.cos((latitude * Math.PI) / 180)),
+  );
+  const longitudeStep = groundSpanKm / longitudeScale;
+  const rowAnchor = anchor === "center" ? (rows - 1) / 2 : 0;
+  const columnAnchor = anchor === "center" ? (columns - 1) / 2 : 0;
+  return {
+    latitude: Math.max(
+      -85,
+      Math.min(85, latitude - (row - rowAnchor) * latitudeStep),
+    ),
+    longitude:
+      (((longitude + (column - columnAnchor) * longitudeStep + 180) % 360) +
+        360) %
+        360 -
+      180,
   };
 }
 
@@ -308,6 +346,9 @@ function TerrainMap({
   const [zoom, setZoom] = useState(9);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [tilesLoaded, setTilesLoaded] = useState(false);
+  const superTileColumns = Math.max(1, spec.adjacent_columns);
+  const superTileRows = Math.max(1, spec.adjacent_rows);
+  const superTileActive = superTileColumns > 1 || superTileRows > 1;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -322,41 +363,113 @@ function TerrainMap({
     return () => observer.disconnect();
   }, []);
 
-  const worldCenter = useMemo(
-    () => projectToWorld(spec.center_lon, spec.center_lat, zoom),
-    [spec.center_lat, spec.center_lon, zoom],
+  const baseMetresPerPixel =
+    (156543.03392 *
+      Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
+    2 ** zoom;
+  const baseSelectionSize =
+    (spec.ground_span_km * 1000) / baseMetresPerPixel;
+  const fitScale = Math.max(
+    1,
+    size.width
+      ? (baseSelectionSize * superTileColumns) / (size.width * 0.88)
+      : 1,
+    size.height
+      ? (baseSelectionSize * superTileRows) / (size.height * 0.82)
+      : 1,
   );
+  const mapZoom = Math.max(
+    MIN_MAP_ZOOM,
+    zoom - Math.max(0, Math.ceil(Math.log2(fitScale))),
+  );
+  const anchorWorld = useMemo(
+    () => projectToWorld(spec.center_lon, spec.center_lat, mapZoom),
+    [mapZoom, spec.center_lat, spec.center_lon],
+  );
+  const superTileCells = useMemo(() => {
+    const worldScale = TILE_SIZE * 2 ** mapZoom;
+    const cells = [];
+    for (let row = 0; row < superTileRows; row += 1) {
+      for (let column = 0; column < superTileColumns; column += 1) {
+        const center = superTileCenter(
+          spec.center_lat,
+          spec.center_lon,
+          spec.ground_span_km,
+          row,
+          column,
+          superTileRows,
+          superTileColumns,
+          spec.super_tile_anchor,
+        );
+        const projected = projectToWorld(
+          center.longitude,
+          center.latitude,
+          mapZoom,
+        );
+        let deltaX = projected.x - anchorWorld.x;
+        if (deltaX > worldScale / 2) deltaX -= worldScale;
+        if (deltaX < -worldScale / 2) deltaX += worldScale;
+        cells.push({
+          row,
+          column,
+          latitude: center.latitude,
+          longitude: center.longitude,
+          worldX: anchorWorld.x + deltaX,
+          worldY: projected.y,
+        });
+      }
+    }
+    return cells;
+  }, [
+    anchorWorld.x,
+    mapZoom,
+    spec.center_lat,
+    spec.center_lon,
+    spec.ground_span_km,
+    spec.super_tile_anchor,
+    superTileColumns,
+    superTileRows,
+  ]);
+  const viewWorldCenter = useMemo(() => {
+    const firstCell = superTileCells[0];
+    const lastCell = superTileCells.at(-1);
+    if (!firstCell || !lastCell) return anchorWorld;
+    return {
+      x: (firstCell.worldX + lastCell.worldX) / 2,
+      y: (firstCell.worldY + lastCell.worldY) / 2,
+    };
+  }, [anchorWorld, superTileCells]);
   const tiles = useMemo(() => {
     if (!size.width || !size.height) return [];
     const firstX =
-      Math.floor((worldCenter.x - size.width / 2) / TILE_SIZE) - 1;
+      Math.floor((viewWorldCenter.x - size.width / 2) / TILE_SIZE) - 1;
     const lastX =
-      Math.floor((worldCenter.x + size.width / 2) / TILE_SIZE) + 1;
+      Math.floor((viewWorldCenter.x + size.width / 2) / TILE_SIZE) + 1;
     const firstY =
-      Math.floor((worldCenter.y - size.height / 2) / TILE_SIZE) - 1;
+      Math.floor((viewWorldCenter.y - size.height / 2) / TILE_SIZE) - 1;
     const lastY =
-      Math.floor((worldCenter.y + size.height / 2) / TILE_SIZE) + 1;
-    const tileCount = 2 ** zoom;
+      Math.floor((viewWorldCenter.y + size.height / 2) / TILE_SIZE) + 1;
+    const tileCount = 2 ** mapZoom;
     const visibleTiles = [];
     for (let tileY = firstY; tileY <= lastY; tileY += 1) {
       if (tileY < 0 || tileY >= tileCount) continue;
       for (let tileX = firstX; tileX <= lastX; tileX += 1) {
         const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
         visibleTiles.push({
-          key: `${zoom}/${tileX}/${tileY}`,
-          url: `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${tileY}.png`,
-          left: tileX * TILE_SIZE - worldCenter.x + size.width / 2,
-          top: tileY * TILE_SIZE - worldCenter.y + size.height / 2,
+          key: `${mapZoom}/${tileX}/${tileY}`,
+          url: `https://tile.openstreetmap.org/${mapZoom}/${wrappedX}/${tileY}.png`,
+          left: tileX * TILE_SIZE - viewWorldCenter.x + size.width / 2,
+          top: tileY * TILE_SIZE - viewWorldCenter.y + size.height / 2,
         });
       }
     }
     return visibleTiles;
-  }, [size, worldCenter, zoom]);
+  }, [mapZoom, size, viewWorldCenter]);
 
   const metresPerPixel =
     (156543.03392 *
       Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
-    2 ** zoom;
+    2 ** mapZoom;
   const selectionSize = Math.max(
     8,
     Math.min(
@@ -367,11 +480,23 @@ function TerrainMap({
   const groundSpanLabel = Number.isInteger(spec.ground_span_km)
     ? spec.ground_span_km.toFixed(0)
     : spec.ground_span_km.toFixed(1);
+  const anchorRow =
+    spec.super_tile_anchor === "center"
+      ? Math.floor(superTileRows / 2)
+      : 0;
+  const anchorColumn =
+    spec.super_tile_anchor === "center"
+      ? Math.floor(superTileColumns / 2)
+      : 0;
+  const anchorDescription =
+    spec.super_tile_anchor === "center"
+      ? "center tile"
+      : "top-left tile";
 
   const moveToWorld = useCallback(
     (worldX: number, worldY: number) =>
-      unprojectFromWorld(worldX, worldY, zoom),
-    [zoom],
+      unprojectFromWorld(worldX, worldY, mapZoom),
+    [mapZoom],
   );
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -380,8 +505,8 @@ function TerrainMap({
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      worldX: worldCenter.x,
-      worldY: worldCenter.y,
+      worldX: anchorWorld.x,
+      worldY: anchorWorld.y,
     };
   };
 
@@ -469,14 +594,42 @@ function TerrainMap({
           ))}
         </div>
         <div
-          className="map-selection"
-          aria-label={`Selected terrain area: ${groundSpanLabel} km square`}
-          data-ground-span-km={spec.ground_span_km}
-          data-map-zoom={zoom}
-          role="img"
-          style={{ height: selectionSize, width: selectionSize }}
+          aria-label={`Super-tile map: ${superTileColumns} across by ${superTileRows} down, anchored at ${anchorDescription}`}
+          className="map-super-tile-grid"
+          data-super-tile-columns={superTileColumns}
+          data-super-tile-rows={superTileRows}
+          role="group"
         >
-          <span>{groundSpanLabel} km</span>
+          {superTileCells.map((cell) => {
+            const current =
+              cell.row === anchorRow && cell.column === anchorColumn;
+            return (
+              <div
+                aria-label={
+                  current
+                    ? `Selected terrain area: ${groundSpanLabel} km square`
+                    : `Super-tile row ${cell.row + 1}, column ${cell.column + 1}`
+                }
+                className={`map-selection${current ? " current" : ""}`}
+                data-ground-span-km={spec.ground_span_km}
+                data-map-zoom={mapZoom}
+                data-super-tile-column={cell.column + 1}
+                data-super-tile-row={cell.row + 1}
+                key={`${cell.row}-${cell.column}`}
+                role="img"
+                style={{
+                  height: selectionSize,
+                  left:
+                    cell.worldX - viewWorldCenter.x + size.width / 2,
+                  top:
+                    cell.worldY - viewWorldCenter.y + size.height / 2,
+                  width: selectionSize,
+                }}
+              >
+                {current && <span>{groundSpanLabel} km</span>}
+              </div>
+            );
+          })}
         </div>
       </div>
       <div className="map-zoom" aria-label="Map zoom">
@@ -497,12 +650,23 @@ function TerrainMap({
           −
         </button>
       </div>
-      <div className="map-crosshair" aria-hidden="true">
+      <div
+        className="map-crosshair"
+        aria-hidden="true"
+        style={{
+          left: anchorWorld.x - viewWorldCenter.x + size.width / 2,
+          top: anchorWorld.y - viewWorldCenter.y + size.height / 2,
+        }}
+      >
         <span />
         <span />
       </div>
       <div className="map-instruction">
-        {tilesLoaded ? "Drag the map to choose a place" : "Loading map tiles…"}
+        {tilesLoaded
+          ? superTileActive
+            ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
+            : "Drag the map to choose a place"
+          : "Loading map tiles…"}
       </div>
       <a
         className="map-attribution"
@@ -1533,6 +1697,33 @@ export function TerrainStudio() {
     },
     [],
   );
+  const setSuperTileAnchor = useCallback(
+    (anchor: GenerationSpec["super_tile_anchor"]) => {
+      const columns =
+        anchor === "center"
+          ? oddSuperTileSize(spec.adjacent_columns)
+          : spec.adjacent_columns;
+      const rows =
+        anchor === "center"
+          ? oddSuperTileSize(spec.adjacent_rows)
+          : spec.adjacent_rows;
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        adjacent_columns: columns,
+        adjacent_rows: rows,
+        super_tile_anchor: anchor,
+      }));
+      setAdjacentMessage(
+        anchor === "center"
+          ? columns !== spec.adjacent_columns || rows !== spec.adjacent_rows
+            ? `Center anchor needs a center tile, so the grid changed to ${columns} × ${rows}.`
+            : "The selected map point is the center tile."
+          : "The selected map point is the top-left tile.",
+      );
+    },
+    [spec.adjacent_columns, spec.adjacent_rows],
+  );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
     setGeneratedPreview(null);
@@ -1977,6 +2168,10 @@ export function TerrainStudio() {
     spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
   const heightFrameCompatible =
     preview?.height_frame_compatible !== false;
+  const superTileGridSizes =
+    spec.super_tile_anchor === "center"
+      ? ADJACENT_GRID_SIZES.filter((value) => value % 2 === 1)
+      : ADJACENT_GRID_SIZES;
   const generationActive =
     job !== null && ["queued", "running"].includes(job.status);
   const cancellationActive = generationActive || canceling;
@@ -2277,10 +2472,10 @@ export function TerrainStudio() {
               <div
                 className="adjacent-tiles"
                 role="group"
-                aria-label="Adjacent tiles"
+                aria-label="Super-tile mode"
               >
                 <div className="adjacent-heading">
-                  <strong>Adjacent tiles</strong>
+                  <strong>Super-tile mode</strong>
                   <button
                     type="button"
                     onClick={
@@ -2314,8 +2509,8 @@ export function TerrainStudio() {
                       ),
                     )}
                   </div>
-                  <div className="adjacent-grid" aria-label="Auto-adjacent grid">
-                    <span>Auto grid</span>
+                  <div className="adjacent-grid" aria-label="Super-tile grid">
+                    <span>Grid</span>
                     <label>
                       Across
                       <select
@@ -2324,7 +2519,7 @@ export function TerrainStudio() {
                           update("adjacent_columns", Number(event.target.value))
                         }
                       >
-                        {ADJACENT_GRID_SIZES.map((value) => (
+                        {superTileGridSizes.map((value) => (
                           <option key={value}>{value}</option>
                         ))}
                       </select>
@@ -2338,12 +2533,37 @@ export function TerrainStudio() {
                           update("adjacent_rows", Number(event.target.value))
                         }
                       >
-                        {ADJACENT_GRID_SIZES.map((value) => (
+                        {superTileGridSizes.map((value) => (
                           <option key={value}>{value}</option>
                         ))}
                       </select>
                     </label>
                   </div>
+                </div>
+                <div
+                  className="super-tile-anchor"
+                  role="radiogroup"
+                  aria-label="Super-tile anchor"
+                >
+                  <span>Anchor</span>
+                  <label>
+                    <input
+                      type="radio"
+                      name="super-tile-anchor"
+                      checked={spec.super_tile_anchor === "top_left"}
+                      onChange={() => setSuperTileAnchor("top_left")}
+                    />
+                    <span>Top-left tile</span>
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="super-tile-anchor"
+                      checked={spec.super_tile_anchor === "center"}
+                      onChange={() => setSuperTileAnchor("center")}
+                    />
+                    <span>Center tile</span>
+                  </label>
                 </div>
                 {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
                   <label className="adjacent-interlock-toggle">
@@ -2354,7 +2574,7 @@ export function TerrainStudio() {
                         update("adjacent_interlocks", event.target.checked)
                       }
                     />
-                    Interlock adjacent tile and tray edges
+                    Interlock super-tile and tray edges
                   </label>
                 )}
                 <p
@@ -2378,7 +2598,11 @@ export function TerrainStudio() {
                           1,
                         )} m · ${spec.elevation_m_per_mm?.toFixed(1)} m/mm`
                       : spec.adjacent_columns > 1 || spec.adjacent_rows > 1
-                        ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the north-west corner. The grid shares one height frame.`
+                        ? `${spec.adjacent_columns * spec.adjacent_rows} terrain 3MF files; current tile is the ${
+                            spec.super_tile_anchor === "center"
+                              ? "grid center"
+                              : "top-left tile"
+                          }. The super-tile shares one height frame.`
                         : "Auto height fits one tile; manual neighbors may form a step."}
                 </p>
                 {adjacentMessage && (

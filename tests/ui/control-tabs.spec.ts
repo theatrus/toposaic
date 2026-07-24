@@ -398,7 +398,7 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   expect(largerBounds!.width).toBeGreaterThan(zoomedBounds!.width);
 });
 
-test("locks a height frame when moving to an adjacent tile", async ({
+test("locks a height frame and maps a super-tile grid", async ({
   page,
 }) => {
   const previewSpecs: Array<Record<string, unknown>> = [];
@@ -435,7 +435,7 @@ test("locks a height frame when moving to an adjacent tile", async ({
     await page.getByLabel("Longitude").inputValue(),
   );
   await page
-    .getByRole("group", { name: "Adjacent tiles" })
+    .getByRole("group", { name: "Super-tile mode" })
     .getByRole("button", { name: /east/i })
     .click();
 
@@ -458,10 +458,10 @@ test("locks a height frame when moving to an adjacent tile", async ({
   await page.getByRole("button", { name: "Unlock height" }).click();
   await expect(page.getByText(/manual neighbors may form a step/)).toBeVisible();
 
-  const autoGrid = page.getByLabel("Auto-adjacent grid");
+  const superTileControls = page.getByLabel("Super-tile grid");
   const latitudeBounds = await page.getByLabel("Latitude").boundingBox();
   const adjacentBounds = await page
-    .getByRole("group", { name: "Adjacent tiles" })
+    .getByRole("group", { name: "Super-tile mode" })
     .boundingBox();
   expect(latitudeBounds).not.toBeNull();
   expect(adjacentBounds).not.toBeNull();
@@ -469,11 +469,59 @@ test("locks a height frame when moving to an adjacent tile", async ({
   expect(adjacentBounds!.y).toBeLessThan(
     latitudeBounds!.y + latitudeBounds!.height,
   );
-  await autoGrid.getByLabel("Across").selectOption("8");
-  await autoGrid.getByLabel("Down").selectOption("6");
+  await superTileControls.getByLabel("Across").selectOption("8");
+  await superTileControls.getByLabel("Down").selectOption("6");
   await expect(page.getByText(/48 terrain 3MF files/)).toBeVisible();
+  const mapGrid = page.getByRole("group", {
+    name: "Super-tile map: 8 across by 6 down, anchored at top-left tile",
+  });
+  await expect(mapGrid).toHaveAttribute("data-super-tile-columns", "8");
+  await expect(mapGrid).toHaveAttribute("data-super-tile-rows", "6");
+  await expect(page.locator(".map-selection")).toHaveCount(48);
+  await expect(
+    page.getByText(/Super-tile mode · 8 × 6 · current tile is top-left tile/),
+  ).toBeVisible();
+  const currentMapTile = page.locator(
+    '.map-selection[data-super-tile-row="1"][data-super-tile-column="1"]',
+  );
+  const eastMapTile = page.locator(
+    '.map-selection[data-super-tile-row="1"][data-super-tile-column="2"]',
+  );
+  const southMapTile = page.locator(
+    '.map-selection[data-super-tile-row="2"][data-super-tile-column="1"]',
+  );
+  const currentMapBounds = await currentMapTile.boundingBox();
+  const eastMapBounds = await eastMapTile.boundingBox();
+  const southMapBounds = await southMapTile.boundingBox();
+  expect(currentMapBounds).not.toBeNull();
+  expect(eastMapBounds).not.toBeNull();
+  expect(southMapBounds).not.toBeNull();
+  expect(eastMapBounds!.x).toBeGreaterThan(currentMapBounds!.x);
+  expect(southMapBounds!.y).toBeGreaterThan(currentMapBounds!.y);
+  const anchorChoice = page.getByRole("radiogroup", {
+    name: "Super-tile anchor",
+  });
+  await expect(
+    anchorChoice.getByRole("radio", { name: "Top-left tile" }),
+  ).toBeChecked();
+  await anchorChoice.getByRole("radio", { name: "Center tile" }).check();
+  await expect(
+    page.getByText(/grid changed to 9 × 7/),
+  ).toBeVisible();
+  await expect(superTileControls.getByLabel("Across")).toHaveValue("9");
+  await expect(superTileControls.getByLabel("Down")).toHaveValue("7");
+  await expect(page.locator(".map-selection")).toHaveCount(63);
+  await expect(
+    page.getByRole("group", {
+      name: "Super-tile map: 9 across by 7 down, anchored at center tile",
+    }),
+  ).toBeVisible();
+  const centeredMapTile = page.locator(
+    '.map-selection.current[data-super-tile-row="4"][data-super-tile-column="5"]',
+  );
+  await expect(centeredMapTile).toHaveCount(1);
   const tileInterlocks = page.getByRole("checkbox", {
-    name: /Interlock adjacent tile and tray edges/,
+    name: /Interlock super-tile and tray edges/,
   });
   await tileInterlocks.check();
   await expect(tileInterlocks).toBeChecked();
