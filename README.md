@@ -34,7 +34,7 @@ builds.
 *Choose a place beside a live, rotatable preview. The lower workspace starts
 larger and can be resized with the horizontal divider.*
 
-![TopoSaic model controls showing compact model choices and a four-by-three adjacent tile grid](docs/images/toposaic-model-controls.png)
+![TopoSaic model controls showing compact model choices and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
 *Move by one tile or export a straight 4×3 mosaic under one shared height
 frame. Optional tabs join both terrain tiles and matching tray sections.*
@@ -73,8 +73,10 @@ terrain point.
 
 ## Super-tile mode
 
-Super-tile mode makes terrain sets larger than one printer's build plate. It
-starts at the current north-west tile and exports a grid of up to 12×12 print
+Super-tile mode makes terrain sets larger than one printer's build plate. The
+map draws the full grid before export. The chosen point can mark the top-left
+tile or the center tile; center anchoring uses odd row and column counts so one
+real tile stays at the chosen point. A grid can contain up to 12×12 print
 passes. Each terrain tile gets its own color 3MF, while every tile uses the same
 elevation datum and vertical scale. Straight tile bounds keep the grid aligned.
 Optional external tabs and sockets join shared edges, and the full set keeps a

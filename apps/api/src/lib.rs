@@ -24,8 +24,8 @@ use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use terrain_core::{
-    Artifact, GenerationSpec, HeightField, artifact_path, generate_project_with_fields_cancellable,
-    generate_tray_artifacts,
+    Artifact, GenerationSpec, HeightField, SuperTileAnchor, artifact_path,
+    generate_project_with_fields_cancellable, generate_tray_artifacts,
 };
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, time::sleep};
 use tower_http::{
@@ -785,7 +785,7 @@ fn run_adjacent_grid_job(
         job_id = %id,
         tiles = tile_count,
         elapsed_ms = job_started.elapsed().as_millis() as u64,
-        "adjacent grid generation complete"
+        "super-tile grid generation complete"
     );
     Ok(())
 }
@@ -794,13 +794,23 @@ fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
     let latitude_step = spec.ground_span_km / 110.574;
     let longitude_scale = (111.32 * spec.center_lat.to_radians().cos().abs()).max(20.0);
     let longitude_step = spec.ground_span_km / longitude_scale;
+    let row_anchor = match spec.super_tile_anchor {
+        SuperTileAnchor::TopLeft => 0.0,
+        SuperTileAnchor::Center => (f64::from(spec.adjacent_rows) - 1.0) / 2.0,
+    };
+    let column_anchor = match spec.super_tile_anchor {
+        SuperTileAnchor::TopLeft => 0.0,
+        SuperTileAnchor::Center => (f64::from(spec.adjacent_columns) - 1.0) / 2.0,
+    };
     (0..spec.adjacent_rows)
         .flat_map(|row| {
             (0..spec.adjacent_columns).map(move |column| {
                 let mut tile = spec.clone();
-                tile.center_lat = (spec.center_lat - row as f64 * latitude_step).max(-85.0);
+                let row_offset = f64::from(row) - row_anchor;
+                let column_offset = f64::from(column) - column_anchor;
+                tile.center_lat = (spec.center_lat - row_offset * latitude_step).clamp(-85.0, 85.0);
                 tile.center_lon =
-                    normalize_longitude(spec.center_lon + column as f64 * longitude_step);
+                    normalize_longitude(spec.center_lon + column_offset * longitude_step);
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
                 tile
@@ -1119,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_grid_uses_the_current_tile_as_its_north_west_anchor() {
+    fn super_tile_grid_uses_the_current_tile_as_its_top_left_anchor() {
         let spec = GenerationSpec {
             center_lat: 46.0,
             center_lon: -121.0,
@@ -1137,6 +1147,37 @@ mod tests {
         assert!(tiles[3].center_lat < tiles[0].center_lat);
         assert_eq!(tiles[5].adjacent_tile_column, 2);
         assert_eq!(tiles[5].adjacent_tile_row, 1);
+    }
+
+    #[test]
+    fn super_tile_grid_can_use_the_selected_point_as_its_center() {
+        let spec = GenerationSpec {
+            center_lat: 46.0,
+            center_lon: -121.0,
+            ground_span_km: 10.0,
+            adjacent_columns: 5,
+            adjacent_rows: 3,
+            super_tile_anchor: SuperTileAnchor::Center,
+            ..GenerationSpec::default()
+        };
+        let tiles = adjacent_tile_specs(&spec);
+        let top_left = &tiles[0];
+        let center = &tiles[7];
+        let bottom_right = &tiles[14];
+
+        assert_eq!(tiles.len(), 15);
+        assert!(top_left.center_lat > spec.center_lat);
+        assert!(top_left.center_lon < spec.center_lon);
+        assert_eq!(center.center_lat, spec.center_lat);
+        assert_eq!(center.center_lon, spec.center_lon);
+        assert!(bottom_right.center_lat < spec.center_lat);
+        assert!(bottom_right.center_lon > spec.center_lon);
+        assert!(
+            ((top_left.center_lat + bottom_right.center_lat) / 2.0 - spec.center_lat).abs() < 1e-9
+        );
+        assert!(
+            ((top_left.center_lon + bottom_right.center_lon) / 2.0 - spec.center_lon).abs() < 1e-9
+        );
     }
 
     #[test]

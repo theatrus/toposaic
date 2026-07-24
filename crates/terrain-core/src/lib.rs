@@ -44,6 +44,7 @@ pub struct GenerationSpec {
     pub elevation_m_per_mm: Option<f32>,
     pub adjacent_columns: u32,
     pub adjacent_rows: u32,
+    pub super_tile_anchor: SuperTileAnchor,
     pub adjacent_interlocks: bool,
     pub adjacent_tile_column: u32,
     pub adjacent_tile_row: u32,
@@ -75,6 +76,7 @@ impl Default for GenerationSpec {
             elevation_m_per_mm: None,
             adjacent_columns: 1,
             adjacent_rows: 1,
+            super_tile_anchor: SuperTileAnchor::TopLeft,
             adjacent_interlocks: false,
             adjacent_tile_column: 0,
             adjacent_tile_row: 0,
@@ -131,13 +133,18 @@ impl GenerationSpec {
             || !(1..=MAX_ADJACENT_GRID_SIDE).contains(&self.adjacent_rows)
         {
             bail!(
-                "adjacent grid columns and rows must each be between 1 and {MAX_ADJACENT_GRID_SIDE}"
+                "super-tile grid columns and rows must each be between 1 and {MAX_ADJACENT_GRID_SIDE}"
             );
         }
         if self.adjacent_tile_column >= self.adjacent_columns
             || self.adjacent_tile_row >= self.adjacent_rows
         {
-            bail!("adjacent tile position must be inside its grid");
+            bail!("super-tile position must be inside its grid");
+        }
+        if self.super_tile_anchor == SuperTileAnchor::Center
+            && (self.adjacent_columns.is_multiple_of(2) || self.adjacent_rows.is_multiple_of(2))
+        {
+            bail!("center-anchored super-tile grids require odd column and row counts");
         }
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
@@ -183,6 +190,14 @@ pub enum ElevationSource {
     #[default]
     Mapzen,
     Mapterhorn,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuperTileAnchor {
+    #[default]
+    TopLeft,
+    Center,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1210,7 +1225,7 @@ fn validate_height_frame(spec: &GenerationSpec, height_field: Option<&HeightFiel
         if minimum + 0.01 < datum {
             bail!(
                 "shared elevation datum {datum:.1} m is above this tile's minimum elevation \
-                 {minimum:.1} m; lower the datum and regenerate adjacent tiles"
+                 {minimum:.1} m; lower the datum and regenerate the earlier super-tile parts"
             );
         }
     }
@@ -4783,7 +4798,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_adjacent_grids_up_to_twelve_by_twelve() {
+    fn accepts_super_tile_grids_up_to_twelve_by_twelve() {
         let mut spec = GenerationSpec {
             adjacent_columns: 12,
             adjacent_rows: 12,
@@ -4795,6 +4810,21 @@ mod tests {
 
         spec.adjacent_columns = 13;
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn center_anchored_super_tiles_require_odd_dimensions() {
+        let mut spec = GenerationSpec {
+            adjacent_columns: 5,
+            adjacent_rows: 3,
+            super_tile_anchor: SuperTileAnchor::Center,
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.adjacent_columns = 4;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("require odd column and row counts"));
     }
 
     #[test]
@@ -4839,7 +4869,7 @@ mod tests {
             .to_string();
 
         assert!(error.contains("above this tile's minimum elevation 90.0 m"));
-        assert!(error.contains("regenerate adjacent tiles"));
+        assert!(error.contains("regenerate the earlier super-tile parts"));
     }
 
     #[test]
