@@ -86,13 +86,20 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(preview).toHaveAttribute("data-straight-piece-sides", "true");
   await expect(preview).toHaveAttribute("data-puzzle-tabs", "false");
   await expect(page.getByText("Separate pieces with plain cuts")).toBeVisible();
-  const relief = page.getByRole("slider", { name: "Terrain relief" });
+  const relief = page.getByRole("slider", { name: "Terrain height" });
   await expect(relief).toHaveAttribute("max", "80");
   const initialHeightScale = Number(
     await page
       .getByLabel("Interactive 3D terrain preview")
       .getAttribute("data-height-scale"),
   );
+  const initialBaseScale = Number(
+    await page
+      .getByLabel("Interactive 3D terrain preview")
+      .getAttribute("data-base-scale"),
+  );
+  expect(initialHeightScale).toBeCloseTo(14 / 180, 4);
+  expect(initialBaseScale).toBeCloseTo(2.4 / 180, 4);
   await relief.fill("80");
   await expect(relief).toHaveValue("80");
   await expect
@@ -103,7 +110,27 @@ test("switches between the reflowed control panels", async ({ page }) => {
           .getAttribute("data-height-scale"),
       ),
     )
-    .toBeGreaterThan(initialHeightScale);
+    .toBeCloseTo(80 / 180, 4);
+  const printWidth = page.getByRole("slider", { name: "Print width" });
+  await printWidth.fill("300");
+  await expect
+    .poll(async () =>
+      Number(
+        await page
+          .getByLabel("Interactive 3D terrain preview")
+          .getAttribute("data-height-scale"),
+      ),
+    )
+    .toBeCloseTo(80 / 300, 4);
+  await expect
+    .poll(async () =>
+      Number(
+        await page
+          .getByLabel("Interactive 3D terrain preview")
+          .getAttribute("data-base-scale"),
+      ),
+    )
+    .toBeCloseTo(2.4 / 300, 4);
 
   await page.getByRole("tab", { name: "Surface" }).click();
   const surfaceColors = page.getByRole("group", { name: "Surface colors" });

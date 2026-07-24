@@ -933,14 +933,10 @@ function ReliefPreview({
     const scene = new THREE.Scene();
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
-    const rawHeightScale = (spec.relief_mm / spec.width_mm) * 4.2;
-    const heightScale = Math.max(
-      0.12,
-      rawHeightScale <= 0.48
-        ? rawHeightScale
-        : 0.48 + Math.log1p((rawHeightScale - 0.48) * 1.6) / 1.6,
-    );
+    const heightScale = spec.relief_mm / spec.width_mm;
+    const baseDepth = spec.base_mm / spec.width_mm;
     canvas.dataset.heightScale = heightScale.toFixed(4);
+    canvas.dataset.baseScale = baseDepth.toFixed(4);
     const seedA = Math.sin((spec.center_lat * Math.PI) / 180) * 1.7;
     const seedB = Math.cos((spec.center_lon * Math.PI) / 180) * 1.3;
     const heightValues = Array.from(
@@ -1097,7 +1093,6 @@ function ReliefPreview({
     const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
     scene.add(terrainMesh);
 
-    const baseDepth = 0.055;
     const baseGeometry = new THREE.BoxGeometry(1, baseDepth, 1);
     const baseMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color(palette.rock).multiplyScalar(0.68),
@@ -2701,7 +2696,7 @@ export function TerrainStudio() {
               onChange={(value) => update("width_mm", value)}
             />
             <RangeField
-              label="Terrain relief"
+              label="Terrain height"
               value={spec.relief_mm}
               unit=" mm"
               min={3}
