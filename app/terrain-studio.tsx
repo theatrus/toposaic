@@ -14,7 +14,10 @@ import {
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { previewWorldX } from "./preview-orientation";
+import {
+  previewInitialCameraPosition,
+  previewWorldX,
+} from "./preview-orientation";
 import {
   APP_VERSION,
   RELEASES_URL,
@@ -1236,10 +1239,8 @@ function ReliefPreview({
     if (savedView) {
       camera.position.fromArray(savedView.position);
     } else {
-      camera.position.set(
-        0.92 * cameraScale,
-        defaultTarget[1] + 0.72 * cameraScale,
-        1.08 * cameraScale,
+      camera.position.fromArray(
+        previewInitialCameraPosition(cameraScale, defaultTarget[1]),
       );
     }
     const controls = new OrbitControls(camera, canvas);
