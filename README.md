@@ -12,26 +12,41 @@ colors.
 
 ## Download
 
-Download the latest desktop build from
-[TopoSaic Releases](https://github.com/theatrus/toposaic/releases):
+The current desktop release is
+[TopoSaic v0.2.0](https://github.com/theatrus/toposaic/releases/tag/v0.2.0).
 
-- Windows x64: `.exe` setup or `.msi` installer
-- macOS Apple silicon: `.dmg` disk image or `.app.zip` application archive
-- Linux x86-64: portable `.AppImage`
+| Platform | Downloads |
+| --- | --- |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
-tickets. On Linux, make the AppImage executable with `chmod +x` before opening
-it.
+tickets. Windows installers use the GUI subsystem and do not open a terminal
+window. On Linux, make the AppImage executable with `chmod +x` before opening
+it. See [all releases](https://github.com/theatrus/toposaic/releases) for older
+builds.
 
 ## Screenshots
 
 ![TopoSaic light workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
 
-*Choose a place beside a live, rotatable preview, then shape the model below.*
+*Choose a place beside a live, rotatable preview. The lower workspace starts
+larger and can be resized with the horizontal divider.*
+
+![TopoSaic model controls showing compact model choices and a four-by-three adjacent tile grid](docs/images/toposaic-model-controls.png)
+
+*Move by one tile or export a straight 4×3 mosaic under one shared height
+frame. Optional tabs join both terrain tiles and matching tray sections.*
 
 ![TopoSaic light workspace showing terrain colors, mapped water and road controls, and bridge structure choices](docs/images/toposaic-surface-controls.png)
 
-*Tune print colors, mapped layers, road detail, and bridge structure in place.*
+*Tune print colors, mapped water, road width and height, dense-network thinning,
+and floating or supported bridges in place.*
+
+Version 0.2 adds signed update notices, Mapterhorn elevation tiles, resizable
+map and preview space, synchronized map zoom and ground span, adjacent `N×M`
+exports, shared height frames, and matching segmentable trays.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
