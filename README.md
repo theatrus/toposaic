@@ -47,7 +47,8 @@ and floating or supported bridges in place.*
 ![A generated Mount Rainier color 3MF opened in Bambu Studio](docs/images/toposaic-3mf-bambu-studio.jpg)
 
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
-road, and building materials ready for a color print.*
+road, and building materials ready for a color print. Bambu Studio and
+OrcaSlicer load the six palette colors as filament assignments.*
 
 Version 0.2 adds signed update notices, Mapterhorn elevation tiles, resizable
 map and preview space, synchronized map zoom and ground span, adjacent `N×M`

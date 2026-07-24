@@ -114,8 +114,10 @@ with the six palette entries, then attach a flat property to each triangle
 with `pid` and equal `p1`, `p2`, and `p3` values. Keep geometry and color data
 separate in the Rust mesh model.
 
-Do not write Bambu-only project data in the first pass. A standards-based 3MF
-is easier to test and still leaves room for a later Bambu project export.
+Keep the standards-based color group for portable display. Also write the
+shared Bambu Studio and OrcaSlicer face-paint values and filament palette.
+OrcaSlicer does not turn standard per-triangle color-group indices into
+filament assignments, so both forms must stay in sync.
 
 Reference:
 

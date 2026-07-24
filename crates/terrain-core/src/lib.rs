@@ -4544,6 +4544,9 @@ struct ThreeMfWriter<'a> {
 }
 
 const COLOR_GROUP_ID: u32 = 1000;
+// OrcaSlicer and Bambu Studio use these face-paint values for extruders 1–6.
+// Keep the standard 3MF color properties too, for consumers that support them.
+const ORCA_PAINT_CODES: [&str; 6] = ["4", "8", "0C", "1C", "2C", "3C"];
 
 impl<'a> ThreeMfWriter<'a> {
     fn new(spec: &'a GenerationSpec, path: &Path) -> Result<Self> {
@@ -4633,9 +4636,10 @@ impl<'a> ThreeMfWriter<'a> {
         for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
             if self.spec.uses_color_materials() {
                 let index = material.material_index();
+                let paint_color = ORCA_PAINT_CODES[index as usize];
                 writeln!(
                     output,
-                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>",
+                    "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\" paint_color=\"{paint_color}\"/>",
                     triangle[0], triangle[1], triangle[2],
                 )?;
             } else {
@@ -4679,6 +4683,47 @@ impl<'a> ThreeMfWriter<'a> {
             )?;
         }
         self.zip.write_all(b"  </build>\n</model>")?;
+        if self.spec.uses_color_materials() {
+            let options = SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .compression_level(Some(3));
+            self.zip.add_directory("Metadata/", options)?;
+            self.zip
+                .start_file("Metadata/project_settings.config", options)?;
+            let colors = [
+                self.spec.color_output.rock_color.as_str(),
+                self.spec.color_output.forest_color.as_str(),
+                self.spec.color_output.snow_color.as_str(),
+                self.spec.color_output.water_color.as_str(),
+                self.spec.color_output.road_color.as_str(),
+                self.spec.color_output.building_color.as_str(),
+            ];
+            let flush_volumes_matrix = (0..colors.len())
+                .flat_map(|row| {
+                    (0..colors.len()).map(move |column| if row == column { "0" } else { "280" })
+                })
+                .collect::<Vec<_>>();
+            let project_settings = serde_json::json!({
+                "default_filament_colour": colors,
+                "filament_colour": colors,
+                "filament_settings_id": ["", "", "", "", "", ""],
+                "filament_type": ["PLA", "PLA", "PLA", "PLA", "PLA", "PLA"],
+                "filament_vendor": [
+                    "(Undefined)",
+                    "(Undefined)",
+                    "(Undefined)",
+                    "(Undefined)",
+                    "(Undefined)",
+                    "(Undefined)"
+                ],
+                "flush_volumes_matrix": flush_volumes_matrix,
+                "flush_volumes_vector": [
+                    "140", "140", "140", "140", "140", "140",
+                    "140", "140", "140", "140", "140", "140"
+                ],
+            });
+            serde_json::to_writer_pretty(&mut self.zip, &project_settings)?;
+        }
         self.zip.finish()?;
         Ok(())
     }
@@ -5506,8 +5551,35 @@ mod tests {
         assert!(model.contains("p1=\"3\""));
         assert!(model.contains("p1=\"4\""));
         assert!(model.contains("p1=\"5\""));
+        assert!(model.contains("paint_color=\"4\""));
+        assert!(model.contains("paint_color=\"8\""));
+        assert!(model.contains("paint_color=\"0C\""));
+        assert!(model.contains("paint_color=\"1C\""));
+        assert!(model.contains("paint_color=\"2C\""));
+        assert!(model.contains("paint_color=\"3C\""));
         assert_eq!(model.matches("<object id=").count(), 4);
         assert_eq!(model.matches("<item objectid=").count(), 4);
+
+        let mut project_settings = String::new();
+        archive
+            .by_name("Metadata/project_settings.config")
+            .unwrap()
+            .read_to_string(&mut project_settings)
+            .unwrap();
+        let project_settings: serde_json::Value = serde_json::from_str(&project_settings).unwrap();
+        assert_eq!(
+            project_settings["filament_colour"],
+            serde_json::json!([
+                "#7C7468", "#28543A", "#F4F3EC", "#2F76B5", "#D8A33C", "#B8A890"
+            ])
+        );
+        assert_eq!(
+            project_settings["filament_settings_id"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
 
         let preview: serde_json::Value =
             serde_json::from_slice(&std::fs::read(output_dir.join("preview.json")).unwrap())
