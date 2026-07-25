@@ -51,3 +51,4 @@ next-env.d.ts
 
 # Local TopoSaic state and generated files
 /data/
+*.tsbuildinfo

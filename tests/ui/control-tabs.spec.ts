@@ -719,6 +719,78 @@ test("turns Generate into Cancel while a job is active", async ({ page }) => {
   expect(cancelRequested).toBe(true);
 });
 
+test("shows the generated preview after a polled job completes", async ({
+  page,
+}) => {
+  const jobId = "37c1f0aa-52d7-4f8e-9a41-6a0b0f5f7f21";
+  let jobSpec: Record<string, unknown> = {};
+  let statusReads = 0;
+
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: jobId,
+          status: "queued",
+          progress: 0,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}` && request.method() === "GET") {
+      statusReads += 1;
+      const complete = statusReads > 1;
+      await route.fulfill({
+        json: {
+          id: jobId,
+          status: complete ? "complete" : "running",
+          progress: complete ? 100 : 55,
+          artifacts: complete
+            ? [
+                {
+                  name: "terrain.3mf",
+                  media_type: "model/3mf",
+                  bytes: 1_048_576,
+                },
+              ]
+            : [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}/downloads/preview.json`) {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0.2, 0.4, 0.6, 0.8] },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Generate/ }).click();
+
+  await expect(page.getByText("Generated terrain").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByRole("link", { name: /terrain\.3mf/ }),
+  ).toBeVisible();
+});
+
 test("keeps direct artifact downloads in the web app", async ({ page }) => {
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();

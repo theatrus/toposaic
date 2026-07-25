@@ -561,17 +561,22 @@ export function TerrainStudio() {
           controller.signal,
         );
         if (nextJob.id !== polledJobId) return;
+        // Fetch the finished preview before setJob: updating the job tears
+        // this effect down and aborts the controller, which would cancel a
+        // preview request started after the update.
+        let previewData: PreviewData | null = null;
+        if (nextJob.status === "complete") {
+          previewData = await terrainApi
+            .generatedPreview(nextJob.id, controller.signal)
+            .catch(() => null);
+          if (controller.signal.aborted) return;
+        }
         setJob(nextJob);
         setMessage((current) =>
           current === GENERATOR_STALLED_MESSAGE ? null : current,
         );
-        if (nextJob.status === "complete") {
-          const previewData = await terrainApi
-            .generatedPreview(nextJob.id, controller.signal)
-            .catch(() => null);
-          if (previewData && !controller.signal.aborted) {
-            setGeneratedPreview(previewData);
-          }
+        if (previewData) {
+          setGeneratedPreview(previewData);
         }
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
