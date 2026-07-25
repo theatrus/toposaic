@@ -130,13 +130,14 @@ Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
 forest, rock, snow, and water colors. Terrain class borders can stay blocky,
 matching the native 10 m cells, or switch to smoothed borders that bend
-forest, rock, and water edges into curves using the surrounding data; the
-difference only shows at close zooms where single cells are visible. Expert
-sliders set how far smoothed borders bend (in 10 m cells) and how strongly
-staircase noise is damped at the cost of single-cell detail. Color
-mode also keeps forest off steep rock by default, since WorldCover bleeds
-tree cover onto cliff faces: slopes above an adjustable limit (55° to start)
-print as rock instead of forest. It also reads routes from OpenStreetMap
+forest, rock, and water edges into curves using the source pixels on their
+true 10 m lattice; the difference only shows at close zooms where single
+cells are visible. Expert sliders set how far smoothed borders bend (in
+10 m cells) and how strongly staircase noise is damped at the cost of
+single-cell detail. Color mode also keeps forest off steep rock by default,
+since WorldCover bleeds tree cover onto cliff faces: slopes above an
+adjustable limit (55° to start) print as rock instead of forest — or as
+snow above the snowline, if chosen. It also reads routes from OpenStreetMap
 through Overpass and draws them as smooth, print-safe vector lines. Route detail
 can stop at major roads, add minor roads, add local streets, or include paths
 and trails. Automatic mode includes more classes as the ground span shrinks,

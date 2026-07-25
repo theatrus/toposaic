@@ -18,8 +18,8 @@ use std::{
 };
 
 use toposaic_core::{
-    BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, SurfaceClass, SurfaceField,
-    generate_project_with_fields,
+    BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, NativeClassGrid, SteepForestTarget,
+    SurfaceClass, SurfaceField, generate_project_with_fields,
 };
 
 fn argument(index: usize, default: &str) -> String {
@@ -122,6 +122,46 @@ fn synthetic_surface_field(spec: &GenerationSpec, size: usize) -> SurfaceField {
     field
 }
 
+/// A synthetic 10 m class lattice covering the sample grid with a nonzero
+/// phase, standing in for the true WorldCover window production feeds the
+/// native smoothing path.
+fn synthetic_native_grid(sample_width: usize, ground_span_m: f32) -> NativeClassGrid {
+    let cells = (ground_span_m / 10.0).round() as usize;
+    let x_scale = cells as f64 / (sample_width - 1) as f64;
+    let x_offset = 1.37;
+    let native_size = cells + 4;
+    let classes = (0..native_size * native_size)
+        .map(|index| {
+            let node_x = index % native_size;
+            let node_y = index / native_size;
+            let u = ((node_x as f64 - x_offset) / x_scale / (sample_width - 1) as f64) as f32;
+            let v = ((node_y as f64 - x_offset) / x_scale / (sample_width - 1) as f64) as f32;
+            let bands =
+                (u * std::f32::consts::TAU * 2.0).sin() + (v * std::f32::consts::TAU * 1.5).cos();
+            let patches = (u * 23.0).sin() * (v * 19.0).cos();
+            if bands < -1.1 {
+                SurfaceClass::Water
+            } else if bands > 1.3 {
+                SurfaceClass::Snow
+            } else if patches > 0.25 {
+                SurfaceClass::Forest
+            } else {
+                SurfaceClass::Rock
+            }
+        })
+        .collect();
+    NativeClassGrid::new(
+        native_size,
+        native_size,
+        classes,
+        x_scale,
+        x_offset,
+        x_scale,
+        x_offset,
+    )
+    .unwrap()
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = argument(1, "puzzle");
     let samples_across: u32 = argument(2, "1024").parse()?;
@@ -164,20 +204,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let (true, Some(field)) = (smooth, surface_field.as_mut()) {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gate_started = Instant::now();
-        let demoted = field.demote_steep_forest(&height_field, ground_span_m, 55.0);
+        let demoted = field
+            .demote_steep_forest(&height_field, ground_span_m, 55.0, SteepForestTarget::Rock)
+            .total();
         let gate_elapsed = gate_started.elapsed();
-        let smooth_started = Instant::now();
-        field.smooth_class_borders(
+        // Time the recovered-grid fallback on a clone, then the true-lattice
+        // path (what production uses) on the field itself.
+        let mut recovered = field.clone();
+        let recovered_started = Instant::now();
+        recovered.smooth_class_borders(
             10.0,
             ground_span_m,
             spec.color_output.border_smoothing_range_cells,
             spec.color_output.border_smoothing_nugget,
         );
-        let smooth_elapsed = smooth_started.elapsed();
+        let recovered_elapsed = recovered_started.elapsed();
+        let native = synthetic_native_grid(field_width, ground_span_m);
+        let native_started = Instant::now();
+        field.smooth_class_borders_with_native(
+            &native,
+            spec.color_output.border_smoothing_range_cells,
+            spec.color_output.border_smoothing_nugget,
+        );
+        let native_elapsed = native_started.elapsed();
         println!(
-            "slope gate: {:.3}s ({demoted} demoted); border smoothing: {:.3}s",
+            "slope gate: {:.3}s ({demoted} demoted); border smoothing: {:.3}s recovered, {:.3}s native lattice",
             gate_elapsed.as_secs_f64(),
-            smooth_elapsed.as_secs_f64()
+            recovered_elapsed.as_secs_f64(),
+            native_elapsed.as_secs_f64()
         );
     }
 

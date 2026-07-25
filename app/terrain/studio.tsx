@@ -1508,17 +1508,40 @@ export function TerrainStudio() {
                   </small>
                 </div>
                 {spec.color_output.forest_slope_gate && (
-                  <RangeField
-                    label="Forest slope limit"
-                    value={spec.color_output.forest_slope_limit_degrees}
-                    unit="°"
-                    min={30}
-                    max={85}
-                    step={1}
-                    onChange={(value) =>
-                      updateColor("forest_slope_limit_degrees", value)
-                    }
-                  />
+                  <>
+                    <RangeField
+                      label="Forest slope limit"
+                      value={spec.color_output.forest_slope_limit_degrees}
+                      unit="°"
+                      min={30}
+                      max={85}
+                      step={1}
+                      onChange={(value) =>
+                        updateColor("forest_slope_limit_degrees", value)
+                      }
+                    />
+                    <label className="road-detail-field">
+                      Steep forest becomes
+                      <select
+                        value={spec.color_output.steep_forest_target}
+                        onChange={(event) =>
+                          updateColor(
+                            "steep_forest_target",
+                            event.target
+                              .value as GenerationSpec["color_output"]["steep_forest_target"],
+                          )
+                        }
+                      >
+                        <option value="rock">Rock</option>
+                        <option value="snow">Snow above the snowline</option>
+                      </select>
+                      <small>
+                        Snow keeps demoted forest white above the snowline,
+                        estimated from the mapped snowcap. Below it, or without
+                        a snowcap, demoted forest still prints as rock.
+                      </small>
+                    </label>
+                  </>
                 )}
                 <div className="road-options">
                   <label className="color-toggle">

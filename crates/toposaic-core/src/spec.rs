@@ -474,6 +474,19 @@ pub enum ClassBorders {
     Smooth,
 }
 
+/// What steep forest demoted by the slope gate becomes. `Rock` recolors
+/// every demoted sample; `Snow` recolors demoted samples above the local
+/// snowline as snow instead, so shaded couloirs and icefields WorldCover
+/// paints green print white like their surroundings. Below the snowline (or
+/// when the scene has no snow) `Snow` still falls back to rock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteepForestTarget {
+    #[default]
+    Rock,
+    Snow,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
@@ -510,6 +523,9 @@ pub struct ColorOutputSpec {
     /// Tower), so it defaults on.
     pub forest_slope_gate: bool,
     pub forest_slope_limit_degrees: f32,
+    /// What demoted steep forest becomes: rock everywhere, or snow above
+    /// the local snowline.
+    pub steep_forest_target: SteepForestTarget,
 }
 
 impl Default for ColorOutputSpec {
@@ -544,6 +560,7 @@ impl Default for ColorOutputSpec {
             // gorge and fjord walls while catching near-vertical rock that
             // 10 m land-cover pixels paint green.
             forest_slope_limit_degrees: 55.0,
+            steep_forest_target: SteepForestTarget::Rock,
         }
     }
 }
@@ -734,6 +751,26 @@ mod tests {
         assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
         assert!(spec.color_output.forest_slope_gate);
         assert_eq!(spec.color_output.forest_slope_limit_degrees, 55.0);
+        assert_eq!(
+            spec.color_output.steep_forest_target,
+            SteepForestTarget::Rock
+        );
+    }
+
+    #[test]
+    fn steep_forest_targets_parse_as_snake_case() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "steep_forest_target": "snow" }
+        }))
+        .unwrap();
+        assert_eq!(
+            spec.color_output.steep_forest_target,
+            SteepForestTarget::Snow
+        );
+        assert_eq!(
+            serde_json::to_value(SteepForestTarget::Rock).unwrap(),
+            serde_json::json!("rock")
+        );
     }
 
     #[test]

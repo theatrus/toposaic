@@ -78,6 +78,9 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Keep forest off steep rock/);
   assert.match(html, /demotes forest to rock above the slope limit/);
   assert.match(html, /Forest slope limit/);
+  // The demotion target renders with the slope gate, which defaults on.
+  assert.match(html, /Steep forest becomes/);
+  assert.match(html, /Snow above the snowline/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);

@@ -19,6 +19,6 @@ pub use project::{
 };
 pub use spec::{
     BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec, ElevationSource, GenerationSpec,
-    ResolvedRoadDetail, RoadDetail, SuperTileAnchor, SurfaceClass, TraySpec,
+    ResolvedRoadDetail, RoadDetail, SteepForestTarget, SuperTileAnchor, SurfaceClass, TraySpec,
 };
-pub use surface::SurfaceField;
+pub use surface::{NativeClassGrid, SteepForestDemotion, SurfaceField};

@@ -14,7 +14,8 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, ResolvedRoadDetail, SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, ResolvedRoadDetail, SurfaceClass,
+    SurfaceField,
 };
 use tracing::warn;
 
@@ -29,6 +30,10 @@ const WORLD_COVER_BASE_URL: &str =
 const WORLD_COVER_INFO_URL: &str = "https://worldcover2021.esa.int/download";
 const WORLD_COVER_ATTRIBUTION: &str = "© ESA WorldCover project / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium";
 const WORLD_COVER_RESOLUTION_M: f32 = 10.0;
+const WORLD_COVER_TILE_DEGREES: f64 = 3.0;
+const WORLD_COVER_TILE_PIXELS: i64 = 36_000;
+const WORLD_COVER_PIXELS_PER_DEGREE: f64 =
+    WORLD_COVER_TILE_PIXELS as f64 / WORLD_COVER_TILE_DEGREES;
 const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const FALLBACK_OVERPASS_URL: &str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
@@ -180,29 +185,68 @@ pub fn fetch_surface_field(
                 height_field,
                 ground_span_m,
                 spec.color_output.forest_slope_limit_degrees,
+                spec.color_output.steep_forest_target,
             );
-            if demoted > 0 {
-                append_source(
-                    &mut field.source,
-                    format!(
-                        "steep-slope gate: {demoted} forest samples steeper than {:.0} degrees reclassified as rock",
-                        spec.color_output.forest_slope_limit_degrees
-                    ),
+            if demoted.total() > 0 {
+                let mut audit = format!(
+                    "steep-slope gate: {} forest samples steeper than {:.0} degrees reclassified as rock",
+                    demoted.to_rock, spec.color_output.forest_slope_limit_degrees
                 );
+                if demoted.to_snow > 0 {
+                    audit.push_str(&format!(
+                        " and {} as snow above the snowline",
+                        demoted.to_snow
+                    ));
+                }
+                append_source(&mut field.source, audit);
             }
         }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if spec.color_output.class_borders == ClassBorders::Smooth {
-            field.smooth_class_borders(
-                WORLD_COVER_RESOLUTION_M,
-                ground_span_m,
-                spec.color_output.border_smoothing_range_cells,
-                spec.color_output.border_smoothing_nugget,
-            );
+            // The native window is only worth reading where smoothing will
+            // actually redraw borders; at wide spans smoothing no-ops and
+            // the read is skipped entirely.
+            let smoothed_native = field
+                .class_border_smoothing_applies(WORLD_COVER_RESOLUTION_M, ground_span_m)
+                && match fetch_native_class_grid(
+                    bounds,
+                    width,
+                    height,
+                    &map_cache_dir.join("world-cover"),
+                ) {
+                    Ok(native) => {
+                        field.smooth_class_borders_with_native(
+                            &native,
+                            spec.color_output.border_smoothing_range_cells,
+                            spec.color_output.border_smoothing_nugget,
+                        );
+                        true
+                    }
+                    Err(error) => {
+                        warn!(
+                            %error,
+                            "native land-cover window unavailable; smoothing the recovered grid"
+                        );
+                        false
+                    }
+                };
+            if !smoothed_native {
+                field.smooth_class_borders(
+                    WORLD_COVER_RESOLUTION_M,
+                    ground_span_m,
+                    spec.color_output.border_smoothing_range_cells,
+                    spec.color_output.border_smoothing_nugget,
+                );
+            }
             append_source(
                 &mut field.source,
                 format!(
-                    "class borders smoothed by indicator kriging of the 10 m land-cover grid (range {:.1} cells, nugget {:.2})",
+                    "class borders smoothed by indicator kriging of the 10 m land-cover grid ({} lattice, range {:.1} cells, nugget {:.2})",
+                    if smoothed_native {
+                        "native"
+                    } else {
+                        "recovered"
+                    },
                     spec.color_output.border_smoothing_range_cells,
                     spec.color_output.border_smoothing_nugget
                 ),
@@ -854,17 +898,185 @@ fn unwrap_longitude(longitude: f64, center: f64) -> f64 {
     center + normalize_longitude(longitude - center)
 }
 
-fn sample_tile(
-    tile_name: &str,
-    points: &[SamplePoint],
-    target_width: usize,
-    target_height: usize,
-    output: &mut [SurfaceClass],
+/// Continuous WorldCover grid column of a longitude, on the global lattice
+/// implied by the tiling: 3 degree tiles of 36000 by 36000 pixels anchored
+/// at integer multiples of 3 degrees. Integer values sit on pixel centres.
+/// Longitudes may be unwrapped past the antimeridian; the lattice continues
+/// linearly and the per-tile reads normalize.
+fn world_cover_grid_column(longitude: f64) -> f64 {
+    (longitude + 180.0) * WORLD_COVER_PIXELS_PER_DEGREE - 0.5
+}
+
+/// Continuous WorldCover grid row of a latitude; rows grow southward like
+/// the tiles themselves, with integer values on pixel centres.
+fn world_cover_grid_row(latitude: f64) -> f64 {
+    (90.0 - latitude) * WORLD_COVER_PIXELS_PER_DEGREE - 0.5
+}
+
+/// One contiguous window read from one WorldCover tile: where it starts in
+/// the tile's own pixel coordinates and on the global lattice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeTileRead {
+    tile_name: String,
+    tile_row: usize,
+    tile_column: usize,
+    rows: usize,
+    columns: usize,
+    global_row: i64,
+    global_column: i64,
+}
+
+/// The native-resolution window that covers the model bounds plus the
+/// kriging neighbourhood, the affine map from sample pixels to window grid
+/// coordinates, and the per-tile reads that fill it. Splitting the plan
+/// from the reads keeps the stitching arithmetic testable without tiles.
+#[derive(Debug)]
+struct NativeWindowPlan {
+    column_start: i64,
+    row_start: i64,
+    width: usize,
+    height: usize,
+    x_scale: f64,
+    x_offset: f64,
+    y_scale: f64,
+    y_offset: f64,
+    reads: Vec<NativeTileRead>,
+}
+
+/// Plans the native WorldCover window for a sample raster of
+/// `sample_width` by `sample_height` covering `bounds`. The window pads one
+/// pixel beyond the outermost kriging cells so the 4 by 4 neighbourhood
+/// never clamps for interior samples, and the mapping puts window row 0 at
+/// the southmost row to match the sample raster's row order.
+fn plan_native_window(
+    bounds: GeoBounds,
+    sample_width: usize,
+    sample_height: usize,
+) -> NativeWindowPlan {
+    let column_start = world_cover_grid_column(bounds.west).floor() as i64 - 1;
+    let column_end = world_cover_grid_column(bounds.east).floor() as i64 + 2;
+    let row_start = world_cover_grid_row(bounds.north).floor() as i64 - 1;
+    let row_end = world_cover_grid_row(bounds.south).floor() as i64 + 2;
+    let mut reads = Vec::new();
+    for tile_row in
+        row_start.div_euclid(WORLD_COVER_TILE_PIXELS)..=row_end.div_euclid(WORLD_COVER_TILE_PIXELS)
+    {
+        let clipped_rows = row_start.max(tile_row * WORLD_COVER_TILE_PIXELS)
+            ..=row_end.min((tile_row + 1) * WORLD_COVER_TILE_PIXELS - 1);
+        for tile_column in column_start.div_euclid(WORLD_COVER_TILE_PIXELS)
+            ..=column_end.div_euclid(WORLD_COVER_TILE_PIXELS)
+        {
+            let clipped_columns = column_start.max(tile_column * WORLD_COVER_TILE_PIXELS)
+                ..=column_end.min((tile_column + 1) * WORLD_COVER_TILE_PIXELS - 1);
+            let tile_center_longitude =
+                normalize_longitude((tile_column as f64 + 0.5) * WORLD_COVER_TILE_DEGREES - 180.0);
+            let tile_center_latitude = 90.0 - (tile_row as f64 + 0.5) * WORLD_COVER_TILE_DEGREES;
+            reads.push(NativeTileRead {
+                tile_name: world_cover_tile(tile_center_longitude, tile_center_latitude),
+                tile_row: (clipped_rows.start() - tile_row * WORLD_COVER_TILE_PIXELS) as usize,
+                tile_column: (clipped_columns.start() - tile_column * WORLD_COVER_TILE_PIXELS)
+                    as usize,
+                rows: (clipped_rows.end() - clipped_rows.start() + 1) as usize,
+                columns: (clipped_columns.end() - clipped_columns.start() + 1) as usize,
+                global_row: *clipped_rows.start(),
+                global_column: *clipped_columns.start(),
+            });
+        }
+    }
+    NativeWindowPlan {
+        column_start,
+        row_start,
+        width: (column_end - column_start + 1) as usize,
+        height: (row_end - row_start + 1) as usize,
+        // Sample x maps to longitude west..east, and grid coordinates are
+        // window-relative pixel centres; the y map also flips rows so the
+        // window matches the raster's south-first row order.
+        x_scale: (bounds.east - bounds.west) * WORLD_COVER_PIXELS_PER_DEGREE
+            / (sample_width - 1) as f64,
+        x_offset: world_cover_grid_column(bounds.west) - column_start as f64,
+        y_scale: (bounds.north - bounds.south) * WORLD_COVER_PIXELS_PER_DEGREE
+            / (sample_height - 1) as f64,
+        y_offset: row_end as f64 - world_cover_grid_row(bounds.south),
+        reads,
+    }
+}
+
+/// Reads the native-resolution WorldCover classes for the planned window,
+/// stitching across tile borders, and returns them with the sample-to-grid
+/// mapping for `SurfaceField::smooth_class_borders_with_native`. Any error
+/// (a missing tile, an unexpected layout) is returned so the caller can
+/// fall back to the recovered-grid smoothing path.
+fn fetch_native_class_grid(
+    bounds: GeoBounds,
+    sample_width: usize,
+    sample_height: usize,
     cache_dir: &Path,
-) -> Result<()> {
+) -> Result<NativeClassGrid> {
+    let plan = plan_native_window(bounds, sample_width, sample_height);
+    let mut classes = vec![SurfaceClass::Rock; plan.width * plan.height];
+    for read in &plan.reads {
+        let geotiff = open_world_cover_tile(&read.tile_name, cache_dir)?;
+        if i64::from(geotiff.width()) != WORLD_COVER_TILE_PIXELS
+            || i64::from(geotiff.height()) != WORLD_COVER_TILE_PIXELS
+        {
+            bail!(
+                "ESA WorldCover tile {} is {}x{}, not the expected {WORLD_COVER_TILE_PIXELS} square",
+                read.tile_name,
+                geotiff.width(),
+                geotiff.height()
+            );
+        }
+        // Cross-check the analytic lattice against the tile's own
+        // geotransform before trusting the phase it implies.
+        let (expected_column, expected_row) = geotiff
+            .geo_to_pixel(
+                normalize_longitude(
+                    -180.0 + (read.global_column as f64 + 0.5) / WORLD_COVER_PIXELS_PER_DEGREE,
+                ),
+                90.0 - (read.global_row as f64 + 0.5) / WORLD_COVER_PIXELS_PER_DEGREE,
+            )
+            .with_context(|| format!("map the window into tile {}", read.tile_name))?;
+        if (expected_column - (read.tile_column as f64 + 0.5)).abs() > 0.05
+            || (expected_row - (read.tile_row as f64 + 0.5)).abs() > 0.05
+        {
+            bail!(
+                "ESA WorldCover tile {} is not on the expected 1/{WORLD_COVER_PIXELS_PER_DEGREE} degree lattice",
+                read.tile_name
+            );
+        }
+        let window = geotiff
+            .read_band_window::<u8>(0, read.tile_row, read.tile_column, read.rows, read.columns)
+            .with_context(|| format!("read ESA WorldCover tile {}", read.tile_name))?;
+        for row in 0..read.rows {
+            let global_row = read.global_row + row as i64;
+            let flipped_row = (plan.row_start + plan.height as i64 - 1 - global_row) as usize;
+            for column in 0..read.columns {
+                let value = window[[row, column]];
+                // Nodata keeps the default rock, like the sample path.
+                if value == 0 {
+                    continue;
+                }
+                let window_column =
+                    (read.global_column + column as i64 - plan.column_start) as usize;
+                classes[flipped_row * plan.width + window_column] = classify_world_cover(value);
+            }
+        }
+    }
+    NativeClassGrid::new(
+        plan.width,
+        plan.height,
+        classes,
+        plan.x_scale,
+        plan.x_offset,
+        plan.y_scale,
+        plan.y_offset,
+    )
+}
+
+/// Opens a cached WorldCover tile, refetching once when the cached copy is
+/// unreadable: a corrupt cached tile must not fail its area forever.
+fn open_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<GeoTiffFile> {
     let path = cached_world_cover_tile(tile_name, cache_dir)?;
-    // A corrupt cached tile must not fail this area forever: drop it and
-    // fetch a fresh copy once before giving up.
     let geotiff = match GeoTiffFile::open(&path) {
         Ok(geotiff) => geotiff,
         Err(error) => {
@@ -886,6 +1098,18 @@ fn sample_tile(
             geotiff.epsg()
         );
     }
+    Ok(geotiff)
+}
+
+fn sample_tile(
+    tile_name: &str,
+    points: &[SamplePoint],
+    target_width: usize,
+    target_height: usize,
+    output: &mut [SurfaceClass],
+    cache_dir: &Path,
+) -> Result<()> {
+    let geotiff = open_world_cover_tile(tile_name, cache_dir)?;
 
     let base_pixels = points
         .iter()
@@ -1044,6 +1268,110 @@ mod tests {
         assert_eq!(classify_world_cover(80), SurfaceClass::Water);
         assert_eq!(classify_world_cover(60), SurfaceClass::Rock);
         assert_eq!(classify_world_cover(30), SurfaceClass::Rock);
+    }
+
+    #[test]
+    fn native_window_mapping_puts_pixel_centres_on_integer_grid_coordinates() {
+        let bounds = GeoBounds {
+            south: 46.8,
+            north: 46.9,
+            west: -121.9,
+            east: -121.7,
+        };
+        let plan = plan_native_window(bounds, 65, 65);
+        assert_eq!(plan.reads.len(), 1);
+        assert_eq!(plan.reads[0].tile_name, "N45W123");
+        // The first sample sits one to two pixels inside the padded window,
+        // so the kriging neighbourhood never leaves it.
+        assert!((1.0..2.0).contains(&plan.x_offset));
+        let last_x = 64.0 * plan.x_scale + plan.x_offset;
+        assert!(last_x < plan.width as f64 - 1.0);
+        // A sample placed exactly on a pixel centre maps to that pixel's
+        // integer grid coordinate: the phase the recovered grid loses.
+        let column = plan.column_start + 5;
+        let longitude = -180.0 + (column as f64 + 0.5) / WORLD_COVER_PIXELS_PER_DEGREE;
+        let sample_x = (longitude - bounds.west) / (bounds.east - bounds.west) * 64.0;
+        assert!((sample_x * plan.x_scale + plan.x_offset - 5.0).abs() < 1e-6);
+        let row = plan.row_start + 5;
+        let latitude = 90.0 - (row as f64 + 0.5) / WORLD_COVER_PIXELS_PER_DEGREE;
+        let sample_y = (latitude - bounds.south) / (bounds.north - bounds.south) * 64.0;
+        // Window row 0 is the southmost row, so global row start + 5 lands
+        // five rows below the window top.
+        let expected = plan.height as f64 - 6.0;
+        assert!((sample_y * plan.y_scale + plan.y_offset - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn native_window_stitches_across_tile_borders() {
+        let across_longitude = GeoBounds {
+            south: 46.8,
+            north: 46.81,
+            west: -120.005,
+            east: -119.995,
+        };
+        let plan = plan_native_window(across_longitude, 65, 65);
+        assert_eq!(plan.reads.len(), 2);
+        assert_eq!(plan.reads[0].tile_name, "N45W123");
+        assert_eq!(plan.reads[1].tile_name, "N45W120");
+        // The two reads butt against the shared tile border and cover the
+        // window exactly.
+        assert_eq!(plan.reads[0].tile_column + plan.reads[0].columns, 36_000);
+        assert_eq!(plan.reads[1].tile_column, 0);
+        assert_eq!(
+            plan.reads[0].global_column + plan.reads[0].columns as i64,
+            plan.reads[1].global_column
+        );
+        assert_eq!(plan.reads[0].columns + plan.reads[1].columns, plan.width);
+
+        let corner = plan_native_window(
+            GeoBounds {
+                south: 44.995,
+                north: 45.005,
+                west: -120.005,
+                east: -119.995,
+            },
+            65,
+            65,
+        );
+        let mut names = corner
+            .reads
+            .iter()
+            .map(|read| read.tile_name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, ["N42W120", "N42W123", "N45W120", "N45W123"]);
+        assert_eq!(
+            corner
+                .reads
+                .iter()
+                .map(|read| read.rows * read.columns)
+                .sum::<usize>(),
+            corner.width * corner.height
+        );
+    }
+
+    #[test]
+    fn native_window_follows_unwrapped_antimeridian_bounds() {
+        let plan = plan_native_window(
+            GeoBounds {
+                south: 0.1,
+                north: 0.11,
+                west: 179.99,
+                east: 180.01,
+            },
+            65,
+            65,
+        );
+        let names = plan
+            .reads
+            .iter()
+            .map(|read| read.tile_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["N00E177", "N00W180"]);
+        assert_eq!(
+            plan.reads[0].global_column + plan.reads[0].columns as i64,
+            plan.reads[1].global_column
+        );
     }
 
     #[test]

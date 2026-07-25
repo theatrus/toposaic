@@ -206,15 +206,21 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const forestSlopeLimit = surfaceColors.getByRole("slider", {
     name: "Forest slope limit",
   });
+  const steepForestTarget = surfaceColors.getByLabel("Steep forest becomes");
   await expect(forestSlopeGate).toBeChecked();
   await expect(forestSlopeLimit).toHaveValue("55");
   await forestSlopeLimit.fill("70");
   await expect(forestSlopeLimit).toHaveValue("70");
+  await expect(steepForestTarget).toHaveValue("rock");
+  await steepForestTarget.selectOption("snow");
+  await expect(steepForestTarget).toHaveValue("snow");
   await forestSlopeGate.uncheck();
   await expect(forestSlopeGate).not.toBeChecked();
   await expect(forestSlopeLimit).toBeHidden();
+  await expect(steepForestTarget).toBeHidden();
   await forestSlopeGate.check();
   await expect(forestSlopeLimit).toBeVisible();
+  await expect(steepForestTarget).toHaveValue("snow");
   await expect(floatingBridge).toBeChecked();
   await expect(bridgeThickness).toHaveValue("1.2");
   await supportedBridge.check();

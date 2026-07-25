@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use crate::heightfield::HeightField;
 use crate::mesh::{distance_squared, point_in_polygon};
-use crate::spec::SurfaceClass;
+use crate::spec::{SteepForestTarget, SurfaceClass};
 
 const VECTOR_BUCKET_COLUMNS: usize = 32;
 const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
@@ -25,6 +25,16 @@ const KRIGING_OFFSET_STEPS: usize = 16;
 /// Below this many samples per native cell the raster already resolves the
 /// source borders and smoothing would only blur real data.
 const MINIMUM_NATIVE_CELL_SAMPLES: f32 = 1.5;
+/// Below this share of snow samples a scene has no snowcap, so there is no
+/// snowline to estimate.
+const SNOWLINE_MINIMUM_SNOW_FRACTION: f32 = 0.01;
+/// Snowline percentile of the snow-sample elevations. A low percentile
+/// rather than the minimum keeps the estimate robust: a few misclassified
+/// low-altitude snow pixels (a white roof, a glacier terminus in shadow)
+/// would drag a minimum-based snowline far below the real one, while the
+/// 10th percentile ignores them and still sits near the bottom of the
+/// genuine snowcap.
+const SNOWLINE_PERCENTILE: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct SurfaceField {
@@ -76,6 +86,83 @@ pub(crate) struct SurfaceSample {
     pub(crate) building_height_m: f32,
 }
 
+/// How many samples the steep-slope forest gate reclassified, split by what
+/// they became.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SteepForestDemotion {
+    pub to_rock: usize,
+    pub to_snow: usize,
+}
+
+impl SteepForestDemotion {
+    pub fn total(self) -> usize {
+        self.to_rock + self.to_snow
+    }
+}
+
+/// Land-cover classes on the source's own pixel lattice, plus the affine
+/// map from sample-raster pixel indices to native grid coordinates:
+/// `grid = sample_index * scale + offset`, with node centres at integer
+/// grid coordinates. Row 0 is the southmost row, matching the sample
+/// raster. Unlike the grid `smooth_class_borders` recovers from the
+/// upsampled raster, this carries the true geographic phase of the source
+/// pixels, so borders land where the source drew them instead of up to half
+/// a cell away.
+#[derive(Debug, Clone)]
+pub struct NativeClassGrid {
+    width: usize,
+    height: usize,
+    classes: Vec<SurfaceClass>,
+    x_scale: f64,
+    x_offset: f64,
+    y_scale: f64,
+    y_offset: f64,
+}
+
+impl NativeClassGrid {
+    pub fn new(
+        width: usize,
+        height: usize,
+        classes: Vec<SurfaceClass>,
+        x_scale: f64,
+        x_offset: f64,
+        y_scale: f64,
+        y_offset: f64,
+    ) -> Result<Self> {
+        if width < 2 || height < 2 {
+            bail!("native class grid must be at least 2 by 2");
+        }
+        if classes.len() != width * height {
+            bail!("native class grid dimensions do not match its values");
+        }
+        if !(x_scale.is_finite()
+            && x_offset.is_finite()
+            && y_scale.is_finite()
+            && y_offset.is_finite())
+            || x_scale <= 0.0
+            || y_scale <= 0.0
+        {
+            bail!("native class grid mapping must be finite with positive scales");
+        }
+        Ok(Self {
+            width,
+            height,
+            classes,
+            x_scale,
+            x_offset,
+            y_scale,
+            y_offset,
+        })
+    }
+
+    /// Samples per native cell along the denser axis, as implied by the
+    /// mapping; the counterpart of the ratio `smooth_class_borders` derives
+    /// from the ground span.
+    fn cell_samples(&self) -> f64 {
+        (1.0 / self.x_scale).max(1.0 / self.y_scale)
+    }
+}
+
 impl SurfaceField {
     pub fn new(
         width: usize,
@@ -114,20 +201,30 @@ impl SurfaceField {
         self.base_classes.clone_from(&self.classes);
     }
 
-    /// Reclassifies forest as rock wherever the local ground slope exceeds
+    /// Reclassifies forest wherever the local ground slope exceeds
     /// `limit_degrees`, using central differences on the height field over
-    /// the real ground spacing. Applies to both the working and the base
-    /// class rasters, so call it before painting vector overlays. Returns
-    /// how many samples were reclassified.
+    /// the real ground spacing. Demoted samples become rock, or — with
+    /// `SteepForestTarget::Snow` — snow when they sit above the snowline
+    /// estimated from the samples already classed snow (and rock below it,
+    /// or everywhere when the scene has no snowcap). Applies to both the
+    /// working and the base class rasters, so call it before painting
+    /// vector overlays. Returns how many samples were reclassified, split
+    /// by what they became.
     pub fn demote_steep_forest(
         &mut self,
         height_field: &HeightField,
         ground_span_m: f32,
         limit_degrees: f32,
-    ) -> usize {
+        target: SteepForestTarget,
+    ) -> SteepForestDemotion {
         if !ground_span_m.is_finite() || ground_span_m <= 0.0 {
-            return 0;
+            return SteepForestDemotion::default();
         }
+        // The snowline comes from the classes before any demotion, so the
+        // demoted samples themselves cannot move it.
+        let snowline_m = (target == SteepForestTarget::Snow)
+            .then(|| self.snowline_m(height_field))
+            .flatten();
         let tan_limit = limit_degrees.to_radians().tan();
         let width = self.width;
         let du = 1.0 / (width - 1) as f32;
@@ -140,7 +237,7 @@ impl SurfaceField {
                 let v = y as f32 * dv;
                 let v0 = (v - dv).max(0.0);
                 let v1 = (v + dv).min(1.0);
-                let mut demoted = 0;
+                let mut demoted = SteepForestDemotion::default();
                 for (x, class) in row.iter_mut().enumerate() {
                     if *class != SurfaceClass::Forest {
                         continue;
@@ -155,17 +252,75 @@ impl SurfaceField {
                     let gradient_x = rise_x / ((u1 - u0) * ground_span_m);
                     let gradient_y = rise_y / ((v1 - v0) * ground_span_m);
                     if gradient_x.hypot(gradient_y) > tan_limit {
-                        *class = SurfaceClass::Rock;
-                        demoted += 1;
+                        *class = match snowline_m {
+                            Some(snowline) if height_field.elevation_m_at(u, v) >= snowline => {
+                                demoted.to_snow += 1;
+                                SurfaceClass::Snow
+                            }
+                            _ => {
+                                demoted.to_rock += 1;
+                                SurfaceClass::Rock
+                            }
+                        };
                     }
                 }
                 demoted
             })
-            .sum();
-        if demoted > 0 {
+            .reduce(SteepForestDemotion::default, |left, right| {
+                SteepForestDemotion {
+                    to_rock: left.to_rock + right.to_rock,
+                    to_snow: left.to_snow + right.to_snow,
+                }
+            });
+        if demoted.total() > 0 {
             self.base_classes.clone_from(&self.classes);
         }
         demoted
+    }
+
+    /// Estimates the snowline as the `SNOWLINE_PERCENTILE`th percentile of
+    /// the elevations of samples already classed snow. `None` when snow
+    /// covers less than `SNOWLINE_MINIMUM_SNOW_FRACTION` of the raster: a
+    /// handful of stray white pixels is not a snowcap and defines no line.
+    fn snowline_m(&self, height_field: &HeightField) -> Option<f32> {
+        let width = self.width;
+        let mut elevations = self
+            .classes
+            .par_iter()
+            .enumerate()
+            .filter(|(_, class)| **class == SurfaceClass::Snow)
+            .map(|(index, _)| {
+                let u = (index % width) as f32 / (width - 1) as f32;
+                let v = (index / width) as f32 / (self.height - 1) as f32;
+                height_field.elevation_m_at(u, v)
+            })
+            .collect::<Vec<_>>();
+        if (elevations.len() as f32) < self.classes.len() as f32 * SNOWLINE_MINIMUM_SNOW_FRACTION {
+            return None;
+        }
+        elevations.sort_unstable_by(f32::total_cmp);
+        Some(elevations[(elevations.len() - 1) * SNOWLINE_PERCENTILE / 100])
+    }
+
+    /// Whether `smooth_class_borders` would actually redraw this raster:
+    /// finite positive inputs and a raster meaningfully finer than the
+    /// source. Callers use this to skip fetching native-resolution
+    /// land-cover data when smoothing would no-op anyway (wide spans).
+    pub fn class_border_smoothing_applies(
+        &self,
+        native_resolution_m: f32,
+        ground_span_m: f32,
+    ) -> bool {
+        if !native_resolution_m.is_finite()
+            || !ground_span_m.is_finite()
+            || native_resolution_m <= 0.0
+            || ground_span_m <= 0.0
+        {
+            return false;
+        }
+        let cell_samples_x = native_resolution_m * (self.width - 1) as f32 / ground_span_m;
+        let cell_samples_y = native_resolution_m * (self.height - 1) as f32 / ground_span_m;
+        cell_samples_x.max(cell_samples_y) >= MINIMUM_NATIVE_CELL_SAMPLES
     }
 
     /// Redraws raster class borders by ordinary kriging of per-class
@@ -179,6 +334,11 @@ impl SurfaceField {
     /// noise but blur single-cell features. A no-op when the raster is not
     /// meaningfully finer than the source. Call before painting vector
     /// overlays; both class rasters are replaced.
+    ///
+    /// The recovered grid can sit up to half a cell off the true source
+    /// lattice; prefer `smooth_class_borders_with_native` when the true
+    /// native window is available, and keep this as the fallback when it is
+    /// not (for example when the source data cannot be re-read).
     pub fn smooth_class_borders(
         &mut self,
         native_resolution_m: f32,
@@ -186,10 +346,7 @@ impl SurfaceField {
         range_cells: f32,
         nugget: f32,
     ) {
-        if !native_resolution_m.is_finite()
-            || !ground_span_m.is_finite()
-            || native_resolution_m <= 0.0
-            || ground_span_m <= 0.0
+        if !self.class_border_smoothing_applies(native_resolution_m, ground_span_m)
             || !range_cells.is_finite()
             || range_cells <= 0.0
             || !nugget.is_finite()
@@ -199,9 +356,6 @@ impl SurfaceField {
         }
         let cell_samples_x = native_resolution_m * (self.width - 1) as f32 / ground_span_m;
         let cell_samples_y = native_resolution_m * (self.height - 1) as f32 / ground_span_m;
-        if cell_samples_x.max(cell_samples_y) < MINIMUM_NATIVE_CELL_SAMPLES {
-            return;
-        }
         let native_width = (((self.width - 1) as f32 / cell_samples_x).round() as usize).max(1) + 1;
         let native_height =
             (((self.height - 1) as f32 / cell_samples_y).round() as usize).max(1) + 1;
@@ -220,23 +374,96 @@ impl SurfaceField {
                 self.base_classes[y * self.width + x]
             })
             .collect::<Vec<_>>();
+        // The recovered nodes span the raster exactly, so the mapping from
+        // sample indices to grid coordinates is a pure scale with no phase.
+        self.krige_class_borders(
+            &native,
+            native_width,
+            native_height,
+            (native_width - 1) as f64 / (self.width - 1) as f64,
+            0.0,
+            (native_height - 1) as f64 / (self.height - 1) as f64,
+            0.0,
+            range_cells,
+            nugget,
+        );
+    }
+
+    /// Like `smooth_class_borders`, but kriges from the source's true pixel
+    /// lattice instead of a grid recovered from the upsampled raster, so
+    /// borders keep the source's geographic phase. A no-op under the same
+    /// conditions: invalid parameters, or fewer than
+    /// `MINIMUM_NATIVE_CELL_SAMPLES` samples per native cell (as implied by
+    /// the grid's mapping).
+    pub fn smooth_class_borders_with_native(
+        &mut self,
+        native: &NativeClassGrid,
+        range_cells: f32,
+        nugget: f32,
+    ) {
+        if !range_cells.is_finite()
+            || range_cells <= 0.0
+            || !nugget.is_finite()
+            || nugget < 0.0
+            || native.cell_samples() < f64::from(MINIMUM_NATIVE_CELL_SAMPLES)
+        {
+            return;
+        }
+        self.krige_class_borders(
+            &native.classes,
+            native.width,
+            native.height,
+            native.x_scale,
+            native.x_offset,
+            native.y_scale,
+            native.y_offset,
+            range_cells,
+            nugget,
+        );
+    }
+
+    /// The shared kriging pass: re-estimates every sample from the node
+    /// classes of a regular grid, where `grid = sample_index * scale +
+    /// offset` maps sample pixels onto grid coordinates with node centres
+    /// at integers. Fractional positions are quantized to the
+    /// `KRIGING_OFFSET_STEPS` stencil table; with the true lattice the
+    /// offsets come from real geography, so they are clamped into the cell
+    /// before quantizing (edge samples clamped to the border cell can
+    /// otherwise fall outside it). One table step is 1/16 of a native cell
+    /// — about 0.6 m of ground for 10 m sources — well under both the
+    /// sample spacing wherever smoothing runs and any visible border
+    /// movement, so the existing table resolution needs no extension.
+    #[expect(clippy::too_many_arguments)]
+    fn krige_class_borders(
+        &mut self,
+        native: &[SurfaceClass],
+        native_width: usize,
+        native_height: usize,
+        x_scale: f64,
+        x_offset: f64,
+        y_scale: f64,
+        y_offset: f64,
+        range_cells: f32,
+        nugget: f32,
+    ) {
         let weights = kriging_weight_table(range_cells as f64, nugget as f64);
         let width = self.width;
-        let height = self.height;
         let mut smoothed = vec![SurfaceClass::Rock; width * self.height];
         smoothed
             .par_chunks_mut(width)
             .enumerate()
             .for_each(|(y, row)| {
-                let grid_y = y as f32 / (height - 1) as f32 * (native_height - 1) as f32;
+                let grid_y = y as f64 * y_scale + y_offset;
                 let cell_y = (grid_y.floor() as isize).clamp(0, native_height as isize - 2);
-                let offset_y =
-                    ((grid_y - cell_y as f32) * KRIGING_OFFSET_STEPS as f32).round() as usize;
+                let offset_y = ((grid_y - cell_y as f64).clamp(0.0, 1.0)
+                    * KRIGING_OFFSET_STEPS as f64)
+                    .round() as usize;
                 for (x, sample) in row.iter_mut().enumerate() {
-                    let grid_x = x as f32 / (width - 1) as f32 * (native_width - 1) as f32;
+                    let grid_x = x as f64 * x_scale + x_offset;
                     let cell_x = (grid_x.floor() as isize).clamp(0, native_width as isize - 2);
-                    let offset_x =
-                        ((grid_x - cell_x as f32) * KRIGING_OFFSET_STEPS as f32).round() as usize;
+                    let offset_x = ((grid_x - cell_x as f64).clamp(0.0, 1.0)
+                        * KRIGING_OFFSET_STEPS as f64)
+                        .round() as usize;
                     let stencil = &weights[offset_y * (KRIGING_OFFSET_STEPS + 1) + offset_x];
                     let mut scores = [0.0_f32; 6];
                     for node_y in 0..KRIGING_NEIGHBORHOOD {
@@ -1206,6 +1433,127 @@ mod tests {
         }
     }
 
+    /// The true 9 by 9 native diagonal that `blocky_diagonal_field` is a
+    /// nearest-neighbour upsample of.
+    fn diagonal_native_classes() -> Vec<SurfaceClass> {
+        (0..9 * 9)
+            .map(|index| {
+                if index % 9 + index / 9 > 8 {
+                    SurfaceClass::Forest
+                } else {
+                    SurfaceClass::Rock
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_smoothing_matches_the_recovered_path_when_aligned() {
+        let mut recovered = blocky_diagonal_field();
+        let mut native_path = recovered.clone();
+        recovered.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        // The same lattice the recovered path reconstructs: 9 nodes across
+        // 64 sample steps, no phase.
+        let native = NativeClassGrid::new(
+            9,
+            9,
+            diagonal_native_classes(),
+            8.0 / 64.0,
+            0.0,
+            8.0 / 64.0,
+            0.0,
+        )
+        .unwrap();
+        native_path.smooth_class_borders_with_native(&native, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        assert_eq!(recovered.base_classes, native_path.base_classes);
+        assert_eq!(native_path.classes, native_path.base_classes);
+    }
+
+    #[test]
+    fn native_smoothing_honours_the_lattice_phase() {
+        let mut aligned = blocky_diagonal_field();
+        let mut shifted = aligned.clone();
+        let grid = |x_offset: f64| {
+            NativeClassGrid::new(
+                9,
+                9,
+                diagonal_native_classes(),
+                8.0 / 64.0,
+                x_offset,
+                8.0 / 64.0,
+                0.0,
+            )
+            .unwrap()
+        };
+        aligned.smooth_class_borders_with_native(&grid(0.0), DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        // The same data half a native cell further along x: every border
+        // must shift with it instead of snapping back to the sample grid.
+        shifted.smooth_class_borders_with_native(&grid(0.5), DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        assert_ne!(aligned.base_classes, shifted.base_classes);
+        let first_forest = |field: &SurfaceField, row: usize| {
+            (0..65)
+                .find(|x| field.base_classes[row * 65 + x] == SurfaceClass::Forest)
+                .unwrap()
+        };
+        for row in [16, 32, 48] {
+            let moved = first_forest(&aligned, row) as isize - first_forest(&shifted, row) as isize;
+            // Half a native cell is 4 samples; allow one sample of kriging
+            // slack but reject snapping (0) and whole-cell jumps (8).
+            assert!(
+                (3..=5).contains(&moved),
+                "row {row} border moved {moved} samples"
+            );
+        }
+    }
+
+    #[test]
+    fn native_smoothing_is_deterministic_and_respects_the_no_op_threshold() {
+        let mut first = blocky_diagonal_field();
+        let mut second = first.clone();
+        let native = NativeClassGrid::new(
+            9,
+            9,
+            diagonal_native_classes(),
+            8.0 / 64.0,
+            0.25,
+            8.0 / 64.0,
+            0.25,
+        )
+        .unwrap();
+        first.smooth_class_borders_with_native(&native, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        second.smooth_class_borders_with_native(&native, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        assert_eq!(first.base_classes, second.base_classes);
+
+        // One sample per native cell: nothing to reconstruct, so the grid
+        // is ignored just as the recovered path would ignore it.
+        let mut coarse = blocky_diagonal_field();
+        let original = coarse.base_classes.clone();
+        let unit = NativeClassGrid::new(
+            65,
+            65,
+            vec![SurfaceClass::Rock; 65 * 65],
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        coarse.smooth_class_borders_with_native(&unit, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        assert_eq!(coarse.base_classes, original);
+    }
+
+    #[test]
+    fn smoothing_gate_tracks_the_sample_density() {
+        let field = blocky_diagonal_field();
+        // 64 sample steps over 80 m is 8 samples per 10 m cell; over 1 km
+        // it is coarser than the source and smoothing must no-op, so
+        // callers can skip fetching native data entirely.
+        assert!(field.class_border_smoothing_applies(10.0, 80.0));
+        assert!(!field.class_border_smoothing_applies(10.0, 1_000.0));
+        assert!(!field.class_border_smoothing_applies(10.0, 0.0));
+        assert!(!field.class_border_smoothing_applies(f32::NAN, 80.0));
+    }
+
     #[test]
     fn steep_slope_gate_demotes_forest_on_cliff_faces() {
         let size = 33;
@@ -1223,8 +1571,10 @@ mod tests {
         let height_field = HeightField::new(size, size, values, "cliff").unwrap();
         let mut field =
             SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
-        let demoted = field.demote_steep_forest(&height_field, 1_000.0, 55.0);
-        assert!(demoted > 0);
+        let demoted =
+            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock);
+        assert!(demoted.to_rock > 0);
+        assert_eq!(demoted.to_snow, 0);
         assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
         assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Forest);
         assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Forest);
@@ -1241,13 +1591,97 @@ mod tests {
         let height_field = HeightField::new(size, size, values, "hill").unwrap();
         let mut field =
             SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
-        assert_eq!(field.demote_steep_forest(&height_field, 1_000.0, 55.0), 0);
+        assert_eq!(
+            field
+                .demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock)
+                .total(),
+            0
+        );
         assert!(
             field
                 .classes
                 .iter()
                 .all(|class| *class == SurfaceClass::Forest)
         );
+    }
+
+    /// A steep ramp along x (3200 m over 1 km, about 73 degrees everywhere)
+    /// with a snowcap on the high side and a forested wall crossing the
+    /// snowline as a horizontal band.
+    fn snowline_wall() -> (HeightField, SurfaceField) {
+        let size = 33;
+        let elevation = |x: usize| x as f32 / (size - 1) as f32 * 3_200.0;
+        let values = (0..size * size)
+            .map(|index| elevation(index % size))
+            .collect();
+        let height_field = HeightField::new(size, size, values, "ramp").unwrap();
+        let classes = (0..size * size)
+            .map(|index| {
+                let x = index % size;
+                let v = (index / size) as f32 / (size - 1) as f32;
+                if (0.4..=0.6).contains(&v) {
+                    SurfaceClass::Forest
+                } else if elevation(x) > 2_400.0 {
+                    SurfaceClass::Snow
+                } else {
+                    SurfaceClass::Rock
+                }
+            })
+            .collect();
+        let field = SurfaceField::new(size, size, classes, "test").unwrap();
+        (height_field, field)
+    }
+
+    #[test]
+    fn snow_target_splits_the_demoted_wall_at_the_snowline() {
+        let (height_field, mut field) = snowline_wall();
+        let demoted =
+            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Snow);
+        // The whole band is steeper than the limit, and the snowline (the
+        // 10th percentile of snow elevations, 2500 m here) splits it.
+        assert!(demoted.to_snow > 0);
+        assert!(demoted.to_rock > 0);
+        assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Snow);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Snow);
+        assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Rock);
+        // Outside the band nothing moves.
+        assert_eq!(field.terrain_at(0.1, 0.1), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(1.0, 0.1), SurfaceClass::Snow);
+        assert_eq!(field.base_classes, field.classes);
+    }
+
+    #[test]
+    fn rock_target_keeps_the_current_behavior_on_snow_scenes() {
+        let (height_field, mut field) = snowline_wall();
+        let demoted =
+            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock);
+        assert_eq!(demoted.to_snow, 0);
+        assert!(demoted.to_rock > 0);
+        // The demoted wall is rock everywhere, snowcap or not.
+        assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Rock);
+    }
+
+    #[test]
+    fn snow_target_without_a_snowcap_demotes_to_rock() {
+        let (height_field, mut field) = snowline_wall();
+        // Erase the snowcap down to a few stray pixels: under the 1 percent
+        // threshold there is no snowline.
+        for class in &mut field.classes {
+            if *class == SurfaceClass::Snow {
+                *class = SurfaceClass::Rock;
+            }
+        }
+        for index in 0..5 {
+            field.classes[index * 33 + 32] = SurfaceClass::Snow;
+        }
+        field.base_classes.clone_from(&field.classes);
+        let demoted =
+            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Snow);
+        assert_eq!(demoted.to_snow, 0);
+        assert!(demoted.to_rock > 0);
+        assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Rock);
     }
 
     #[test]

@@ -69,6 +69,7 @@ export const initialSpec: GenerationSpec = {
     border_smoothing_nugget: 0.05,
     forest_slope_gate: true,
     forest_slope_limit_degrees: 55,
+    steep_forest_target: "rock",
   },
 };
 
