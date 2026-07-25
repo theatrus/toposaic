@@ -399,6 +399,7 @@ pub(crate) fn build_piece_with_height_range(
         vertices,
         triangles,
         materials,
+        quantization_collisions: Vec::new(),
     };
     if spec.buildings.enabled
         && let Some(field) = surface_field

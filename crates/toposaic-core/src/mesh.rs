@@ -11,6 +11,11 @@ pub(crate) struct Mesh {
     pub(crate) vertices: Vec<[f32; 3]>,
     pub(crate) triangles: Vec<[u32; 3]>,
     pub(crate) materials: Vec<SurfaceClass>,
+    /// Diagnostic trail only: `MeshBuilder::vertex` calls whose 1e-5
+    /// quantization key matched an already-stored vertex at a *different*
+    /// position (kept position, dropped position). Geometry is unchanged;
+    /// the manifold analyzer reads this to attribute weld collisions.
+    pub(crate) quantization_collisions: Vec<([f32; 3], [f32; 3])>,
 }
 
 #[derive(Default)]
@@ -19,6 +24,7 @@ pub(crate) struct MeshBuilder {
     triangles: Vec<[u32; 3]>,
     materials: Vec<SurfaceClass>,
     indices: HashMap<(i64, i64, i64), u32>,
+    collisions: Vec<([f32; 3], [f32; 3])>,
 }
 
 impl MeshBuilder {
@@ -28,11 +34,17 @@ impl MeshBuilder {
             (point[1] * 100_000.0).round() as i64,
             (point[2] * 100_000.0).round() as i64,
         );
-        *self.indices.entry(key).or_insert_with(|| {
-            let index = self.vertices.len() as u32;
-            self.vertices.push(point);
-            index
-        })
+        if let Some(&index) = self.indices.get(&key) {
+            let kept = self.vertices[index as usize];
+            if kept != point {
+                self.collisions.push((kept, point));
+            }
+            return index;
+        }
+        let index = self.vertices.len() as u32;
+        self.vertices.push(point);
+        self.indices.insert(key, index);
+        index
     }
 
     pub(crate) fn triangle(
@@ -65,6 +77,7 @@ impl MeshBuilder {
             vertices: self.vertices,
             triangles: self.triangles,
             materials: self.materials,
+            quantization_collisions: self.collisions,
         }
     }
 
@@ -73,6 +86,7 @@ impl MeshBuilder {
             &mut self.vertices,
             &mut self.triangles,
             &mut self.materials,
+            &mut self.collisions,
             other,
         );
     }
@@ -84,6 +98,7 @@ impl Mesh {
             &mut self.vertices,
             &mut self.triangles,
             &mut self.materials,
+            &mut self.quantization_collisions,
             other,
         );
     }
@@ -93,6 +108,7 @@ fn append_isolated_parts(
     vertices: &mut Vec<[f32; 3]>,
     triangles: &mut Vec<[u32; 3]>,
     materials: &mut Vec<SurfaceClass>,
+    collisions: &mut Vec<([f32; 3], [f32; 3])>,
     other: MeshBuilder,
 ) {
     let offset = vertices.len() as u32;
@@ -104,6 +120,7 @@ fn append_isolated_parts(
             .map(|triangle| triangle.map(|index| index + offset)),
     );
     materials.extend(other.materials);
+    collisions.extend(other.collisions);
 }
 
 /// Boolean clipping can repeat a vertex or overlap constraints at a dense

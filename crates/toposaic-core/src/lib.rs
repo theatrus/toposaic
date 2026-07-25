@@ -1,3 +1,5 @@
+#[doc(hidden)]
+pub mod analysis;
 mod export;
 mod heightfield;
 mod jigsaw;

@@ -26,6 +26,15 @@ mod settings;
 mod setups;
 mod surface;
 
+/// Internal hooks for the `manifold_report_real` diagnostics example only;
+/// not a stable API.
+#[doc(hidden)]
+pub mod diagnostics {
+    pub use crate::cache::root as map_cache_root;
+    pub use crate::elevation::fetch_height_field_with_progress;
+    pub use crate::surface::fetch_surface_field;
+}
+
 use database::migrate;
 use geocoding::search_places;
 pub(crate) use jobs::Job;
