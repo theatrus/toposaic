@@ -622,6 +622,22 @@ pub struct ColorOutputSpec {
     pub bridge_structure: BridgeStructure,
     pub bridge_thickness_mm: f32,
     pub minimum_patch_mm: f32,
+    /// Class border drawing and smoothing. Flattened, so the JSON keys stay
+    /// at the `color_output` level exactly as before the grouping.
+    #[serde(flatten)]
+    pub borders: BorderSpec,
+    /// Steep-slope reclassification gates. Flattened like `borders`.
+    #[serde(flatten)]
+    pub slope_gates: SlopeGateSpec,
+}
+
+/// How land-cover class borders are drawn and smoothed.
+///
+/// Serialized flattened into [`ColorOutputSpec`], so this grouping never
+/// shows up on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BorderSpec {
     pub class_borders: ClassBorders,
     /// How far smoothed borders bend: the indicator-kriging variogram range
     /// in native (10 m) land-cover cells. Larger values bend borders over a
@@ -632,6 +648,46 @@ pub struct ColorOutputSpec {
     /// upsampling introduces, at the cost of fidelity to single-cell
     /// features at the native nodes.
     pub border_smoothing_nugget: f32,
+}
+
+impl Default for BorderSpec {
+    fn default() -> Self {
+        Self {
+            class_borders: ClassBorders::default(),
+            // 2.5 cells keeps the estimate local so borders track the data;
+            // a 0.05 nugget keeps the estimator near-exact at native nodes
+            // while still damping staircase phase noise between them.
+            border_smoothing_range_cells: 2.5,
+            border_smoothing_nugget: 0.05,
+        }
+    }
+}
+
+impl BorderSpec {
+    fn validate(&self) -> Result<()> {
+        // Below 1 cell the 4 by 4 kriging neighbourhood barely overlaps the
+        // variogram range and borders stay blocky; above 8 cells borders
+        // detach from the data the stencil can see.
+        if !(1.0..=8.0).contains(&self.border_smoothing_range_cells) {
+            bail!("border smoothing range must be between 1 and 8 native cells");
+        }
+        // Past half the sill the nugget flattens the stencil into a blur
+        // that erases single-cell features.
+        if !(0.0..=0.5).contains(&self.border_smoothing_nugget) {
+            bail!("border smoothing nugget must be between 0 and 0.5");
+        }
+        Ok(())
+    }
+}
+
+/// Steep-slope gates that reclassify land cover the 10 m source raster
+/// bleeds onto near-vertical faces.
+///
+/// Serialized flattened into [`ColorOutputSpec`], so this grouping never
+/// shows up on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlopeGateSpec {
     /// Reclassify forest as rock where the local ground slope exceeds
     /// `forest_slope_limit_degrees`. Fixes 10 m land-cover pixels that bleed
     /// tree cover onto near-vertical faces (for example the sides of Devils
@@ -649,6 +705,38 @@ pub struct ColorOutputSpec {
     /// forest gate demoted to snow is gated too.
     pub snow_slope_gate: bool,
     pub snow_slope_limit_degrees: f32,
+}
+
+impl Default for SlopeGateSpec {
+    fn default() -> Self {
+        Self {
+            forest_slope_gate: true,
+            // Closed forest is rare above roughly 45 degrees and absent from
+            // true cliff faces; 55 degrees keeps legitimately steep forested
+            // gorge and fjord walls while catching near-vertical rock that
+            // 10 m land-cover pixels paint green.
+            forest_slope_limit_degrees: 55.0,
+            steep_forest_target: SteepForestTarget::Rock,
+            snow_slope_gate: true,
+            // Snow patches persist on steeper ground than closed forest:
+            // couloirs and clingy north faces hold snow past 55 degrees,
+            // but faces past roughly 65 degrees shed. DEM smoothing
+            // understates slope, so the default errs high.
+            snow_slope_limit_degrees: 65.0,
+        }
+    }
+}
+
+impl SlopeGateSpec {
+    fn validate(&self) -> Result<()> {
+        if !(30.0..=85.0).contains(&self.forest_slope_limit_degrees) {
+            bail!("forest slope limit must be between 30 and 85 degrees");
+        }
+        if !(30.0..=85.0).contains(&self.snow_slope_limit_degrees) {
+            bail!("snow slope limit must be between 30 and 85 degrees");
+        }
+        Ok(())
+    }
 }
 
 impl Default for ColorOutputSpec {
@@ -676,25 +764,8 @@ impl Default for ColorOutputSpec {
             bridge_structure: BridgeStructure::Floating,
             bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
-            class_borders: ClassBorders::default(),
-            // 2.5 cells keeps the estimate local so borders track the data;
-            // a 0.05 nugget keeps the estimator near-exact at native nodes
-            // while still damping staircase phase noise between them.
-            border_smoothing_range_cells: 2.5,
-            border_smoothing_nugget: 0.05,
-            forest_slope_gate: true,
-            // Closed forest is rare above roughly 45 degrees and absent from
-            // true cliff faces; 55 degrees keeps legitimately steep forested
-            // gorge and fjord walls while catching near-vertical rock that
-            // 10 m land-cover pixels paint green.
-            forest_slope_limit_degrees: 55.0,
-            steep_forest_target: SteepForestTarget::Rock,
-            snow_slope_gate: true,
-            // Snow patches persist on steeper ground than closed forest:
-            // couloirs and clingy north faces hold snow past 55 degrees,
-            // but faces past roughly 65 degrees shed. DEM smoothing
-            // understates slope, so the default errs high.
-            snow_slope_limit_degrees: 65.0,
+            borders: BorderSpec::default(),
+            slope_gates: SlopeGateSpec::default(),
         }
     }
 }
@@ -732,23 +803,8 @@ impl ColorOutputSpec {
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
         }
-        if !(30.0..=85.0).contains(&self.forest_slope_limit_degrees) {
-            bail!("forest slope limit must be between 30 and 85 degrees");
-        }
-        if !(30.0..=85.0).contains(&self.snow_slope_limit_degrees) {
-            bail!("snow slope limit must be between 30 and 85 degrees");
-        }
-        // Below 1 cell the 4 by 4 kriging neighbourhood barely overlaps the
-        // variogram range and borders stay blocky; above 8 cells borders
-        // detach from the data the stencil can see.
-        if !(1.0..=8.0).contains(&self.border_smoothing_range_cells) {
-            bail!("border smoothing range must be between 1 and 8 native cells");
-        }
-        // Past half the sill the nugget flattens the stencil into a blur
-        // that erases single-cell features.
-        if !(0.0..=0.5).contains(&self.border_smoothing_nugget) {
-            bail!("border smoothing nugget must be between 0 and 0.5");
-        }
+        self.slope_gates.validate()?;
+        self.borders.validate()?;
         Ok(())
     }
 }
@@ -893,17 +949,23 @@ mod tests {
             BridgeStructure::Floating
         );
         assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
-        assert_eq!(spec.color_output.class_borders, ClassBorders::Blocky);
-        assert_eq!(spec.color_output.border_smoothing_range_cells, 2.5);
-        assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
-        assert!(spec.color_output.forest_slope_gate);
-        assert_eq!(spec.color_output.forest_slope_limit_degrees, 55.0);
         assert_eq!(
-            spec.color_output.steep_forest_target,
+            spec.color_output.borders.class_borders,
+            ClassBorders::Blocky
+        );
+        assert_eq!(spec.color_output.borders.border_smoothing_range_cells, 2.5);
+        assert_eq!(spec.color_output.borders.border_smoothing_nugget, 0.05);
+        assert!(spec.color_output.slope_gates.forest_slope_gate);
+        assert_eq!(
+            spec.color_output.slope_gates.forest_slope_limit_degrees,
+            55.0
+        );
+        assert_eq!(
+            spec.color_output.slope_gates.steep_forest_target,
             SteepForestTarget::Rock
         );
-        assert!(spec.color_output.snow_slope_gate);
-        assert_eq!(spec.color_output.snow_slope_limit_degrees, 65.0);
+        assert!(spec.color_output.slope_gates.snow_slope_gate);
+        assert_eq!(spec.color_output.slope_gates.snow_slope_limit_degrees, 65.0);
         // Specs saved before the 3MF style existed keep today's project
         // output, embedded slicer settings included.
         assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Project);
@@ -913,6 +975,117 @@ mod tests {
         assert!(!spec.uses_trails());
         assert_eq!(spec.color_output.trail_color, "#D6336C");
         assert_eq!(spec.color_output.trail_width_mm, 0.7);
+    }
+
+    /// The exact serialization of `GenerationSpec::default()` captured
+    /// before `ColorOutputSpec` grew its flattened sub-structs. Byte
+    /// equality proves the grouping never touched the wire format: every
+    /// key flat, every key in the old order.
+    #[test]
+    fn default_spec_serializes_to_the_exact_flat_wire_format() {
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"blocky","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
+        assert_eq!(serialized, expected);
+    }
+
+    /// A JSON document that sets every spec field, flat `color_output` keys
+    /// included, must survive a full round-trip unchanged.
+    #[test]
+    fn full_flat_documents_round_trip_unchanged() {
+        let doc: serde_json::Value = serde_json::from_str(
+            r##"{
+            "center_lat": 44.5,
+            "center_lon": -110.5,
+            "elevation_source": "mapterhorn",
+            "ground_span_km": 6.0,
+            "width_mm": 240.0,
+            "rows": 5,
+            "columns": 5,
+            "base_mm": 3.0,
+            "relief_mm": 20.0,
+            "elevation_datum_m": 1200.0,
+            "elevation_m_per_mm": 40.0,
+            "adjacent_columns": 3,
+            "adjacent_rows": 3,
+            "super_tile_anchor": "center",
+            "adjacent_interlocks": true,
+            "adjacent_tile_column": 1,
+            "adjacent_tile_row": 2,
+            "clearance_mm": 0.25,
+            "samples_per_piece": 96,
+            "overlay_samples_per_piece": 128,
+            "mesh_samples_across": 512,
+            "overlay_samples_across": 640,
+            "fine_dem_detail": true,
+            "solid_model": true,
+            "straight_piece_sides": true,
+            "puzzle_tabs": false,
+            "place_name": "Yellowstone",
+            "tray": {
+                "enabled": true,
+                "individual_tiles": true,
+                "tray_color": "#111111",
+                "contour_color": "#222222",
+                "label_color": "#333333",
+                "clearance_mm": 0.5,
+                "rim_width_mm": 9.0,
+                "floor_mm": 2.0,
+                "rim_height_mm": 4.0,
+                "contour_count": 24,
+                "segment_columns": 2,
+                "segment_rows": 3
+            },
+            "buildings": { "enabled": true, "z_scale": 2.0 },
+            "color_output": {
+                "enabled": true,
+                "threemf_style": "painted",
+                "forest_color": "#014421",
+                "rock_color": "#6E6E6E",
+                "snow_color": "#FFFFFF",
+                "water_color": "#0055AA",
+                "road_color": "#AA8800",
+                "building_color": "#997755",
+                "trail_color": "#CC2266",
+                "trail_width_mm": 1.5,
+                "roads_enabled": false,
+                "road_detail": "streets",
+                "adaptive_road_widths": false,
+                "osm_water_enabled": false,
+                "waterway_coverage_percent": 25.0,
+                "road_width_mm": 1.0,
+                "road_height_mm": 0.25,
+                "bridge_structure": "supported",
+                "bridge_thickness_mm": 2.0,
+                "minimum_patch_mm": 2.5,
+                "class_borders": "smooth",
+                "border_smoothing_range_cells": 4.0,
+                "border_smoothing_nugget": 0.25,
+                "forest_slope_gate": false,
+                "forest_slope_limit_degrees": 60.0,
+                "steep_forest_target": "snow",
+                "snow_slope_gate": false,
+                "snow_slope_limit_degrees": 70.0
+            },
+            "trails": [
+                {
+                    "name": "Loop",
+                    "points": [[44.5, -110.5], [44.6, -110.25]]
+                }
+            ]
+        }"##,
+        )
+        .unwrap();
+        let spec: GenerationSpec = serde_json::from_value(doc.clone()).unwrap();
+        spec.validate().unwrap();
+        assert_eq!(
+            spec.color_output.borders.class_borders,
+            ClassBorders::Smooth
+        );
+        assert_eq!(
+            spec.color_output.slope_gates.steep_forest_target,
+            SteepForestTarget::Snow
+        );
+        assert_eq!(serde_json::to_value(&spec).unwrap(), doc);
     }
 
     fn trail(points: Vec<[f64; 2]>) -> TrailRoute {
@@ -1012,7 +1185,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            spec.color_output.steep_forest_target,
+            spec.color_output.slope_gates.steep_forest_target,
             SteepForestTarget::Snow
         );
         assert_eq!(
@@ -1031,38 +1204,41 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(spec.color_output.class_borders, ClassBorders::Smooth);
-        assert!(!spec.color_output.forest_slope_gate);
-        assert!(!spec.color_output.snow_slope_gate);
-        assert_eq!(spec.color_output.border_smoothing_range_cells, 2.5);
-        assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
+        assert_eq!(
+            spec.color_output.borders.class_borders,
+            ClassBorders::Smooth
+        );
+        assert!(!spec.color_output.slope_gates.forest_slope_gate);
+        assert!(!spec.color_output.slope_gates.snow_slope_gate);
+        assert_eq!(spec.color_output.borders.border_smoothing_range_cells, 2.5);
+        assert_eq!(spec.color_output.borders.border_smoothing_nugget, 0.05);
 
         let mut spec = GenerationSpec::default();
-        spec.color_output.forest_slope_limit_degrees = 20.0;
+        spec.color_output.slope_gates.forest_slope_limit_degrees = 20.0;
         assert!(spec.validate().is_err());
-        spec.color_output.forest_slope_limit_degrees = 85.0;
+        spec.color_output.slope_gates.forest_slope_limit_degrees = 85.0;
         assert!(spec.validate().is_ok());
 
-        spec.color_output.snow_slope_limit_degrees = 89.0;
+        spec.color_output.slope_gates.snow_slope_limit_degrees = 89.0;
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("snow slope limit"));
-        spec.color_output.snow_slope_limit_degrees = 30.0;
+        spec.color_output.slope_gates.snow_slope_limit_degrees = 30.0;
         assert!(spec.validate().is_ok());
     }
 
     #[test]
     fn border_smoothing_parameters_validate() {
         let mut spec = GenerationSpec::default();
-        spec.color_output.border_smoothing_range_cells = 0.5;
+        spec.color_output.borders.border_smoothing_range_cells = 0.5;
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("between 1 and 8 native cells"));
-        spec.color_output.border_smoothing_range_cells = 8.0;
+        spec.color_output.borders.border_smoothing_range_cells = 8.0;
         assert!(spec.validate().is_ok());
 
-        spec.color_output.border_smoothing_nugget = 0.6;
+        spec.color_output.borders.border_smoothing_nugget = 0.6;
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("between 0 and 0.5"));
-        spec.color_output.border_smoothing_nugget = 0.0;
+        spec.color_output.borders.border_smoothing_nugget = 0.0;
         assert!(spec.validate().is_ok());
     }
 
