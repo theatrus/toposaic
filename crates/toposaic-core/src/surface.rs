@@ -19,8 +19,21 @@ pub struct SurfaceField {
     pub(crate) base_classes: Vec<SurfaceClass>,
     pub(crate) vector_lines: Vec<VectorSurfaceLine>,
     pub(crate) vector_areas: Vec<VectorSurfaceArea>,
-    vector_line_buckets: Vec<Vec<usize>>,
+    vector_line_buckets: Vec<Vec<LineBucketEntry>>,
     vector_area_buckets: Vec<Vec<usize>>,
+}
+
+/// One line's presence in one bucket: only the segments whose padded
+/// bounding box touches the bucket, as ranges into `points_mm` windows.
+/// Long resampled lines have hundreds of segments but only a handful near
+/// any one bucket, so queries walk a short subset instead of the whole
+/// polyline.
+#[derive(Debug, Clone)]
+struct LineBucketEntry {
+    line_index: usize,
+    /// Half-open ranges of segment indices; segment `i` spans
+    /// `points_mm[i]..=points_mm[i + 1]`.
+    segment_ranges: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,9 +177,55 @@ impl SurfaceField {
                 ]
             },
         );
+        // Whole-line bucket rectangle from the padded bounds, exactly as the
+        // per-line index used; per-segment rectangles never reach outside it.
+        let line_rect = [
+            vector_bucket_coordinate(bounds[0]),
+            vector_bucket_coordinate(bounds[1]),
+            vector_bucket_coordinate(bounds[2]),
+            vector_bucket_coordinate(bounds[3]),
+        ];
         let line_index = self.vector_lines.len();
+        for (segment, pair) in line.points_mm.windows(2).enumerate() {
+            // A segment must be indexed in every bucket whose queries it can
+            // satisfy. A query q (in mm, after the same clamp the distance
+            // test applies) is within half_width of the segment only if q
+            // lies inside the segment's bounding box padded by half_width,
+            // so index the buckets that padded box touches. The padding math
+            // matches the whole-line bounds fold above; on top of that, one
+            // extra ring of buckets absorbs any f32 rounding slack in the
+            // subtract/divide/quantize chain — rounding is ULP-scale while a
+            // bucket spans 1/32 of the model, so containment answers at
+            // bucket borders are exactly those of the full-line walk.
+            let first_x = vector_bucket_coordinate(
+                (pair[0][0].min(pair[1][0]) - half_width) / print_width_mm,
+            )
+            .saturating_sub(1)
+            .max(line_rect[0]);
+            let first_y = vector_bucket_coordinate(
+                (pair[0][1].min(pair[1][1]) - half_width) / print_height_mm,
+            )
+            .saturating_sub(1)
+            .max(line_rect[1]);
+            let last_x = (vector_bucket_coordinate(
+                (pair[0][0].max(pair[1][0]) + half_width) / print_width_mm,
+            ) + 1)
+                .min(line_rect[2]);
+            let last_y = (vector_bucket_coordinate(
+                (pair[0][1].max(pair[1][1]) + half_width) / print_height_mm,
+            ) + 1)
+                .min(line_rect[3]);
+            for y in first_y..=last_y {
+                for x in first_x..=last_x {
+                    add_segment_to_bucket(
+                        &mut self.vector_line_buckets[y * VECTOR_BUCKET_COLUMNS + x],
+                        line_index,
+                        segment as u32,
+                    );
+                }
+            }
+        }
         self.vector_lines.push(line);
-        add_to_vector_buckets(&mut self.vector_line_buckets, bounds, line_index);
     }
 
     pub fn paint_building(&mut self, points: &[[f32; 2]], height_m: f32) {
@@ -380,11 +439,12 @@ impl SurfaceField {
                 building_height_m,
             };
         }
-        let line_indices = &self.vector_line_buckets[bucket];
+        let line_entries = &self.vector_line_buckets[bucket];
         let has_road = include_roads
-            && line_indices.iter().any(|index| {
-                let line = &self.vector_lines[*index];
-                line.class == SurfaceClass::Road && surface_line_contains(line, u, v)
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Road
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
             });
         if has_road {
             return SurfaceSample {
@@ -407,13 +467,13 @@ impl SurfaceField {
                 building_height_m,
             };
         }
-        if let Some(class) = self.vector_line_buckets[bucket]
+        if let Some(class) = line_entries
             .iter()
             .rev()
-            .map(|index| &self.vector_lines[*index])
-            .filter(|line| line.class != SurfaceClass::Road)
-            .find(|line| surface_line_contains(line, u, v))
-            .map(|line| line.class)
+            .map(|entry| (&self.vector_lines[entry.line_index], entry))
+            .filter(|(line, _)| line.class != SurfaceClass::Road)
+            .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
+            .map(|(line, _)| line.class)
         {
             return SurfaceSample {
                 class,
@@ -496,6 +556,34 @@ fn vector_bucket_index(u: f32, v: f32) -> usize {
     vector_bucket_coordinate(v) * VECTOR_BUCKET_COLUMNS + vector_bucket_coordinate(u)
 }
 
+/// Records one segment of one line in a bucket. Segments arrive in
+/// increasing order and a whole line is indexed before the next line
+/// starts, so the entry for this line is the bucket's last entry (if any)
+/// and a contiguous segment extends its trailing range.
+fn add_segment_to_bucket(bucket: &mut Vec<LineBucketEntry>, line_index: usize, segment: u32) {
+    if let Some(entry) = bucket.last_mut()
+        && entry.line_index == line_index
+    {
+        if let Some(range) = entry.segment_ranges.last_mut() {
+            if range.1 == segment {
+                range.1 = segment + 1;
+                return;
+            }
+            if segment < range.1 {
+                // Each (segment, bucket) pair is visited once, so an
+                // already-covered segment cannot arrive; kept as a guard.
+                return;
+            }
+        }
+        entry.segment_ranges.push((segment, segment + 1));
+        return;
+    }
+    bucket.push(LineBucketEntry {
+        line_index,
+        segment_ranges: vec![(segment, segment + 1)],
+    });
+}
+
 fn add_to_vector_buckets(buckets: &mut [Vec<usize>], bounds: [f32; 4], feature_index: usize) {
     let minimum_x = vector_bucket_coordinate(bounds[0]);
     let minimum_y = vector_bucket_coordinate(bounds[1]);
@@ -572,12 +660,6 @@ fn resample_surface_line(points: &[[f32; 2]], maximum_step_mm: f32) -> Vec<[f32;
     result
 }
 
-fn surface_line_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> Option<(f32, f32)> {
-    let radius_squared = (line.width_mm * 0.5).powi(2);
-    let nearest = surface_line_nearest_projection(line, u, v);
-    (nearest.0 <= radius_squared).then_some(nearest)
-}
-
 pub(crate) fn surface_line_progress(line: &VectorSurfaceLine, u: f32, v: f32) -> f32 {
     surface_line_nearest_projection(line, u, v).1
 }
@@ -615,8 +697,46 @@ fn surface_line_nearest_projection(line: &VectorSurfaceLine, u: f32, v: f32) -> 
     closest
 }
 
-fn surface_line_contains(line: &VectorSurfaceLine, u: f32, v: f32) -> bool {
-    surface_line_projection(line, u, v).is_some()
+/// Whether the query point lies within the line's half width, tested only
+/// against the segment ranges indexed for the query's bucket.
+///
+/// Equal to running the old full-polyline walk for every query point whose
+/// bucket produced `ranges`: the minimum distance over all segments is
+/// within the radius exactly when some segment's distance is, every segment
+/// within reach of any point in the bucket is present in `ranges` (see the
+/// indexing comment in `paint_polyline_with_bridge`), and the per-segment
+/// math below matches `surface_line_nearest_projection` operation for
+/// operation.
+fn line_segment_ranges_contain(
+    line: &VectorSurfaceLine,
+    ranges: &[(u32, u32)],
+    u: f32,
+    v: f32,
+) -> bool {
+    let radius_squared = (line.width_mm * 0.5).powi(2);
+    let point = [
+        u.clamp(0.0, 1.0) * line.model_width_mm,
+        v.clamp(0.0, 1.0) * line.model_height_mm,
+    ];
+    for &(first, last) in ranges {
+        for segment in first as usize..last as usize {
+            let start = line.points_mm[segment];
+            let end = line.points_mm[segment + 1];
+            let delta = [end[0] - start[0], end[1] - start[1]];
+            let length_squared = delta[0].powi(2) + delta[1].powi(2);
+            let offset = [point[0] - start[0], point[1] - start[1]];
+            let amount = if length_squared <= f32::EPSILON {
+                0.0
+            } else {
+                ((offset[0] * delta[0] + offset[1] * delta[1]) / length_squared).clamp(0.0, 1.0)
+            };
+            let nearest = [start[0] + delta[0] * amount, start[1] + delta[1] * amount];
+            if distance_squared(point, nearest) <= radius_squared {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
