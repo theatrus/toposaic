@@ -1984,7 +1984,11 @@ export function TerrainStudio() {
                   }
                 >
                   {heightFrameLocked && !heightFrameCompatible
-                    ? `This tile drops below the shared ${spec.elevation_datum_m?.toFixed(
+                    ? `Shared datum ${spec.elevation_datum_m?.toFixed(
+                        1,
+                      )} m · ${spec.elevation_m_per_mm?.toFixed(
+                        1,
+                      )} m/mm. This tile drops below the shared ${spec.elevation_datum_m?.toFixed(
                         1,
                       )} m datum. Lower the datum and regenerate earlier tiles.`
                     : heightFrameLocked
