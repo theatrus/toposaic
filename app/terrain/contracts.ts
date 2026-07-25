@@ -73,6 +73,14 @@ export type GenerationSpec = {
   };
 };
 
+export type SavedSetup = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  spec: GenerationSpec;
+};
+
 export type Artifact = {
   name: string;
   media_type: string;

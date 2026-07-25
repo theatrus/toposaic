@@ -545,30 +545,8 @@ fn mesh_job_progress(fraction: f32) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Mutex as StdMutex, time::Instant};
-
-    use reqwest::Client;
-    use rusqlite::Connection;
-    use tokio::sync::Mutex as AsyncMutex;
-
     use super::*;
-    use crate::database::migrate;
-
-    fn test_state() -> AppState {
-        let connection = Connection::open_in_memory().unwrap();
-        migrate(&connection).unwrap();
-        let data_dir =
-            std::env::temp_dir().join(format!("toposaic-api-test-{}", std::process::id()));
-        AppState {
-            db: Arc::new(StdMutex::new(connection)),
-            jobs_dir: Arc::new(data_dir.join("jobs")),
-            map_cache_dir: Arc::new(data_dir.join("cache")),
-            geocoder: Client::new(),
-            geocoder_base_url: Arc::new("https://example.invalid".into()),
-            last_geocode_request: Arc::new(AsyncMutex::new(Instant::now())),
-            active_jobs: Arc::new(StdMutex::new(HashMap::new())),
-        }
-    }
+    use crate::test_state;
 
     #[test]
     fn panic_payload_becomes_a_job_error() {

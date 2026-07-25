@@ -1,11 +1,11 @@
 use std::sync::MutexGuard;
 
 use anyhow::{Result, anyhow};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use toposaic_core::Artifact;
 
-use crate::{AppState, Job};
+use crate::{AppState, Job, SavedSetup};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     connection.execute_batch(
@@ -23,6 +23,14 @@ pub fn migrate(connection: &Connection) -> Result<()> {
             error TEXT
         );
         CREATE INDEX IF NOT EXISTS jobs_created_at_idx ON jobs(created_at DESC);
+        CREATE TABLE IF NOT EXISTS saved_setups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            spec_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS saved_setups_updated_at_idx ON saved_setups(updated_at DESC);
         CREATE TABLE IF NOT EXISTS place_search_cache (
             query TEXT PRIMARY KEY,
             response_json TEXT NOT NULL,
@@ -114,6 +122,90 @@ pub fn recent_jobs(state: &AppState, limit: usize) -> Result<Vec<Job>> {
         .map_err(Into::into)
 }
 
+pub fn insert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<()> {
+    connection(state)?.execute(
+        "INSERT INTO saved_setups (id, name, created_at, updated_at, spec_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            setup.id,
+            setup.name,
+            setup.created_at.to_rfc3339(),
+            setup.updated_at.to_rfc3339(),
+            serde_json::to_string(&setup.spec)?,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<()> {
+    connection(state)?.execute(
+        "UPDATE saved_setups SET spec_json = ?2, updated_at = ?3 WHERE id = ?1",
+        params![
+            setup.id,
+            serde_json::to_string(&setup.spec)?,
+            setup.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Renames the setup and returns the updated row, or `None` when no setup
+/// has the given id.
+pub fn rename_saved_setup(
+    state: &AppState,
+    id: &str,
+    name: &str,
+    updated_at: DateTime<Utc>,
+) -> Result<Option<SavedSetup>> {
+    let connection = connection(state)?;
+    let updated = connection.execute(
+        "UPDATE saved_setups SET name = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, name, updated_at.to_rfc3339()],
+    )?;
+    if updated != 1 {
+        return Ok(None);
+    }
+    let mut statement = connection.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups WHERE id = ?1",
+    )?;
+    let mut rows = statement.query([id])?;
+    rows.next()?
+        .map(row_to_saved_setup)
+        .transpose()
+        .map_err(Into::into)
+}
+
+pub fn find_saved_setup_by_name(state: &AppState, name: &str) -> Result<Option<SavedSetup>> {
+    let connection = connection(state)?;
+    let mut statement = connection.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups WHERE name = ?1",
+    )?;
+    let mut rows = statement.query([name])?;
+    rows.next()?
+        .map(row_to_saved_setup)
+        .transpose()
+        .map_err(Into::into)
+}
+
+pub fn list_saved_setups(state: &AppState) -> Result<Vec<SavedSetup>> {
+    let connection = connection(state)?;
+    let mut statement = connection.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups ORDER BY updated_at DESC",
+    )?;
+    let rows = statement.query_map([], row_to_saved_setup)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub fn delete_saved_setup(state: &AppState, id: &str) -> Result<bool> {
+    let deleted =
+        connection(state)?.execute("DELETE FROM saved_setups WHERE id = ?1", params![id])?;
+    Ok(deleted == 1)
+}
+
 fn connection(state: &AppState) -> Result<MutexGuard<'_, Connection>> {
     state.db.lock().map_err(|_| anyhow!("database lock failed"))
 }
@@ -132,6 +224,19 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         spec: serde_json::from_str(&spec_json).map_err(sql_conversion_error)?,
         artifacts: serde_json::from_str(&artifacts_json).map_err(sql_conversion_error)?,
         error: row.get(7)?,
+    })
+}
+
+fn row_to_saved_setup(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedSetup> {
+    let created_at: String = row.get(2)?;
+    let updated_at: String = row.get(3)?;
+    let spec_json: String = row.get(4)?;
+    Ok(SavedSetup {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: created_at.parse().map_err(sql_conversion_error)?,
+        updated_at: updated_at.parse().map_err(sql_conversion_error)?,
+        spec: serde_json::from_str(&spec_json).map_err(sql_conversion_error)?,
     })
 }
 

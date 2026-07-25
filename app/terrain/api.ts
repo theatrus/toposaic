@@ -3,6 +3,7 @@ import type {
   Job,
   PlaceResult,
   PreviewData,
+  SavedSetup,
 } from "./contracts";
 
 export const IS_TAURI =
@@ -85,5 +86,28 @@ export const terrainApi = {
   },
   artifactUrl(id: string, name: string) {
     return `${API_URL}/api/jobs/${encodeURIComponent(id)}/downloads/${encodeURIComponent(name)}`;
+  },
+  listSetups(signal?: AbortSignal) {
+    return requestJson<SavedSetup[]>("/api/setups", { signal });
+  },
+  saveSetup(name: string, spec: GenerationSpec) {
+    return requestJson<SavedSetup>("/api/setups", jsonBody({ name, spec }));
+  },
+  renameSetup(id: string, name: string, signal?: AbortSignal) {
+    return requestJson<SavedSetup>(`/api/setups/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+      signal,
+    });
+  },
+  async deleteSetup(id: string) {
+    const response = await fetch(
+      `${API_URL}/api/setups/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      throw new Error(`TopoSaic service returned ${response.status}.`);
+    }
   },
 };
