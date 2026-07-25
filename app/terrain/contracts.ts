@@ -62,6 +62,14 @@ export type GenerationSpec = {
     bridge_structure: "floating" | "supported";
     bridge_thickness_mm: number;
     minimum_patch_mm: number;
+    class_borders: "blocky" | "smooth";
+    border_smoothing_range_cells: number;
+    border_smoothing_nugget: number;
+    forest_slope_gate: boolean;
+    forest_slope_limit_degrees: number;
+    steep_forest_target: "rock" | "snow";
+    snow_slope_gate: boolean;
+    snow_slope_limit_degrees: number;
   };
 };
 

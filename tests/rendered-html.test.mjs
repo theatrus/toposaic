@@ -68,6 +68,23 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
+  assert.match(html, /Terrain class borders/);
+  assert.match(html, /Blocky \(native 10 m data\)/);
+  assert.match(html, /Smoothed borders/);
+  // The border smoothing sliders only render once "Smoothed borders" is
+  // selected; the server renders the blocky default without them.
+  assert.doesNotMatch(html, /Border bend range/);
+  assert.doesNotMatch(html, /Border noise damping/);
+  assert.match(html, /Keep forest off steep rock/);
+  assert.match(html, /demotes forest to rock above the slope limit/);
+  assert.match(html, /Forest slope limit/);
+  // The demotion target renders with the slope gate, which defaults on.
+  assert.match(html, /Steep forest becomes/);
+  assert.match(html, /Snow above the snowline/);
+  assert.match(html, /Keep snow off sheer faces/);
+  assert.match(html, /demotes snow\s+to rock above the slope limit/);
+  // The snow slope limit renders with its own gate, which defaults on.
+  assert.match(html, /Snow slope limit/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);

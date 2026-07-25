@@ -175,6 +175,74 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     surfaceColors.getByText("The chosen detail applies at every map span."),
   ).toBeVisible();
+  const classBorders = surfaceColors.getByLabel("Terrain class borders");
+  const bendRange = surfaceColors.getByRole("slider", {
+    name: "Border bend range",
+  });
+  const noiseDamping = surfaceColors.getByRole("slider", {
+    name: "Border noise damping",
+  });
+  await expect(classBorders).toHaveValue("blocky");
+  await expect(bendRange).toBeHidden();
+  await expect(noiseDamping).toBeHidden();
+  await classBorders.selectOption("smooth");
+  await expect(classBorders).toHaveValue("smooth");
+  await expect(
+    surfaceColors.getByText(/Smoothing bends forest, rock, and water borders/),
+  ).toBeVisible();
+  await expect(bendRange).toHaveValue("2.5");
+  await expect(noiseDamping).toHaveValue("0.05");
+  await bendRange.fill("4");
+  await expect(bendRange).toHaveValue("4");
+  await classBorders.selectOption("blocky");
+  await expect(bendRange).toBeHidden();
+  await expect(noiseDamping).toBeHidden();
+  await classBorders.selectOption("smooth");
+  await expect(bendRange).toBeVisible();
+  await expect(bendRange).toHaveValue("4");
+  const forestSlopeGate = surfaceColors.getByRole("checkbox", {
+    name: "Keep forest off steep rock",
+  });
+  const forestSlopeLimit = surfaceColors.getByRole("slider", {
+    name: "Forest slope limit",
+  });
+  const steepForestTarget = surfaceColors.getByLabel("Steep forest becomes");
+  await expect(forestSlopeGate).toBeChecked();
+  await expect(forestSlopeLimit).toHaveValue("55");
+  await forestSlopeLimit.fill("70");
+  await expect(forestSlopeLimit).toHaveValue("70");
+  await expect(steepForestTarget).toHaveValue("rock");
+  await steepForestTarget.selectOption("snow");
+  await expect(steepForestTarget).toHaveValue("snow");
+  await forestSlopeGate.uncheck();
+  await expect(forestSlopeGate).not.toBeChecked();
+  await expect(forestSlopeLimit).toBeHidden();
+  await expect(steepForestTarget).toBeHidden();
+  await forestSlopeGate.check();
+  await expect(forestSlopeLimit).toBeVisible();
+  await expect(steepForestTarget).toHaveValue("snow");
+  const snowSlopeGate = surfaceColors.getByRole("checkbox", {
+    name: "Keep snow off sheer faces",
+  });
+  const snowSlopeLimit = surfaceColors.getByRole("slider", {
+    name: "Snow slope limit",
+  });
+  await expect(snowSlopeGate).toBeChecked();
+  await expect(snowSlopeLimit).toHaveValue("65");
+  await snowSlopeLimit.fill("75");
+  await expect(snowSlopeLimit).toHaveValue("75");
+  await snowSlopeGate.uncheck();
+  await expect(snowSlopeGate).not.toBeChecked();
+  await expect(snowSlopeLimit).toBeHidden();
+  // The two gates are independent: the forest controls stay put.
+  await expect(forestSlopeLimit).toBeVisible();
+  await snowSlopeGate.check();
+  await expect(snowSlopeLimit).toBeVisible();
+  await expect(snowSlopeLimit).toHaveValue("75");
+  await forestSlopeGate.uncheck();
+  await expect(forestSlopeLimit).toBeHidden();
+  await expect(snowSlopeLimit).toBeVisible();
+  await forestSlopeGate.check();
   await expect(floatingBridge).toBeChecked();
   await expect(bridgeThickness).toHaveValue("1.2");
   await supportedBridge.check();
