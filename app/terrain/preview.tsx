@@ -6,7 +6,25 @@ import {
   useRef,
   useState,
 } from "react";
-import * as THREE from "three";
+import {
+  ACESFilmicToneMapping,
+  BoxGeometry,
+  BufferGeometry,
+  Color,
+  DirectionalLight,
+  DoubleSide,
+  Float32BufferAttribute,
+  HemisphereLight,
+  Line,
+  LineBasicMaterial,
+  Mesh,
+  MeshStandardMaterial,
+  PerspectiveCamera,
+  Scene,
+  SRGBColorSpace,
+  Vector3,
+  WebGLRenderer,
+} from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import {
@@ -253,9 +271,9 @@ export function ReliefPreview({
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (renderErrorRef.current) renderErrorRef.current.hidden = true;
-    let renderer: THREE.WebGLRenderer;
+    let renderer: WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({
+      renderer = new WebGLRenderer({
         canvas,
         antialias: true,
         alpha: true,
@@ -266,7 +284,7 @@ export function ReliefPreview({
       return;
     }
 
-    const scene = new THREE.Scene();
+    const scene = new Scene();
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
     const heightScale = spec.relief_mm / spec.width_mm;
@@ -372,12 +390,12 @@ export function ReliefPreview({
           heightValues[down * sampleWidth + x]) *
           heightScale) /
         spanY;
-      return new THREE.Vector3(-slopeX, 1, -slopeY).normalize();
+      return new Vector3(-slopeX, 1, -slopeY).normalize();
     };
     const addVertex = (
       x: number,
       y: number,
-      color: THREE.Color,
+      color: Color,
     ) => {
       const u = x / Math.max(1, sampleWidth - 1);
       const v = y / Math.max(1, sampleHeight - 1);
@@ -396,7 +414,7 @@ export function ReliefPreview({
           spec.color_output.enabled || spec.buildings.enabled
           ? preview?.surface_classes?.[y * sampleWidth + x]
           : undefined;
-        const color = new THREE.Color(classColor(surfaceClass));
+        const color = new Color(classColor(surfaceClass));
         addVertex(x, y, color);
         addVertex(x + 1, y, color);
         addVertex(x, y + 1, color);
@@ -406,46 +424,46 @@ export function ReliefPreview({
       }
     }
 
-    const terrainGeometry = new THREE.BufferGeometry();
+    const terrainGeometry = new BufferGeometry();
     terrainGeometry.setAttribute(
       "position",
-      new THREE.Float32BufferAttribute(positions, 3),
+      new Float32BufferAttribute(positions, 3),
     );
     terrainGeometry.setAttribute(
       "color",
-      new THREE.Float32BufferAttribute(colors, 3),
+      new Float32BufferAttribute(colors, 3),
     );
     terrainGeometry.setAttribute(
       "normal",
-      new THREE.Float32BufferAttribute(normals, 3),
+      new Float32BufferAttribute(normals, 3),
     );
-    const terrainMaterial = new THREE.MeshStandardMaterial({
+    const terrainMaterial = new MeshStandardMaterial({
       color: 0xffffff,
       metalness: 0,
       roughness: 0.86,
-      side: THREE.DoubleSide,
+      side: DoubleSide,
       vertexColors: true,
     });
-    const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
+    const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
     scene.add(terrainMesh);
 
-    const baseGeometry = new THREE.BoxGeometry(1, baseDepth, 1);
-    const baseMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(palette.rock).multiplyScalar(0.68),
+    const baseGeometry = new BoxGeometry(1, baseDepth, 1);
+    const baseMaterial = new MeshStandardMaterial({
+      color: new Color(palette.rock).multiplyScalar(0.68),
       metalness: 0,
       roughness: 0.92,
     });
-    const baseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
+    const baseMesh = new Mesh(baseGeometry, baseMaterial);
     baseMesh.position.y = -baseDepth / 2;
     scene.add(baseMesh);
 
-    const lineMaterial = new THREE.LineBasicMaterial({
+    const lineMaterial = new LineBasicMaterial({
       color: 0x14201d,
       opacity: 0.72,
       transparent: true,
     });
     const pointOnTerrain = (u: number, v: number) =>
-      new THREE.Vector3(
+      new Vector3(
         previewWorldX(u),
         heightAt(u, v) * heightScale + 0.0025,
         v - 0.5,
@@ -472,8 +490,8 @@ export function ReliefPreview({
     ];
     perimeter.push(perimeter[0].clone());
     scene.add(
-      new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(perimeter),
+      new Line(
+        new BufferGeometry().setFromPoints(perimeter),
         lineMaterial,
       ),
     );
@@ -509,8 +527,8 @@ export function ReliefPreview({
             );
           }
           scene.add(
-            new THREE.Line(
-              new THREE.BufferGeometry().setFromPoints(points),
+            new Line(
+              new BufferGeometry().setFromPoints(points),
               lineMaterial,
             ),
           );
@@ -543,8 +561,8 @@ export function ReliefPreview({
             );
           }
           scene.add(
-            new THREE.Line(
-              new THREE.BufferGeometry().setFromPoints(points),
+            new Line(
+              new BufferGeometry().setFromPoints(points),
               lineMaterial,
             ),
           );
@@ -552,15 +570,15 @@ export function ReliefPreview({
       }
     }
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x39433c, 1.8));
-    const keyLight = new THREE.DirectionalLight(0xfff8df, 2.7);
+    scene.add(new HemisphereLight(0xffffff, 0x39433c, 1.8));
+    const keyLight = new DirectionalLight(0xfff8df, 2.7);
     keyLight.position.set(-1.4, 2.1, 1.5);
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xb9d8ff, 0.8);
+    const fillLight = new DirectionalLight(0xb9d8ff, 0.8);
     fillLight.position.set(1.3, 0.7, -1);
     scene.add(fillLight);
 
-    const camera = new THREE.PerspectiveCamera(36, 1, 0.01, 20);
+    const camera = new PerspectiveCamera(36, 1, 0.01, 20);
     const cameraScale = Math.max(1, heightScale * 1.5);
     const defaultTarget: [number, number, number] = [
       0,
@@ -594,8 +612,8 @@ export function ReliefPreview({
     const initialTarget = controls.target.clone();
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.outputColorSpace = SRGBColorSpace;
+    renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
 
     const render = () => renderer.render(scene, camera);
@@ -638,7 +656,7 @@ export function ReliefPreview({
       controls.dispose();
       controlsRef.current = null;
       scene.traverse((object) => {
-        if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
+        if (object instanceof Mesh || object instanceof Line) {
           object.geometry.dispose();
           const materials = Array.isArray(object.material)
             ? object.material

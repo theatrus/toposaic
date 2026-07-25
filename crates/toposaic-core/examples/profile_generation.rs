@@ -3,7 +3,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use terrain_core::{GenerationSpec, HeightField, generate_project_with_height_field};
+use toposaic_core::{GenerationSpec, HeightField, generate_project_with_height_field};
 
 fn argument(index: usize, default: u32) -> u32 {
     env::args()

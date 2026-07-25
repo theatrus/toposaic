@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::{ImageFormat, RgbImage};
 use reqwest::{StatusCode, blocking::Client};
-use terrain_core::{ElevationSource, GenerationSpec, HeightField};
+use toposaic_core::{ElevationSource, GenerationSpec, HeightField};
 
 use crate::{
     cache,

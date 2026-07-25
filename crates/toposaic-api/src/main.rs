@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    terrain_api::run().await
+    toposaic_api::run().await
 }

@@ -188,7 +188,7 @@ work in order. No more than eight piece meshes stay in memory at once. Set
 `RAYON_NUM_THREADS` to cap CPU use. A repeatable release-mode mesh check is:
 
 ```bash
-cargo run --release -p terrain-core --example profile_generation -- 6 6 96
+cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 ```
 
 ## Requirements
@@ -203,7 +203,7 @@ cargo run --release -p terrain-core --example profile_generation -- 6 6 96
 Start the Rust API:
 
 ```bash
-cargo run -p terrain-api
+cargo run -p toposaic-api
 ```
 
 In a second terminal, start the website:
@@ -295,10 +295,10 @@ npm run test:ui
 
 ## Project shape
 
-- `crates/terrain-core`: puzzle edges, terrain surface, watertight meshes,
+- `crates/toposaic-core`: puzzle edges, terrain surface, watertight meshes,
   binary STL, and standards-based 3MF
-- `apps/api`: global elevation provider, Axum API, SQLite jobs, background
-  generation, ESA WorldCover sampling, and downloads
+- `crates/toposaic-api`: global elevation provider, Axum API, SQLite jobs,
+  background generation, ESA WorldCover sampling, and downloads
 - `app/terrain`: shared studio, map, 3D preview, downloads, API client,
   contracts, and quality rules
 - `app/updates`: release notices, version checks, and desktop updates

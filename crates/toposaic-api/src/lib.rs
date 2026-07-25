@@ -23,11 +23,11 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use terrain_core::{
+use tokio::{net::TcpListener, sync::Mutex as AsyncMutex};
+use toposaic_core::{
     Artifact, GenerationSpec, HeightField, SuperTileAnchor, artifact_path,
     generate_project_with_fields_cancellable, generate_tray_artifacts,
 };
-use tokio::{net::TcpListener, sync::Mutex as AsyncMutex};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -86,7 +86,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "terrain_api=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "toposaic_api=info,tower_http=info".into()),
         )
         .try_init()
         .ok();
@@ -213,7 +213,7 @@ async fn create_preview(
     let preview = tokio::task::spawn_blocking(move || {
         let samples = spec.terrain_samples_per_piece().clamp(64, 128) as usize;
         let height_field = elevation::fetch_preview_height_field(&spec, &cache_dir, samples)?;
-        terrain_core::build_height_preview(&spec, &height_field, samples)
+        toposaic_core::build_height_preview(&spec, &height_field, samples)
     })
     .await
     .map_err(internal_error)?

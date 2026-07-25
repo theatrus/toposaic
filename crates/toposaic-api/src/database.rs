@@ -3,7 +3,7 @@ use std::sync::MutexGuard;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use rusqlite::{Connection, params};
-use terrain_core::Artifact;
+use toposaic_core::Artifact;
 
 use crate::{AppState, Job};
 

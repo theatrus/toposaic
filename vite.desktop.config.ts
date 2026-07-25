@@ -29,5 +29,18 @@ export default defineConfig({
     target: "es2020",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "three",
+              test: /node_modules[\\/]three[\\/]/,
+              maxSize: 350_000,
+            },
+          ],
+        },
+      },
+    },
   },
 });

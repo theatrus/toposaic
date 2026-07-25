@@ -5,6 +5,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -44,8 +46,13 @@ import type {
 import { adjacentCenter } from "./geo";
 import { ArtifactDownloads } from "./downloads";
 import { TerrainMap } from "./map";
-import { ReliefPreview } from "./preview";
 import { displayVersion, isVersionNewer } from "../updates/version";
+
+const ReliefPreview = lazy(() =>
+  import("./preview").then(({ ReliefPreview: component }) => ({
+    default: component,
+  })),
+);
 
 const DEFAULT_VISUAL_HEIGHT_PERCENT = 37;
 const MIN_VISUAL_HEIGHT_PERCENT = 28;
@@ -894,11 +901,21 @@ export function TerrainStudio() {
               update("ground_span_km", groundSpanKm)
             }
           />
-          <ReliefPreview
-            spec={spec}
-            preview={preview}
-            previewState={previewState}
-          />
+          <Suspense
+            fallback={
+              <section className="relief-shell" aria-label="3D terrain preview">
+                <div className="preview-label loading">
+                  <span>Loading 3D preview…</span>
+                </div>
+              </section>
+            }
+          >
+            <ReliefPreview
+              spec={spec}
+              preview={preview}
+              previewState={previewState}
+            />
+          </Suspense>
         </section>
 
         <div

@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
-use terrain_core::{GenerationSpec, HeightField, RoadDetail, SurfaceClass, SurfaceField};
+use toposaic_core::{GenerationSpec, HeightField, RoadDetail, SurfaceClass, SurfaceField};
 use tracing::warn;
 
 use crate::{

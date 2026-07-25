@@ -44,6 +44,21 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    build: {
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: "three",
+                test: /node_modules[\\/]three[\\/]/,
+                maxSize: 350_000,
+              },
+            ],
+          },
+        },
+      },
+    },
     server: {
       port: 3100,
       strictPort: true,

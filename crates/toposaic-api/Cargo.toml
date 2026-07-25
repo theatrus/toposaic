@@ -1,5 +1,5 @@
 [package]
-name = "terrain-api"
+name = "toposaic-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-terrain-core = { path = "../../crates/terrain-core" }
+toposaic-core = { path = "../toposaic-core" }
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
