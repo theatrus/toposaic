@@ -408,35 +408,31 @@ impl<'a> PolygonStripIndex<'a> {
 }
 
 #[cfg(test)]
+/// Asserts a mesh survives every vertex weld a consumer applies: in the
+/// in-memory index topology, after an STL bit-exact weld, and after a 3MF
+/// five-decimal weld, every undirected edge must be used exactly twice with
+/// no collapsed triangles and no same-winding duplicate faces. Any edge
+/// used four or more times after welding means two pieces of geometry
+/// genuinely overlap and is always a hard failure.
 pub(crate) fn assert_watertight(mesh: &Mesh) {
-    let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
-    for triangle in &mesh.triangles {
-        for edge in [
-            (triangle[0], triangle[1]),
-            (triangle[1], triangle[2]),
-            (triangle[2], triangle[0]),
-        ] {
-            let ordered = if edge.0 < edge.1 {
-                edge
-            } else {
-                (edge.1, edge.0)
-            };
-            *edges.entry(ordered).or_default() += 1;
-        }
+    let report = crate::analysis::analyze_mesh_views(mesh);
+    for view in &report.views {
+        assert_eq!(
+            view.slicer_edge_defects, 0,
+            "{}: {} view has {} open and {} overused edges: {:?}",
+            mesh.name, view.view, view.open_edges, view.overused_edges, view.edge_examples,
+        );
+        assert_eq!(
+            view.degenerate_repeated_index, 0,
+            "{}: {} view has collapsed triangles: {:?}",
+            mesh.name, view.view, view.degenerate_examples,
+        );
+        assert_eq!(
+            view.duplicate_same_winding, 0,
+            "{}: {} view has same-winding duplicate faces: {:?}",
+            mesh.name, view.view, view.duplicate_examples,
+        );
     }
-    let bad_edges = edges
-        .iter()
-        .filter(|(_, uses)| **uses != 2)
-        .take(12)
-        .map(|(edge, uses)| {
-            (
-                mesh.vertices[edge.0 as usize],
-                mesh.vertices[edge.1 as usize],
-                *uses,
-            )
-        })
-        .collect::<Vec<_>>();
-    assert!(bad_edges.is_empty(), "non-manifold edges: {bad_edges:?}");
 }
 
 #[cfg(test)]

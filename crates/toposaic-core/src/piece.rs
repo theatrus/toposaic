@@ -3035,6 +3035,66 @@ mod tests {
     }
 
     #[test]
+    fn abutting_buildings_and_clipped_roads_stay_manifold_after_welding() {
+        // Regression for the coincident-shell defect family: buildings that
+        // share a wall (equal and unequal heights), a building pair meeting
+        // corner-to-corner, and a road clipped against those outlines used
+        // to emit per-feature shells whose identical bottoms and wall quads
+        // fused into 4-use edges and duplicate faces once a slicer welded
+        // vertices.
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "abutting").unwrap();
+        // Two buildings sharing the x = 0.5 wall at different heights.
+        field.paint_building(&[[0.3, 0.3], [0.5, 0.3], [0.5, 0.5], [0.3, 0.5]], 30.0);
+        field.paint_building(&[[0.5, 0.3], [0.7, 0.3], [0.7, 0.5], [0.5, 0.5]], 12.0);
+        // Two buildings sharing a wall at the same height.
+        field.paint_building(&[[0.3, 0.6], [0.4, 0.6], [0.4, 0.7], [0.3, 0.7]], 18.0);
+        field.paint_building(&[[0.4, 0.6], [0.5, 0.6], [0.5, 0.7], [0.4, 0.7]], 18.0);
+        // Two buildings meeting at a single corner point.
+        field.paint_building(&[[0.6, 0.6], [0.65, 0.6], [0.65, 0.65], [0.6, 0.65]], 24.0);
+        field.paint_building(&[[0.65, 0.65], [0.7, 0.65], [0.7, 0.7], [0.65, 0.7]], 9.0);
+        // A road running straight through the buildings, so its ribbon is
+        // clipped against their outlines.
+        field.paint_polyline(&[[0.1, 0.4], [0.9, 0.4]], 60.0, 1.5, SurfaceClass::Road);
+        let height = HeightField::new(2, 2, vec![0.0; 4], "flat").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            ground_span_km: 1.0,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        let mesh = build_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
+        assert!(mesh.materials.contains(&SurfaceClass::Building));
+        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        // Both roof levels of the unequal pair survive the union.
+        let building_tops = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Building)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| (mesh.vertices[*index as usize][2] * 1_000.0).round() as i32)
+            .collect::<HashSet<_>>();
+        for height_m in [30.0_f32, 12.0] {
+            let expected = spec.base_mm + scaled_building_height_mm(&spec, height_m);
+            assert!(
+                building_tops.contains(&((expected * 1_000.0).round() as i32)),
+                "missing roof level for {height_m} m building"
+            );
+        }
+        assert_watertight(&mesh);
+    }
+
+    #[test]
     fn buildings_raise_the_printed_mesh() {
         let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "buildings").unwrap();
         field.paint_building(&[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]], 12.0);
