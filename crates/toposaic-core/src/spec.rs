@@ -487,10 +487,37 @@ pub enum SteepForestTarget {
     Snow,
 }
 
+/// What the color 3MF carries beyond core-spec geometry and its color group.
+///
+/// `Project` stays the default so existing users — above all Bambu Studio
+/// users who rely on one-click color setups — keep getting exactly what they
+/// get today: OrcaSlicer/Bambu face-paint codes plus an embedded
+/// `Metadata/project_settings.config` with filament colours and purge
+/// volumes. Slicers treat that archive as a full project, so importing it
+/// also pulls printer, material, and process preset state. `Painted` keeps
+/// the per-triangle paint codes but drops the embedded settings for users
+/// who don't want the import touching their presets; `Geometry` drops the
+/// paint codes too and leaves a plain standards-based 3MF.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreeMfStyle {
+    /// Color group plus slicer face-paint codes; no embedded settings.
+    Painted,
+    /// Today's full output: paint codes plus embedded project settings.
+    #[default]
+    Project,
+    /// Core-spec color group only; cleanest for interchange.
+    Geometry,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
     pub enabled: bool,
+    /// Which 3MF flavour to write. `#[serde(default)]` on the struct fills
+    /// this with `Project` for specs saved before the field existed, so
+    /// existing users keep today's one-click color behavior unchanged.
+    pub threemf_style: ThreeMfStyle,
     pub forest_color: String,
     pub rock_color: String,
     pub snow_color: String,
@@ -540,6 +567,7 @@ impl Default for ColorOutputSpec {
     fn default() -> Self {
         Self {
             enabled: false,
+            threemf_style: ThreeMfStyle::default(),
             forest_color: "#28543A".into(),
             rock_color: "#7C7468".into(),
             snow_color: "#F4F3EC".into(),
@@ -774,6 +802,31 @@ mod tests {
         );
         assert!(spec.color_output.snow_slope_gate);
         assert_eq!(spec.color_output.snow_slope_limit_degrees, 65.0);
+        // Specs saved before the 3MF style existed keep today's project
+        // output, embedded slicer settings included.
+        assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Project);
+    }
+
+    #[test]
+    fn threemf_style_defaults_to_project_and_parses_as_snake_case() {
+        assert_eq!(
+            ColorOutputSpec::default().threemf_style,
+            ThreeMfStyle::Project
+        );
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "threemf_style": "painted" }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Painted);
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "threemf_style": "geometry" }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Geometry);
+        assert_eq!(
+            serde_json::to_value(ThreeMfStyle::Project).unwrap(),
+            serde_json::json!("project")
+        );
     }
 
     #[test]

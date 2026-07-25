@@ -159,7 +159,14 @@ canals, and mapped water areas use the same vector path so they stay smooth and
 flush with the terrain. Building footprints keep
 their straight mapped edges, with dense local mesh detail along each wall
 instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
-color properties.
+color properties, and an Output-tab style picker sets what else it carries.
+The default "Color project" style also embeds filament colors, purge settings,
+and OrcaSlicer/Bambu face-paint codes, so those slicers open the file as a
+project with colors set up in one click — importing printer, material, and
+process presets with it. "Painted colors" keeps the face-paint codes but skips
+the embedded settings, so opening the model never touches slicer presets.
+"Geometry only" drops the paint codes too and writes a plain standards-based
+3MF for other tools.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
 networks without dropping any selected road class. Roads tagged as bridges in

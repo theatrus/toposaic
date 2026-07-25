@@ -2797,6 +2797,42 @@ export function TerrainStudio() {
             </p>
           </div>
 
+          <fieldset
+            className="control-section"
+            aria-label="3MF export style"
+            hidden={activeSection !== "output"}
+          >
+            <label className="road-detail-field">
+              3MF style
+              <select
+                value={spec.color_output.threemf_style}
+                onChange={(event) =>
+                  updateColor(
+                    "threemf_style",
+                    event.target
+                      .value as GenerationSpec["color_output"]["threemf_style"],
+                  )
+                }
+              >
+                <option value="project">
+                  Color project · filament colors and purge settings
+                </option>
+                <option value="painted">
+                  Painted colors · no embedded presets
+                </option>
+                <option value="geometry">Geometry only · plain colors</option>
+              </select>
+              <small>
+                Color project embeds slicer settings, so OrcaSlicer and Bambu
+                Studio import the file as a project: filament colors and purge
+                volumes load in one click, but printer, material, and process
+                presets come along too. Painted colors keeps the per-triangle
+                paint without importing any presets. Geometry only writes a
+                plain standards-based 3MF.
+              </small>
+            </label>
+          </fieldset>
+
           <div className="engine-note" hidden={activeSection !== "output"}>
             <span>Print source</span>
             <strong>

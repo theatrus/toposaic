@@ -46,6 +46,7 @@ export type GenerationSpec = {
   };
   color_output: {
     enabled: boolean;
+    threemf_style: "painted" | "project" | "geometry";
     forest_color: string;
     rock_color: string;
     snow_color: string;

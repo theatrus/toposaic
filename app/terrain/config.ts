@@ -48,6 +48,10 @@ export const initialSpec: GenerationSpec = {
   },
   color_output: {
     enabled: true,
+    // "project" keeps today's output — embedded filament colors and purge
+    // settings for one-click Bambu color setups. mergeSpecDefaults fills it
+    // into setups saved before the field existed.
+    threemf_style: "project",
     forest_color: "#28543A",
     rock_color: "#7C7468",
     snow_color: "#F4F3EC",

@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::mesh::Mesh;
-use crate::spec::GenerationSpec;
+use crate::spec::{GenerationSpec, ThreeMfStyle};
 
 pub(crate) fn write_binary_stl(mesh: &Mesh, path: &Path) -> Result<()> {
     let mut writer = BufWriter::new(
@@ -184,6 +184,11 @@ impl<'a> ThreeMfWriter<'a> {
         }
         output.write_all(b"    </vertices><triangles>\n")?;
         let uses_color = self.spec.uses_color_materials();
+        // `Geometry` style keeps the core-spec color group references but
+        // drops the OrcaSlicer/Bambu `paint_color` vendor attribute. The
+        // painted-triangle branch below is the exact pre-style code path, so
+        // `Painted` and `Project` archives keep their previous bytes.
+        let paints = self.spec.color_output.threemf_style != ThreeMfStyle::Geometry;
         for (triangles, materials) in mesh
             .triangles
             .chunks(WRITE_BATCH_ELEMENTS)
@@ -195,12 +200,20 @@ impl<'a> ThreeMfWriter<'a> {
                 .map(|(triangles, materials)| {
                     let mut buffer = Vec::with_capacity(triangles.len() * 128);
                     for (triangle, material) in triangles.iter().zip(materials) {
-                        if uses_color {
+                        if uses_color && paints {
                             let index = material.material_index();
                             let paint_color = ORCA_PAINT_CODES[index as usize];
                             writeln!(
                                 buffer,
                                 "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\" paint_color=\"{paint_color}\"/>",
+                                triangle[0], triangle[1], triangle[2],
+                            )
+                            .expect("writing to a Vec cannot fail");
+                        } else if uses_color {
+                            let index = material.material_index();
+                            writeln!(
+                                buffer,
+                                "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>",
                                 triangle[0], triangle[1], triangle[2],
                             )
                             .expect("writing to a Vec cannot fail");
@@ -252,7 +265,17 @@ impl<'a> ThreeMfWriter<'a> {
             )?;
         }
         self.zip.write_all(b"  </build>\n</model>")?;
-        if self.spec.uses_color_materials() {
+        // Only the `Project` style embeds Metadata/project_settings.config.
+        // Its presence makes OrcaSlicer and Bambu Studio import the archive
+        // as a full PROJECT — filament colours and purge volumes, but also
+        // printer, material, and process preset state. That one-click color
+        // setup is what `Project` (the default) is for; `Painted` and
+        // `Geometry` skip the file so opening the model never touches the
+        // user's presets. The per-triangle `paint_color` codes are separate
+        // MMU-painting metadata and do not trigger the project prompt.
+        if self.spec.uses_color_materials()
+            && self.spec.color_output.threemf_style == ThreeMfStyle::Project
+        {
             let options = SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated)
                 .compression_level(Some(3));
@@ -295,5 +318,181 @@ impl<'a> ThreeMfWriter<'a> {
         }
         self.zip.finish()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use super::*;
+    use crate::spec::{ColorOutputSpec, SurfaceClass};
+
+    fn fixture_spec(style: ThreeMfStyle) -> GenerationSpec {
+        GenerationSpec {
+            rows: 2,
+            columns: 2,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                threemf_style: style,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        }
+    }
+
+    /// Two small meshes whose triangles cover every surface class. The
+    /// project-style golden fixture was generated from these exact meshes
+    /// with the pre-style writer, so do not change them.
+    fn fixture_meshes() -> Vec<Mesh> {
+        (0..2u32)
+            .map(|piece| {
+                let mut vertices = Vec::new();
+                let mut triangles = Vec::new();
+                let mut materials = Vec::new();
+                for (index, class) in SurfaceClass::ALL.into_iter().enumerate() {
+                    let base = vertices.len() as u32;
+                    let x = piece as f32 * 40.0 + index as f32 * 3.25;
+                    vertices.push([x, 0.0, 0.5 + index as f32 * 0.125]);
+                    vertices.push([x + 2.5, 0.75, 1.0 + piece as f32]);
+                    vertices.push([x + 1.25, 3.125, 2.0 + index as f32]);
+                    triangles.push([base, base + 1, base + 2]);
+                    materials.push(class);
+                }
+                Mesh {
+                    name: format!("piece-{}", piece + 1),
+                    vertices,
+                    triangles,
+                    materials,
+                    quantization_collisions: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    fn write_fixture(style: ThreeMfStyle) -> Vec<u8> {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let unique = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "toposaic-3mf-style-{style:?}-{}-{unique}.3mf",
+            std::process::id()
+        ));
+        let spec = fixture_spec(style);
+        let mut writer = ThreeMfWriter::new(&spec, &path).unwrap();
+        for mesh in fixture_meshes() {
+            writer.write_mesh(&mesh).unwrap();
+        }
+        writer.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        bytes
+    }
+
+    fn archive_names(bytes: &[u8]) -> Vec<String> {
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        archive.file_names().map(str::to_owned).collect()
+    }
+
+    fn model_xml(bytes: &[u8]) -> String {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        model
+    }
+
+    /// The default `Project` style must keep producing the exact archive the
+    /// pre-style writer produced. The golden fixture was written by the
+    /// writer as it stood before `ThreeMfStyle` existed (commit 6e4b1a0),
+    /// from `fixture_spec`/`fixture_meshes` above; deterministic zip
+    /// timestamps (a constant 1980 date without the `time` feature) and the
+    /// pure-Rust zlib-rs deflate make whole-archive comparison stable.
+    #[test]
+    fn project_style_output_is_byte_identical_to_pre_style_writer() {
+        let golden = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/project-style-golden.3mf"
+        ));
+        assert_eq!(write_fixture(ThreeMfStyle::Project), golden.as_slice());
+        // The default style is `Project`, so an untouched spec gets the
+        // same bytes too.
+        assert_eq!(
+            fixture_spec(ThreeMfStyle::default())
+                .color_output
+                .threemf_style,
+            ThreeMfStyle::Project
+        );
+    }
+
+    #[test]
+    fn only_the_project_style_embeds_project_settings() {
+        let expected_project = [
+            "[Content_Types].xml",
+            "_rels/",
+            "_rels/.rels",
+            "3D/",
+            "3D/3dmodel.model",
+            "Metadata/",
+            "Metadata/project_settings.config",
+        ];
+        assert_eq!(
+            archive_names(&write_fixture(ThreeMfStyle::Project)),
+            expected_project
+        );
+        let expected_plain = [
+            "[Content_Types].xml",
+            "_rels/",
+            "_rels/.rels",
+            "3D/",
+            "3D/3dmodel.model",
+        ];
+        assert_eq!(
+            archive_names(&write_fixture(ThreeMfStyle::Painted)),
+            expected_plain
+        );
+        assert_eq!(
+            archive_names(&write_fixture(ThreeMfStyle::Geometry)),
+            expected_plain
+        );
+    }
+
+    #[test]
+    fn painted_and_project_styles_keep_paint_codes_and_geometry_drops_them() {
+        for style in [ThreeMfStyle::Painted, ThreeMfStyle::Project] {
+            let model = model_xml(&write_fixture(style));
+            for code in ORCA_PAINT_CODES {
+                assert!(
+                    model.contains(&format!(" paint_color=\"{code}\"/>")),
+                    "{style:?} should carry paint code {code}"
+                );
+            }
+            assert!(model.contains("<m:colorgroup id=\"1000\">"));
+            assert!(model.contains("pid=\"1000\" p1=\"5\" p2=\"5\" p3=\"5\""));
+        }
+
+        let model = model_xml(&write_fixture(ThreeMfStyle::Geometry));
+        assert!(!model.contains("paint_color"));
+        // The core-spec color group and per-triangle references stay.
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("color=\"#28543AFF\""));
+        for index in 0..6 {
+            assert!(model.contains(&format!(
+                "pid=\"1000\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\"/>"
+            )));
+        }
+        assert_eq!(model.matches("<object id=").count(), 2);
+    }
+
+    #[test]
+    fn painted_style_differs_from_project_only_by_the_settings_file() {
+        // Same model XML, different archive: the paint codes stay, only the
+        // embedded slicer settings go away.
+        let painted = write_fixture(ThreeMfStyle::Painted);
+        let project = write_fixture(ThreeMfStyle::Project);
+        assert_eq!(model_xml(&painted), model_xml(&project));
+        assert_ne!(painted, project);
     }
 }
