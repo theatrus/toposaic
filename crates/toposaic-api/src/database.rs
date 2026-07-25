@@ -1,7 +1,7 @@
 use std::sync::MutexGuard;
 
 use anyhow::{Result, anyhow};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use toposaic_core::Artifact;
 
@@ -147,6 +147,33 @@ pub fn update_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Renames the setup and returns the updated row, or `None` when no setup
+/// has the given id.
+pub fn rename_saved_setup(
+    state: &AppState,
+    id: &str,
+    name: &str,
+    updated_at: DateTime<Utc>,
+) -> Result<Option<SavedSetup>> {
+    let connection = connection(state)?;
+    let updated = connection.execute(
+        "UPDATE saved_setups SET name = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, name, updated_at.to_rfc3339()],
+    )?;
+    if updated != 1 {
+        return Ok(None);
+    }
+    let mut statement = connection.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups WHERE id = ?1",
+    )?;
+    let mut rows = statement.query([id])?;
+    rows.next()?
+        .map(row_to_saved_setup)
+        .transpose()
+        .map_err(Into::into)
 }
 
 pub fn find_saved_setup_by_name(state: &AppState, name: &str) -> Result<Option<SavedSetup>> {

@@ -103,7 +103,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         )
         .route(
             "/api/setups/{id}",
-            axum::routing::delete(setups::delete_setup),
+            axum::routing::delete(setups::delete_setup).patch(setups::rename_setup),
         )
         .layer(http::cors_layer(settings::allowed_origins()))
         .layer(TraceLayer::new_for_http())

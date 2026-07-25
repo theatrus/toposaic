@@ -14,7 +14,7 @@ use crate::{
     ApiError, AppState, api_error,
     database::{
         delete_saved_setup, find_saved_setup_by_name, insert_saved_setup, list_saved_setups,
-        update_saved_setup,
+        rename_saved_setup, update_saved_setup,
     },
     internal_error,
 };
@@ -36,6 +36,11 @@ pub(crate) struct SaveSetupRequest {
     pub(crate) spec: GenerationSpec,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct RenameSetupRequest {
+    pub(crate) name: String,
+}
+
 pub(crate) async fn list_setups(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SavedSetup>>, (StatusCode, Json<ApiError>)> {
@@ -46,19 +51,7 @@ pub(crate) async fn save_setup(
     State(state): State<AppState>,
     Json(request): Json<SaveSetupRequest>,
 ) -> Result<Json<SavedSetup>, (StatusCode, Json<ApiError>)> {
-    let name = request.name.trim();
-    if name.is_empty() {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "setup name must not be blank",
-        ));
-    }
-    if name.chars().count() > MAX_SETUP_NAME_CHARS {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            format!("setup name must be at most {MAX_SETUP_NAME_CHARS} characters"),
-        ));
-    }
+    let name = validated_setup_name(&request.name)?;
     request
         .spec
         .validate()
@@ -90,6 +83,29 @@ pub(crate) async fn save_setup(
     Ok(Json(setup))
 }
 
+pub(crate) async fn rename_setup(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(request): Json<RenameSetupRequest>,
+) -> Result<Json<SavedSetup>, (StatusCode, Json<ApiError>)> {
+    let id = canonical_setup_id(&id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
+    let name = validated_setup_name(&request.name)?;
+    if let Some(existing) = find_saved_setup_by_name(&state, name).map_err(internal_error)? {
+        if existing.id == id {
+            return Ok(Json(existing));
+        }
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            format!("a setup named \"{name}\" already exists"),
+        ));
+    }
+    rename_saved_setup(&state, &id, name, Utc::now())
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))
+}
+
 pub(crate) async fn delete_setup(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -101,6 +117,23 @@ pub(crate) async fn delete_setup(
     } else {
         Err(api_error(StatusCode::NOT_FOUND, "setup not found"))
     }
+}
+
+fn validated_setup_name(name: &str) -> Result<&str, (StatusCode, Json<ApiError>)> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "setup name must not be blank",
+        ));
+    }
+    if name.chars().count() > MAX_SETUP_NAME_CHARS {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            format!("setup name must be at most {MAX_SETUP_NAME_CHARS} characters"),
+        ));
+    }
+    Ok(name)
 }
 
 fn canonical_setup_id(id: &str) -> Option<String> {
@@ -138,6 +171,14 @@ mod tests {
     async fn delete(state: &AppState, id: &str) -> Result<StatusCode, StatusCode> {
         delete_setup(State(state.clone()), AxumPath(id.into()))
             .await
+            .map_err(|(status, _)| status)
+    }
+
+    async fn rename(state: &AppState, id: &str, name: &str) -> Result<SavedSetup, StatusCode> {
+        let request = RenameSetupRequest { name: name.into() };
+        rename_setup(State(state.clone()), AxumPath(id.into()), Json(request))
+            .await
+            .map(|json| json.0)
             .map_err(|(status, _)| status)
     }
 
@@ -218,6 +259,98 @@ mod tests {
             Some(StatusCode::BAD_REQUEST)
         );
         assert!(list(&state).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn renaming_changes_only_the_name_and_updated_at() {
+        let state = test_state();
+        let spec = GenerationSpec {
+            ground_span_km: 30.0,
+            ..GenerationSpec::default()
+        };
+        let saved = save(&state, "Alps", spec).await.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let renamed = rename(&state, &saved.id, "  Dolomites  ").await.unwrap();
+        assert_eq!(renamed.name, "Dolomites");
+        assert_eq!(renamed.id, saved.id);
+        assert_eq!(renamed.created_at, saved.created_at);
+        assert_eq!(renamed.spec.ground_span_km, 30.0);
+        assert!(renamed.updated_at > saved.updated_at);
+
+        let listed = list(&state).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Dolomites");
+        assert_eq!(listed[0].updated_at, renamed.updated_at);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_setup_to_its_own_name_succeeds() {
+        let state = test_state();
+        let saved = save(&state, "Alps", GenerationSpec::default())
+            .await
+            .unwrap();
+
+        let renamed = rename(&state, &saved.id, " Alps ").await.unwrap();
+        assert_eq!(renamed.id, saved.id);
+        assert_eq!(renamed.name, "Alps");
+        assert_eq!(renamed.created_at, saved.created_at);
+        assert_eq!(renamed.updated_at, saved.updated_at, "rename is a no-op");
+    }
+
+    #[tokio::test]
+    async fn renaming_over_another_setup_is_a_conflict() {
+        let state = test_state();
+        let first = save(&state, "Alps", GenerationSpec::default())
+            .await
+            .unwrap();
+        let second = save(&state, "Rockies", GenerationSpec::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rename(&state, &second.id, " Alps ").await.err(),
+            Some(StatusCode::CONFLICT)
+        );
+
+        let listed = list(&state).await;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, second.id);
+        assert_eq!(listed[0].name, "Rockies");
+        assert_eq!(listed[0].updated_at, second.updated_at);
+        assert_eq!(listed[1].id, first.id);
+        assert_eq!(listed[1].name, "Alps");
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_bad_names_and_unknown_ids() {
+        let state = test_state();
+        let saved = save(&state, "Alps", GenerationSpec::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rename(&state, &saved.id, "   ").await.err(),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        assert_eq!(
+            rename(&state, &saved.id, &"x".repeat(121)).await.err(),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        assert_eq!(
+            rename(&state, "395481ef-0e39-4d94-9d94-2c39fea86001", "Baker")
+                .await
+                .err(),
+            Some(StatusCode::NOT_FOUND)
+        );
+        assert_eq!(
+            rename(&state, "../escape", "Baker").await.err(),
+            Some(StatusCode::NOT_FOUND)
+        );
+
+        let listed = list(&state).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Alps");
     }
 
     #[tokio::test]
