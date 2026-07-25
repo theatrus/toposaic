@@ -147,6 +147,19 @@ pub(crate) fn triangulate_constraints(
         .context(error_context)
 }
 
+/// Snaps one coordinate to the 3MF export grid: the value the `{:.5}`
+/// formatter in `export.rs` will print is exactly the decimal this rounds to.
+/// Negative values that round to zero return positive zero so the formatted
+/// text never distinguishes `-0.00000` from `0.00000`.
+pub(crate) fn quantize_export_coordinate(value: f32) -> f32 {
+    let snapped = (f64::from(value) * 100_000.0).round() / 100_000.0;
+    if snapped == 0.0 {
+        0.0
+    } else {
+        snapped as f32
+    }
+}
+
 pub(crate) fn unit_vector(vector: [f32; 2]) -> [f32; 2] {
     let length = vector[0].hypot(vector[1]);
     if length <= f32::EPSILON {

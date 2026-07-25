@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
-use geo::{Area, BooleanOps, Buffer, Centroid, Contains, Coord, LineString, Point, Polygon};
+use geo::{
+    Area, BooleanOps, Buffer, Centroid, Contains, Coord, LineString, MultiPolygon, Point, Polygon,
+    unary_union,
+};
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
@@ -11,7 +14,7 @@ use crate::heightfield::{HeightField, normalized_height};
 use crate::jigsaw::{EdgePattern, edge_noise, edge_sign, puzzle_edge_point, shared_edge_pattern};
 use crate::mesh::{
     Mesh, MeshBuilder, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
-    triangulate_constraints, unit_vector,
+    quantize_export_coordinate, triangulate_constraints, unit_vector,
 };
 use crate::spec::{BridgeStructure, GenerationSpec, SurfaceClass};
 use crate::surface::{
@@ -22,6 +25,16 @@ use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_cont
 
 const OVERLAY_TERRAIN_EMBED_MM: f32 = 0.02;
 const BUILDING_GROUND_STEP_MM: f32 = 0.25;
+/// Clearance kept between road shells and building shells. Without it a road
+/// clipped against a building outline shares that outline's exact coordinates
+/// with the building shell, and both shells' embedded bottoms sit at the same
+/// depth, so a slicer's vertex weld fuses the two solids along those edges
+/// into non-manifold four-face edges. Five microns is far below print
+/// resolution but far above the 1e-5 mm export grid.
+const OVERLAY_SEPARATION_MM: f64 = 0.005;
+/// Overlay footprint fragments below this area (mm^2) are unprintable dust
+/// left over from boolean clipping and are dropped before shelling.
+const MINIMUM_OVERLAY_AREA_MM2: f64 = 0.000_01;
 
 #[allow(clippy::too_many_arguments)]
 fn add_forest_boundary_points(
@@ -401,10 +414,11 @@ pub(crate) fn build_piece_with_height_range(
         materials,
         quantization_collisions: Vec::new(),
     };
+    let mut building_union = None;
     if spec.buildings.enabled
         && let Some(field) = surface_field
     {
-        append_building_geometry(
+        building_union = Some(append_building_geometry(
             &mut mesh,
             spec,
             field,
@@ -415,7 +429,7 @@ pub(crate) fn build_piece_with_height_range(
             origin_y,
             assembled_width,
             assembled_height,
-        )?;
+        )?);
     }
     if spec.color_output.enabled
         && spec.color_output.roads_enabled
@@ -432,11 +446,36 @@ pub(crate) fn build_piece_with_height_range(
             origin_y,
             assembled_width,
             assembled_height,
+            building_union.as_ref(),
         )?;
     }
     Ok(mesh)
 }
 
+/// One building footprint clipped to the current piece, with the roof level
+/// the whole footprint shares.
+struct ClippedBuilding {
+    /// Clipped footprint in local piece millimeters.
+    footprint: MultiPolygon<f64>,
+    /// Local-mm bounding box of the clipped footprint.
+    bounds: [f32; 4],
+    roof_z: f32,
+}
+
+/// Builds all building prisms of one piece as one welded shell per connected
+/// group of footprints and returns the unioned footprint area so the road
+/// pass can keep clear of it.
+///
+/// Real map data abuts and overlaps building footprints constantly. Shelling
+/// each footprint separately (the previous approach) leaves coincident
+/// bottoms and wall quads that a slicer's vertex weld fuses into non-manifold
+/// edges and duplicate faces. Unioning the footprints first and shelling each
+/// connected component once eliminates every coincident face while keeping
+/// each building's own roof height: the component is triangulated with the
+/// individual footprint boundaries as interior constraints, every triangle
+/// takes the roof of the building containing it (the tallest, where
+/// footprints overlap), and interior edges between different roof levels grow
+/// vertical step walls, exactly the silhouette the separate shells drew.
 #[allow(clippy::too_many_arguments)]
 fn append_building_geometry(
     mesh: &mut Mesh,
@@ -449,7 +488,7 @@ fn append_building_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
-) -> Result<()> {
+) -> Result<MultiPolygon<f64>> {
     let piece_polygon = geo_polygon(piece_outline);
     let piece_bounds = piece_outline.iter().fold(
         [
@@ -473,12 +512,9 @@ fn append_building_geometry(
         .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
         .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
         .collect::<Vec<_>>();
-    // Each building builds an isolated MeshBuilder with no shared state, so
-    // the shells can be built in parallel and appended in the original
-    // feature order, leaving the output bytes unchanged.
-    let shells = candidates
+    let clipped_buildings = candidates
         .par_iter()
-        .map(|building| -> Result<Vec<MeshBuilder>> {
+        .map(|building| {
             let local_points = building
                 .points
                 .iter()
@@ -490,6 +526,17 @@ fn append_building_geometry(
                 })
                 .collect::<Vec<_>>();
             let clipped = geo_polygon(&local_points).intersection(&piece_polygon);
+            let footprint = MultiPolygon(
+                clipped
+                    .0
+                    .into_iter()
+                    .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+                    .collect::<Vec<_>>(),
+            );
+            if footprint.0.is_empty() {
+                return None;
+            }
+            let bounds = multi_polygon_bounds(&footprint);
             let roof_z = building_roof_z(
                 spec,
                 building,
@@ -498,37 +545,350 @@ fn append_building_geometry(
                 assembled_width,
                 assembled_height,
             );
-            clipped
-                .0
+            Some(ClippedBuilding {
+                footprint,
+                bounds,
+                roof_z,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if clipped_buildings.is_empty() {
+        return Ok(MultiPolygon(Vec::new()));
+    }
+    let footprint_union = unary_union(clipped_buildings.iter().map(|building| &building.footprint));
+    let bottom = |point: [f32; 2]| {
+        terrain_z_at(
+            spec,
+            height_field,
+            height_range,
+            (point[0] + origin_x) / assembled_width,
+            (point[1] + origin_y) / assembled_height,
+        ) - OVERLAY_TERRAIN_EMBED_MM
+    };
+    // Components are independent, so shell them in parallel and append in
+    // the union's stable output order.
+    let shells = footprint_union
+        .0
+        .par_iter()
+        .map(|component| -> Result<MeshBuilder> {
+            if component.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 {
+                return Ok(MeshBuilder::default());
+            }
+            let component_rings = std::iter::once(component.exterior())
+                .chain(component.interiors())
+                .map(snapped_open_ring)
+                .filter(|ring| ring.len() >= 3)
+                .collect::<Vec<_>>();
+            let Some(snapped_component) = polygon_from_rings(&component_rings) else {
+                return Ok(MeshBuilder::default());
+            };
+            let component_bounds = rings_bounds(&component_rings);
+            let members = clipped_buildings
                 .iter()
-                .filter(|polygon| polygon.unsigned_area() > 0.000_01)
-                .map(|polygon| {
-                    let bottom = |point: [f32; 2]| {
-                        terrain_z_at(
-                            spec,
-                            height_field,
-                            height_range,
-                            (point[0] + origin_x) / assembled_width,
-                            (point[1] + origin_y) / assembled_height,
-                        ) - OVERLAY_TERRAIN_EMBED_MM
-                    };
-                    let top = |_point: [f32; 2]| roof_z;
-                    build_polygon_shell(
-                        polygon,
-                        bottom,
-                        top,
-                        None,
-                        SurfaceClass::Building,
-                        "triangulate vector building footprint",
-                    )
-                })
-                .collect()
+                .filter(|building| bounds_overlap(building.bounds, component_bounds))
+                .collect::<Vec<_>>();
+            let mut constraint_rings = component_rings;
+            for member in &members {
+                for polygon in &member.footprint.0 {
+                    constraint_rings.extend(
+                        std::iter::once(polygon.exterior())
+                            .chain(polygon.interiors())
+                            .map(snapped_open_ring)
+                            .filter(|ring| ring.len() >= 3),
+                    );
+                }
+            }
+            build_building_union_shell(&snapped_component, constraint_rings, &members, &bottom)
         })
         .collect::<Result<Vec<_>>>()?;
-    for shell in shells.into_iter().flatten() {
+    for shell in shells {
         mesh.append_isolated(shell);
     }
-    Ok(())
+    Ok(footprint_union)
+}
+
+/// Roof level for one triangulated footprint face: the tallest building whose
+/// footprint contains the face centroid. Faces in snap-width slivers that no
+/// footprint quite contains fall back to the tallest bounding-box match.
+fn face_roof_z(members: &[&ClippedBuilding], centroid: [f32; 2]) -> f32 {
+    let centroid_point = Point::new(f64::from(centroid[0]), f64::from(centroid[1]));
+    let mut roof: Option<f32> = None;
+    for member in members {
+        if point_in_bounds(centroid, member.bounds) && member.footprint.contains(&centroid_point) {
+            roof = Some(roof.map_or(member.roof_z, |best| best.max(member.roof_z)));
+        }
+    }
+    if let Some(roof) = roof {
+        return roof;
+    }
+    let mut fallback: Option<f32> = None;
+    for member in members {
+        if point_in_bounds(centroid, member.bounds) {
+            fallback = Some(fallback.map_or(member.roof_z, |best| best.max(member.roof_z)));
+        }
+    }
+    fallback.unwrap_or_else(|| {
+        members
+            .iter()
+            .map(|member| member.roof_z)
+            .fold(f32::NEG_INFINITY, f32::max)
+    })
+}
+
+/// Triangulates one connected component of the building union — with every
+/// member footprint boundary as an interior constraint — and closes it into a
+/// single watertight shell: per-face roofs on top, terrain-following bottom,
+/// full-height walls on the outline, and vertical step walls where two roof
+/// levels meet inside the component.
+fn build_building_union_shell(
+    component: &Polygon<f64>,
+    constraint_rings: Vec<Vec<[f32; 2]>>,
+    members: &[&ClippedBuilding],
+    bottom: &impl Fn([f32; 2]) -> f32,
+) -> Result<MeshBuilder> {
+    let mut points = Vec::new();
+    let mut constraints = Vec::new();
+    for ring in &constraint_rings {
+        let start = points.len();
+        points.extend(
+            ring.iter()
+                .map(|point| Point2::new(f64::from(point[0]), f64::from(point[1]))),
+        );
+        constraints
+            .extend((0..ring.len()).map(|index| [start + index, start + (index + 1) % ring.len()]));
+    }
+    if points.len() < 3 {
+        return Ok(MeshBuilder::default());
+    }
+    let triangulation =
+        triangulate_constraints(points, constraints, "triangulate building union footprint")?;
+    let mut output = MeshBuilder::default();
+    let mut edge_faces = HashMap::<(usize, usize), Vec<([usize; 2], f32)>>::new();
+    let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
+    // Every roof level that appears on a vertex. Wall quads sharing that
+    // vertex's vertical line must subdivide at these levels, or a short
+    // neighbor's wall corner becomes a T-junction (an open edge after weld)
+    // against a taller neighbor's unbroken vertical side.
+    let mut vertex_roofs = HashMap::<usize, Vec<f32>>::new();
+    for face in triangulation.inner_faces() {
+        let face_vertices = face.vertices();
+        let face_points = face_vertices.map(|vertex| {
+            let point = vertex.position();
+            [point.x as f32, point.y as f32]
+        });
+        let centroid = [
+            (face_points.iter().map(|point| f64::from(point[0])).sum::<f64>() / 3.0) as f32,
+            (face_points.iter().map(|point| f64::from(point[1])).sum::<f64>() / 3.0) as f32,
+        ];
+        if !component.contains(&Point::new(f64::from(centroid[0]), f64::from(centroid[1]))) {
+            continue;
+        }
+        let roof = face_roof_z(members, centroid);
+        let mut ordered = face_points;
+        let mut ordered_indices = face_vertices.map(|vertex| vertex.fix().index());
+        let area = (ordered[1][0] - ordered[0][0]) * (ordered[2][1] - ordered[0][1])
+            - (ordered[1][1] - ordered[0][1]) * (ordered[2][0] - ordered[0][0]);
+        if area < 0.0 {
+            ordered.swap(1, 2);
+            ordered_indices.swap(1, 2);
+        }
+        for (index, point) in ordered_indices.into_iter().zip(ordered) {
+            vertex_positions.insert(index, point);
+            let roofs = vertex_roofs.entry(index).or_default();
+            if !roofs.contains(&roof) {
+                roofs.push(roof);
+            }
+        }
+        for directed in [
+            [ordered_indices[0], ordered_indices[1]],
+            [ordered_indices[1], ordered_indices[2]],
+            [ordered_indices[2], ordered_indices[0]],
+        ] {
+            let key = if directed[0] < directed[1] {
+                (directed[0], directed[1])
+            } else {
+                (directed[1], directed[0])
+            };
+            edge_faces.entry(key).or_default().push((directed, roof));
+        }
+        output.triangle(
+            [ordered[0][0], ordered[0][1], roof],
+            [ordered[1][0], ordered[1][1], roof],
+            [ordered[2][0], ordered[2][1], roof],
+            SurfaceClass::Building,
+        );
+        output.triangle(
+            [ordered[0][0], ordered[0][1], bottom(ordered[0])],
+            [ordered[2][0], ordered[2][1], bottom(ordered[2])],
+            [ordered[1][0], ordered[1][1], bottom(ordered[1])],
+            SurfaceClass::Building,
+        );
+    }
+    for roofs in vertex_roofs.values_mut() {
+        roofs.sort_by(f32::total_cmp);
+    }
+    // Emits a wall face for the directed footprint edge `from -> to`
+    // spanning `low_z(vertex)..high_z` on both vertical sides, splitting
+    // each side at every other roof level its vertex carries so neighboring
+    // walls of different heights share complete edges instead of forming
+    // T-junctions.
+    let mut emit_wall = |output: &mut MeshBuilder,
+                         from: usize,
+                         to: usize,
+                         low_z: &dyn Fn([f32; 2]) -> f32,
+                         high_z: f32| {
+        let side = |index: usize| {
+            let point = vertex_positions[&index];
+            let floor = low_z(point);
+            let mut levels = vec![floor];
+            levels.extend(
+                vertex_roofs
+                    .get(&index)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|level| *level > floor && *level < high_z),
+            );
+            levels.push(high_z);
+            (point, levels)
+        };
+        let (start, left) = side(from);
+        let (end, right) = side(to);
+        // Ladder triangulation between the two ascending vertical sides,
+        // oriented like the plain wall quad it generalizes.
+        let mut i = 0;
+        let mut j = 0;
+        while i + 1 < left.len() || j + 1 < right.len() {
+            let advance_right = j + 1 < right.len()
+                && (i + 1 >= left.len() || right[j + 1] <= left[i + 1]);
+            if advance_right {
+                output.triangle(
+                    [start[0], start[1], left[i]],
+                    [end[0], end[1], right[j]],
+                    [end[0], end[1], right[j + 1]],
+                    SurfaceClass::Building,
+                );
+                j += 1;
+            } else {
+                output.triangle(
+                    [start[0], start[1], left[i]],
+                    [end[0], end[1], right[j]],
+                    [start[0], start[1], left[i + 1]],
+                    SurfaceClass::Building,
+                );
+                i += 1;
+            }
+        }
+    };
+    // Sorted for the same run-to-run reproducibility as the terrain walls.
+    let mut edges = edge_faces.into_iter().collect::<Vec<_>>();
+    edges.sort_unstable_by_key(|(key, _)| *key);
+    for (_, faces) in edges {
+        match faces.as_slice() {
+            [([from, to], roof)] => {
+                emit_wall(&mut output, *from, *to, &bottom, *roof);
+            }
+            [first, second] => {
+                if first.1 == second.1 {
+                    continue;
+                }
+                let (high, low) = if first.1 > second.1 {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                let [from, to] = high.0;
+                let low_roof = low.1;
+                emit_wall(&mut output, from, to, &move |_point| low_roof, high.1);
+            }
+            _ => {}
+        }
+    }
+    Ok(output)
+}
+
+fn point_in_bounds(point: [f32; 2], bounds: [f32; 4]) -> bool {
+    point[0] >= bounds[0] && point[0] <= bounds[2] && point[1] >= bounds[1] && point[1] <= bounds[3]
+}
+
+fn multi_polygon_bounds(multi_polygon: &MultiPolygon<f64>) -> [f32; 4] {
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for polygon in &multi_polygon.0 {
+        for point in &polygon.exterior().0 {
+            bounds[0] = bounds[0].min(point.x as f32);
+            bounds[1] = bounds[1].min(point.y as f32);
+            bounds[2] = bounds[2].max(point.x as f32);
+            bounds[3] = bounds[3].max(point.y as f32);
+        }
+    }
+    bounds
+}
+
+fn rings_bounds(rings: &[Vec<[f32; 2]>]) -> [f32; 4] {
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for point in rings.iter().flatten() {
+        bounds[0] = bounds[0].min(point[0]);
+        bounds[1] = bounds[1].min(point[1]);
+        bounds[2] = bounds[2].max(point[0]);
+        bounds[3] = bounds[3].max(point[1]);
+    }
+    bounds
+}
+
+/// Rebuilds a polygon (first ring exterior, rest holes) from snapped open
+/// rings, for containment tests that agree with the triangulated geometry.
+fn polygon_from_rings(rings: &[Vec<[f32; 2]>]) -> Option<Polygon<f64>> {
+    let mut ring_strings = rings.iter().map(|ring| {
+        let mut coordinates = ring
+            .iter()
+            .map(|point| Coord {
+                x: f64::from(point[0]),
+                y: f64::from(point[1]),
+            })
+            .collect::<Vec<_>>();
+        if let Some(first) = coordinates.first().copied() {
+            coordinates.push(first);
+        }
+        LineString::new(coordinates)
+    });
+    let exterior = ring_strings.next()?;
+    Some(Polygon::new(exterior, ring_strings.collect()))
+}
+
+/// Converts one closed ring into snapped open points: every coordinate lands
+/// on the 1e-5 export grid, and consecutive duplicates created by the snap
+/// are removed. No collinear simplification happens here — the union outline
+/// and the member footprint constraints must keep their shared segments
+/// exactly identical so the triangulation dedupes them.
+fn snapped_open_ring(ring: &LineString<f64>) -> Vec<[f32; 2]> {
+    let mut points = ring
+        .0
+        .iter()
+        .map(|point| {
+            [
+                quantize_export_coordinate(point.x as f32),
+                quantize_export_coordinate(point.y as f32),
+            ]
+        })
+        .collect::<Vec<_>>();
+    points.dedup();
+    while points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    points
 }
 
 fn building_roof_z(
@@ -617,6 +977,16 @@ fn terrain_z_at(
             )
 }
 
+/// Builds the road shells of one piece.
+///
+/// Ordinary roads all share one terrain-following surface, so their clipped
+/// ribbons are unioned into a single footprint per piece and each connected
+/// component is shelled once — abutting or overlapping ribbons can therefore
+/// never leave coincident faces for a slicer weld to fuse. Bridge ribbons
+/// keep a shell per line because their deck height comes from the line's own
+/// elevation profile. Every road footprint also keeps
+/// [`OVERLAY_SEPARATION_MM`] clear of the building union so road and
+/// building shells never share welded vertices.
 #[allow(clippy::too_many_arguments)]
 fn append_road_geometry(
     mesh: &mut Mesh,
@@ -629,6 +999,7 @@ fn append_road_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
+    building_union: Option<&MultiPolygon<f64>>,
 ) -> Result<()> {
     let piece_polygon = geo_polygon(piece_outline);
     let piece_bounds = piece_outline.iter().fold(
@@ -651,13 +1022,7 @@ fn append_road_geometry(
         .vector_lines
         .iter()
         .filter(|line| line.class == SurfaceClass::Road)
-        .collect::<Vec<_>>();
-    // As with buildings, each road ribbon is clipped and shelled into its
-    // own isolated MeshBuilder, so the work parallelizes per road while the
-    // appends keep the original feature order and identical output bytes.
-    let shells = roads
-        .par_iter()
-        .map(|line| -> Result<Vec<MeshBuilder>> {
+        .filter(|line| {
             let half_width = line.width_mm * 0.5;
             let line_bounds = line.points_mm.iter().fold(
                 [
@@ -675,61 +1040,83 @@ fn append_road_geometry(
                     ]
                 },
             );
-            if !bounds_overlap(piece_bounds, line_bounds) {
-                return Ok(Vec::new());
-            }
-            let local_points = line
-                .points_mm
-                .iter()
-                .map(|point| Coord {
-                    x: (point[0] - origin_x) as f64,
-                    y: (point[1] - origin_y) as f64,
-                })
-                .collect::<Vec<_>>();
-            if local_points.len() < 2 {
-                return Ok(Vec::new());
-            }
-            let road_area = LineString::new(local_points).buffer(line.width_mm as f64 * 0.5);
-            let mut clipped = road_area.intersection(&piece_polygon);
-            if spec.buildings.enabled {
-                for building in surface_field
-                    .vector_areas
-                    .iter()
-                    .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
-                    .filter(|area| {
-                        let bounds = surface_area_bounds(&area.points);
-                        let assembled_bounds = [
-                            bounds[0] * assembled_width,
-                            bounds[1] * assembled_height,
-                            bounds[2] * assembled_width,
-                            bounds[3] * assembled_height,
-                        ];
-                        bounds_overlap(piece_bounds, assembled_bounds)
-                            && bounds_overlap(line_bounds, assembled_bounds)
-                    })
-                {
-                    let local_building = building
-                        .points
-                        .iter()
-                        .map(|point| {
-                            [
-                                point[0] * assembled_width - origin_x,
-                                point[1] * assembled_height - origin_y,
-                            ]
-                        })
-                        .collect::<Vec<_>>();
-                    clipped = clipped.difference(&geo_polygon(&local_building));
-                }
-            }
-            clipped
+            bounds_overlap(piece_bounds, line_bounds) && line.points_mm.len() >= 2
+        })
+        .collect::<Vec<_>>();
+    if roads.is_empty() {
+        return Ok(());
+    }
+    // Buildings the roads must keep clear of, grown by the separation gap.
+    let obstacles = building_union.filter(|union| !union.0.is_empty()).map(|union| {
+        let buffered = union
+            .0
+            .iter()
+            .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
+            .collect::<Vec<_>>();
+        unary_union(buffered.iter())
+    });
+    let clip_ribbon = |line: &VectorSurfaceLine| {
+        let local_points = line
+            .points_mm
+            .iter()
+            .map(|point| Coord {
+                x: f64::from(point[0] - origin_x),
+                y: f64::from(point[1] - origin_y),
+            })
+            .collect::<Vec<_>>();
+        let ribbon = LineString::new(local_points).buffer(f64::from(line.width_mm) * 0.5);
+        let mut clipped = ribbon.intersection(&piece_polygon);
+        if let Some(obstacles) = &obstacles {
+            clipped = clipped.difference(obstacles);
+        }
+        clipped
+    };
+    let (bridges, regular): (Vec<_>, Vec<_>) = roads
+        .into_iter()
+        .partition(|line| line.bridge_elevations_m.is_some());
+    // Ordinary ribbons are clipped in parallel, unioned, and shelled per
+    // connected component; the stable union output order keeps the emitted
+    // bytes reproducible.
+    let regular_areas = regular
+        .par_iter()
+        .map(|line| clip_ribbon(line))
+        .collect::<Vec<_>>();
+    let road_area = unary_union(regular_areas.iter());
+    let regular_shells = road_area
+        .0
+        .par_iter()
+        .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+        .map(|polygon| {
+            build_road_polygon_shell(
+                polygon,
+                spec,
+                None,
+                height_field,
+                height_range,
+                origin_x,
+                origin_y,
+                assembled_width,
+                assembled_height,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for shell in regular_shells {
+        mesh.append_isolated(shell);
+    }
+    // Bridge decks follow their own elevation profile, so they stay one
+    // shell batch per line, in feature order.
+    let bridge_shells = bridges
+        .par_iter()
+        .map(|line| -> Result<Vec<MeshBuilder>> {
+            clip_ribbon(line)
                 .0
                 .iter()
-                .filter(|polygon| polygon.unsigned_area() > 0.000_01)
+                .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
                 .map(|polygon| {
                     build_road_polygon_shell(
                         polygon,
                         spec,
-                        line,
+                        Some(line),
                         height_field,
                         height_range,
                         origin_x,
@@ -741,7 +1128,7 @@ fn append_road_geometry(
                 .collect()
         })
         .collect::<Result<Vec<_>>>()?;
-    for shell in shells.into_iter().flatten() {
+    for shell in bridge_shells.into_iter().flatten() {
         mesh.append_isolated(shell);
     }
     Ok(())
@@ -767,7 +1154,7 @@ pub(crate) fn geo_polygon(points: &[[f32; 2]]) -> Polygon<f64> {
 fn build_road_polygon_shell(
     polygon: &Polygon<f64>,
     spec: &GenerationSpec,
-    line: &VectorSurfaceLine,
+    line: Option<&VectorSurfaceLine>,
     height_field: Option<&HeightField>,
     height_range: Option<(f32, f32)>,
     origin_x: f32,
@@ -775,11 +1162,12 @@ fn build_road_polygon_shell(
     assembled_width: f32,
     assembled_height: f32,
 ) -> Result<MeshBuilder> {
+    let bridge = line.filter(|line| line.bridge_elevations_m.is_some());
     let road_z = |point: [f32; 2]| {
         let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
         let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
-        if let (Some([start, end]), Some((minimum, span))) =
-            (line.bridge_elevations_m, height_range)
+        if let (Some(line), Some((minimum, span))) = (bridge, height_range)
+            && let Some([start, end]) = line.bridge_elevations_m
         {
             let progress = surface_line_progress(line, u, v);
             let elevation = start + (end - start) * progress;
@@ -798,7 +1186,7 @@ fn build_road_polygon_shell(
         }
     };
     let top = |point: [f32; 2]| road_z(point) + spec.color_output.road_height_mm;
-    let is_bridge = line.bridge_elevations_m.is_some();
+    let is_bridge = bridge.is_some();
     let bottom = |point: [f32; 2]| {
         if !is_bridge {
             return road_z(point) - OVERLAY_TERRAIN_EMBED_MM;
