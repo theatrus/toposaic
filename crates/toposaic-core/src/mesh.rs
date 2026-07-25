@@ -153,11 +153,7 @@ pub(crate) fn triangulate_constraints(
 /// text never distinguishes `-0.00000` from `0.00000`.
 pub(crate) fn quantize_export_coordinate(value: f32) -> f32 {
     let snapped = (f64::from(value) * 100_000.0).round() / 100_000.0;
-    if snapped == 0.0 {
-        0.0
-    } else {
-        snapped as f32
-    }
+    if snapped == 0.0 { 0.0 } else { snapped as f32 }
 }
 
 pub(crate) fn unit_vector(vector: [f32; 2]) -> [f32; 2] {

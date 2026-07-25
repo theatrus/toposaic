@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use geo::{
-    Area, BooleanOps, Buffer, Centroid, Contains, Coord, LineString, MultiPolygon, Point, Polygon,
-    unary_union,
+    Area, BooleanOps, Buffer, Centroid, Contains, Coord, InteriorPoint, LineString, MultiPolygon,
+    Point, Polygon, unary_union,
 };
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
@@ -558,7 +558,10 @@ fn append_building_geometry(
     if clipped_buildings.is_empty() {
         return Ok(MultiPolygon(Vec::new()));
     }
-    let footprint_union = unary_union(clipped_buildings.iter().map(|building| &building.footprint));
+    let footprint_union = sanitize_footprint_group(
+        unary_union(clipped_buildings.iter().map(|building| &building.footprint)),
+        false,
+    );
     let bottom = |point: [f32; 2]| {
         terrain_z_at(
             spec,
@@ -568,13 +571,48 @@ fn append_building_geometry(
             (point[1] + origin_y) / assembled_height,
         ) - OVERLAY_TERRAIN_EMBED_MM
     };
+    // Every building belongs to exactly one union component. Exclusive
+    // membership matters: a component's shell keeps only faces covered by
+    // its own members, so no two components can ever emit geometry over the
+    // same spot even when coordinate rounding nudges their outlines.
+    let mut component_members: Vec<Vec<&ClippedBuilding>> =
+        vec![Vec::new(); footprint_union.0.len()];
+    let component_bounds = footprint_union
+        .0
+        .iter()
+        .map(polygon_bounds)
+        .collect::<Vec<_>>();
+    for building in &clipped_buildings {
+        let anchor = building.footprint.interior_point();
+        let component = anchor.and_then(|anchor| {
+            let anchor_bounds = [anchor.x() as f32, anchor.y() as f32];
+            footprint_union.0.iter().position(|component| {
+                point_in_bounds(anchor_bounds, polygon_bounds(component))
+                    && component.contains(&anchor)
+            })
+        });
+        match component {
+            Some(component) => component_members[component].push(building),
+            None => {
+                // The component this building fed vanished or shrank in
+                // sanitizing; give the building to every nearby component
+                // rather than dropping it.
+                for (index, bounds) in component_bounds.iter().enumerate() {
+                    if bounds_overlap(building.bounds, *bounds) {
+                        component_members[index].push(building);
+                    }
+                }
+            }
+        }
+    }
     // Components are independent, so shell them in parallel and append in
     // the union's stable output order.
     let shells = footprint_union
         .0
         .par_iter()
-        .map(|component| -> Result<MeshBuilder> {
-            if component.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 {
+        .zip(&component_members)
+        .map(|(component, members)| -> Result<MeshBuilder> {
+            if component.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 || members.is_empty() {
                 return Ok(MeshBuilder::default());
             }
             let component_rings = std::iter::once(component.exterior())
@@ -585,13 +623,9 @@ fn append_building_geometry(
             let Some(snapped_component) = polygon_from_rings(&component_rings) else {
                 return Ok(MeshBuilder::default());
             };
-            let component_bounds = rings_bounds(&component_rings);
-            let members = clipped_buildings
-                .iter()
-                .filter(|building| bounds_overlap(building.bounds, component_bounds))
-                .collect::<Vec<_>>();
             let mut constraint_rings = component_rings;
-            for member in &members {
+            let outline_ring_count = constraint_rings.len();
+            for member in members.iter() {
                 for polygon in &member.footprint.0 {
                     constraint_rings.extend(
                         std::iter::once(polygon.exterior())
@@ -601,7 +635,8 @@ fn append_building_geometry(
                     );
                 }
             }
-            build_building_union_shell(&snapped_component, constraint_rings, &members, &bottom)
+            retract_isolated_member_contacts(&mut constraint_rings, outline_ring_count);
+            build_building_union_shell(&snapped_component, constraint_rings, members, &bottom)
         })
         .collect::<Result<Vec<_>>>()?;
     for shell in shells {
@@ -610,10 +645,58 @@ fn append_building_geometry(
     Ok(footprint_union)
 }
 
-/// Roof level for one triangulated footprint face: the tallest building whose
-/// footprint contains the face centroid. Faces in snap-width slivers that no
-/// footprint quite contains fall back to the tallest bounding-box match.
-fn face_roof_z(members: &[&ClippedBuilding], centroid: [f32; 2]) -> f32 {
+/// Separates member footprints that touch each other (or the union outline)
+/// at a single point, like two towers meeting corner-to-corner on a shared
+/// podium. Around such a point the roof partition alternates high/low, which
+/// stacks four step walls on one vertical edge. A repeated point whose two
+/// incident segments are shared with another ring is a normal abutting wall
+/// and stays; a repeated point with unshared segments is an isolated contact
+/// and retracts a few microns into its own footprint, so the tops separate
+/// through a sliver at the surrounding roof level.
+fn retract_isolated_member_contacts(
+    constraint_rings: &mut [Vec<[f32; 2]>],
+    outline_ring_count: usize,
+) {
+    let point_key = |point: [f32; 2]| [point[0].to_bits(), point[1].to_bits()];
+    let segment_key = |a: [f32; 2], b: [f32; 2]| {
+        let (a, b) = (point_key(a), point_key(b));
+        if a <= b { (a, b) } else { (b, a) }
+    };
+    let mut point_counts = HashMap::<[u32; 2], u32>::new();
+    let mut segment_counts = HashMap::<([u32; 2], [u32; 2]), u32>::new();
+    for ring in constraint_rings.iter() {
+        for (index, point) in ring.iter().enumerate() {
+            *point_counts.entry(point_key(*point)).or_default() += 1;
+            let next = ring[(index + 1) % ring.len()];
+            *segment_counts.entry(segment_key(*point, next)).or_default() += 1;
+        }
+    }
+    for ring in constraint_rings.iter_mut().skip(outline_ring_count) {
+        let orientation = ring_signed_area(ring).signum() as f32;
+        let original = ring.clone();
+        for (index, point) in original.iter().enumerate() {
+            if point_counts[&point_key(*point)] < 2 {
+                continue;
+            }
+            let previous = original[(index + original.len() - 1) % original.len()];
+            let next = original[(index + 1) % original.len()];
+            if segment_counts[&segment_key(previous, *point)] > 1
+                || segment_counts[&segment_key(*point, next)] > 1
+            {
+                continue;
+            }
+            if let Some(moved) = retract_pinch_point(*point, previous, next, orientation) {
+                ring[index] = moved;
+            }
+        }
+    }
+}
+
+/// Roof level for one triangulated footprint face: the tallest member
+/// building whose footprint contains the face centroid, or `None` when no
+/// member covers it — such a face lies outside this component's buildings
+/// and stays out of the shell.
+fn face_roof_z(members: &[&ClippedBuilding], centroid: [f32; 2]) -> Option<f32> {
     let centroid_point = Point::new(f64::from(centroid[0]), f64::from(centroid[1]));
     let mut roof: Option<f32> = None;
     for member in members {
@@ -621,21 +704,164 @@ fn face_roof_z(members: &[&ClippedBuilding], centroid: [f32; 2]) -> f32 {
             roof = Some(roof.map_or(member.roof_z, |best| best.max(member.roof_z)));
         }
     }
-    if let Some(roof) = roof {
-        return roof;
-    }
-    let mut fallback: Option<f32> = None;
-    for member in members {
-        if point_in_bounds(centroid, member.bounds) {
-            fallback = Some(fallback.map_or(member.roof_z, |best| best.max(member.roof_z)));
+    roof
+}
+
+/// Removes pinches from the roof partition of one building union shell.
+///
+/// Around every triangulation vertex, the walls that will exist there are
+/// known: a step wall between each pair of neighboring kept faces with
+/// different roofs, and a full wall wherever a kept face meets a dropped
+/// one. When those wall spans stack more than two deep on the vertex's
+/// vertical line — roofs alternating high/low around the vertex, as when
+/// two footprints of different heights meet corner-to-corner inside the
+/// union — the shell would be non-manifold there. The smallest offending
+/// roof run merges into the neighboring run with the nearest roof level,
+/// sweeping until stable; only sliver-scale corner triangles change height.
+fn smooth_roof_partition(
+    triangulation: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+    inside: &[bool],
+    face_roofs: &mut [f32],
+    bottom: &impl Fn([f32; 2]) -> f32,
+) {
+    let areas = triangulation_face_areas(triangulation);
+    for _sweep in 0..8 {
+        let mut changed = false;
+        for vertex in triangulation.vertices() {
+            let faces = vertex
+                .out_edges()
+                .map(|edge| edge.face().fix().index())
+                .collect::<Vec<_>>();
+            if faces.len() < 3 {
+                continue;
+            }
+            let position = vertex.position();
+            let floor = bottom([position.x as f32, position.y as f32]);
+            // Wall spans on this vertex's vertical line.
+            let mut spans = Vec::<(f32, f32)>::new();
+            for index in 0..faces.len() {
+                let current = faces[index];
+                let next = faces[(index + 1) % faces.len()];
+                match (inside[current], inside[next]) {
+                    (true, true) => {
+                        let (low, high) = (
+                            face_roofs[current].min(face_roofs[next]),
+                            face_roofs[current].max(face_roofs[next]),
+                        );
+                        if low < high {
+                            spans.push((low, high));
+                        }
+                    }
+                    (true, false) => spans.push((floor, face_roofs[current])),
+                    (false, true) => spans.push((floor, face_roofs[next])),
+                    (false, false) => {}
+                }
+            }
+            if spans.len() <= 2 {
+                continue;
+            }
+            // Sweep the spans; more than two walls over any height is a
+            // pinch.
+            let mut events = Vec::with_capacity(spans.len() * 2);
+            for (low, high) in &spans {
+                events.push((*low, 1));
+                events.push((*high, -1));
+            }
+            events.sort_by(|(left, left_step), (right, right_step)| {
+                left.total_cmp(right).then(left_step.cmp(right_step))
+            });
+            let mut depth = 0;
+            let mut pinched = false;
+            for (_, step) in &events {
+                depth += step;
+                if depth > 2 {
+                    pinched = true;
+                    break;
+                }
+            }
+            if !pinched {
+                continue;
+            }
+            // Roof runs around the vertex: contiguous kept faces sharing a
+            // roof, broken at dropped faces. Merge the smallest run into
+            // the neighboring run with the nearest roof.
+            let start = (0..faces.len())
+                .find(|index| {
+                    let previous = faces[(index + faces.len() - 1) % faces.len()];
+                    let current = faces[*index];
+                    inside[current]
+                        && (!inside[previous] || face_roofs[previous] != face_roofs[current])
+                })
+                .unwrap_or(0);
+            let mut runs: Vec<Option<(f64, f32, Vec<usize>)>> = Vec::new();
+            for offset in 0..faces.len() {
+                let face = faces[(start + offset) % faces.len()];
+                if !inside[face] {
+                    if !matches!(runs.last(), Some(None) | None) {
+                        runs.push(None);
+                    }
+                    continue;
+                }
+                match runs.last_mut() {
+                    Some(Some((area, roof, members))) if *roof == face_roofs[face] => {
+                        *area += areas[face];
+                        members.push(face);
+                    }
+                    _ => runs.push(Some((areas[face], face_roofs[face], vec![face]))),
+                }
+            }
+            let run_count = runs.len();
+            let smallest = runs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, run)| run.as_ref().map(|run| (index, run)))
+                .filter(|(index, (_, roof, _))| {
+                    // Only merge runs that have a kept neighbor run to
+                    // merge into.
+                    let neighbors = [
+                        (*index + run_count - 1) % run_count,
+                        (*index + 1) % run_count,
+                    ];
+                    neighbors.iter().any(|neighbor| {
+                        *neighbor != *index
+                            && runs[*neighbor]
+                                .as_ref()
+                                .is_some_and(|(_, other, _)| other != roof)
+                    })
+                })
+                .min_by(|(_, (left, ..)), (_, (right, ..))| left.total_cmp(right))
+                .map(|(index, _)| index);
+            let Some(smallest) = smallest else {
+                continue;
+            };
+            let (_, roof, members) = runs[smallest].clone().expect("smallest run is kept");
+            let neighbor_roofs = [
+                (smallest + run_count - 1) % run_count,
+                (smallest + 1) % run_count,
+            ]
+            .into_iter()
+            .filter(|neighbor| *neighbor != smallest)
+            .filter_map(|neighbor| runs[neighbor].as_ref())
+            .map(|(_, other, _)| *other)
+            .filter(|other| *other != roof)
+            .collect::<Vec<_>>();
+            let Some(new_roof) = neighbor_roofs.into_iter().min_by(|left, right| {
+                (left - roof)
+                    .abs()
+                    .total_cmp(&(right - roof).abs())
+                    .then(left.total_cmp(right))
+            }) else {
+                continue;
+            };
+            for face in members {
+                face_roofs[face] = new_roof;
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
         }
     }
-    fallback.unwrap_or_else(|| {
-        members
-            .iter()
-            .map(|member| member.roof_z)
-            .fold(f32::NEG_INFINITY, f32::max)
-    })
 }
 
 /// Triangulates one connected component of the building union — with every
@@ -665,6 +891,29 @@ fn build_building_union_shell(
     }
     let triangulation =
         triangulate_constraints(points, constraints, "triangulate building union footprint")?;
+    // Classify: a face belongs to the shell when its centroid sits in the
+    // component. Repair any classification pinch, then assign each kept
+    // face its roof and smooth away pinches in the roof partition itself.
+    let mut inside = vec![false; triangulation.num_all_faces()];
+    let mut face_roofs = vec![f32::NAN; triangulation.num_all_faces()];
+    for face in triangulation.inner_faces() {
+        let positions = face.vertices().map(|vertex| vertex.position());
+        let centroid = Point::new(
+            (positions[0].x + positions[1].x + positions[2].x) / 3.0,
+            (positions[0].y + positions[1].y + positions[2].y) / 3.0,
+        );
+        if !component.contains(&centroid) {
+            continue;
+        }
+        let Some(roof) = face_roof_z(members, [centroid.x() as f32, centroid.y() as f32]) else {
+            continue;
+        };
+        let index = face.fix().index();
+        inside[index] = true;
+        face_roofs[index] = roof;
+    }
+    repair_classification_pinches(&triangulation, &mut inside, false);
+    smooth_roof_partition(&triangulation, &inside, &mut face_roofs, bottom);
     let mut output = MeshBuilder::default();
     let mut edge_faces = HashMap::<(usize, usize), Vec<([usize; 2], f32)>>::new();
     let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
@@ -674,19 +923,15 @@ fn build_building_union_shell(
     // against a taller neighbor's unbroken vertical side.
     let mut vertex_roofs = HashMap::<usize, Vec<f32>>::new();
     for face in triangulation.inner_faces() {
+        if !inside[face.fix().index()] {
+            continue;
+        }
         let face_vertices = face.vertices();
         let face_points = face_vertices.map(|vertex| {
             let point = vertex.position();
             [point.x as f32, point.y as f32]
         });
-        let centroid = [
-            (face_points.iter().map(|point| f64::from(point[0])).sum::<f64>() / 3.0) as f32,
-            (face_points.iter().map(|point| f64::from(point[1])).sum::<f64>() / 3.0) as f32,
-        ];
-        if !component.contains(&Point::new(f64::from(centroid[0]), f64::from(centroid[1]))) {
-            continue;
-        }
-        let roof = face_roof_z(members, centroid);
+        let roof = face_roofs[face.fix().index()];
         let mut ordered = face_points;
         let mut ordered_indices = face_vertices.map(|vertex| vertex.fix().index());
         let area = (ordered[1][0] - ordered[0][0]) * (ordered[2][1] - ordered[0][1])
@@ -735,11 +980,11 @@ fn build_building_union_shell(
     // each side at every other roof level its vertex carries so neighboring
     // walls of different heights share complete edges instead of forming
     // T-junctions.
-    let mut emit_wall = |output: &mut MeshBuilder,
-                         from: usize,
-                         to: usize,
-                         low_z: &dyn Fn([f32; 2]) -> f32,
-                         high_z: f32| {
+    let emit_wall = |output: &mut MeshBuilder,
+                     from: usize,
+                     to: usize,
+                     low_z: &dyn Fn([f32; 2]) -> f32,
+                     high_z: f32| {
         let side = |index: usize| {
             let point = vertex_positions[&index];
             let floor = low_z(point);
@@ -762,8 +1007,8 @@ fn build_building_union_shell(
         let mut i = 0;
         let mut j = 0;
         while i + 1 < left.len() || j + 1 < right.len() {
-            let advance_right = j + 1 < right.len()
-                && (i + 1 >= left.len() || right[j + 1] <= left[i + 1]);
+            let advance_right =
+                j + 1 < right.len() && (i + 1 >= left.len() || right[j + 1] <= left[i + 1]);
             if advance_right {
                 output.triangle(
                     [start[0], start[1], left[i]],
@@ -814,6 +1059,22 @@ fn point_in_bounds(point: [f32; 2], bounds: [f32; 4]) -> bool {
     point[0] >= bounds[0] && point[0] <= bounds[2] && point[1] >= bounds[1] && point[1] <= bounds[3]
 }
 
+fn polygon_bounds(polygon: &Polygon<f64>) -> [f32; 4] {
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for point in &polygon.exterior().0 {
+        bounds[0] = bounds[0].min(point.x as f32);
+        bounds[1] = bounds[1].min(point.y as f32);
+        bounds[2] = bounds[2].max(point.x as f32);
+        bounds[3] = bounds[3].max(point.y as f32);
+    }
+    bounds
+}
+
 fn multi_polygon_bounds(multi_polygon: &MultiPolygon<f64>) -> [f32; 4] {
     let mut bounds = [
         f32::INFINITY,
@@ -828,22 +1089,6 @@ fn multi_polygon_bounds(multi_polygon: &MultiPolygon<f64>) -> [f32; 4] {
             bounds[2] = bounds[2].max(point.x as f32);
             bounds[3] = bounds[3].max(point.y as f32);
         }
-    }
-    bounds
-}
-
-fn rings_bounds(rings: &[Vec<[f32; 2]>]) -> [f32; 4] {
-    let mut bounds = [
-        f32::INFINITY,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::NEG_INFINITY,
-    ];
-    for point in rings.iter().flatten() {
-        bounds[0] = bounds[0].min(point[0]);
-        bounds[1] = bounds[1].min(point[1]);
-        bounds[2] = bounds[2].max(point[0]);
-        bounds[3] = bounds[3].max(point[1]);
     }
     bounds
 }
@@ -889,6 +1134,137 @@ fn snapped_open_ring(ring: &LineString<f64>) -> Vec<[f32; 2]> {
         points.pop();
     }
     points
+}
+
+fn ring_signed_area(points: &[[f32; 2]]) -> f64 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        area += f64::from(a[0]) * f64::from(b[1]) - f64::from(b[0]) * f64::from(a[1]);
+    }
+    area * 0.5
+}
+
+/// Cleans the footprint rings of one overlay material group before shelling.
+///
+/// * Every coordinate snaps to the 1e-5 export grid and consecutive
+///   duplicates disappear, so triangulation never sees the sub-grid slivers
+///   that used to collapse into degenerate triangles in `MeshBuilder`.
+/// * Degenerate rings (under three points or under the minimum area) drop
+///   out; a degenerate exterior drops its whole polygon.
+/// * A snapped point that occurs twice anywhere in the group — a ring
+///   touching itself, a hole touching its exterior, or two polygons meeting
+///   at a point — is a pinch: the shells built from those rings would stack
+///   four wall quads on one vertical edge. Every occurrence after the first
+///   retracts a few microns toward its own lobe (or is removed when its
+///   edges are too short to retract along), which separates the lobes
+///   without visibly changing the outline.
+fn sanitize_footprint_group(group: MultiPolygon<f64>, simplify: bool) -> MultiPolygon<f64> {
+    let mut polygons = Vec::new();
+    for polygon in group.0 {
+        let mut rings = Vec::new();
+        for (ring_index, ring) in std::iter::once(polygon.exterior())
+            .chain(polygon.interiors())
+            .enumerate()
+        {
+            let mut points = snapped_open_ring(ring);
+            if simplify {
+                points = simplify_closed_ring(points);
+            }
+            if points.len() < 3 || ring_signed_area(&points).abs() <= MINIMUM_OVERLAY_AREA_MM2 {
+                if ring_index == 0 {
+                    rings.clear();
+                    break;
+                }
+                continue;
+            }
+            rings.push(points);
+        }
+        if !rings.is_empty() {
+            polygons.push(rings);
+        }
+    }
+
+    let mut seen = HashMap::<[u32; 2], u32>::new();
+    for rings in &mut polygons {
+        for ring in rings.iter_mut() {
+            let orientation = ring_signed_area(ring).signum() as f32;
+            let original = ring.clone();
+            let mut removed = vec![false; original.len()];
+            for index in 0..original.len() {
+                let point = original[index];
+                let key = [point[0].to_bits(), point[1].to_bits()];
+                let occurrences = seen.entry(key).or_insert(0);
+                *occurrences += 1;
+                if *occurrences == 1 {
+                    continue;
+                }
+                let previous = original[(index + original.len() - 1) % original.len()];
+                let next = original[(index + 1) % original.len()];
+                let Some(moved) = retract_pinch_point(point, previous, next, orientation) else {
+                    removed[index] = true;
+                    continue;
+                };
+                ring[index] = moved;
+                *seen
+                    .entry([moved[0].to_bits(), moved[1].to_bits()])
+                    .or_insert(0) += 1;
+            }
+            if removed.iter().any(|flag| *flag) {
+                *ring = ring
+                    .iter()
+                    .zip(&removed)
+                    .filter(|(_, removed)| !**removed)
+                    .map(|(point, _)| *point)
+                    .collect();
+            }
+        }
+        rings.retain(|ring| {
+            ring.len() >= 3 && ring_signed_area(ring).abs() > MINIMUM_OVERLAY_AREA_MM2
+        });
+    }
+
+    MultiPolygon(
+        polygons
+            .into_iter()
+            .filter_map(|rings| polygon_from_rings(&rings))
+            .collect(),
+    )
+}
+
+/// Moves a repeated ring point a few microns into its own lobe: along the
+/// corner's angle bisector, which points into the enclosed wedge for the
+/// sharp corners pinches form. Falls back to the ring's enclosed side when
+/// the corner is collinear. Returns `None` when the neighboring edges are
+/// too short to retract along, meaning the point should be removed instead.
+fn retract_pinch_point(
+    point: [f32; 2],
+    previous: [f32; 2],
+    next: [f32; 2],
+    orientation: f32,
+) -> Option<[f32; 2]> {
+    let incoming_length = distance_squared(previous, point).sqrt();
+    let outgoing_length = distance_squared(next, point).sqrt();
+    let shortest = incoming_length.min(outgoing_length);
+    let epsilon = (0.25 * shortest).min(OVERLAY_SEPARATION_MM as f32);
+    if epsilon < 0.000_03 {
+        return None;
+    }
+    let to_previous = unit_vector([previous[0] - point[0], previous[1] - point[1]]);
+    let to_next = unit_vector([next[0] - point[0], next[1] - point[1]]);
+    let bisector = [to_previous[0] + to_next[0], to_previous[1] + to_next[1]];
+    let direction = if bisector[0].hypot(bisector[1]) > 0.001 {
+        unit_vector(bisector)
+    } else {
+        let tangent = unit_vector([next[0] - previous[0], next[1] - previous[1]]);
+        [-tangent[1] * orientation, tangent[0] * orientation]
+    };
+    let moved = [
+        quantize_export_coordinate(point[0] + direction[0] * epsilon),
+        quantize_export_coordinate(point[1] + direction[1] * epsilon),
+    ];
+    if moved == point { None } else { Some(moved) }
 }
 
 fn building_roof_z(
@@ -955,7 +1331,11 @@ fn building_roof_z(
             }
         }
     }
-    ground_z + scaled_building_height_mm(spec, building.building_height_m)
+    // Snapped to the export grid: two roofs closer than the grid would emit
+    // step walls thinner than the vertex weld can represent.
+    quantize_export_coordinate(
+        ground_z + scaled_building_height_mm(spec, building.building_height_m),
+    )
 }
 
 fn terrain_z_at(
@@ -1047,14 +1427,16 @@ fn append_road_geometry(
         return Ok(());
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
-    let obstacles = building_union.filter(|union| !union.0.is_empty()).map(|union| {
-        let buffered = union
-            .0
-            .iter()
-            .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
-            .collect::<Vec<_>>();
-        unary_union(buffered.iter())
-    });
+    let obstacles = building_union
+        .filter(|union| !union.0.is_empty())
+        .map(|union| {
+            let buffered = union
+                .0
+                .iter()
+                .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
+                .collect::<Vec<_>>();
+            unary_union(buffered.iter())
+        });
     let clip_ribbon = |line: &VectorSurfaceLine| {
         let local_points = line
             .points_mm
@@ -1074,14 +1456,120 @@ fn append_road_geometry(
     let (bridges, regular): (Vec<_>, Vec<_>) = roads
         .into_iter()
         .partition(|line| line.bridge_elevations_m.is_some());
-    // Ordinary ribbons are clipped in parallel, unioned, and shelled per
-    // connected component; the stable union output order keeps the emitted
-    // bytes reproducible.
+    // Ordinary ribbons are clipped in parallel and unioned; the union is
+    // shelled per connected component further below, once the bridge decks
+    // it must keep clear of are known.
     let regular_areas = regular
         .par_iter()
         .map(|line| clip_ribbon(line))
         .collect::<Vec<_>>();
-    let road_area = unary_union(regular_areas.iter());
+    let mut road_area = unary_union(regular_areas.iter());
+    // Bridge decks follow their own elevation profile, so they cannot join
+    // the terrain-following union. But one physical bridge arrives as many
+    // lines — chained segments that share endpoints (whose round buffer
+    // caps coincide exactly) and parallel carriageways — and separate
+    // shells over those overlaps leave coincident deck and wall faces. So
+    // bridge lines whose clipped ribbons overlap at (nearly) the same deck
+    // height merge into one group, each group unions into one footprint,
+    // and every group vertex takes its height from the nearest line of the
+    // group. Crossings at different heights stay separate shells, exactly
+    // as flyovers must.
+    let bridge_areas = bridges
+        .par_iter()
+        .map(|line| clip_ribbon(line))
+        .collect::<Vec<_>>();
+    let bridge_bounds = bridge_areas
+        .iter()
+        .map(multi_polygon_bounds)
+        .collect::<Vec<_>>();
+    let mut parent = (0..bridges.len()).collect::<Vec<_>>();
+    fn root(parent: &mut [usize], mut index: usize) -> usize {
+        while parent[index] != index {
+            parent[index] = parent[parent[index]];
+            index = parent[index];
+        }
+        index
+    }
+    for first in 0..bridges.len() {
+        for second in first + 1..bridges.len() {
+            if !bounds_overlap(bridge_bounds[first], bridge_bounds[second]) {
+                continue;
+            }
+            let overlap = bridge_areas[first].intersection(&bridge_areas[second]);
+            let Some(largest) = overlap
+                .0
+                .iter()
+                .max_by(|a, b| a.unsigned_area().total_cmp(&b.unsigned_area()))
+                .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+            else {
+                continue;
+            };
+            let Some(sample) = largest.centroid() else {
+                continue;
+            };
+            let sample = [sample.x() as f32, sample.y() as f32];
+            let deck_z = |line: &VectorSurfaceLine| {
+                bridge_line_z(
+                    spec,
+                    line,
+                    height_field,
+                    height_range,
+                    ((sample[0] + origin_x) / assembled_width).clamp(0.0, 1.0),
+                    ((sample[1] + origin_y) / assembled_height).clamp(0.0, 1.0),
+                )
+            };
+            if (deck_z(bridges[first]) - deck_z(bridges[second])).abs() <= BRIDGE_DECK_JOIN_MM {
+                let left = root(&mut parent, first);
+                let right = root(&mut parent, second);
+                if left != right {
+                    parent[left.max(right)] = left.min(right);
+                }
+            }
+        }
+    }
+    let mut groups: Vec<(Vec<&VectorSurfaceLine>, Vec<&MultiPolygon<f64>>)> = Vec::new();
+    let mut group_of_root = HashMap::<usize, usize>::new();
+    for index in 0..bridges.len() {
+        let group_root = root(&mut parent, index);
+        let group = *group_of_root.entry(group_root).or_insert_with(|| {
+            groups.push((Vec::new(), Vec::new()));
+            groups.len() - 1
+        });
+        groups[group].0.push(bridges[index]);
+        groups[group].1.push(&bridge_areas[index]);
+    }
+    let decks = groups
+        .into_iter()
+        .map(|(group_lines, group_areas)| (group_lines, unary_union(group_areas)))
+        .collect::<Vec<_>>();
+    // Where a deck touches down — the same OSM way continues as a plain road
+    // from the bridge's end node, so both ribbons carry the identical round
+    // buffer cap there — the two shells would share exact boundary faces.
+    // The plain road yields: every overlap where the deck sits at road level
+    // is cut out of the road union with the separation gap.
+    for (group_lines, deck_area) in &decks {
+        for overlap in road_area.intersection(deck_area).0 {
+            if overlap.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 {
+                continue;
+            }
+            let Some(sample) = overlap.centroid() else {
+                continue;
+            };
+            let assembled = [sample.x() as f32 + origin_x, sample.y() as f32 + origin_y];
+            let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
+            let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
+            let road_level = terrain_z_at(spec, height_field, height_range, u, v);
+            let deck_level = nearest_deck_line(group_lines, assembled)
+                .map(|line| bridge_line_z(spec, line, height_field, height_range, u, v))
+                .unwrap_or(road_level);
+            if (deck_level - road_level).abs() <= BRIDGE_DECK_JOIN_MM {
+                road_area = road_area.difference(&overlap.buffer(OVERLAY_SEPARATION_MM));
+            }
+        }
+    }
+    // Shell the plain roads per connected component; the stable union output
+    // order keeps the emitted bytes reproducible.
+    let road_area = sanitize_footprint_group(road_area, true);
     let regular_shells = road_area
         .0
         .par_iter()
@@ -1090,7 +1578,7 @@ fn append_road_geometry(
             build_road_polygon_shell(
                 polygon,
                 spec,
-                None,
+                &[],
                 height_field,
                 height_range,
                 origin_x,
@@ -1103,35 +1591,99 @@ fn append_road_geometry(
     for shell in regular_shells {
         mesh.append_isolated(shell);
     }
-    // Bridge decks follow their own elevation profile, so they stay one
-    // shell batch per line, in feature order.
-    let bridge_shells = bridges
-        .par_iter()
-        .map(|line| -> Result<Vec<MeshBuilder>> {
-            clip_ribbon(line)
-                .0
-                .iter()
-                .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
-                .map(|polygon| {
-                    build_road_polygon_shell(
-                        polygon,
-                        spec,
-                        Some(line),
-                        height_field,
-                        height_range,
-                        origin_x,
-                        origin_y,
-                        assembled_width,
-                        assembled_height,
-                    )
-                })
-                .collect()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for shell in bridge_shells.into_iter().flatten() {
-        mesh.append_isolated(shell);
+    for (ordinal, (group_lines, deck_area)) in decks.into_iter().enumerate() {
+        // Each deck group embeds a fraction deeper than the last. Supported
+        // decks of *different* groups follow the same terrain-hugging
+        // bottom, and where two groups meet at a shared road node their
+        // buffered end caps coincide exactly — distinct embed depths keep
+        // those bottoms from welding into one non-manifold sheet. The
+        // offsets stay far below print resolution, hidden inside terrain.
+        let embed_mm = quantize_export_coordinate(
+            OVERLAY_TERRAIN_EMBED_MM + ((ordinal % 64) as f32 + 1.0) * 0.000_05,
+        );
+        let deck_area = sanitize_footprint_group(deck_area, true);
+        let group_shells = deck_area
+            .0
+            .par_iter()
+            .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+            .map(|polygon| {
+                build_road_polygon_shell_with_embed(
+                    polygon,
+                    spec,
+                    &group_lines,
+                    height_field,
+                    height_range,
+                    origin_x,
+                    origin_y,
+                    assembled_width,
+                    assembled_height,
+                    embed_mm,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for shell in group_shells {
+            mesh.append_isolated(shell);
+        }
     }
     Ok(())
+}
+
+/// Deck heights within this tolerance where two bridge ribbons overlap mean
+/// one physical deck (chained segments, parallel carriageways); a larger gap
+/// means a flyover crossing that must keep its own shell.
+const BRIDGE_DECK_JOIN_MM: f32 = 0.05;
+
+/// Print height of a bridge line's deck surface at one map position.
+fn bridge_line_z(
+    spec: &GenerationSpec,
+    line: &VectorSurfaceLine,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    u: f32,
+    v: f32,
+) -> f32 {
+    if let (Some([start, end]), Some((minimum, span))) = (line.bridge_elevations_m, height_range) {
+        let progress = surface_line_progress(line, u, v);
+        let elevation = start + (end - start) * progress;
+        spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).max(0.0)
+    } else {
+        terrain_z_at(spec, height_field, height_range, u, v)
+    }
+}
+
+/// Line of a merged deck group nearest to an assembled-mm point.
+fn nearest_deck_line<'lines>(
+    deck_lines: &[&'lines VectorSurfaceLine],
+    assembled: [f32; 2],
+) -> Option<&'lines VectorSurfaceLine> {
+    let mut nearest = None::<(f32, &VectorSurfaceLine)>;
+    for line in deck_lines {
+        let distance = polyline_distance_squared(&line.points_mm, assembled);
+        if nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, line));
+        }
+    }
+    nearest.map(|(_, line)| line)
+}
+
+/// Squared distance from an assembled-mm point to a polyline.
+fn polyline_distance_squared(points: &[[f32; 2]], point: [f32; 2]) -> f32 {
+    let mut best = f32::INFINITY;
+    for segment in points.windows(2) {
+        let [start, end] = [segment[0], segment[1]];
+        let direction = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+        let t = if length_squared <= f32::EPSILON {
+            0.0
+        } else {
+            (((point[0] - start[0]) * direction[0] + (point[1] - start[1]) * direction[1])
+                / length_squared)
+                .clamp(0.0, 1.0)
+        };
+        let nearest = [start[0] + direction[0] * t, start[1] + direction[1] * t];
+        best = best.min(distance_squared(point, nearest));
+    }
+    best
 }
 
 pub(crate) fn geo_polygon(points: &[[f32; 2]]) -> Polygon<f64> {
@@ -1154,7 +1706,7 @@ pub(crate) fn geo_polygon(points: &[[f32; 2]]) -> Polygon<f64> {
 fn build_road_polygon_shell(
     polygon: &Polygon<f64>,
     spec: &GenerationSpec,
-    line: Option<&VectorSurfaceLine>,
+    deck_lines: &[&VectorSurfaceLine],
     height_field: Option<&HeightField>,
     height_range: Option<(f32, f32)>,
     origin_x: f32,
@@ -1162,16 +1714,41 @@ fn build_road_polygon_shell(
     assembled_width: f32,
     assembled_height: f32,
 ) -> Result<MeshBuilder> {
-    let bridge = line.filter(|line| line.bridge_elevations_m.is_some());
+    build_road_polygon_shell_with_embed(
+        polygon,
+        spec,
+        deck_lines,
+        height_field,
+        height_range,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+        OVERLAY_TERRAIN_EMBED_MM,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_road_polygon_shell_with_embed(
+    polygon: &Polygon<f64>,
+    spec: &GenerationSpec,
+    deck_lines: &[&VectorSurfaceLine],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+    embed_mm: f32,
+) -> Result<MeshBuilder> {
     let road_z = |point: [f32; 2]| {
-        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
-        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
-        if let (Some(line), Some((minimum, span))) = (bridge, height_range)
-            && let Some([start, end]) = line.bridge_elevations_m
-        {
-            let progress = surface_line_progress(line, u, v);
-            let elevation = start + (end - start) * progress;
-            spec.base_mm + spec.relief_mm * ((elevation - minimum) / span).max(0.0)
+        let assembled = [point[0] + origin_x, point[1] + origin_y];
+        let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
+        let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
+        // A merged deck takes its height from the nearest of its lines, so
+        // a chained elevation profile carries across the whole group.
+        if let Some(line) = nearest_deck_line(deck_lines, assembled) {
+            bridge_line_z(spec, line, height_field, height_range, u, v)
         } else {
             spec.base_mm
                 + spec.relief_mm
@@ -1186,18 +1763,18 @@ fn build_road_polygon_shell(
         }
     };
     let top = |point: [f32; 2]| road_z(point) + spec.color_output.road_height_mm;
-    let is_bridge = bridge.is_some();
+    let is_bridge = !deck_lines.is_empty();
     let bottom = |point: [f32; 2]| {
         if !is_bridge {
-            return road_z(point) - OVERLAY_TERRAIN_EMBED_MM;
+            return road_z(point) - embed_mm;
         }
         match spec.color_output.bridge_structure {
             BridgeStructure::Floating => top(point) - spec.color_output.bridge_thickness_mm,
             BridgeStructure::Supported => {
                 let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
                 let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
-                (terrain_z_at(spec, height_field, height_range, u, v) - OVERLAY_TERRAIN_EMBED_MM)
-                    .min(top(point) - OVERLAY_TERRAIN_EMBED_MM)
+                (terrain_z_at(spec, height_field, height_range, u, v) - embed_mm)
+                    .min(top(point) - embed_mm)
             }
         }
     };
@@ -1227,7 +1804,24 @@ fn build_polygon_shell(
         .map(open_ring_points)
         .map(|ring| {
             boundary_step_mm
-                .map(|step| densify_closed_ring(&ring, step))
+                .map(|step| {
+                    // Densified midpoints land off the export grid; snap them
+                    // back so triangulation and the vertex weld agree.
+                    let mut dense = densify_closed_ring(&ring, step)
+                        .into_iter()
+                        .map(|point| {
+                            [
+                                quantize_export_coordinate(point[0]),
+                                quantize_export_coordinate(point[1]),
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    dense.dedup();
+                    while dense.len() > 1 && dense.first() == dense.last() {
+                        dense.pop();
+                    }
+                    dense
+                })
                 .unwrap_or(ring)
         })
         .filter(|ring| ring.len() >= 3)
@@ -1247,22 +1841,20 @@ fn build_polygon_shell(
         return Ok(MeshBuilder::default());
     }
     let triangulation = triangulate_constraints(points, constraints, error_context)?;
+    let mut inside = interior_faces_by_parity(&triangulation);
+    repair_classification_pinches(&triangulation, &mut inside, true);
     let mut output = MeshBuilder::default();
     let mut edge_uses = HashMap::<(usize, usize), (u32, [usize; 2])>::new();
     let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
     for face in triangulation.inner_faces() {
+        if !inside[face.fix().index()] {
+            continue;
+        }
         let face_vertices = face.vertices();
         let face_points = face_vertices.map(|vertex| {
             let point = vertex.position();
             [point.x as f32, point.y as f32]
         });
-        let centroid = Point::new(
-            face_points.iter().map(|point| point[0] as f64).sum::<f64>() / 3.0,
-            face_points.iter().map(|point| point[1] as f64).sum::<f64>() / 3.0,
-        );
-        if !polygon.contains(&centroid) {
-            continue;
-        }
         let mut ordered = face_points;
         let mut ordered_indices = face_vertices.map(|vertex| vertex.fix().index());
         let area = (ordered[1][0] - ordered[0][0]) * (ordered[2][1] - ordered[0][1])
@@ -1321,6 +1913,136 @@ fn build_polygon_shell(
     Ok(output)
 }
 
+/// Areas of every triangulation face, indexed like the all-faces domain
+/// (the outer face keeps zero).
+fn triangulation_face_areas(
+    triangulation: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+) -> Vec<f64> {
+    let mut areas = vec![0.0; triangulation.num_all_faces()];
+    for face in triangulation.inner_faces() {
+        let positions = face.vertices().map(|vertex| vertex.position());
+        let area = 0.5
+            * ((positions[1].x - positions[0].x) * (positions[2].y - positions[0].y)
+                - (positions[1].y - positions[0].y) * (positions[2].x - positions[0].x))
+                .abs();
+        areas[face.fix().index()] = area;
+    }
+    areas
+}
+
+/// Repairs pinches in a kept-face set: a vertex whose incident faces
+/// alternate kept/dropped more than twice stacks four or more wall quads on
+/// one vertical edge. Ring coordinates are rounded, so two rings can cross
+/// by a sliver, which drops a conflicting constraint and lets the
+/// classification leak into (or out of) a tiny pocket. Flipping the
+/// smallest alternating fan at each pinched vertex — sweeping until stable —
+/// dissolves those pockets while never touching more than sliver-scale area.
+/// `allow_fill` controls whether dropped fans may flip to kept. Road shells
+/// allow it (a dropped pocket strictly inside the ring is always road).
+/// Building components must not: their triangulation spans neighboring
+/// components' footprints too, and filling would grow the shell into a
+/// neighbor's area — shedding the smaller kept fan resolves the pinch
+/// instead.
+fn repair_classification_pinches(
+    triangulation: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+    inside: &mut [bool],
+    allow_fill: bool,
+) {
+    let outer = triangulation.outer_face().fix().index();
+    let areas = triangulation_face_areas(triangulation);
+    for _sweep in 0..8 {
+        let mut changed = false;
+        for vertex in triangulation.vertices() {
+            let faces = vertex
+                .out_edges()
+                .map(|edge| edge.face().fix().index())
+                .collect::<Vec<_>>();
+            if faces.len() < 4 {
+                continue;
+            }
+            let transitions = (0..faces.len())
+                .filter(|index| inside[faces[*index]] != inside[faces[(index + 1) % faces.len()]])
+                .count();
+            if transitions <= 2 {
+                continue;
+            }
+            // Cyclic runs of equal classification; flip the smallest one
+            // that does not contain the outer face.
+            let start = (0..faces.len())
+                .find(|index| {
+                    inside[faces[(index + faces.len() - 1) % faces.len()]] != inside[faces[*index]]
+                })
+                .unwrap_or(0);
+            let mut runs: Vec<(f64, bool, Vec<usize>)> = Vec::new();
+            for offset in 0..faces.len() {
+                let face = faces[(start + offset) % faces.len()];
+                match runs.last_mut() {
+                    Some((area, kept, members)) if *kept == inside[face] => {
+                        *area += areas[face];
+                        members.push(face);
+                    }
+                    _ => runs.push((areas[face], inside[face], vec![face])),
+                }
+            }
+            let smallest = runs
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, kept, members))| {
+                    (allow_fill || *kept) && !members.contains(&outer)
+                })
+                .min_by(|(_, (left, ..)), (_, (right, ..))| left.total_cmp(right));
+            if let Some((_, (_, _, members))) = smallest {
+                for face in members {
+                    inside[*face] = !inside[*face];
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Classifies every triangulation face as inside or outside the footprint
+/// whose closed rings were loaded as constraints, by walking the face
+/// adjacency graph from the outer face and flipping sides at every
+/// constraint edge. Unlike a point-in-polygon test on face centroids, this
+/// cannot misclassify the near-degenerate slivers a snapped, densified
+/// boundary produces — misclassified slivers notch the kept set and leave
+/// pinched, non-manifold wall verticals.
+fn interior_faces_by_parity(
+    triangulation: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+) -> Vec<bool> {
+    let face_count = triangulation.num_all_faces();
+    let mut adjacency: Vec<Vec<(u32, bool)>> = vec![Vec::new(); face_count];
+    for edge in triangulation.undirected_edges() {
+        let constraint = edge.is_constraint_edge();
+        let directed = edge.as_directed();
+        let left = directed.face().fix().index();
+        let right = directed.rev().face().fix().index();
+        adjacency[left].push((right as u32, constraint));
+        adjacency[right].push((left as u32, constraint));
+    }
+    let mut inside = vec![false; face_count];
+    let mut visited = vec![false; face_count];
+    let outer = triangulation.outer_face().fix().index();
+    visited[outer] = true;
+    let mut queue = std::collections::VecDeque::from([outer]);
+    while let Some(face) = queue.pop_front() {
+        for &(neighbor, constraint) in &adjacency[face] {
+            let neighbor = neighbor as usize;
+            if visited[neighbor] {
+                continue;
+            }
+            visited[neighbor] = true;
+            inside[neighbor] = inside[face] != constraint;
+            queue.push_back(neighbor);
+        }
+    }
+    inside
+}
+
 fn densify_closed_ring(points: &[[f32; 2]], maximum_step: f32) -> Vec<[f32; 2]> {
     let mut dense = Vec::new();
     for (start, end) in points.iter().zip(points.iter().cycle().skip(1)) {
@@ -1339,7 +2061,12 @@ fn open_ring_points(ring: &LineString<f64>) -> Vec<[f32; 2]> {
     let mut points = ring
         .0
         .iter()
-        .map(|point| [point.x as f32, point.y as f32])
+        .map(|point| {
+            [
+                quantize_export_coordinate(point.x as f32),
+                quantize_export_coordinate(point.y as f32),
+            ]
+        })
         .collect::<Vec<_>>();
     if points.len() > 1 && distance_squared(points[0], *points.last().unwrap()) < 0.000_000_01 {
         points.pop();

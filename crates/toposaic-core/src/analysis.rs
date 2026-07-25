@@ -360,6 +360,16 @@ fn analyze_view(mesh: &Mesh, view_name: &str, vertex_map: &[u32]) -> ViewReport 
                 };
                 if defective_set.contains_key(&ordered) {
                     attribute(&mut report.defect_features, *triangle_index);
+                    if std::env::var_os("TOPOSAIC_DEBUG_EDGES").is_some() {
+                        eprintln!(
+                            "[{}] edge {:?}-{:?}: triangle {triangle_index} {:?}",
+                            view_name,
+                            mesh.vertices[ordered.0 as usize],
+                            mesh.vertices[ordered.1 as usize],
+                            mesh.triangles[*triangle_index]
+                                .map(|index| mesh.vertices[index as usize]),
+                        );
+                    }
                     edge_incident_features
                         .entry(ordered)
                         .or_default()
