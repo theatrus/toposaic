@@ -112,7 +112,8 @@ pub(crate) fn build_preview(
         // preview.json stays byte-identical for every existing project.
         if spec.uses_trails() {
             preview["surface_palette"]["trail"] = serde_json::json!(spec.color_output.trail_color);
-            preview["surface_coverage"]["trail"] = serde_json::json!(coverage[6]);
+            preview["surface_coverage"]["trail"] =
+                serde_json::json!(coverage[SurfaceClass::Trail.material_index() as usize]);
         }
         preview["surface_source"] = serde_json::json!(field.source);
     }

@@ -764,7 +764,7 @@ impl SurfaceField {
             let class = original[start];
             let mut queue = VecDeque::from([start]);
             let mut component = Vec::new();
-            let mut neighbours = [0_usize; 7];
+            let mut neighbours = [0_usize; SurfaceClass::ALL.len()];
             visited[start] = true;
             while let Some(index) = queue.pop_front() {
                 component.push(index);
@@ -961,11 +961,11 @@ impl SurfaceField {
             .fold(0.0, f32::max)
     }
 
-    pub(crate) fn coverage(&self) -> [f32; 7] {
+    pub(crate) fn coverage(&self) -> [f32; SurfaceClass::ALL.len()] {
         let counts = (0..self.classes.len())
             .into_par_iter()
             .fold(
-                || [0_usize; 7],
+                || [0_usize; SurfaceClass::ALL.len()],
                 |mut counts, index| {
                     let x = index % self.width;
                     let y = index / self.width;
@@ -976,7 +976,7 @@ impl SurfaceField {
                 },
             )
             .reduce(
-                || [0_usize; 7],
+                || [0_usize; SurfaceClass::ALL.len()],
                 |mut total, counts| {
                     for (total, count) in total.iter_mut().zip(counts) {
                         *total += count;

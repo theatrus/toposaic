@@ -84,6 +84,10 @@ const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
 // is only ever emitted for the Trail material, which only specs with
 // imported trails produce.
 const ORCA_PAINT_CODES: [&str; 7] = ["4", "8", "0C", "1C", "2C", "3C", "4C"];
+const _: () = assert!(
+    ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
+    "every surface class needs a face-paint code"
+);
 
 impl<'a> ThreeMfWriter<'a> {
     pub(crate) fn new(spec: &'a GenerationSpec, path: &Path) -> Result<Self> {

@@ -183,7 +183,7 @@ impl GenerationSpec {
         self.buildings.validate()?;
         self.color_output.validate()?;
         if self.trails.len() > MAX_TRAILS {
-            bail!("at most {MAX_TRAILS} imported trails are supported");
+            bail!("imported trail count must be at most {MAX_TRAILS}");
         }
         for trail in &self.trails {
             trail.validate()?;
@@ -344,10 +344,10 @@ impl TrailRoute {
             bail!("trail names cannot contain control characters");
         }
         if self.points.len() < 2 {
-            bail!("trails need at least 2 points");
+            bail!("trail point counts must be between 2 and {MAX_TRAIL_POINTS}");
         }
         if self.points.len() > MAX_TRAIL_POINTS {
-            bail!("trails are capped at {MAX_TRAIL_POINTS} points");
+            bail!("trail point counts must be between 2 and {MAX_TRAIL_POINTS}");
         }
         for point in &self.points {
             let [latitude, longitude] = *point;
@@ -933,7 +933,7 @@ mod tests {
 
         spec.trails[0].points = vec![[46.85, -121.76]];
         let error = spec.validate().unwrap_err().to_string();
-        assert!(error.contains("at least 2 points"));
+        assert!(error.contains("must be between 2 and"));
 
         spec.trails[0].points = vec![[91.0, 0.0], [0.0, 0.0]];
         let error = spec.validate().unwrap_err().to_string();
@@ -949,11 +949,11 @@ mod tests {
 
         spec.trails[0].points = vec![[0.0, 0.0]; 20_001];
         let error = spec.validate().unwrap_err().to_string();
-        assert!(error.contains("capped at 20000 points"));
+        assert!(error.contains("must be between 2 and 20000"));
 
         spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]]); 21];
         let error = spec.validate().unwrap_err().to_string();
-        assert!(error.contains("at most 20 imported trails"));
+        assert!(error.contains("must be at most 20"));
 
         spec.trails.truncate(20);
         assert!(spec.validate().is_ok());

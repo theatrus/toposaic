@@ -58,7 +58,7 @@ and floating or supported bridges in place.*
 
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. Bambu Studio and
-OrcaSlicer load the six palette colors as filament assignments.*
+OrcaSlicer load the palette colors as filament assignments.*
 
 ## Version 0.3 highlights
 
