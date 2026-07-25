@@ -1,5 +1,4 @@
 use std::{
-    env,
     ffi::OsStr,
     fs,
     fs::OpenOptions,
@@ -11,13 +10,15 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use uuid::Uuid;
 
+use crate::settings;
+
 pub fn root() -> Result<PathBuf> {
-    if let Some(value) = env::var_os("TERRAIN_CACHE_DIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(value));
+    if let Some(path) = settings::cache_dir_override() {
+        return Ok(path);
     }
     ProjectDirs::from("com", "theatrus", "toposaic")
         .map(|directories| directories.cache_dir().to_path_buf())
-        .context("find the OS cache directory; set TERRAIN_CACHE_DIR to choose one")
+        .context("find the OS cache directory; set TOPOSAIC_CACHE_DIR to choose one")
 }
 
 pub fn store(path: &Path, bytes: &[u8]) -> Result<()> {

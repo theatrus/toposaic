@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import {
   previewInitialCameraPosition,
   previewWorldX,
-} from "../../app/preview-orientation";
-import { isVersionNewer } from "../../app/versioning";
+} from "../../app/terrain/preview-orientation";
+import { isVersionNewer } from "../../app/updates/version";
 
 const appVersion = JSON.parse(
   readFileSync(

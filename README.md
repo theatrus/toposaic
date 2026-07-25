@@ -170,7 +170,7 @@ color beneath each footprint.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
-are limited to one per second. Set `NOMINATIM_BASE_URL` to use another
+are limited to one per second. Set `TOPOSAIC_GEOCODER_URL` to use another
 compatible service. Review the
 [public service policy](https://operations.osmfoundation.org/policies/nominatim/)
 before wider or commercial use.
@@ -266,7 +266,7 @@ WebView2 bootstrapper only when the system does not already have WebView2.
 ## Storage
 
 SQLite and generated jobs live under `data/`, which Git ignores. Set
-`TERRAIN_DATA_DIR` to use another directory.
+`TOPOSAIC_DATA_DIR` to use another directory.
 
 Downloaded map inputs use the standard per-user cache path:
 
@@ -274,12 +274,15 @@ Downloaded map inputs use the standard per-user cache path:
 - Linux: `$XDG_CACHE_HOME/toposaic` or `~/.cache/toposaic`
 - Windows: `%LOCALAPPDATA%\theatrus\toposaic\cache`
 
-Set `TERRAIN_CACHE_DIR` to override that path. The cache keeps Mapzen elevation
+Set `TOPOSAIC_CACHE_DIR` to override that path. The cache keeps Mapzen elevation
 PNGs, Mapterhorn elevation WebPs, full ESA WorldCover GeoTIFF tiles, and
 OpenStreetMap route responses. Writes use a temporary file and an atomic rename,
 so a stopped download does not leave a valid-looking partial tile.
 
-The browser uses `NEXT_PUBLIC_TERRAIN_API_URL` when set. See `.env.example`.
+The browser uses `NEXT_PUBLIC_TOPOSAIC_API_URL` when set. See `.env.example`.
+The old `TERRAIN_*` names still work, so existing setups do not break.
+The local API accepts the TopoSaic site, the desktop app, and loopback browser
+origins. Set `TOPOSAIC_ALLOWED_ORIGINS` to add other trusted browser origins.
 
 ## Check
 
@@ -296,8 +299,9 @@ npm run test:ui
   binary STL, and standards-based 3MF
 - `apps/api`: global elevation provider, Axum API, SQLite jobs, background
   generation, ESA WorldCover sampling, and downloads
-- `app`: shared map, 3D relief preview, print controls, and job downloads
-- `app/terrain`: React-side terrain contracts, defaults, and quality rules
+- `app/terrain`: shared studio, map, 3D preview, downloads, API client,
+  contracts, and quality rules
+- `app/updates`: release notices, version checks, and desktop updates
 - `desktop` and `src-tauri`: shared React entry point and native Tauri shell
 
 See [the architecture guide](docs/architecture.md) for dependency and folder

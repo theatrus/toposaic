@@ -11,15 +11,13 @@ import {
 } from "react";
 
 import type { GenerationSpec } from "./contracts";
+import { MAX_GROUND_SPAN_KM, MIN_GROUND_SPAN_KM } from "./config";
 import { superTileCenter } from "./geo";
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
 const MIN_MAP_ZOOM = 2;
 const MAX_MAP_ZOOM = 17;
-const MIN_GROUND_SPAN_KM = 0.25;
-const MAX_GROUND_SPAN_KM = 80;
-
 function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
   const clampedLatitude = Math.max(

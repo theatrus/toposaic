@@ -1,5 +1,5 @@
-import tauriConfig from "../src-tauri/tauri.conf.json";
-import { isVersionNewer } from "./versioning";
+import tauriConfig from "../../src-tauri/tauri.conf.json";
+import { isVersionNewer } from "./version";
 
 export const APP_VERSION = tauriConfig.version;
 export const GITHUB_RELEASE_API_URL =

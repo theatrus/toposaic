@@ -11,43 +11,41 @@ import {
   useRef,
   useState,
 } from "react";
-import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import {
-  previewInitialCameraPosition,
-  previewWorldX,
-} from "./preview-orientation";
 import {
   APP_VERSION,
   RELEASES_URL,
   type AvailableUpdate,
   fetchAvailableUpdate,
   signedUpdateFallback,
-} from "./releases";
+} from "../updates/releases";
 import {
   checkSignedUpdateVersion,
   downloadAndInstallSignedUpdate,
-} from "./desktop-updater";
+} from "../updates/desktop";
+import { IS_TAURI, terrainApi } from "./api";
 import {
   FINE_DEM_MAX_SPAN_KM,
+  MAX_ASSEMBLED_SAMPLES,
+  MAX_SUPER_TILE_SIDE,
   MESH_QUALITY_OPTIONS,
   assembledMeshSamples,
   automaticRoadDetail,
-  effectiveMeshSamples,
   formatGroundSpacing,
   groundMeshSpacing,
   initialSpec,
-} from "./terrain/config";
+} from "./config";
 import type {
   ArtifactFeedback,
   GenerationSpec,
   Job,
   PlaceResult,
   PreviewData,
-} from "./terrain/contracts";
-import { adjacentCenter } from "./terrain/geo";
-import { TerrainMap } from "./terrain/map";
-import { displayVersion, isVersionNewer } from "./versioning";
+} from "./contracts";
+import { adjacentCenter } from "./geo";
+import { ArtifactDownloads } from "./downloads";
+import { TerrainMap } from "./map";
+import { ReliefPreview } from "./preview";
+import { displayVersion, isVersionNewer } from "../updates/version";
 
 const DEFAULT_VISUAL_HEIGHT_PERCENT = 37;
 const MIN_VISUAL_HEIGHT_PERCENT = 28;
@@ -55,779 +53,14 @@ const MAX_VISUAL_HEIGHT_PERCENT = 76;
 const VISUAL_HEIGHT_KEYBOARD_STEP = 4;
 const WORKSPACE_RESIZER_HEIGHT_PX = 14;
 
-const IS_TAURI =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-const API_URL =
-  IS_TAURI
-    ? "http://127.0.0.1:38787"
-    : ((typeof process !== "undefined"
-        ? process.env.NEXT_PUBLIC_TERRAIN_API_URL
-        : undefined) ?? "http://127.0.0.1:8787");
-
-const ADJACENT_GRID_SIZES = Array.from({ length: 12 }, (_, index) => index + 1);
+const ADJACENT_GRID_SIZES = Array.from(
+  { length: MAX_SUPER_TILE_SIDE },
+  (_, index) => index + 1,
+);
 
 function oddSuperTileSize(value: number) {
   if (value % 2 === 1) return value;
-  return value >= 12 ? 11 : value + 1;
-}
-
-function cubicBezier(
-  start: [number, number],
-  controlA: [number, number],
-  controlB: [number, number],
-  end: [number, number],
-  t: number,
-) {
-  const inverse = 1 - t;
-  const weights = [
-    inverse ** 3,
-    3 * inverse ** 2 * t,
-    3 * inverse * t ** 2,
-    t ** 3,
-  ];
-  return {
-    along:
-      start[0] * weights[0] +
-      controlA[0] * weights[1] +
-      controlB[0] * weights[2] +
-      end[0] * weights[3],
-    offset:
-      start[1] * weights[0] +
-      controlA[1] * weights[1] +
-      controlB[1] * weights[2] +
-      end[1] * weights[3],
-  };
-}
-
-type EdgePattern = {
-  center: number;
-  radiusAlong: number;
-  depthScale: number;
-  skew: number;
-};
-
-function edgeNoise(seed: bigint, lane: bigint) {
-  let value = BigInt.asUintN(
-    64,
-    seed ^ BigInt.asUintN(64, lane * 0xd6e8feb86659fd93n),
-  );
-  value ^= value >> 30n;
-  value = BigInt.asUintN(64, value * 0xbf58476d1ce4e5b9n);
-  value ^= value >> 27n;
-  value = BigInt.asUintN(64, value * 0x94d049bb133111ebn);
-  value ^= value >> 31n;
-  return Number(value >> 40n) / 16777215;
-}
-
-function sharedEdgePattern(
-  orientation: number,
-  line: number,
-  segment: number,
-): EdgePattern {
-  const seed =
-    BigInt.asUintN(64, BigInt(orientation) * 0x9e3779b97f4a7c15n) ^
-    BigInt.asUintN(64, BigInt(line) * 0xbf58476d1ce4e5b9n) ^
-    BigInt.asUintN(64, BigInt(segment) * 0x94d049bb133111ebn);
-  return {
-    center: 0.43 + edgeNoise(seed, 2n) * 0.14,
-    radiusAlong: 0.11 + edgeNoise(seed, 3n) * 0.035,
-    depthScale: 0.88 + edgeNoise(seed, 4n) * 0.24,
-    skew: (edgeNoise(seed, 5n) - 0.5) * 0.05,
-  };
-}
-
-function puzzleGridPoint(spec: GenerationSpec, row: number, column: number) {
-  const pieceWidth = spec.width_mm / spec.columns;
-  const pieceHeight = (spec.width_mm * spec.rows) / spec.columns / spec.rows;
-  if (spec.straight_piece_sides) {
-    return {
-      x: column === spec.columns ? spec.width_mm : column * pieceWidth,
-      y:
-        row === spec.rows
-          ? (spec.width_mm * spec.rows) / spec.columns
-          : row * pieceHeight,
-    };
-  }
-  const seed = (BigInt(row) << 32n) | BigInt(column);
-  const x =
-    column === 0
-      ? 0
-      : column === spec.columns
-        ? spec.width_mm
-        : column * pieceWidth +
-          (edgeNoise(seed, 0n) - 0.5) * pieceWidth * 0.18;
-  const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
-  const y =
-    row === 0
-      ? 0
-      : row === spec.rows
-        ? modelHeight
-        : row * pieceHeight +
-          (edgeNoise(seed, 1n) - 0.5) * pieceHeight * 0.18;
-  return { x, y };
-}
-
-function edgeSign(
-  orientation: number,
-  segment: number,
-  line: number,
-  lineCount: number,
-) {
-  if (line === 0 || line === lineCount) return 0;
-  const seed =
-    BigInt.asUintN(64, BigInt(orientation) * 0xa24baed4963ee407n) ^
-    BigInt.asUintN(64, BigInt(line) * 0x9fb21c651e98df25n) ^
-    BigInt.asUintN(64, BigInt(segment) * 0xc13fa9a902a6328fn);
-  return edgeNoise(seed, 7n) < 0.5 ? -1 : 1;
-}
-
-function jigsawEdge(t: number, pattern: EdgePattern) {
-  const radius = pattern.radiusAlong;
-  const neck = radius * 0.46;
-  const shoulderStart = pattern.center - radius - 0.085;
-  const shoulderEnd = pattern.center + radius + 0.085;
-  const neckLeft: [number, number] = [pattern.center - neck, 0.18];
-  const neckRight: [number, number] = [pattern.center + neck, 0.18];
-  const headLeft: [number, number] = [pattern.center - radius, 0.58];
-  const headRight: [number, number] = [pattern.center + radius, 0.58];
-  const quarterCircle = 0.5522848;
-  let point;
-  if (t < 0.26) {
-    point = { along: (t / 0.26) * shoulderStart, offset: 0 };
-  } else if (t < 0.34) {
-    point = cubicBezier(
-      [shoulderStart, 0],
-      [shoulderStart + 0.045, -0.01],
-      [neckLeft[0] - 0.025, 0.04],
-      neckLeft,
-      (t - 0.26) / 0.08,
-    );
-  } else if (t < 0.42) {
-    point = cubicBezier(
-      neckLeft,
-      [neckLeft[0] + 0.012, 0.34],
-      [headLeft[0], 0.45],
-      headLeft,
-      (t - 0.34) / 0.08,
-    );
-  } else if (t < 0.5) {
-    point = cubicBezier(
-      headLeft,
-      [
-        headLeft[0],
-        headLeft[1] + (1 - headLeft[1]) * quarterCircle,
-      ],
-      [pattern.center - radius * quarterCircle, 1],
-      [pattern.center, 1],
-      (t - 0.42) / 0.08,
-    );
-  } else if (t < 0.58) {
-    point = cubicBezier(
-      [pattern.center, 1],
-      [pattern.center + radius * quarterCircle, 1],
-      [
-        headRight[0],
-        headRight[1] + (1 - headRight[1]) * quarterCircle,
-      ],
-      headRight,
-      (t - 0.5) / 0.08,
-    );
-  } else if (t < 0.66) {
-    point = cubicBezier(
-      headRight,
-      [headRight[0], 0.45],
-      [neckRight[0] - 0.012, 0.34],
-      neckRight,
-      (t - 0.58) / 0.08,
-    );
-  } else if (t < 0.74) {
-    point = cubicBezier(
-      neckRight,
-      [neckRight[0] + 0.025, 0.04],
-      [shoulderEnd - 0.045, -0.01],
-      [shoulderEnd, 0],
-      (t - 0.66) / 0.08,
-    );
-  } else {
-    point = {
-      along: shoulderEnd + ((t - 0.74) / 0.26) * (1 - shoulderEnd),
-      offset: 0,
-    };
-  }
-  return {
-    along: point.along + pattern.skew * point.offset,
-    offset: point.offset,
-  };
-}
-
-function puzzleEdgePoint(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  pattern: EdgePattern,
-  sign: number,
-  t: number,
-  baseDepth: number,
-) {
-  const deltaX = end.x - start.x;
-  const deltaY = end.y - start.y;
-  const length = Math.max(Number.EPSILON, Math.hypot(deltaX, deltaY));
-  const edge = sign === 0 ? { along: t, offset: 0 } : jigsawEdge(t, pattern);
-  const depth = baseDepth * pattern.depthScale;
-  return {
-    x:
-      start.x +
-      deltaX * edge.along -
-      (deltaY / length) * sign * depth * edge.offset,
-    y:
-      start.y +
-      deltaY * edge.along +
-      (deltaX / length) * sign * depth * edge.offset,
-  };
-}
-
-function ReliefPreview({
-  spec,
-  preview,
-  previewState,
-}: {
-  spec: GenerationSpec;
-  preview: PreviewData | null;
-  previewState: "shape" | "loading" | "elevation" | "generated";
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const renderErrorRef = useRef<HTMLParagraphElement>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
-  const viewRef = useRef<{
-    position: [number, number, number];
-    target: [number, number, number];
-  } | null>(null);
-  const resetViewRef = useRef(false);
-  const [resetViewKey, setResetViewKey] = useState(0);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    if (renderErrorRef.current) renderErrorRef.current.hidden = true;
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({
-        canvas,
-        antialias: true,
-        alpha: true,
-        powerPreference: "high-performance",
-      });
-    } catch {
-      if (renderErrorRef.current) renderErrorRef.current.hidden = false;
-      return;
-    }
-
-    const scene = new THREE.Scene();
-    const sampleWidth = preview?.width ?? 32;
-    const sampleHeight = preview?.height ?? sampleWidth;
-    const heightScale = spec.relief_mm / spec.width_mm;
-    const baseDepth = spec.base_mm / spec.width_mm;
-    canvas.dataset.heightScale = heightScale.toFixed(4);
-    canvas.dataset.baseScale = baseDepth.toFixed(4);
-    const seedA = Math.sin((spec.center_lat * Math.PI) / 180) * 1.7;
-    const seedB = Math.cos((spec.center_lon * Math.PI) / 180) * 1.3;
-    const heightValues = Array.from(
-      { length: sampleWidth * sampleHeight },
-      (_, index) => {
-        const x = index % sampleWidth;
-        const y = Math.floor(index / sampleWidth);
-        const u = x / Math.max(1, sampleWidth - 1);
-        const v = y / Math.max(1, sampleHeight - 1);
-        return (
-          preview?.values[index] ??
-          (() => {
-            const ridge =
-              Math.sin((u * 9.2 + seedA) * 1.2) * 0.19 +
-              Math.cos((v * 7.1 - seedB) * 1.4) * 0.14;
-            const folds =
-              Math.abs(Math.sin((u * 3.8 + v * 5.6 + seedB) * Math.PI)) *
-              0.17;
-            const dx = u - (0.54 + seedB * 0.05);
-            const dy = v - (0.48 + seedA * 0.05);
-            const peak = Math.exp(-(dx * dx * 5.5 + dy * dy * 7)) * 0.63;
-            return Math.max(0.03, Math.min(1, 0.12 + ridge + folds + peak));
-          })()
-        );
-      },
-    );
-
-    const heightAt = (u: number, v: number) => {
-      const sampleX = Math.max(
-        0,
-        Math.min(sampleWidth - 1, u * (sampleWidth - 1)),
-      );
-      const sampleY = Math.max(
-        0,
-        Math.min(sampleHeight - 1, v * (sampleHeight - 1)),
-      );
-      const x0 = Math.floor(sampleX);
-      const y0 = Math.floor(sampleY);
-      const x1 = Math.min(sampleWidth - 1, x0 + 1);
-      const y1 = Math.min(sampleHeight - 1, y0 + 1);
-      const tx = sampleX - x0;
-      const ty = sampleY - y0;
-      const bottom =
-        heightValues[y0 * sampleWidth + x0] * (1 - tx) +
-        heightValues[y0 * sampleWidth + x1] * tx;
-      const top =
-        heightValues[y1 * sampleWidth + x0] * (1 - tx) +
-        heightValues[y1 * sampleWidth + x1] * tx;
-      return bottom * (1 - ty) + top * ty;
-    };
-
-    const palette = {
-      rock:
-        preview?.surface_palette?.rock ?? spec.color_output.rock_color,
-      forest:
-        preview?.surface_palette?.forest ?? spec.color_output.forest_color,
-      snow:
-        preview?.surface_palette?.snow ?? spec.color_output.snow_color,
-      water:
-        preview?.surface_palette?.water ?? spec.color_output.water_color,
-      road:
-        preview?.surface_palette?.road ?? spec.color_output.road_color,
-      building:
-        preview?.surface_palette?.building ?? spec.color_output.building_color,
-    };
-    const classColor = (surfaceClass?: number) =>
-      surfaceClass === 1
-        ? palette.forest
-        : surfaceClass === 2
-          ? palette.snow
-          : surfaceClass === 3
-            ? palette.water
-            : surfaceClass === 4
-              ? palette.road
-              : surfaceClass === 5
-                ? palette.building
-                : spec.color_output.enabled
-                  ? palette.rock
-                  : "#74846B";
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const normals: number[] = [];
-    const normalAt = (x: number, y: number) => {
-      const left = Math.max(0, x - 1);
-      const right = Math.min(sampleWidth - 1, x + 1);
-      const down = Math.max(0, y - 1);
-      const up = Math.min(sampleHeight - 1, y + 1);
-      const spanX = Math.max(1, right - left) / Math.max(1, sampleWidth - 1);
-      const spanY = Math.max(1, up - down) / Math.max(1, sampleHeight - 1);
-      const slopeX =
-        ((heightValues[y * sampleWidth + right] -
-          heightValues[y * sampleWidth + left]) *
-          heightScale) /
-        spanX;
-      const slopeY =
-        ((heightValues[up * sampleWidth + x] -
-          heightValues[down * sampleWidth + x]) *
-          heightScale) /
-        spanY;
-      return new THREE.Vector3(-slopeX, 1, -slopeY).normalize();
-    };
-    const addVertex = (
-      x: number,
-      y: number,
-      color: THREE.Color,
-    ) => {
-      const u = x / Math.max(1, sampleWidth - 1);
-      const v = y / Math.max(1, sampleHeight - 1);
-      positions.push(
-        previewWorldX(u),
-        heightValues[y * sampleWidth + x] * heightScale,
-        v - 0.5,
-      );
-      colors.push(color.r, color.g, color.b);
-      const normal = normalAt(x, y);
-      normals.push(-normal.x, normal.y, normal.z);
-    };
-    for (let y = 0; y < sampleHeight - 1; y += 1) {
-      for (let x = 0; x < sampleWidth - 1; x += 1) {
-        const surfaceClass =
-          spec.color_output.enabled || spec.buildings.enabled
-          ? preview?.surface_classes?.[y * sampleWidth + x]
-          : undefined;
-        const color = new THREE.Color(classColor(surfaceClass));
-        addVertex(x, y, color);
-        addVertex(x + 1, y, color);
-        addVertex(x, y + 1, color);
-        addVertex(x + 1, y, color);
-        addVertex(x + 1, y + 1, color);
-        addVertex(x, y + 1, color);
-      }
-    }
-
-    const terrainGeometry = new THREE.BufferGeometry();
-    terrainGeometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(positions, 3),
-    );
-    terrainGeometry.setAttribute(
-      "color",
-      new THREE.Float32BufferAttribute(colors, 3),
-    );
-    terrainGeometry.setAttribute(
-      "normal",
-      new THREE.Float32BufferAttribute(normals, 3),
-    );
-    const terrainMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      metalness: 0,
-      roughness: 0.86,
-      side: THREE.DoubleSide,
-      vertexColors: true,
-    });
-    const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
-    scene.add(terrainMesh);
-
-    const baseGeometry = new THREE.BoxGeometry(1, baseDepth, 1);
-    const baseMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(palette.rock).multiplyScalar(0.68),
-      metalness: 0,
-      roughness: 0.92,
-    });
-    const baseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
-    baseMesh.position.y = -baseDepth / 2;
-    scene.add(baseMesh);
-
-    const lineMaterial = new THREE.LineBasicMaterial({
-      color: 0x14201d,
-      opacity: 0.72,
-      transparent: true,
-    });
-    const pointOnTerrain = (u: number, v: number) =>
-      new THREE.Vector3(
-        previewWorldX(u),
-        heightAt(u, v) * heightScale + 0.0025,
-        v - 0.5,
-      );
-    const perimeter = [
-      ...Array.from({ length: sampleWidth }, (_, x) =>
-        pointOnTerrain(x / Math.max(1, sampleWidth - 1), 0),
-      ),
-      ...Array.from({ length: sampleHeight - 1 }, (_, y) =>
-        pointOnTerrain(1, (y + 1) / Math.max(1, sampleHeight - 1)),
-      ),
-      ...Array.from({ length: sampleWidth - 1 }, (_, x) =>
-        pointOnTerrain(
-          (sampleWidth - 2 - x) / Math.max(1, sampleWidth - 1),
-          1,
-        ),
-      ),
-      ...Array.from({ length: sampleHeight - 2 }, (_, y) =>
-        pointOnTerrain(
-          0,
-          (sampleHeight - 2 - y) / Math.max(1, sampleHeight - 1),
-        ),
-      ),
-    ];
-    perimeter.push(perimeter[0].clone());
-    scene.add(
-      new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(perimeter),
-        lineMaterial,
-      ),
-    );
-
-    const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
-    const puzzleTabDepth =
-      Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.17;
-    if (!spec.solid_model) {
-      for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
-        for (let row = 0; row < spec.rows; row += 1) {
-          const start = puzzleGridPoint(spec, row, edgeColumn);
-          const end = puzzleGridPoint(spec, row + 1, edgeColumn);
-          const pattern = sharedEdgePattern(1, edgeColumn, row);
-          const sign = spec.puzzle_tabs
-            ? edgeSign(1, row, edgeColumn, spec.columns)
-            : 0;
-          const points = [];
-          for (let step = 0; step <= 48; step += 1) {
-            const t = step / 48;
-            const edgePoint = puzzleEdgePoint(
-              start,
-              end,
-              pattern,
-              sign,
-              t,
-              puzzleTabDepth,
-            );
-            points.push(
-              pointOnTerrain(
-                edgePoint.x / spec.width_mm,
-                edgePoint.y / modelHeight,
-              ),
-            );
-          }
-          scene.add(
-            new THREE.Line(
-              new THREE.BufferGeometry().setFromPoints(points),
-              lineMaterial,
-            ),
-          );
-        }
-      }
-      for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
-        for (let column = 0; column < spec.columns; column += 1) {
-          const start = puzzleGridPoint(spec, edgeRow, column);
-          const end = puzzleGridPoint(spec, edgeRow, column + 1);
-          const pattern = sharedEdgePattern(0, edgeRow, column);
-          const sign = spec.puzzle_tabs
-            ? edgeSign(0, column, edgeRow, spec.rows)
-            : 0;
-          const points = [];
-          for (let step = 0; step <= 48; step += 1) {
-            const t = step / 48;
-            const edgePoint = puzzleEdgePoint(
-              start,
-              end,
-              pattern,
-              sign,
-              t,
-              puzzleTabDepth,
-            );
-            points.push(
-              pointOnTerrain(
-                edgePoint.x / spec.width_mm,
-                edgePoint.y / modelHeight,
-              ),
-            );
-          }
-          scene.add(
-            new THREE.Line(
-              new THREE.BufferGeometry().setFromPoints(points),
-              lineMaterial,
-            ),
-          );
-        }
-      }
-    }
-
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x39433c, 1.8));
-    const keyLight = new THREE.DirectionalLight(0xfff8df, 2.7);
-    keyLight.position.set(-1.4, 2.1, 1.5);
-    scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xb9d8ff, 0.8);
-    fillLight.position.set(1.3, 0.7, -1);
-    scene.add(fillLight);
-
-    const camera = new THREE.PerspectiveCamera(36, 1, 0.01, 20);
-    const cameraScale = Math.max(1, heightScale * 1.5);
-    const defaultTarget: [number, number, number] = [
-      0,
-      heightScale * 0.35,
-      0,
-    ];
-    const savedView = resetViewRef.current ? null : viewRef.current;
-    if (savedView) {
-      camera.position.fromArray(savedView.position);
-    } else {
-      camera.position.fromArray(
-        previewInitialCameraPosition(cameraScale, defaultTarget[1]),
-      );
-    }
-    const controls = new OrbitControls(camera, canvas);
-    controls.target.fromArray(savedView?.target ?? defaultTarget);
-    controls.enableDamping = false;
-    controls.enablePan = false;
-    controls.minDistance = 0.72;
-    controls.maxDistance = 3.1 * cameraScale;
-    controls.minPolarAngle = 0.12;
-    controls.maxPolarAngle = Math.PI / 2 - 0.025;
-    controls.rotateSpeed = 0.72;
-    controls.zoomSpeed = 0.85;
-    controls.zoomToCursor = true;
-    controls.update();
-    controlsRef.current = controls;
-    canvas.dataset.cameraMoved = savedView ? "true" : "false";
-    resetViewRef.current = false;
-    const initialPosition = camera.position.clone();
-    const initialTarget = controls.target.clone();
-
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
-
-    const render = () => renderer.render(scene, camera);
-    const resize = () => {
-      const width = Math.max(1, canvas.clientWidth);
-      const height = Math.max(1, canvas.clientHeight);
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-      render();
-    };
-    const onViewChange = () => {
-      const positionDelta =
-        camera.position.distanceToSquared(initialPosition);
-      const targetDelta = controls.target.distanceToSquared(initialTarget);
-      const cameraMoved = positionDelta > 1e-12 || targetDelta > 1e-12;
-      if (cameraMoved) {
-        canvas.dataset.cameraMoved = "true";
-        viewRef.current = {
-          position: camera.position.toArray(),
-          target: controls.target.toArray(),
-        };
-      }
-      render();
-    };
-    controls.addEventListener("change", onViewChange);
-    const observer = new ResizeObserver(resize);
-    observer.observe(canvas);
-    resize();
-
-    return () => {
-      if (!resetViewRef.current && canvas.dataset.cameraMoved === "true") {
-        viewRef.current = {
-          position: camera.position.toArray(),
-          target: controls.target.toArray(),
-        };
-      }
-      observer.disconnect();
-      controls.removeEventListener("change", onViewChange);
-      controls.dispose();
-      controlsRef.current = null;
-      scene.traverse((object) => {
-        if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
-          object.geometry.dispose();
-          const materials = Array.isArray(object.material)
-            ? object.material
-            : [object.material];
-          materials.forEach((material) => material.dispose());
-        }
-      });
-      renderer.dispose();
-    };
-  }, [preview, resetViewKey, spec]);
-
-  const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
-    const controls = controlsRef.current;
-    if (!controls) return;
-    switch (event.key) {
-      case "ArrowLeft":
-        controls.rotateLeft(Math.PI / 18);
-        break;
-      case "ArrowRight":
-        controls.rotateLeft(-Math.PI / 18);
-        break;
-      case "ArrowUp":
-        controls.rotateUp(Math.PI / 24);
-        break;
-      case "ArrowDown":
-        controls.rotateUp(-Math.PI / 24);
-        break;
-      case "+":
-      case "=":
-        controls.dollyIn(1.12);
-        break;
-      case "-":
-      case "_":
-        controls.dollyOut(1.12);
-        break;
-      default:
-        return;
-    }
-    event.preventDefault();
-    controls.update();
-  };
-
-  return (
-    <div className="relief-shell">
-      <canvas
-        ref={canvasRef}
-        className="relief-canvas"
-        aria-label="Interactive 3D terrain preview"
-        data-camera-moved="false"
-        data-puzzle-tabs={spec.puzzle_tabs}
-        data-straight-piece-sides={spec.straight_piece_sides}
-        onKeyDown={keyboardOrbit}
-        tabIndex={0}
-      />
-      <p ref={renderErrorRef} className="preview-render-error" hidden>
-        This system could not start the 3D preview.
-      </p>
-      <div className="preview-orbit-controls" aria-label="3D preview controls">
-        <span>Drag to rotate · Scroll or pinch to zoom</span>
-        <button
-          type="button"
-          onClick={() => {
-            resetViewRef.current = true;
-            viewRef.current = null;
-            setResetViewKey((current) => current + 1);
-          }}
-        >
-          Reset view
-        </button>
-      </div>
-      {(spec.color_output.enabled || spec.buildings.enabled) && (
-        <div className="color-legend" aria-label="Surface color legend">
-          {(
-            [
-              ["Forest", "forest", spec.color_output.forest_color],
-              ["Rock", "rock", spec.color_output.rock_color],
-              ["Snow", "snow", spec.color_output.snow_color],
-              ["Water", "water", spec.color_output.water_color],
-              ["Route", "road", spec.color_output.road_color],
-              ["Building", "building", spec.color_output.building_color],
-            ] as const
-          )
-            .filter(
-              ([, key]) => {
-                if (!spec.color_output.enabled) {
-                  return (
-                    key === "rock" ||
-                    (key === "building" && spec.buildings.enabled)
-                  );
-                }
-                return (
-                  (key !== "road" || spec.color_output.roads_enabled) &&
-                  (key !== "building" || spec.buildings.enabled)
-                );
-              },
-            )
-            .map(([label, key, color]) => (
-              <span key={key}>
-                <i
-                  style={{
-                    background: preview?.surface_palette?.[key] ?? color,
-                  }}
-                />
-                {label}
-                {preview?.surface_coverage && (
-                  <small>{preview.surface_coverage[key].toFixed(0)}%</small>
-                )}
-              </span>
-            ))}
-        </div>
-      )}
-      <div className={`preview-label ${previewState}`}>
-        <span>
-          {previewState === "generated"
-            ? "Generated terrain"
-            : previewState === "elevation"
-              ? "Live elevation preview"
-              : previewState === "loading"
-                ? "Sampling preview elevation"
-                : "Fast shape preview"}{" "}
-          ·{" "}
-          {spec.solid_model
-            ? `${effectiveMeshSamples(spec)} mesh samples`
-            : `${assembledMeshSamples(spec)} mesh samples across model`}
-        </span>
-        <strong>
-          {spec.solid_model
-            ? "One solid terrain model"
-            : `${spec.columns} × ${spec.rows} pieces`}
-        </strong>
-      </div>
-    </div>
-  );
+  return value >= MAX_SUPER_TILE_SIDE ? MAX_SUPER_TILE_SIDE - 1 : value + 1;
 }
 
 function RangeField({
@@ -1032,7 +265,8 @@ export function TerrainStudio() {
       ...current,
       mesh_samples_across: samples,
       overlay_samples_across: samples,
-      fine_dem_detail: samples === 2048 ? false : current.fine_dem_detail,
+      fine_dem_detail:
+        samples === MAX_ASSEMBLED_SAMPLES ? false : current.fine_dem_detail,
     }));
   }, []);
   const updateColor = useCallback(
@@ -1245,14 +479,9 @@ export function TerrainStudio() {
         tray: { ...initialSpec.tray, enabled: false },
       };
       try {
-        const response = await fetch(`${API_URL}/api/preview`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(previewSpec),
-          signal: controller.signal,
-        });
-        if (!response.ok) return;
-        setElevationPreview((await response.json()) as PreviewData);
+        setElevationPreview(
+          await terrainApi.preview(previewSpec, controller.signal),
+        );
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           setElevationPreview(null);
@@ -1292,14 +521,7 @@ export function TerrainStudio() {
     setSearchingPlaces(true);
     setPlaceMessage(null);
     try {
-      const response = await fetch(
-        `${API_URL}/api/places?q=${encodeURIComponent(query)}`,
-      );
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Place search failed");
-      }
-      const results = payload as PlaceResult[];
+      const results = await terrainApi.searchPlaces(query);
       setPlaceResults(results);
       if (results.length === 0) {
         setPlaceMessage("No matching places found.");
@@ -1327,16 +549,13 @@ export function TerrainStudio() {
     if (!job || !["queued", "running"].includes(job.status)) return;
     const timer = window.setInterval(async () => {
       try {
-        const response = await fetch(`${API_URL}/api/jobs/${job.id}`);
-        if (!response.ok) throw new Error("Could not read the job");
-        const nextJob = (await response.json()) as Job;
+        const nextJob = await terrainApi.getJob(job.id);
         setJob(nextJob);
         if (nextJob.status === "complete") {
-          const previewResponse = await fetch(
-            `${API_URL}/api/jobs/${nextJob.id}/downloads/preview.json`,
-          );
-          if (previewResponse.ok) {
-            setGeneratedPreview((await previewResponse.json()) as PreviewData);
+          try {
+            setGeneratedPreview(await terrainApi.generatedPreview(nextJob.id));
+          } catch {
+            setGeneratedPreview(null);
           }
         }
       } catch {
@@ -1354,16 +573,7 @@ export function TerrainStudio() {
     setArtifactFeedback(null);
     setGeneratedPreview(null);
     try {
-      const response = await fetch(`${API_URL}/api/jobs`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(spec),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Generation could not start");
-      }
-      setJob(payload as Job);
+      setJob(await terrainApi.createJob(spec));
       setActiveSection("output");
     } catch (error) {
       setActiveSection("output");
@@ -1386,14 +596,7 @@ export function TerrainStudio() {
 
     setCanceling(true);
     try {
-      const response = await fetch(`${API_URL}/api/jobs/${job.id}`, {
-        method: "DELETE",
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Generation could not be canceled");
-      }
-      setJob(payload as Job);
+      setJob(await terrainApi.cancelJob(job.id));
       setGeneratedPreview(null);
       setMessage("Generation canceled.");
     } catch (error) {
@@ -1464,13 +667,6 @@ export function TerrainStudio() {
   const noteWebDownload = (artifact: Artifact) => {
     setArtifactFeedback({ name: artifact.name, state: "sent" });
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
-  };
-
-  const artifactStatus = (artifact: Artifact, fallback: string) => {
-    if (artifactFeedback?.name !== artifact.name) return fallback;
-    if (artifactFeedback.state === "saving") return "Choosing & saving…";
-    if (artifactFeedback.state === "saved") return "Saved";
-    return "Sent to browser";
   };
 
   const statusLabel = useMemo(() => {
@@ -2036,7 +1232,7 @@ export function TerrainStudio() {
                   checked={spec.fine_dem_detail}
                   disabled={
                     spec.ground_span_km > FINE_DEM_MAX_SPAN_KM ||
-                    spec.mesh_samples_across === 2048
+                    spec.mesh_samples_across === MAX_ASSEMBLED_SAMPLES
                   }
                   onChange={(event) =>
                     update("fine_dem_detail", event.target.checked)
@@ -2044,7 +1240,7 @@ export function TerrainStudio() {
                 />
                 Use finest available DEM detail
                 <small>
-                  {spec.mesh_samples_across === 2048
+                  {spec.mesh_samples_across === MAX_ASSEMBLED_SAMPLES
                     ? "Ultra already uses the maximum 2,048-sample budget."
                     : spec.ground_span_km > FINE_DEM_MAX_SPAN_KM
                       ? "Zoom to 2 km or less to enable the fine-detail budget."
@@ -2120,7 +1316,7 @@ export function TerrainStudio() {
                   </button>
                 ))}
               </div>
-              {spec.mesh_samples_across === 2048 && (
+              {spec.mesh_samples_across === MAX_ASSEMBLED_SAMPLES && (
                 <p>
                   Ultra produces about four times as many surface triangles as
                   High and can make large 3MF files.
@@ -2816,81 +2012,13 @@ export function TerrainStudio() {
                 </div>
               )}
               {job?.status === "complete" && (
-                <div className="downloads">
-                  {job.artifacts
-                    .filter(
-                      (artifact) =>
-                        artifact.name.endsWith(".3mf") ||
-                        artifact.name === "manifest.json",
-                    )
-                    .map((artifact) =>
-                      IS_TAURI ? (
-                        <button
-                          key={artifact.name}
-                          type="button"
-                          disabled={artifactFeedback?.state === "saving"}
-                          onClick={() => void saveDesktopArtifact(artifact)}
-                        >
-                          <span>{artifact.name}</span>
-                          <small aria-live="polite">
-                            {artifactStatus(
-                              artifact,
-                              `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`,
-                            )}
-                          </small>
-                        </button>
-                      ) : (
-                        <a
-                          key={artifact.name}
-                          href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
-                          download={artifact.name}
-                          onClick={() => noteWebDownload(artifact)}
-                        >
-                          <span>{artifact.name}</span>
-                          <small aria-live="polite">
-                            {artifactStatus(
-                              artifact,
-                              `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`,
-                            )}
-                          </small>
-                        </a>
-                      ),
-                    )}
-                  <details>
-                    <summary>STL models</summary>
-                    <div>
-                      {job.artifacts
-                        .filter((artifact) => artifact.name.endsWith(".stl"))
-                        .map((artifact) =>
-                          IS_TAURI ? (
-                            <button
-                              key={artifact.name}
-                              type="button"
-                              disabled={artifactFeedback?.state === "saving"}
-                              onClick={() => void saveDesktopArtifact(artifact)}
-                            >
-                              <span>{artifact.name}</span>
-                              <small aria-live="polite">
-                                {artifactStatus(artifact, "Save STL")}
-                              </small>
-                            </button>
-                          ) : (
-                            <a
-                              key={artifact.name}
-                              href={`${API_URL}/api/jobs/${job.id}/downloads/${artifact.name}`}
-                              download={artifact.name}
-                              onClick={() => noteWebDownload(artifact)}
-                            >
-                              <span>{artifact.name}</span>
-                              <small aria-live="polite">
-                                {artifactStatus(artifact, "Download STL")}
-                              </small>
-                            </a>
-                          ),
-                        )}
-                    </div>
-                  </details>
-                </div>
+                <ArtifactDownloads
+                  feedback={artifactFeedback}
+                  isDesktop={IS_TAURI}
+                  job={job}
+                  onSave={(artifact) => void saveDesktopArtifact(artifact)}
+                  onWebDownload={noteWebDownload}
+                />
               )}
             </section>
           )}

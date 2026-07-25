@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env, fs,
+    fs,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
@@ -14,32 +14,35 @@ use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path as AxumPath, Query, State},
+    extract::{Path as AxumPath, State},
     http::{HeaderValue, StatusCode, header},
     response::Response,
     routing::get,
 };
 use chrono::{DateTime, Utc};
 use reqwest::Client;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use terrain_core::{
     Artifact, GenerationSpec, HeightField, SuperTileAnchor, artifact_path,
     generate_project_with_fields_cancellable, generate_tray_artifacts,
 };
-use tokio::{net::TcpListener, sync::Mutex as AsyncMutex, time::sleep};
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+use tokio::{net::TcpListener, sync::Mutex as AsyncMutex};
+use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
 mod cache;
+mod database;
 mod elevation;
 mod geo;
+mod geocoding;
 mod http;
+mod settings;
 mod surface;
+
+use database::{find_job, insert_job, mark_job_canceled, migrate, recent_jobs, update_job};
+use geocoding::search_places;
 
 #[derive(Clone)]
 struct AppState {
@@ -75,34 +78,8 @@ struct ApiError {
     error: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct PlaceSearch {
-    q: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PlaceResult {
-    display_name: String,
-    latitude: f64,
-    longitude: f64,
-    category: String,
-    kind: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct NominatimPlace {
-    display_name: String,
-    lat: String,
-    lon: String,
-    category: String,
-    #[serde(rename = "type")]
-    kind: String,
-}
-
 pub async fn run() -> Result<()> {
-    let data_dir = PathBuf::from(env::var("TERRAIN_DATA_DIR").unwrap_or_else(|_| "data".into()));
-    let address = env::var("TERRAIN_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
-    run_with(data_dir, address).await
+    run_with(settings::data_dir(), settings::bind_address()).await
 }
 
 pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
@@ -129,10 +106,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         jobs_dir: Arc::new(jobs_dir),
         map_cache_dir: Arc::new(map_cache_dir.clone()),
         geocoder,
-        geocoder_base_url: Arc::new(
-            env::var("NOMINATIM_BASE_URL")
-                .unwrap_or_else(|_| "https://nominatim.openstreetmap.org".into()),
-        ),
+        geocoder_base_url: Arc::new(settings::geocoder_base_url()),
         last_geocode_request: Arc::new(AsyncMutex::new(Instant::now() - Duration::from_secs(1))),
         active_jobs: Arc::new(StdMutex::new(HashMap::new())),
     };
@@ -144,12 +118,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .route("/api/jobs", get(list_jobs).post(create_job))
         .route("/api/jobs/{id}", get(get_job).delete(cancel_job))
         .route("/api/jobs/{id}/downloads/{name}", get(download))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(http::cors_layer(settings::allowed_origins()))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -164,163 +133,11 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     Ok(())
 }
 
-fn migrate(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
-        r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA foreign_keys = ON;
-        CREATE TABLE IF NOT EXISTS jobs (
-            id TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            progress INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            spec_json TEXT NOT NULL,
-            artifacts_json TEXT NOT NULL DEFAULT '[]',
-            error TEXT
-        );
-        CREATE INDEX IF NOT EXISTS jobs_created_at_idx ON jobs(created_at DESC);
-        CREATE TABLE IF NOT EXISTS place_search_cache (
-            query TEXT PRIMARY KEY,
-            response_json TEXT NOT NULL,
-            fetched_at TEXT NOT NULL
-        );
-        UPDATE jobs
-        SET status = 'failed',
-            progress = 100,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-            error = 'Generation was interrupted by a service restart.'
-        WHERE status IN ('queued', 'running');
-        "#,
-    )?;
-    Ok(())
-}
-
 async fn health() -> Json<Health> {
     Json(Health {
         status: "ok",
         storage: "sqlite",
     })
-}
-
-async fn search_places(
-    State(state): State<AppState>,
-    Query(search): Query<PlaceSearch>,
-) -> Result<Json<Vec<PlaceResult>>, (StatusCode, Json<ApiError>)> {
-    let query = search.q.trim();
-    if !valid_place_query_length(query) {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "place search must be between 2 and 120 characters",
-        ));
-    }
-    let normalized_query = query.to_lowercase();
-    if let Some(cached) = find_cached_places(&state, &normalized_query).map_err(internal_error)? {
-        return Ok(Json(cached));
-    }
-
-    let results = fetch_places(&state, query, &normalized_query)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(results))
-}
-
-fn valid_place_query_length(query: &str) -> bool {
-    (2..=120).contains(&query.chars().count())
-}
-
-fn find_cached_places(state: &AppState, query: &str) -> Result<Option<Vec<PlaceResult>>> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    let mut statement =
-        connection.prepare("SELECT response_json FROM place_search_cache WHERE query = ?1")?;
-    let mut rows = statement.query([query])?;
-    rows.next()?
-        .map(|row| {
-            let value: String = row.get(0)?;
-            serde_json::from_str(&value).map_err(sql_conversion_error)
-        })
-        .transpose()
-        .map_err(Into::into)
-}
-
-async fn fetch_places(
-    state: &AppState,
-    query: &str,
-    normalized_query: &str,
-) -> Result<Vec<PlaceResult>> {
-    {
-        let mut previous = state.last_geocode_request.lock().await;
-        let wait = Duration::from_secs(1).saturating_sub(previous.elapsed());
-        if !wait.is_zero() {
-            sleep(wait).await;
-        }
-        *previous = Instant::now();
-    }
-
-    let url = format!("{}/search", state.geocoder_base_url.trim_end_matches('/'));
-    let response = state
-        .geocoder
-        .get(url)
-        .query(&[
-            ("q", query),
-            ("format", "jsonv2"),
-            ("limit", "5"),
-            ("addressdetails", "0"),
-        ])
-        .send()
-        .await
-        .context("search OpenStreetMap places")?
-        .error_for_status()
-        .context("OpenStreetMap place search failed")?;
-    let results = response
-        .json::<Vec<NominatimPlace>>()
-        .await?
-        .into_iter()
-        .map(PlaceResult::try_from)
-        .collect::<Result<Vec<_>>>()?;
-
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    connection.execute(
-        "INSERT INTO place_search_cache (query, response_json, fetched_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(query) DO UPDATE SET
-             response_json = excluded.response_json,
-             fetched_at = excluded.fetched_at",
-        params![
-            normalized_query,
-            serde_json::to_string(&results)?,
-            Utc::now().to_rfc3339(),
-        ],
-    )?;
-    Ok(results)
-}
-
-impl TryFrom<NominatimPlace> for PlaceResult {
-    type Error = anyhow::Error;
-
-    fn try_from(place: NominatimPlace) -> Result<Self> {
-        let latitude: f64 = place.lat.parse().context("invalid place latitude")?;
-        let longitude: f64 = place.lon.parse().context("invalid place longitude")?;
-        if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
-            bail!("place latitude is outside the valid range");
-        }
-        if !longitude.is_finite() || !(-180.0..=180.0).contains(&longitude) {
-            bail!("place longitude is outside the valid range");
-        }
-        Ok(Self {
-            display_name: place.display_name,
-            latitude,
-            longitude,
-            category: place.category,
-            kind: place.kind,
-        })
-    }
 }
 
 async fn create_job(
@@ -457,23 +274,7 @@ async fn cancel_job(
 async fn list_jobs(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Job>>, (StatusCode, Json<ApiError>)> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "database lock failed"))?;
-    let mut statement = connection
-        .prepare(
-            "SELECT id, status, progress, created_at, updated_at, spec_json, artifacts_json, error
-             FROM jobs ORDER BY created_at DESC LIMIT 20",
-        )
-        .map_err(internal_error)?;
-    let rows = statement
-        .query_map([], row_to_job)
-        .map_err(internal_error)?;
-    let jobs = rows
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(internal_error)?;
-    Ok(Json(jobs))
+    recent_jobs(&state, 20).map(Json).map_err(internal_error)
 }
 
 async fn download(
@@ -916,106 +717,6 @@ fn mesh_job_progress(fraction: f32) -> i64 {
     (65.0 + fraction.clamp(0.0, 1.0) * 34.0).round() as i64
 }
 
-fn insert_job(state: &AppState, job: &Job) -> Result<()> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    connection.execute(
-        "INSERT INTO jobs
-         (id, status, progress, created_at, updated_at, spec_json, artifacts_json, error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            job.id,
-            job.status,
-            job.progress,
-            job.created_at.to_rfc3339(),
-            job.updated_at.to_rfc3339(),
-            serde_json::to_string(&job.spec)?,
-            serde_json::to_string(&job.artifacts)?,
-            job.error,
-        ],
-    )?;
-    Ok(())
-}
-
-fn update_job(
-    state: &AppState,
-    id: &str,
-    status: &str,
-    progress: i64,
-    artifacts: &[Artifact],
-    error: Option<&str>,
-) -> Result<()> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    connection.execute(
-        "UPDATE jobs SET status = ?2, progress = ?3, updated_at = ?4,
-         artifacts_json = ?5, error = ?6
-         WHERE id = ?1 AND status != 'canceled'",
-        params![
-            id,
-            status,
-            progress,
-            Utc::now().to_rfc3339(),
-            serde_json::to_string(artifacts)?,
-            error,
-        ],
-    )?;
-    Ok(())
-}
-
-fn mark_job_canceled(state: &AppState, id: &str) -> Result<bool> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    let updated = connection.execute(
-        "UPDATE jobs
-         SET status = 'canceled', updated_at = ?2, artifacts_json = '[]',
-             error = NULL
-         WHERE id = ?1 AND status IN ('queued', 'running')",
-        params![id, Utc::now().to_rfc3339()],
-    )?;
-    Ok(updated == 1)
-}
-
-fn find_job(state: &AppState, id: &str) -> Result<Option<Job>> {
-    let connection = state
-        .db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock failed"))?;
-    let mut statement = connection.prepare(
-        "SELECT id, status, progress, created_at, updated_at, spec_json, artifacts_json, error
-         FROM jobs WHERE id = ?1",
-    )?;
-    let mut rows = statement.query([id])?;
-    rows.next()?.map(row_to_job).transpose().map_err(Into::into)
-}
-
-fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
-    let created_at: String = row.get(3)?;
-    let updated_at: String = row.get(4)?;
-    let spec_json: String = row.get(5)?;
-    let artifacts_json: String = row.get(6)?;
-    Ok(Job {
-        id: row.get(0)?,
-        status: row.get(1)?,
-        progress: row.get(2)?,
-        created_at: created_at.parse().map_err(sql_conversion_error)?,
-        updated_at: updated_at.parse().map_err(sql_conversion_error)?,
-        spec: serde_json::from_str(&spec_json).map_err(sql_conversion_error)?,
-        artifacts: serde_json::from_str(&artifacts_json).map_err(sql_conversion_error)?,
-        error: row.get(7)?,
-    })
-}
-
-fn sql_conversion_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
-}
-
 fn api_error(status: StatusCode, message: impl ToString) -> (StatusCode, Json<ApiError>) {
     (
         status,
@@ -1047,55 +748,6 @@ mod tests {
             last_geocode_request: Arc::new(AsyncMutex::new(Instant::now())),
             active_jobs: Arc::new(StdMutex::new(HashMap::new())),
         }
-    }
-
-    #[test]
-    fn converts_nominatim_coordinates() {
-        let place = PlaceResult::try_from(NominatimPlace {
-            display_name: "Mount Rainier, Washington, United States".into(),
-            lat: "46.8523".into(),
-            lon: "-121.7603".into(),
-            category: "natural".into(),
-            kind: "peak".into(),
-        })
-        .unwrap();
-
-        assert_eq!(
-            place.display_name,
-            "Mount Rainier, Washington, United States"
-        );
-        assert!((place.latitude - 46.8523).abs() < f64::EPSILON);
-        assert!((place.longitude + 121.7603).abs() < f64::EPSILON);
-        assert_eq!(place.kind, "peak");
-    }
-
-    #[test]
-    fn rejects_invalid_nominatim_coordinates() {
-        let result = PlaceResult::try_from(NominatimPlace {
-            display_name: "Broken".into(),
-            lat: "north".into(),
-            lon: "west".into(),
-            category: "place".into(),
-            kind: "unknown".into(),
-        });
-        assert!(result.is_err());
-
-        let out_of_range = PlaceResult::try_from(NominatimPlace {
-            display_name: "Broken".into(),
-            lat: "91".into(),
-            lon: "181".into(),
-            category: "place".into(),
-            kind: "unknown".into(),
-        });
-        assert!(out_of_range.is_err());
-    }
-
-    #[test]
-    fn place_query_limit_counts_characters_not_utf8_bytes() {
-        assert!(valid_place_query_length("東京"));
-        assert!(valid_place_query_length(&"é".repeat(120)));
-        assert!(!valid_place_query_length("x"));
-        assert!(!valid_place_query_length(&"é".repeat(121)));
     }
 
     #[test]

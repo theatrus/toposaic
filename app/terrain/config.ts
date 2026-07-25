@@ -67,7 +67,10 @@ export const initialSpec: GenerationSpec = {
   },
 };
 
-const MAX_FINE_DEM_ASSEMBLED_SAMPLES = 2048;
+export const MIN_GROUND_SPAN_KM = 0.25;
+export const MAX_GROUND_SPAN_KM = 80;
+export const MAX_SUPER_TILE_SIDE = 12;
+export const MAX_ASSEMBLED_SAMPLES = 2048;
 const FINE_DEM_TARGET_RESOLUTION_M = 0.25;
 export const FINE_DEM_MAX_SPAN_KM = 2;
 
@@ -75,7 +78,11 @@ export const MESH_QUALITY_OPTIONS = [
   { label: "Draft", samples: 384, note: "Fast export" },
   { label: "Standard", samples: 640, note: "Most prints" },
   { label: "High", samples: 1024, note: "Fine FDM" },
-  { label: "Ultra", samples: 2048, note: "0.2 mm or resin" },
+  {
+    label: "Ultra",
+    samples: MAX_ASSEMBLED_SAMPLES,
+    note: "0.2 mm or resin",
+  },
 ] as const;
 
 export function automaticRoadDetail(groundSpanKm: number) {
@@ -103,7 +110,7 @@ export function terrainSamplesAcross(spec: GenerationSpec) {
     total = Math.max(
       total,
       Math.min(
-        MAX_FINE_DEM_ASSEMBLED_SAMPLES,
+        MAX_ASSEMBLED_SAMPLES,
         Math.ceil(
           (spec.ground_span_km * 1000) / FINE_DEM_TARGET_RESOLUTION_M,
         ),
