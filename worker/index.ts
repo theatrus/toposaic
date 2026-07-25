@@ -2,7 +2,7 @@
 import handler from "vinext/server/app-router-entry";
 
 interface Env {
-  ASSETS: Fetcher;
+  ASSETS: { fetch: typeof fetch };
 }
 
 interface ExecutionContext {
