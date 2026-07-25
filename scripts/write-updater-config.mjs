@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 const outputPath = process.argv[2];
 const publicKey = process.env.TOPOSAIC_UPDATER_PUBLIC_KEY?.trim();
@@ -10,6 +10,15 @@ if (!publicKey) {
   throw new Error("TOPOSAIC_UPDATER_PUBLIC_KEY is not set.");
 }
 
+// Endpoints and install mode come from the checked-in Tauri config so the
+// signed release build cannot drift from it. Only the pubkey is overridden.
+const { updater } = JSON.parse(
+  await readFile(
+    new URL("../src-tauri/tauri.conf.json", import.meta.url),
+    "utf8",
+  ),
+).plugins;
+
 const config = {
   bundle: {
     createUpdaterArtifacts: true,
@@ -17,12 +26,9 @@ const config = {
   plugins: {
     updater: {
       pubkey: publicKey,
-      endpoints: [
-        "https://toposaic.com/releases/updater.json",
-        "https://github.com/theatrus/toposaic/releases/latest/download/updater.json",
-      ],
+      endpoints: updater.endpoints,
       windows: {
-        installMode: "passive",
+        installMode: updater.windows.installMode,
       },
     },
   },

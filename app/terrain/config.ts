@@ -85,6 +85,8 @@ export const MESH_QUALITY_OPTIONS = [
   },
 ] as const;
 
+// Mirrors RoadDetail::resolve in crates/toposaic-core/src/spec.rs; the backend
+// owns the real decision, so change the spans in both places together.
 export function automaticRoadDetail(groundSpanKm: number) {
   if (groundSpanKm <= 2) return "all streets, paths, and trails";
   if (groundSpanKm <= 8) return "local streets";
@@ -155,4 +157,21 @@ export function groundMeshSpacing(spec: GenerationSpec) {
 
 export function formatGroundSpacing(metres: number) {
   return metres < 1 ? metres.toFixed(2) : metres.toFixed(1);
+}
+
+export function deriveHeightFrame(
+  sampled: { minimum_elevation_m: number; maximum_elevation_m: number },
+  reliefMm: number,
+) {
+  const sampledRange = Math.max(
+    1,
+    sampled.maximum_elevation_m - sampled.minimum_elevation_m,
+  );
+  const margin = Math.max(2, sampledRange * 0.02);
+  const datum = Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
+  const metresPerMm = Math.max(
+    0.1,
+    (sampled.maximum_elevation_m - datum) / reliefMm,
+  );
+  return { datum, metresPerMm };
 }

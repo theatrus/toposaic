@@ -13,7 +13,7 @@
     "desktop:dev": "vite --config vite.desktop.config.ts",
     "desktop:build": "vite build --config vite.desktop.config.ts",
     "tauri": "tauri",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node --test --experimental-strip-types tests/*.test.mjs",
     "test:ui": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern target --ignore-pattern .next"
   },

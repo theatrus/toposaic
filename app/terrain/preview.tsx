@@ -99,7 +99,12 @@ function sharedEdgePattern(
   };
 }
 
-function puzzleGridPoint(spec: GenerationSpec, row: number, column: number) {
+type PuzzleGridSpec = Pick<
+  GenerationSpec,
+  "width_mm" | "rows" | "columns" | "straight_piece_sides"
+>;
+
+function puzzleGridPoint(spec: PuzzleGridSpec, row: number, column: number) {
   const pieceWidth = spec.width_mm / spec.columns;
   const pieceHeight = (spec.width_mm * spec.rows) / spec.columns / spec.rows;
   if (spec.straight_piece_sides) {
@@ -267,6 +272,32 @@ export function ReliefPreview({
   const resetViewRef = useRef(false);
   const [resetViewKey, setResetViewKey] = useState(0);
 
+  // The scene effect reads these fields alone, so depending on them (rather
+  // than the whole spec object) avoids rebuilding the scene on unrelated
+  // spec changes.
+  const {
+    relief_mm,
+    width_mm,
+    base_mm,
+    center_lat,
+    center_lon,
+    rows,
+    columns,
+    solid_model,
+    puzzle_tabs,
+    straight_piece_sides,
+  } = spec;
+  const {
+    enabled: colorOutputEnabled,
+    rock_color,
+    forest_color,
+    snow_color,
+    water_color,
+    road_color,
+    building_color,
+  } = spec.color_output;
+  const buildingsEnabled = spec.buildings.enabled;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -287,12 +318,12 @@ export function ReliefPreview({
     const scene = new Scene();
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
-    const heightScale = spec.relief_mm / spec.width_mm;
-    const baseDepth = spec.base_mm / spec.width_mm;
+    const heightScale = relief_mm / width_mm;
+    const baseDepth = base_mm / width_mm;
     canvas.dataset.heightScale = heightScale.toFixed(4);
     canvas.dataset.baseScale = baseDepth.toFixed(4);
-    const seedA = Math.sin((spec.center_lat * Math.PI) / 180) * 1.7;
-    const seedB = Math.cos((spec.center_lon * Math.PI) / 180) * 1.3;
+    const seedA = Math.sin((center_lat * Math.PI) / 180) * 1.7;
+    const seedB = Math.cos((center_lon * Math.PI) / 180) * 1.3;
     const heightValues = Array.from(
       { length: sampleWidth * sampleHeight },
       (_, index) => {
@@ -343,18 +374,12 @@ export function ReliefPreview({
     };
 
     const palette = {
-      rock:
-        preview?.surface_palette?.rock ?? spec.color_output.rock_color,
-      forest:
-        preview?.surface_palette?.forest ?? spec.color_output.forest_color,
-      snow:
-        preview?.surface_palette?.snow ?? spec.color_output.snow_color,
-      water:
-        preview?.surface_palette?.water ?? spec.color_output.water_color,
-      road:
-        preview?.surface_palette?.road ?? spec.color_output.road_color,
-      building:
-        preview?.surface_palette?.building ?? spec.color_output.building_color,
+      rock: preview?.surface_palette?.rock ?? rock_color,
+      forest: preview?.surface_palette?.forest ?? forest_color,
+      snow: preview?.surface_palette?.snow ?? snow_color,
+      water: preview?.surface_palette?.water ?? water_color,
+      road: preview?.surface_palette?.road ?? road_color,
+      building: preview?.surface_palette?.building ?? building_color,
     };
     const classColor = (surfaceClass?: number) =>
       surfaceClass === 1
@@ -367,7 +392,7 @@ export function ReliefPreview({
               ? palette.road
               : surfaceClass === 5
                 ? palette.building
-                : spec.color_output.enabled
+                : colorOutputEnabled
                   ? palette.rock
                   : "#74846B";
     const positions: number[] = [];
@@ -411,9 +436,9 @@ export function ReliefPreview({
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
         const surfaceClass =
-          spec.color_output.enabled || spec.buildings.enabled
-          ? preview?.surface_classes?.[y * sampleWidth + x]
-          : undefined;
+          colorOutputEnabled || buildingsEnabled
+            ? preview?.surface_classes?.[y * sampleWidth + x]
+            : undefined;
         const color = new Color(classColor(surfaceClass));
         addVertex(x, y, color);
         addVertex(x + 1, y, color);
@@ -496,17 +521,18 @@ export function ReliefPreview({
       ),
     );
 
-    const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
+    const gridSpec = { width_mm, rows, columns, straight_piece_sides };
+    const modelHeight = (width_mm * rows) / columns;
     const puzzleTabDepth =
-      Math.min(spec.width_mm / spec.columns, modelHeight / spec.rows) * 0.17;
-    if (!spec.solid_model) {
-      for (let edgeColumn = 1; edgeColumn < spec.columns; edgeColumn += 1) {
-        for (let row = 0; row < spec.rows; row += 1) {
-          const start = puzzleGridPoint(spec, row, edgeColumn);
-          const end = puzzleGridPoint(spec, row + 1, edgeColumn);
+      Math.min(width_mm / columns, modelHeight / rows) * 0.17;
+    if (!solid_model) {
+      for (let edgeColumn = 1; edgeColumn < columns; edgeColumn += 1) {
+        for (let row = 0; row < rows; row += 1) {
+          const start = puzzleGridPoint(gridSpec, row, edgeColumn);
+          const end = puzzleGridPoint(gridSpec, row + 1, edgeColumn);
           const pattern = sharedEdgePattern(1, edgeColumn, row);
-          const sign = spec.puzzle_tabs
-            ? edgeSign(1, row, edgeColumn, spec.columns)
+          const sign = puzzle_tabs
+            ? edgeSign(1, row, edgeColumn, columns)
             : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
@@ -521,7 +547,7 @@ export function ReliefPreview({
             );
             points.push(
               pointOnTerrain(
-                edgePoint.x / spec.width_mm,
+                edgePoint.x / width_mm,
                 edgePoint.y / modelHeight,
               ),
             );
@@ -534,13 +560,13 @@ export function ReliefPreview({
           );
         }
       }
-      for (let edgeRow = 1; edgeRow < spec.rows; edgeRow += 1) {
-        for (let column = 0; column < spec.columns; column += 1) {
-          const start = puzzleGridPoint(spec, edgeRow, column);
-          const end = puzzleGridPoint(spec, edgeRow, column + 1);
+      for (let edgeRow = 1; edgeRow < rows; edgeRow += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const start = puzzleGridPoint(gridSpec, edgeRow, column);
+          const end = puzzleGridPoint(gridSpec, edgeRow, column + 1);
           const pattern = sharedEdgePattern(0, edgeRow, column);
-          const sign = spec.puzzle_tabs
-            ? edgeSign(0, column, edgeRow, spec.rows)
+          const sign = puzzle_tabs
+            ? edgeSign(0, column, edgeRow, rows)
             : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
@@ -555,7 +581,7 @@ export function ReliefPreview({
             );
             points.push(
               pointOnTerrain(
-                edgePoint.x / spec.width_mm,
+                edgePoint.x / width_mm,
                 edgePoint.y / modelHeight,
               ),
             );
@@ -666,7 +692,28 @@ export function ReliefPreview({
       });
       renderer.dispose();
     };
-  }, [preview, resetViewKey, spec]);
+  }, [
+    preview,
+    resetViewKey,
+    relief_mm,
+    width_mm,
+    base_mm,
+    center_lat,
+    center_lon,
+    rows,
+    columns,
+    solid_model,
+    puzzle_tabs,
+    straight_piece_sides,
+    colorOutputEnabled,
+    buildingsEnabled,
+    rock_color,
+    forest_color,
+    snow_color,
+    water_color,
+    road_color,
+    building_color,
+  ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
     const controls = controlsRef.current;

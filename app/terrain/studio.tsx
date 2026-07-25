@@ -32,18 +32,20 @@ import {
   MESH_QUALITY_OPTIONS,
   assembledMeshSamples,
   automaticRoadDetail,
+  deriveHeightFrame,
   formatGroundSpacing,
   groundMeshSpacing,
   initialSpec,
 } from "./config";
 import type {
+  Artifact,
   ArtifactFeedback,
   GenerationSpec,
   Job,
   PlaceResult,
   PreviewData,
 } from "./contracts";
-import { adjacentCenter } from "./geo";
+import { type AdjacentDirection, adjacentCenter } from "./geo";
 import { ArtifactDownloads } from "./downloads";
 import { TerrainMap } from "./map";
 import { displayVersion, isVersionNewer } from "../updates/version";
@@ -53,6 +55,9 @@ const ReliefPreview = lazy(() =>
     default: component,
   })),
 );
+
+const GENERATOR_STALLED_MESSAGE =
+  "The generator stopped responding. The job is safe in SQLite.";
 
 const DEFAULT_VISUAL_HEIGHT_PERCENT = 37;
 const MIN_VISUAL_HEIGHT_PERCENT = 28;
@@ -362,15 +367,12 @@ export function TerrainStudio() {
       setAdjacentMessage("Wait for the elevation sample, then lock the height frame.");
       return false;
     }
-    const sampledRange = Math.max(
-      1,
-      sampled.maximum_elevation_m - sampled.minimum_elevation_m,
-    );
-    const margin = Math.max(2, sampledRange * 0.02);
-    const datum = Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
-    const metresPerMm = Math.max(
-      0.1,
-      (sampled.maximum_elevation_m - datum) / spec.relief_mm,
+    const { datum, metresPerMm } = deriveHeightFrame(
+      {
+        minimum_elevation_m: sampled.minimum_elevation_m,
+        maximum_elevation_m: sampled.maximum_elevation_m,
+      },
+      spec.relief_mm,
     );
     setSpec((current) => ({
       ...current,
@@ -410,19 +412,15 @@ export function TerrainStudio() {
           );
           return;
         }
-        const sampledRange = Math.max(
-          1,
-          sampled.maximum_elevation_m - sampled.minimum_elevation_m,
+        const derived = deriveHeightFrame(
+          {
+            minimum_elevation_m: sampled.minimum_elevation_m,
+            maximum_elevation_m: sampled.maximum_elevation_m,
+          },
+          spec.relief_mm,
         );
-        const margin = Math.max(2, sampledRange * 0.02);
-        datum =
-          Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
-        metresPerMm = Number(
-          (
-            (sampled.maximum_elevation_m - datum) /
-            spec.relief_mm
-          ).toFixed(4),
-        );
+        datum = derived.datum;
+        metresPerMm = Number(derived.metresPerMm.toFixed(4));
       }
       const next = adjacentCenter(
         spec.center_lat,
@@ -554,26 +552,42 @@ export function TerrainStudio() {
 
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
+    const polledJobId = job.id;
+    const controller = new AbortController();
     const timer = window.setInterval(async () => {
       try {
-        const nextJob = await terrainApi.getJob(job.id);
+        const nextJob = await terrainApi.getJob(
+          polledJobId,
+          controller.signal,
+        );
+        if (nextJob.id !== polledJobId) return;
         setJob(nextJob);
+        setMessage((current) =>
+          current === GENERATOR_STALLED_MESSAGE ? null : current,
+        );
         if (nextJob.status === "complete") {
-          try {
-            setGeneratedPreview(await terrainApi.generatedPreview(nextJob.id));
-          } catch {
-            setGeneratedPreview(null);
+          const previewData = await terrainApi
+            .generatedPreview(nextJob.id, controller.signal)
+            .catch(() => null);
+          if (previewData && !controller.signal.aborted) {
+            setGeneratedPreview(previewData);
           }
         }
-      } catch {
-        setMessage("The generator stopped responding. The job is safe in SQLite.");
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setMessage(GENERATOR_STALLED_MESSAGE);
+        }
       }
     }, 900);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      controller.abort();
+    };
   }, [job]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting || generationActive) return;
     setSubmitting(true);
     setMessage(null);
     setJob(null);
@@ -1058,9 +1072,16 @@ export function TerrainStudio() {
                       type="number"
                       step="0.00001"
                       value={spec.center_lat}
-                      onChange={(event) =>
-                        update("center_lat", Number(event.target.value))
-                      }
+                      onChange={(event) => {
+                        const latitude = Number(event.target.value);
+                        if (
+                          event.target.value.trim() === "" ||
+                          !Number.isFinite(latitude)
+                        ) {
+                          return;
+                        }
+                        update("center_lat", latitude);
+                      }}
                     />
                   </label>
                   <label>
@@ -1069,9 +1090,16 @@ export function TerrainStudio() {
                       type="number"
                       step="0.00001"
                       value={spec.center_lon}
-                      onChange={(event) =>
-                        update("center_lon", Number(event.target.value))
-                      }
+                      onChange={(event) => {
+                        const longitude = Number(event.target.value);
+                        if (
+                          event.target.value.trim() === "" ||
+                          !Number.isFinite(longitude)
+                        ) {
+                          return;
+                        }
+                        update("center_lon", longitude);
+                      }}
                     />
                   </label>
                 </div>

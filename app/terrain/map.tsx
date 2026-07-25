@@ -2,7 +2,6 @@
 
 import {
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -270,10 +269,18 @@ export function TerrainMap({
     [onGroundSpanChange, spec.ground_span_km, zoom],
   );
 
-  const wheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    changeZoom(event.deltaY < 0 ? 1 : -1);
-  };
+  // React's onWheel registers a passive listener, so preventDefault is a
+  // no-op there; a native non-passive listener keeps the page from scrolling.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      changeZoom(event.deltaY < 0 ? 1 : -1);
+    };
+    container.addEventListener("wheel", wheel, { passive: false });
+    return () => container.removeEventListener("wheel", wheel);
+  }, [changeZoom]);
 
   const canZoomIn =
     zoom < MAX_MAP_ZOOM &&
@@ -294,7 +301,6 @@ export function TerrainMap({
         onPointerCancel={() => {
           dragRef.current = null;
         }}
-        onWheel={wheel}
         role="application"
       >
         <div className="map-tiles" aria-hidden="true">

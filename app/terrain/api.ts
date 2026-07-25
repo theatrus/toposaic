@@ -20,6 +20,7 @@ export const API_URL = (
 
 type ApiErrorPayload = {
   error?: unknown;
+  message?: unknown;
 };
 
 async function requestJson<T>(
@@ -27,24 +28,24 @@ async function requestJson<T>(
   init?: RequestInit,
 ): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, init);
-  const payload = (await response.json().catch(() => null)) as
-    | ApiErrorPayload
-    | T
-    | null;
   if (!response.ok) {
-    const message =
-      payload &&
-      typeof payload === "object" &&
-      "error" in payload &&
-      typeof payload.error === "string"
-        ? payload.error
-        : `TopoSaic service returned ${response.status}.`;
-    throw new Error(message);
+    let detail: string | null = null;
+    try {
+      const payload = (await response.json()) as ApiErrorPayload;
+      if (typeof payload.error === "string") {
+        detail = payload.error;
+      } else if (typeof payload.message === "string") {
+        detail = payload.message;
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
+      // The body was not JSON, so fall back to the status.
+    }
+    throw new Error(detail ?? `TopoSaic service returned ${response.status}.`);
   }
-  if (payload === null) {
-    throw new Error("TopoSaic service returned an empty response.");
-  }
-  return payload as T;
+  return (await response.json()) as T;
 }
 
 function jsonBody(value: unknown, signal?: AbortSignal): RequestInit {
@@ -68,17 +69,18 @@ export const terrainApi = {
   createJob(spec: GenerationSpec) {
     return requestJson<Job>("/api/jobs", jsonBody(spec));
   },
-  getJob(id: string) {
-    return requestJson<Job>(`/api/jobs/${encodeURIComponent(id)}`);
+  getJob(id: string, signal?: AbortSignal) {
+    return requestJson<Job>(`/api/jobs/${encodeURIComponent(id)}`, { signal });
   },
   cancelJob(id: string) {
     return requestJson<Job>(`/api/jobs/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
   },
-  generatedPreview(id: string) {
+  generatedPreview(id: string, signal?: AbortSignal) {
     return requestJson<PreviewData>(
       `/api/jobs/${encodeURIComponent(id)}/downloads/preview.json`,
+      { signal },
     );
   },
   artifactUrl(id: string, name: string) {

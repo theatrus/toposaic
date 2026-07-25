@@ -5,7 +5,7 @@ const KILOMETRES_PER_LONGITUDE_DEGREE = 111.32;
 const MINIMUM_LONGITUDE_SCALE = 20;
 const MAX_MODEL_LATITUDE = 85;
 
-type AdjacentDirection = "north" | "south" | "east" | "west";
+export type AdjacentDirection = "north" | "south" | "east" | "west";
 
 function offsetCoordinates(
   latitude: number,
