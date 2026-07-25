@@ -71,6 +71,14 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Terrain class borders/);
   assert.match(html, /Blocky \(native 10 m data\)/);
   assert.match(html, /Smoothed borders/);
+  assert.match(html, /3MF style/);
+  assert.match(html, /Color project · filament colors and purge settings/);
+  assert.match(html, /Painted colors · no embedded presets/);
+  assert.match(html, /Geometry only · plain colors/);
+  // The server renders the default style selected: the embedded-settings
+  // project output existing users already get.
+  assert.match(html, /<option value="project" selected="">/);
+  assert.match(html, /OrcaSlicer and Bambu Studio import the file as a project/);
   // The border smoothing sliders only render once "Smoothed borders" is
   // selected; the server renders the blocky default without them.
   assert.doesNotMatch(html, /Border bend range/);

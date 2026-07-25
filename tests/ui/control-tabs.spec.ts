@@ -416,6 +416,17 @@ test("switches between the reflowed control panels", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
+  const threeMfStyle = page.getByLabel("3MF style");
+  await expect(threeMfStyle).toHaveValue("project");
+  await expect(
+    page.getByText(/OrcaSlicer and Bambu\s+Studio import the file as a project/),
+  ).toBeVisible();
+  await threeMfStyle.selectOption("painted");
+  await expect(threeMfStyle).toHaveValue("painted");
+  await threeMfStyle.selectOption("geometry");
+  await expect(threeMfStyle).toHaveValue("geometry");
+  await threeMfStyle.selectOption("project");
+  await expect(threeMfStyle).toHaveValue("project");
   await expect(
     page.getByRole("link", { name: "Mapterhorn elevation tiles" }),
   ).toHaveAttribute("href", "https://mapterhorn.com/attribution");
