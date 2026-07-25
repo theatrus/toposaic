@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use terrain_core::{GenerationSpec, HeightField, SurfaceClass, SurfaceField};
+use terrain_core::{GenerationSpec, HeightField, RoadDetail, SurfaceClass, SurfaceField};
 use tracing::warn;
 
 use crate::cache;
@@ -26,9 +26,17 @@ const WORLD_COVER_ATTRIBUTION: &str = "© ESA WorldCover project / Contains modi
 const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const FALLBACK_OVERPASS_URL: &str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
-const PROMINENT_HIGHWAYS: &str =
+const USER_AGENT: &str = concat!(
+    "toposaic/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/theatrus/toposaic)"
+);
+const MAJOR_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
-const FALLBACK_TRAILS: &str = "path|footway|bridleway|track|cycleway";
+const MINOR_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified";
+const STREET_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|pedestrian|road";
+const ALL_ROUTE_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|pedestrian|road|track|cycleway|path|footway|bridleway|steps";
+const PATH_HIGHWAYS: &str = "path|footway|bridleway|track|cycleway|steps";
 const WATERWAYS: &str = "river|stream|canal";
 const OVERPASS_ATTEMPTS: usize = 2;
 const OVERPASS_RETRY_DELAY: Duration = Duration::from_millis(750);
@@ -72,11 +80,14 @@ struct OverpassPoint {
     lon: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RouteCounts {
     roads: usize,
     trails: usize,
     bridges: usize,
+    detail: RoadDetail,
+    highway_filter: &'static str,
+    fallback: bool,
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +100,7 @@ struct WaterCounts {
 struct RouteFeature {
     points: Vec<[f32; 2]>,
     width_scale: f32,
+    path_or_trail: bool,
     bridge_elevations_m: Option<[f32; 2]>,
 }
 
@@ -184,20 +196,24 @@ pub fn fetch_surface_field(
             &map_cache_dir.join("osm"),
             &mut field,
         ) {
-            Ok(counts) if counts.roads > 0 => append_source(
-                &mut field.source,
-                format!(
-                    "prominent roads: {} OpenStreetMap ways including {} tagged bridges via Overpass API, highway={PROMINENT_HIGHWAYS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                    counts.roads, counts.bridges
-                ),
-            ),
-            Ok(counts) => append_source(
-                &mut field.source,
-                format!(
-                    "no prominent roads found; trail fallback: {} OpenStreetMap ways including {} tagged bridges via Overpass API, highway={FALLBACK_TRAILS}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
-                    counts.trails, counts.bridges
-                ),
-            ),
+            Ok(counts) => {
+                let fallback = if counts.fallback {
+                    " (trail fallback)"
+                } else {
+                    ""
+                };
+                append_source(
+                    &mut field.source,
+                    format!(
+                        "routes{fallback}: {} roads and streets, {} paths and trails, and {} tagged bridges from OpenStreetMap via Overpass API; detail={}; highway={}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                        counts.roads,
+                        counts.trails,
+                        counts.bridges,
+                        road_detail_name(counts.detail),
+                        counts.highway_filter,
+                    ),
+                );
+            }
             Err(error) => {
                 warn!(%error, "OpenStreetMap roads unavailable; omitting route overlay");
                 append_source(
@@ -364,23 +380,38 @@ fn paint_roads_or_trails(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<RouteCounts> {
-    let roads = fetch_osm_ways(spec, bounds, cache_dir, "roads", PROMINENT_HIGHWAYS)?;
-    let (road_count, bridge_count) =
-        paint_osm_ways(spec, height_field, bounds, field, roads, road_width_scale);
-    if road_count > 0 {
+    let detail = spec.color_output.road_detail.resolve(spec.ground_span_km);
+    let highway_filter = road_highway_filter(detail);
+    let cache_prefix = road_cache_prefix(detail);
+    let routes = fetch_osm_ways(spec, bounds, cache_dir, cache_prefix, highway_filter)?;
+    let (road_count, trail_count, bridge_count) =
+        paint_osm_ways(spec, height_field, bounds, field, routes);
+    if road_count + trail_count > 0 || detail == RoadDetail::All {
         return Ok(RouteCounts {
             roads: road_count,
-            trails: 0,
+            trails: trail_count,
             bridges: bridge_count,
+            detail,
+            highway_filter,
+            fallback: false,
         });
     }
-    let trails = fetch_osm_ways(spec, bounds, cache_dir, "trails", FALLBACK_TRAILS)?;
-    let (trail_count, bridge_count) =
-        paint_osm_ways(spec, height_field, bounds, field, trails, trail_width_scale);
+    let trails = fetch_osm_ways(
+        spec,
+        bounds,
+        cache_dir,
+        "roads-v2-path-fallback",
+        PATH_HIGHWAYS,
+    )?;
+    let (road_count, trail_count, bridge_count) =
+        paint_osm_ways(spec, height_field, bounds, field, trails);
     Ok(RouteCounts {
-        roads: 0,
+        roads: road_count,
         trails: trail_count,
         bridges: bridge_count,
+        detail,
+        highway_filter: PATH_HIGHWAYS,
+        fallback: true,
     })
 }
 
@@ -390,14 +421,13 @@ fn paint_osm_ways(
     bounds: GeoBounds,
     field: &mut SurfaceField,
     response: OverpassResponse,
-    width_scale: fn(&HashMap<String, String>) -> Option<f32>,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let mut features = Vec::new();
     for way in response.elements {
         if way.geometry.len() < 2 || is_tunnel(&way.tags) {
             continue;
         }
-        let Some(scale) = width_scale(&way.tags) else {
+        let Some(scale) = road_width_scale(&way.tags) else {
             continue;
         };
         let points = normalized_osm_points(&way, spec, bounds);
@@ -412,6 +442,7 @@ fn paint_osm_ways(
         features.push(RouteFeature {
             points,
             width_scale: scale,
+            path_or_trail: is_path_or_trail(&way.tags),
             bridge_elevations_m,
         });
     }
@@ -434,13 +465,48 @@ fn paint_osm_ways(
             );
         }
     }
+    let trail_count = features
+        .iter()
+        .filter(|feature| feature.path_or_trail)
+        .count();
     (
-        features.len(),
+        features.len() - trail_count,
+        trail_count,
         features
             .iter()
             .filter(|feature| feature.bridge_elevations_m.is_some())
             .count(),
     )
+}
+
+fn road_highway_filter(detail: RoadDetail) -> &'static str {
+    match detail {
+        RoadDetail::Automatic => unreachable!("automatic road detail must be resolved"),
+        RoadDetail::Major => MAJOR_HIGHWAYS,
+        RoadDetail::Minor => MINOR_HIGHWAYS,
+        RoadDetail::Streets => STREET_HIGHWAYS,
+        RoadDetail::All => ALL_ROUTE_HIGHWAYS,
+    }
+}
+
+fn road_cache_prefix(detail: RoadDetail) -> &'static str {
+    match detail {
+        RoadDetail::Automatic => unreachable!("automatic road detail must be resolved"),
+        RoadDetail::Major => "roads-v2-major",
+        RoadDetail::Minor => "roads-v2-minor",
+        RoadDetail::Streets => "roads-v2-streets",
+        RoadDetail::All => "roads-v2-all",
+    }
+}
+
+fn road_detail_name(detail: RoadDetail) -> &'static str {
+    match detail {
+        RoadDetail::Automatic => "automatic",
+        RoadDetail::Major => "major",
+        RoadDetail::Minor => "minor",
+        RoadDetail::Streets => "streets",
+        RoadDetail::All => "all",
+    }
 }
 
 fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 {
@@ -540,7 +606,7 @@ fn fetch_osm_response(
     }
 
     let client = Client::builder()
-        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(45))
         .build()
         .context("build OpenStreetMap client")?;
@@ -699,20 +765,29 @@ fn road_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
         "trunk" => Some(1.25),
         "primary" => Some(1.0),
         "secondary" => Some(0.8),
+        "tertiary" => Some(0.7),
+        "unclassified" => Some(0.62),
         "motorway_link" | "trunk_link" => Some(0.75),
         "primary_link" | "secondary_link" => Some(0.65),
+        "tertiary_link" => Some(0.58),
+        "residential" => Some(0.56),
+        "living_street" | "pedestrian" | "road" => Some(0.5),
+        "service" => Some(0.45),
+        "track" => Some(0.5),
+        "cycleway" => Some(0.45),
+        "bridleway" => Some(0.42),
+        "path" | "footway" | "steps" => Some(0.38),
         _ => None,
     }
 }
 
-fn trail_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
-    match tags.get("highway")?.as_str() {
-        "track" => Some(0.7),
-        "bridleway" => Some(0.65),
-        "cycleway" => Some(0.6),
-        "path" | "footway" => Some(0.55),
-        _ => None,
-    }
+fn is_path_or_trail(tags: &HashMap<String, String>) -> bool {
+    tags.get("highway").is_some_and(|highway| {
+        matches!(
+            highway.as_str(),
+            "track" | "cycleway" | "path" | "footway" | "bridleway" | "steps"
+        )
+    })
 }
 
 fn waterway_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
@@ -877,7 +952,7 @@ fn cached_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<PathBuf>
     }
     let url = format!("{WORLD_COVER_BASE_URL}/{file_name}");
     let response = Client::builder()
-        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
+        .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(300))
         .build()
         .context("build ESA WorldCover client")?
@@ -937,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_prominent_road_query_with_geometry() {
+    fn builds_major_road_query_with_geometry() {
         let query = overpass_query(
             GeoBounds {
                 south: 47.0,
@@ -945,7 +1020,7 @@ mod tests {
                 west: -123.0,
                 east: -122.0,
             },
-            PROMINENT_HIGHWAYS,
+            MAJOR_HIGHWAYS,
         );
         assert!(query.contains("motorway"));
         assert!(query.contains("secondary_link"));
@@ -959,7 +1034,8 @@ mod tests {
         let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
         assert!(road_width_scale(&tags("motorway")) > road_width_scale(&tags("primary")));
         assert!(road_width_scale(&tags("primary")) > road_width_scale(&tags("secondary")));
-        assert_eq!(road_width_scale(&tags("residential")), None);
+        assert!(road_width_scale(&tags("secondary")) > road_width_scale(&tags("residential")));
+        assert!(road_width_scale(&tags("residential")) > road_width_scale(&tags("footway")));
     }
 
     #[test]
@@ -973,6 +1049,7 @@ mod tests {
         let route = || RouteFeature {
             points: vec![[0.0, 0.5], [1.0, 0.5]],
             width_scale: 1.0,
+            path_or_trail: false,
             bridge_elevations_m: None,
         };
         assert_eq!(route_density_scale(&spec, &[route()]), 1.0);
@@ -981,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_trail_fallback_query_and_widths() {
+    fn builds_full_route_query_and_classifies_paths() {
         let query = overpass_query(
             GeoBounds {
                 south: 46.8,
@@ -989,12 +1066,26 @@ mod tests {
                 west: -121.9,
                 east: -121.7,
             },
-            FALLBACK_TRAILS,
+            ALL_ROUTE_HIGHWAYS,
         );
-        assert!(query.contains("path|footway|bridleway|track|cycleway"));
+        assert!(query.contains("residential"));
+        assert!(query.contains("path|footway|bridleway|steps"));
         let tags = |class: &str| HashMap::from([("highway".into(), class.into())]);
-        assert!(trail_width_scale(&tags("track")) > trail_width_scale(&tags("path")));
-        assert_eq!(trail_width_scale(&tags("primary")), None);
+        assert!(road_width_scale(&tags("track")) > road_width_scale(&tags("path")));
+        assert!(is_path_or_trail(&tags("path")));
+        assert!(!is_path_or_trail(&tags("residential")));
+    }
+
+    #[test]
+    fn road_detail_controls_query_scope_and_cache_key() {
+        assert_eq!(road_highway_filter(RoadDetail::Major), MAJOR_HIGHWAYS);
+        assert!(!road_highway_filter(RoadDetail::Minor).contains("residential"));
+        assert!(road_highway_filter(RoadDetail::Streets).contains("residential"));
+        assert!(road_highway_filter(RoadDetail::All).contains("footway"));
+        assert_ne!(
+            road_cache_prefix(RoadDetail::Major),
+            road_cache_prefix(RoadDetail::Streets)
+        );
     }
 
     #[test]
@@ -1038,15 +1129,8 @@ mod tests {
             remark: None,
         };
         assert_eq!(
-            paint_osm_ways(
-                &spec,
-                &height_field,
-                bounds,
-                &mut surface,
-                response,
-                road_width_scale,
-            ),
-            (1, 1)
+            paint_osm_ways(&spec, &height_field, bounds, &mut surface, response,),
+            (1, 0, 1)
         );
     }
 

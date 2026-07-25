@@ -186,6 +186,18 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const bridgeThickness = surfaceColors.getByRole("slider", {
     name: "Floating bridge thickness",
   });
+  const routeDetail = surfaceColors.getByLabel("Route detail");
+  await expect(routeDetail).toHaveValue("automatic");
+  await expect(
+    surfaceColors.getByText(
+      "At 2 km, automatic mode includes all streets, paths, and trails.",
+    ),
+  ).toBeVisible();
+  await routeDetail.selectOption("streets");
+  await expect(routeDetail).toHaveValue("streets");
+  await expect(
+    surfaceColors.getByText("The chosen detail applies at every map span."),
+  ).toBeVisible();
   await expect(floatingBridge).toBeChecked();
   await expect(bridgeThickness).toHaveValue("1.2");
   await supportedBridge.check();

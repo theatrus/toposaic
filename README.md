@@ -128,18 +128,21 @@ specific Overpass instance.
 
 Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
 maps tree cover, bare ground, snow or ice, and permanent water to editable
-forest, rock, snow, and water colors. It also reads prominent roads from
-OpenStreetMap through Overpass, then draws motorway, trunk, primary, and
-secondary roads as smooth, print-safe vector lines. If none cross the selected
-area, it draws paths, footways, bridleways, tracks, and cycleways as a trail
-fallback. Rivers, streams, canals, and mapped water areas use the same vector
-path so they stay smooth and flush with the terrain. Building footprints keep
+forest, rock, snow, and water colors. It also reads routes from OpenStreetMap
+through Overpass and draws them as smooth, print-safe vector lines. Route detail
+can stop at major roads, add minor roads, add local streets, or include paths
+and trails. Automatic mode includes more classes as the ground span shrinks,
+including streets, paths, and trails at 2 km or less. If no selected road
+crosses the area, it still uses paths and trails as a fallback. Rivers, streams,
+canals, and mapped water areas use the same vector path so they stay smooth and
+flush with the terrain. Building footprints keep
 their straight mapped edges, with dense local mesh detail along each wall
 instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
 color properties.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
-networks. Roads tagged as bridges in OpenStreetMap interpolate a deck between
+networks without dropping any selected road class. Roads tagged as bridges in
+OpenStreetMap interpolate a deck between
 their DEM-height abutments instead of dropping into the ravine or water below.
 Untagged roads still follow the terrain, and `layer=*` is not treated as a
 height. OpenStreetMap water can be disabled without hiding WorldCover water.

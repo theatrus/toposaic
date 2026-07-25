@@ -430,6 +430,34 @@ pub enum BridgeStructure {
     Supported,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoadDetail {
+    #[default]
+    Automatic,
+    Major,
+    Minor,
+    Streets,
+    All,
+}
+
+impl RoadDetail {
+    pub fn resolve(self, ground_span_km: f64) -> Self {
+        if self != Self::Automatic {
+            return self;
+        }
+        if ground_span_km <= 2.0 {
+            Self::All
+        } else if ground_span_km <= 8.0 {
+            Self::Streets
+        } else if ground_span_km <= 20.0 {
+            Self::Minor
+        } else {
+            Self::Major
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
@@ -441,6 +469,7 @@ pub struct ColorOutputSpec {
     pub road_color: String,
     pub building_color: String,
     pub roads_enabled: bool,
+    pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
     pub osm_water_enabled: bool,
     pub waterway_coverage_percent: f32,
@@ -462,6 +491,7 @@ impl Default for ColorOutputSpec {
             road_color: "#D8A33C".into(),
             building_color: "#B8A890".into(),
             roads_enabled: true,
+            road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
             osm_water_enabled: true,
             waterway_coverage_percent: 12.0,
@@ -5911,6 +5941,7 @@ mod tests {
         assert_eq!(spec.color_output.road_color, "#D8A33C");
         assert_eq!(spec.color_output.building_color, "#B8A890");
         assert!(spec.color_output.roads_enabled);
+        assert_eq!(spec.color_output.road_detail, RoadDetail::Automatic);
         assert!(spec.color_output.adaptive_road_widths);
         assert!(spec.color_output.osm_water_enabled);
         assert_eq!(spec.color_output.waterway_coverage_percent, 12.0);
@@ -5921,6 +5952,15 @@ mod tests {
             BridgeStructure::Floating
         );
         assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
+    }
+
+    #[test]
+    fn automatic_road_detail_tracks_ground_span() {
+        assert_eq!(RoadDetail::Automatic.resolve(1.0), RoadDetail::All);
+        assert_eq!(RoadDetail::Automatic.resolve(4.0), RoadDetail::Streets);
+        assert_eq!(RoadDetail::Automatic.resolve(18.0), RoadDetail::Minor);
+        assert_eq!(RoadDetail::Automatic.resolve(40.0), RoadDetail::Major);
+        assert_eq!(RoadDetail::Streets.resolve(40.0), RoadDetail::Streets);
     }
 
     #[test]
