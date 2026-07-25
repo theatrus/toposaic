@@ -1391,6 +1391,32 @@ fieldset.control-section .road-options {
   font-size: 9px;
 }
 
+.road-detail-field {
+  color: var(--muted);
+  display: grid;
+  font-size: 9px;
+  font-weight: 700;
+  gap: 5px;
+  text-transform: uppercase;
+}
+
+.road-detail-field select {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  padding: 10px;
+  text-transform: none;
+}
+
+.road-detail-field small {
+  font-size: 9px;
+  font-weight: 450;
+  line-height: 1.45;
+  text-transform: none;
+}
+
 .bridge-options {
   align-items: start;
   display: grid;

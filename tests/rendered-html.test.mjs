@@ -68,7 +68,11 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
+  assert.match(html, /Route detail/);
+  assert.match(html, /Automatic for map span/);
+  assert.match(html, /Streets, paths, and trails/);
   assert.match(html, /Thin dense road networks/);
+  assert.match(html, /does not remove road classes/);
   assert.match(html, /Mesh detail/);
   assert.match(html, /Standard/);
   assert.match(html, /Ultra/);

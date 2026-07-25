@@ -86,6 +86,7 @@ type GenerationSpec = {
     road_color: string;
     building_color: string;
     roads_enabled: boolean;
+    road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
     osm_water_enabled: boolean;
     waterway_coverage_percent: number;
@@ -226,6 +227,7 @@ const initialSpec: GenerationSpec = {
     road_color: "#D8A33C",
     building_color: "#B8A890",
     roads_enabled: true,
+    road_detail: "automatic",
     adaptive_road_widths: true,
     osm_water_enabled: true,
     waterway_coverage_percent: 12,
@@ -246,6 +248,13 @@ const MESH_QUALITY_OPTIONS = [
   { label: "High", samples: 1024, note: "Fine FDM" },
   { label: "Ultra", samples: 2048, note: "0.2 mm or resin" },
 ] as const;
+
+function automaticRoadDetail(groundSpanKm: number) {
+  if (groundSpanKm <= 2) return "all streets, paths, and trails";
+  if (groundSpanKm <= 8) return "local streets";
+  if (groundSpanKm <= 20) return "minor roads";
+  return "major roads";
+}
 
 function meshPieceCount(spec: GenerationSpec) {
   return spec.solid_model ? 1 : Math.max(spec.rows, spec.columns);
@@ -2932,6 +2941,40 @@ export function TerrainStudio() {
                 </div>
                 {spec.color_output.roads_enabled && (
                   <>
+                    <label className="road-detail-field">
+                      Route detail
+                      <select
+                        value={spec.color_output.road_detail}
+                        onChange={(event) =>
+                          updateColor(
+                            "road_detail",
+                            event.target
+                              .value as GenerationSpec["color_output"]["road_detail"],
+                          )
+                        }
+                      >
+                        <option value="automatic">
+                          Automatic for map span
+                        </option>
+                        <option value="major">Major roads only</option>
+                        <option value="minor">
+                          Major and minor roads
+                        </option>
+                        <option value="streets">
+                          Roads and local streets
+                        </option>
+                        <option value="all">
+                          Streets, paths, and trails
+                        </option>
+                      </select>
+                      <small>
+                        {spec.color_output.road_detail === "automatic"
+                          ? `At ${spec.ground_span_km.toLocaleString()} km, automatic mode includes ${automaticRoadDetail(
+                              spec.ground_span_km,
+                            )}.`
+                          : "The chosen detail applies at every map span."}
+                      </small>
+                    </label>
                     <RangeField
                       label="Route print width"
                       value={spec.color_output.road_width_mm}
@@ -2956,7 +2999,8 @@ export function TerrainStudio() {
                         <span>Thin dense road networks</span>
                       </label>
                       <small>
-                        Reduces route width as mapped road coverage rises
+                        Reduces route width as mapped road coverage rises. It
+                        does not remove road classes.
                       </small>
                     </div>
                     <RangeField

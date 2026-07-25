@@ -27,16 +27,19 @@ rock. The first version should use ESA WorldCover 2021 at 10 m resolution:
 - class 80, permanent water bodies: water;
 - all other classes: rock in the color mode.
 
-OpenStreetMap adds motorway, trunk, primary, and secondary road geometry after
-the land-cover mask is clean. It also adds rivers, streams, canals, and mapped
-water areas. Linear features use smooth vector paths rather than raster cells.
-Higher road and waterway classes get wider print lines. The generator skips
-tunnels and keeps bridges visible. The default primary-road width is 0.7 mm;
-motorway and trunk lines are wider, while secondary roads and links are
-narrower. Dense-road adjustment can reduce those widths toward a printable 0.4
-mm floor. If no visible prominent road crosses the model, the generator falls
-back to paths, footways, bridleways, tracks, and cycleways. Trails never appear
-on top of a road network. A separate waterway coverage cutoff always keeps
+OpenStreetMap adds selected road and route geometry after the land-cover mask is
+clean. Route detail can stop at major roads, add minor roads, add local streets,
+or include paths and trails. Automatic mode selects more detail for smaller
+ground spans: all routes at 2 km or less, streets through 8 km, minor roads
+through 20 km, and major roads above that. It also adds rivers, streams, canals,
+and mapped water areas. Linear features use smooth vector paths rather than
+raster cells. Higher road and waterway classes get wider print lines. The
+generator skips tunnels and keeps bridges visible. The default primary-road
+width is 0.7 mm; motorway and trunk lines are wider, while streets and paths
+are narrower. Dense-road adjustment can reduce those widths toward a printable
+0.4 mm floor without removing a selected class. If no selected road crosses the
+model, the generator falls back to paths and trails. A separate waterway
+coverage cutoff always keeps
 rivers and canals, then adds the longest streams while their estimated printed
 area stays within the chosen share of the model. The default is 12%. A 0%
 cutoff gives major waterways only, while 100% keeps every mapped stream. Lakes
