@@ -6,7 +6,9 @@ use spade::{Point2, Triangulation};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::jigsaw::{edge_sign, puzzle_edge_point, shared_edge_pattern};
-use crate::mesh::{Mesh, MeshBuilder, distance_squared, triangulate_constraints, unit_vector};
+use crate::mesh::{
+    Mesh, MeshBuilder, distance_squared, triangulate_constraints, unit_vector, weld_export_mesh,
+};
 use crate::piece::geo_polygon;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::text::{EmbossedLabel, embossing_font};
@@ -283,16 +285,21 @@ pub(crate) fn build_tray_segments(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
 ) -> Result<Vec<Mesh>> {
-    if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
-        return Ok(vec![build_tray(spec, height_field)?]);
-    }
-    let contour_paths = tray_contour_paths(spec, height_field);
-    let mut segments =
-        Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
-    for row in 0..spec.tray.segment_rows {
-        for column in 0..spec.tray.segment_columns {
-            segments.push(build_tray_segment(spec, &contour_paths, row, column)?);
+    let mut segments = if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
+        vec![build_tray(spec, height_field)?]
+    } else {
+        let contour_paths = tray_contour_paths(spec, height_field);
+        let mut segments =
+            Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
+        for row in 0..spec.tray.segment_rows {
+            for column in 0..spec.tray.segment_columns {
+                segments.push(build_tray_segment(spec, &contour_paths, row, column)?);
+            }
         }
+        segments
+    };
+    for segment in &mut segments {
+        weld_export_mesh(segment);
     }
     Ok(segments)
 }
