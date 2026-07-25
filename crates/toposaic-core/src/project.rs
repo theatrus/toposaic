@@ -1,6 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -165,58 +169,91 @@ fn generate_project_inner(
     } else {
         "toposaic.3mf"
     });
-    let mut project_writer = ThreeMfWriter::new(spec, &project_path)?;
     let piece_batch_size = object_count
         .min(rayon::current_num_threads())
         .clamp(1, MAX_PARALLEL_PIECES);
-    for batch_start in (0..object_count).step_by(piece_batch_size) {
-        ensure_generation_active(is_cancelled)?;
-        let batch_end = (batch_start + piece_batch_size).min(object_count);
-        let pieces = (batch_start..batch_end)
-            .into_par_iter()
-            .map(|index| -> Result<(Mesh, Artifact)> {
+    // The 3MF write is serial (one deflate stream), so run it on its own
+    // thread and feed it finished meshes in index order over a bounded
+    // channel: batch k's 3MF write overlaps batch k+1's builds. The writer
+    // consumes meshes in send order, so the file bytes are unchanged.
+    let abort_project_write = AtomicBool::new(false);
+    let (mesh_sender, mesh_receiver) = mpsc::sync_channel::<Mesh>(piece_batch_size);
+    std::thread::scope(|scope| -> Result<()> {
+        let abort_flag = &abort_project_write;
+        let writer_path = &project_path;
+        let writer = scope.spawn(move || -> Result<()> {
+            let mut project_writer = ThreeMfWriter::new(spec, writer_path)?;
+            for mesh in mesh_receiver {
+                project_writer.write_mesh(&mesh)?;
+            }
+            if abort_flag.load(Ordering::Acquire) {
+                // The building side failed or was canceled; skip finalizing
+                // the archive, its error is reported instead.
+                return Ok(());
+            }
+            project_writer.finish()
+        });
+        let build_result = (|| -> Result<()> {
+            for batch_start in (0..object_count).step_by(piece_batch_size) {
                 ensure_generation_active(is_cancelled)?;
-                let row = if spec.solid_model {
-                    0
-                } else {
-                    index as u32 / spec.columns
-                };
-                let column = if spec.solid_model {
-                    0
-                } else {
-                    index as u32 % spec.columns
-                };
-                let mesh = build_piece_with_height_range(
-                    spec,
-                    height_field,
-                    height_range,
-                    surface_field,
-                    row,
-                    column,
-                )
-                .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
-                ensure_generation_active(is_cancelled)?;
-                let name = if spec.solid_model {
-                    "terrain-solid.stl".into()
-                } else {
-                    format!("piece-{}-{}.stl", row + 1, column + 1)
-                };
-                let path = output_dir.join(&name);
-                write_binary_stl(&mesh, &path)?;
-                let artifact = file_artifact(&path, "model/stl")?;
-                Ok((mesh, artifact))
-            })
-            .collect::<Vec<_>>();
-        for piece in pieces {
-            ensure_generation_active(is_cancelled)?;
-            let (mesh, artifact) = piece?;
-            artifacts.push(artifact);
-            project_writer.write_mesh(&mesh)?;
+                let batch_end = (batch_start + piece_batch_size).min(object_count);
+                let pieces = (batch_start..batch_end)
+                    .into_par_iter()
+                    .map(|index| -> Result<(Mesh, Artifact)> {
+                        ensure_generation_active(is_cancelled)?;
+                        let row = if spec.solid_model {
+                            0
+                        } else {
+                            index as u32 / spec.columns
+                        };
+                        let column = if spec.solid_model {
+                            0
+                        } else {
+                            index as u32 % spec.columns
+                        };
+                        let mesh = build_piece_with_height_range(
+                            spec,
+                            height_field,
+                            height_range,
+                            surface_field,
+                            row,
+                            column,
+                        )
+                        .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
+                        ensure_generation_active(is_cancelled)?;
+                        let name = if spec.solid_model {
+                            "terrain-solid.stl".into()
+                        } else {
+                            format!("piece-{}-{}.stl", row + 1, column + 1)
+                        };
+                        let path = output_dir.join(&name);
+                        write_binary_stl(&mesh, &path)?;
+                        let artifact = file_artifact(&path, "model/stl")?;
+                        Ok((mesh, artifact))
+                    })
+                    .collect::<Vec<_>>();
+                for piece in pieces {
+                    ensure_generation_active(is_cancelled)?;
+                    let (mesh, artifact) = piece?;
+                    artifacts.push(artifact);
+                    if mesh_sender.send(mesh).is_err() {
+                        // The writer thread dropped the receiver after an
+                        // error; the join below reports it.
+                        return Ok(());
+                    }
+                }
+                on_progress(batch_end as f32 / object_count as f32 * 0.9)?;
+            }
+            ensure_generation_active(is_cancelled)
+        })();
+        if build_result.is_err() {
+            abort_project_write.store(true, Ordering::Release);
         }
-        on_progress(batch_end as f32 / object_count as f32 * 0.9)?;
-    }
-    ensure_generation_active(is_cancelled)?;
-    project_writer.finish()?;
+        drop(mesh_sender);
+        let write_result = writer.join().expect("3MF writer thread panicked");
+        build_result?;
+        write_result
+    })?;
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     if spec.tray.enabled {
