@@ -184,6 +184,36 @@ export function TerrainMap({
     return visibleTiles;
   }, [mapZoom, size, viewWorldCenter]);
 
+  // Imported trails as screen-space SVG polylines, projected with the same
+  // Mercator math as the selection boxes. Long tracks are thinned for
+  // rendering only; the spec keeps the full resolution.
+  const trailPaths = useMemo(() => {
+    if (!size.width || !size.height || spec.trails.length === 0) return [];
+    const worldScale = TILE_SIZE * 2 ** mapZoom;
+    const toScreen = (latitude: number, longitude: number) => {
+      const projected = projectToWorld(longitude, latitude, mapZoom);
+      let deltaX = projected.x - anchorWorld.x;
+      if (deltaX > worldScale / 2) deltaX -= worldScale;
+      if (deltaX < -worldScale / 2) deltaX += worldScale;
+      const x = anchorWorld.x + deltaX - viewWorldCenter.x + size.width / 2;
+      const y = projected.y - viewWorldCenter.y + size.height / 2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    };
+    return spec.trails.map((trail) => {
+      const stride = Math.max(1, Math.ceil(trail.points.length / 400));
+      const points = [];
+      for (let index = 0; index < trail.points.length; index += stride) {
+        points.push(toScreen(trail.points[index][0], trail.points[index][1]));
+      }
+      const last = trail.points[trail.points.length - 1];
+      const lastScreen = toScreen(last[0], last[1]);
+      if (points[points.length - 1] !== lastScreen) {
+        points.push(lastScreen);
+      }
+      return points.join(" ");
+    });
+  }, [anchorWorld.x, mapZoom, size, spec.trails, viewWorldCenter]);
+
   const metresPerPixel =
     (156543.03392 *
       Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
@@ -355,6 +385,33 @@ export function TerrainMap({
             );
           })}
         </div>
+        {trailPaths.length > 0 && (
+          <svg
+            aria-hidden="true"
+            className="map-trails"
+            height={size.height}
+            style={{
+              inset: 0,
+              pointerEvents: "none",
+              position: "absolute",
+            }}
+            viewBox={`0 0 ${size.width} ${size.height}`}
+            width={size.width}
+          >
+            {trailPaths.map((path, index) => (
+              <polyline
+                fill="none"
+                key={index}
+                opacity={0.9}
+                points={path}
+                stroke={spec.color_output.trail_color}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2.5}
+              />
+            ))}
+          </svg>
+        )}
       </div>
       <div className="map-zoom" aria-label="Map zoom">
         <button

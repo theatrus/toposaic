@@ -332,6 +332,16 @@ pub fn fetch_surface_field(
             }
         }
     }
+    if !spec.trails.is_empty() {
+        let painted = paint_imported_trails(spec, bounds, &mut field);
+        append_source(
+            &mut field.source,
+            format!(
+                "imported trails: {painted} of {} drawn on the model in the trail color",
+                spec.trails.len()
+            ),
+        );
+    }
     if spec.buildings.enabled {
         match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(count) => append_source(
@@ -618,6 +628,136 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
     let model_area = spec.width_mm * spec.height_mm();
     let estimated_coverage = printed_length / model_area.max(f32::EPSILON);
     (0.06 / estimated_coverage.max(0.06)).clamp(0.35, 1.0)
+}
+
+/// How far outside the model square a trail keeps painting, in normalized
+/// map units. The margin only has to cover half the widest trail line
+/// (5 mm on a 60 mm print is 0.042), so clipped ends never show a gap at
+/// the model border.
+const TRAIL_CLIP_MARGIN: f32 = 0.05;
+
+/// Paints the spec's imported trails as Trail-class vector polylines, using
+/// the same lat/lon-to-UV normalization as OpenStreetMap routes. Each trail
+/// is clipped to the (margin-expanded) model square first — GPX files often
+/// wander far beyond the mapped area, and painting the whole track would
+/// resample kilometres of invisible line. Returns how many trails put at
+/// least one segment on the model.
+fn paint_imported_trails(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    field: &mut SurfaceField,
+) -> usize {
+    let mut painted = 0;
+    for trail in &spec.trails {
+        let normalized = trail
+            .points
+            .iter()
+            .map(|point| {
+                let longitude = unwrap_longitude(point[1], spec.center_lon);
+                [
+                    ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
+                    ((point[0] - bounds.south) / (bounds.north - bounds.south)) as f32,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let mut on_model = false;
+        for chain in clip_polyline_to_unit_box(&normalized, TRAIL_CLIP_MARGIN) {
+            if chain.len() >= 2 {
+                field.paint_polyline(
+                    &chain,
+                    spec.width_mm,
+                    spec.color_output.trail_width_mm,
+                    SurfaceClass::Trail,
+                );
+                on_model = true;
+            }
+        }
+        if on_model {
+            painted += 1;
+        }
+    }
+    painted
+}
+
+/// Clips a polyline to the unit square expanded by `margin`, splitting it
+/// into the chains that cross the box. Segments are clipped by
+/// Liang-Barsky; consecutive surviving segments whose endpoints meet stay
+/// in one chain, and every exit from the box starts a new one.
+fn clip_polyline_to_unit_box(points: &[[f32; 2]], margin: f32) -> Vec<Vec<[f32; 2]>> {
+    let low = -margin;
+    let high = 1.0 + margin;
+    let mut chains = Vec::new();
+    let mut current: Vec<[f32; 2]> = Vec::new();
+    let mut flush = |chain: &mut Vec<[f32; 2]>| {
+        if chain.len() >= 2 {
+            chains.push(std::mem::take(chain));
+        } else {
+            chain.clear();
+        }
+    };
+    for pair in points.windows(2) {
+        let Some((start, end)) = clip_segment_to_box(pair[0], pair[1], low, high) else {
+            flush(&mut current);
+            continue;
+        };
+        let continues = current.last().is_some_and(|last| {
+            (last[0] - start[0]).abs() <= 1e-6 && (last[1] - start[1]).abs() <= 1e-6
+        });
+        if !continues {
+            flush(&mut current);
+            current.push(start);
+        }
+        if current.last() != Some(&end) {
+            current.push(end);
+        }
+    }
+    flush(&mut current);
+    chains
+}
+
+/// Liang-Barsky clip of one segment against an axis-aligned box; `None`
+/// when the segment misses the box entirely.
+fn clip_segment_to_box(
+    start: [f32; 2],
+    end: [f32; 2],
+    low: f32,
+    high: f32,
+) -> Option<([f32; 2], [f32; 2])> {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let mut enter = 0.0_f32;
+    let mut exit = 1.0_f32;
+    for (direction, distance) in [
+        (-delta[0], start[0] - low),
+        (delta[0], high - start[0]),
+        (-delta[1], start[1] - low),
+        (delta[1], high - start[1]),
+    ] {
+        if direction == 0.0 {
+            if distance < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let ratio = distance / direction;
+        if direction < 0.0 {
+            if ratio > exit {
+                return None;
+            }
+            enter = enter.max(ratio);
+        } else {
+            if ratio < enter {
+                return None;
+            }
+            exit = exit.min(ratio);
+        }
+    }
+    if enter > exit {
+        return None;
+    }
+    Some((
+        [start[0] + delta[0] * enter, start[1] + delta[1] * enter],
+        [start[0] + delta[0] * exit, start[1] + delta[1] * exit],
+    ))
 }
 
 fn paint_buildings(
@@ -1521,6 +1661,65 @@ mod tests {
             paint_osm_ways(&spec, &height_field, bounds, &mut surface, response,),
             (1, 0, 1)
         );
+    }
+
+    #[test]
+    fn imported_trails_paint_in_the_trail_class_with_clipping() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        let bounds = bounds_for(&spec);
+        let center_latitude = (bounds.south + bounds.north) * 0.5;
+        // A west-to-east trail through the middle of the model that starts
+        // and ends far outside it.
+        spec.trails = vec![toposaic_core::TrailRoute {
+            name: "Crossing".into(),
+            points: vec![
+                [center_latitude, bounds.west - 2.0],
+                [center_latitude, bounds.east + 2.0],
+            ],
+        }];
+        spec.color_output.trail_width_mm = 2.0;
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "trail").unwrap();
+        assert_eq!(paint_imported_trails(&spec, bounds, &mut field), 1);
+        // Vector overlays answer through sampling, not the raster.
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Trail);
+        assert_eq!(field.class_at(0.1, 0.5), SurfaceClass::Trail);
+        assert_eq!(field.class_at(0.5, 0.2), SurfaceClass::Rock);
+
+        // A trail entirely outside the model paints nothing.
+        spec.trails[0].points = vec![
+            [center_latitude + 5.0, bounds.west - 2.0],
+            [center_latitude + 5.0, bounds.east + 2.0],
+        ];
+        let mut untouched = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "trail").unwrap();
+        assert_eq!(paint_imported_trails(&spec, bounds, &mut untouched), 0);
+    }
+
+    #[test]
+    fn polyline_box_clipping_splits_reentrant_tracks() {
+        // Out - in - out - in: two chains, each clipped at the box border.
+        let chains = clip_polyline_to_unit_box(
+            &[
+                [-1.0, 0.5],
+                [0.5, 0.5],
+                [0.5, 2.0],
+                [0.6, 2.0],
+                [0.6, 0.5],
+                [2.0, 0.5],
+            ],
+            0.0,
+        );
+        assert_eq!(chains.len(), 2);
+        assert_eq!(chains[0].first(), Some(&[0.0, 0.5]));
+        assert_eq!(chains[0].last(), Some(&[0.5, 1.0]));
+        assert_eq!(chains[1].first(), Some(&[0.6, 1.0]));
+        assert_eq!(chains[1].last(), Some(&[1.0, 0.5]));
+        // A polyline that never touches the box produces nothing.
+        assert!(clip_polyline_to_unit_box(&[[-2.0, -2.0], [-1.5, -2.0]], 0.0).is_empty());
     }
 
     #[test]

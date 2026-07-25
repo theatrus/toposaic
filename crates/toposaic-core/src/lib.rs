@@ -22,6 +22,6 @@ pub use project::{
 pub use spec::{
     BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec, ElevationSource, GenerationSpec,
     ResolvedRoadDetail, RoadDetail, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
-    TraySpec,
+    TrailRoute, TraySpec,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

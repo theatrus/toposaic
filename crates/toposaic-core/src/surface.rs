@@ -515,7 +515,7 @@ impl SurfaceField {
                         * KRIGING_OFFSET_STEPS as f64)
                         .round() as usize;
                     let stencil = &weights[offset_y * (KRIGING_OFFSET_STEPS + 1) + offset_x];
-                    let mut scores = [0.0_f32; 6];
+                    let mut scores = [0.0_f32; SurfaceClass::ALL.len()];
                     for node_y in 0..KRIGING_NEIGHBORHOOD {
                         let native_y = (cell_y + node_y as isize - 1)
                             .clamp(0, native_height as isize - 1)
@@ -764,7 +764,7 @@ impl SurfaceField {
             let class = original[start];
             let mut queue = VecDeque::from([start]);
             let mut component = Vec::new();
-            let mut neighbours = [0_usize; 6];
+            let mut neighbours = [0_usize; SurfaceClass::ALL.len()];
             visited[start] = true;
             while let Some(index) = queue.pop_front() {
                 component.push(index);
@@ -801,6 +801,7 @@ impl SurfaceField {
                         3 => SurfaceClass::Water,
                         4 => SurfaceClass::Road,
                         5 => SurfaceClass::Building,
+                        6 => SurfaceClass::Trail,
                         _ => SurfaceClass::Rock,
                     })
                     .unwrap_or(SurfaceClass::Rock);
@@ -813,6 +814,12 @@ impl SurfaceField {
 
     fn at(&self, u: f32, v: f32) -> SurfaceClass {
         self.sample(u, v).class
+    }
+
+    /// Surface class at a normalized position with every overlay applied —
+    /// the class a generated artifact colors that spot.
+    pub fn class_at(&self, u: f32, v: f32) -> SurfaceClass {
+        self.at(u, v)
     }
 
     pub(crate) fn terrain_at(&self, u: f32, v: f32) -> SurfaceClass {
@@ -845,26 +852,19 @@ impl SurfaceField {
             (self.base_classes[y1 * self.width + x1], tx * ty),
             (self.base_classes[y1 * self.width + x0], (1.0 - tx) * ty),
         ];
-        [
-            SurfaceClass::Rock,
-            SurfaceClass::Forest,
-            SurfaceClass::Snow,
-            SurfaceClass::Water,
-            SurfaceClass::Road,
-            SurfaceClass::Building,
-        ]
-        .into_iter()
-        .map(|class| {
-            let weight = corners
-                .iter()
-                .filter(|(corner_class, _)| *corner_class == class)
-                .map(|(_, weight)| weight)
-                .sum::<f32>();
-            (class, weight)
-        })
-        .max_by(|first, second| first.1.total_cmp(&second.1))
-        .map(|(class, _)| class)
-        .unwrap_or(SurfaceClass::Rock)
+        SurfaceClass::ALL
+            .into_iter()
+            .map(|class| {
+                let weight = corners
+                    .iter()
+                    .filter(|(corner_class, _)| *corner_class == class)
+                    .map(|(_, weight)| weight)
+                    .sum::<f32>();
+                (class, weight)
+            })
+            .max_by(|first, second| first.1.total_cmp(&second.1))
+            .map(|(class, _)| class)
+            .unwrap_or(SurfaceClass::Rock)
     }
 
     fn sample_with_overlays(
@@ -883,6 +883,21 @@ impl SurfaceField {
             };
         }
         let line_entries = &self.vector_line_buckets[bucket];
+        // Imported trails are the user's own highlight, so they sit above
+        // roads and every other overlay short of buildings. Without trails
+        // no Trail line exists and this check never matches.
+        let has_trail = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Trail
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_trail {
+            return SurfaceSample {
+                class: SurfaceClass::Trail,
+                building_height_m,
+            };
+        }
         let has_road = include_roads
             && line_entries.iter().any(|entry| {
                 let line = &self.vector_lines[entry.line_index];
@@ -914,7 +929,9 @@ impl SurfaceField {
             .iter()
             .rev()
             .map(|entry| (&self.vector_lines[entry.line_index], entry))
-            .filter(|(line, _)| line.class != SurfaceClass::Road)
+            .filter(|(line, _)| {
+                line.class != SurfaceClass::Road && line.class != SurfaceClass::Trail
+            })
             .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
             .map(|(line, _)| line.class)
         {
@@ -944,11 +961,11 @@ impl SurfaceField {
             .fold(0.0, f32::max)
     }
 
-    pub(crate) fn coverage(&self) -> [f32; 6] {
+    pub(crate) fn coverage(&self) -> [f32; SurfaceClass::ALL.len()] {
         let counts = (0..self.classes.len())
             .into_par_iter()
             .fold(
-                || [0_usize; 6],
+                || [0_usize; SurfaceClass::ALL.len()],
                 |mut counts, index| {
                     let x = index % self.width;
                     let y = index / self.width;
@@ -959,7 +976,7 @@ impl SurfaceField {
                 },
             )
             .reduce(
-                || [0_usize; 6],
+                || [0_usize; SurfaceClass::ALL.len()],
                 |mut total, counts| {
                     for (total, count) in total.iter_mut().zip(counts) {
                         *total += count;
@@ -1339,6 +1356,28 @@ mod tests {
         assert_eq!(field.at(0.5, 0.5), SurfaceClass::Road);
         assert_eq!(field.at(0.5, 0.53), SurfaceClass::Road);
         assert_eq!(field.at(0.5, 0.35), SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn surface_field_paints_trail_lines_above_roads_and_water() {
+        let mut field =
+            SurfaceField::new(21, 21, vec![SurfaceClass::Forest; 21 * 21], "test").unwrap();
+        field.paint_surface_area(
+            &[[0.4, 0.0], [0.6, 0.0], [0.6, 1.0], [0.4, 1.0]],
+            SurfaceClass::Water,
+        );
+        field.paint_polyline(&[[0.0, 0.4], [1.0, 0.4]], 20.0, 2.0, SurfaceClass::Road);
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 20.0, 2.0, SurfaceClass::Trail);
+        // A crossing trail wins over the road it shares samples with.
+        field.paint_polyline(&[[0.0, 0.4], [1.0, 0.4]], 20.0, 2.0, SurfaceClass::Trail);
+
+        assert_eq!(field.at(0.2, 0.5), SurfaceClass::Trail);
+        assert_eq!(field.at(0.5, 0.5), SurfaceClass::Trail, "beats water areas");
+        assert_eq!(field.at(0.2, 0.4), SurfaceClass::Trail, "beats roads");
+        assert_eq!(field.at(0.2, 0.7), SurfaceClass::Forest);
+        // The terrain raster under the raised trail keeps its base class,
+        // like it does under roads.
+        assert_eq!(field.terrain_at(0.2, 0.5), SurfaceClass::Forest);
     }
 
     #[test]

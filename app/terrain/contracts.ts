@@ -1,3 +1,9 @@
+export type TrailRoute = {
+  name: string;
+  /** Ordered [latitude, longitude] pairs in degrees. */
+  points: [number, number][];
+};
+
 export type GenerationSpec = {
   center_lat: number;
   center_lon: number;
@@ -53,6 +59,8 @@ export type GenerationSpec = {
     water_color: string;
     road_color: string;
     building_color: string;
+    trail_color: string;
+    trail_width_mm: number;
     roads_enabled: boolean;
     road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
@@ -72,6 +80,7 @@ export type GenerationSpec = {
     snow_slope_gate: boolean;
     snow_slope_limit_degrees: number;
   };
+  trails: TrailRoute[];
 };
 
 export type SavedSetup = {
@@ -117,6 +126,7 @@ export type PreviewData = {
     water: string;
     road: string;
     building: string;
+    trail?: string;
   };
   surface_coverage?: {
     rock: number;
@@ -125,6 +135,7 @@ export type PreviewData = {
     water: number;
     road: number;
     building: number;
+    trail?: number;
   };
   surface_source?: string;
   minimum_elevation_m?: number;

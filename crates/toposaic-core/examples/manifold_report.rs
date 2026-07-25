@@ -13,7 +13,7 @@ use std::env;
 use toposaic_core::analysis::{analyze_project, summarize};
 use toposaic_core::{
     BridgeStructure, BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, SurfaceClass,
-    SurfaceField, TraySpec,
+    SurfaceField, TrailRoute, TraySpec,
 };
 
 /// Small deterministic generator so synthetic roads and buildings are stable
@@ -44,6 +44,28 @@ fn synthetic_height_field(width: usize, height: usize) -> HeightField {
         })
         .collect();
     HeightField::new(width, height, values_m, "synthetic manifold surface").unwrap()
+}
+
+/// Winding imported-trail polylines that cross the synthetic road grid,
+/// buildings, and each other — the worst weld case trails can pose.
+fn paint_synthetic_trails(spec: &GenerationSpec, field: &mut SurfaceField) {
+    for trail in 0..3_u32 {
+        let across = 0.2 + trail as f32 * 0.3;
+        let points = (0..32)
+            .map(|index| {
+                let along = index as f32 / 31.0;
+                let wobble =
+                    0.22 * (along * std::f32::consts::TAU * (1.0 + trail as f32 * 0.8)).cos();
+                [(across + wobble).clamp(0.0, 1.0), along]
+            })
+            .collect::<Vec<_>>();
+        field.paint_polyline(
+            &points,
+            spec.width_mm,
+            spec.color_output.trail_width_mm,
+            SurfaceClass::Trail,
+        );
+    }
 }
 
 fn synthetic_surface_field(spec: &GenerationSpec, size: usize, with_bridge: bool) -> SurfaceField {
@@ -129,7 +151,13 @@ fn scenario(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = spec.sample_grid_dimensions(spec.effective_samples_per_piece());
     let height_field = synthetic_height_field(width, height);
-    let surface_field = color.then(|| synthetic_surface_field(spec, width.max(64), with_bridge));
+    let surface_field = color.then(|| {
+        let mut field = synthetic_surface_field(spec, width.max(64), with_bridge);
+        if !spec.trails.is_empty() {
+            paint_synthetic_trails(spec, &mut field);
+        }
+        field
+    });
     let reports = analyze_project(spec, Some(&height_field), surface_field.as_ref())?;
     if json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
@@ -188,6 +216,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             json,
         )?;
     }
+
+    let trails = GenerationSpec {
+        trails: vec![
+            TrailRoute {
+                name: "Synthetic Loop".into(),
+                points: vec![[46.8, -121.8], [46.9, -121.7]],
+            },
+            TrailRoute {
+                name: "Crossing Track".into(),
+                points: vec![[46.9, -121.8], [46.8, -121.7]],
+            },
+            TrailRoute {
+                name: "Third Route".into(),
+                points: vec![[46.85, -121.8], [46.85, -121.7]],
+            },
+        ],
+        ..color.clone()
+    };
+    scenario(
+        "color 3x3 puzzle with imported trails",
+        &trails,
+        true,
+        false,
+        json,
+    )?;
 
     let tray = GenerationSpec {
         tray: TraySpec {

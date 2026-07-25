@@ -49,9 +49,10 @@ pub(crate) fn build_preview(
             ) / spec.relief_mm.max(f32::EPSILON);
             let road = surface_sample
                 .filter(|sample| {
-                    spec.color_output.enabled
+                    (spec.color_output.enabled
                         && spec.color_output.roads_enabled
-                        && sample.class == SurfaceClass::Road
+                        && sample.class == SurfaceClass::Road)
+                        || (spec.uses_trails() && sample.class == SurfaceClass::Trail)
                 })
                 .map(|_| spec.color_output.road_height_mm)
                 .unwrap_or(0.0)
@@ -107,6 +108,13 @@ pub(crate) fn build_preview(
             "road": coverage[4],
             "building": coverage[5],
         });
+        // The trail keys appear only when the spec carries trails, so
+        // preview.json stays byte-identical for every existing project.
+        if spec.uses_trails() {
+            preview["surface_palette"]["trail"] = serde_json::json!(spec.color_output.trail_color);
+            preview["surface_coverage"]["trail"] =
+                serde_json::json!(coverage[SurfaceClass::Trail.material_index() as usize]);
+        }
         preview["surface_source"] = serde_json::json!(field.source);
     }
     preview

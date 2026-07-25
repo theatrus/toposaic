@@ -58,7 +58,7 @@ and floating or supported bridges in place.*
 
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. Bambu Studio and
-OrcaSlicer load the six palette colors as filament assignments.*
+OrcaSlicer load the palette colors as filament assignments.*
 
 ## Version 0.3 highlights
 
@@ -179,6 +179,16 @@ longest streams until their estimated printed area reaches the chosen share of
 the model. Set it to 0% for major waterways only or 100% for every mapped
 stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
+
+Hikers can import their own routes from GPX or KML files on the Surface tab.
+Each track, route, LineString, or gx:Track becomes one trail, named from the
+file, drawn on the model as a raised vector line like a road, and printed in
+its own seventh color (a high-vis magenta to start). Trail width has its own
+slider, trails show on the map preview and in the 3D legend, and they live in
+the model spec, so saved setups and exported setup files carry them. Files are
+parsed in the browser; tracks longer than 20,000 points are thinned on import,
+and a model holds up to 20 trails. Models without trails keep exactly the
+six-color output they have today.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.
