@@ -12,12 +12,15 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
-use reqwest::blocking::Client;
 use serde::Deserialize;
 use terrain_core::{GenerationSpec, HeightField, RoadDetail, SurfaceClass, SurfaceField};
 use tracing::warn;
 
-use crate::cache;
+use crate::{
+    cache,
+    geo::{GeoBounds, normalize_longitude},
+    http,
+};
 
 const WORLD_COVER_BASE_URL: &str =
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map";
@@ -26,11 +29,6 @@ const WORLD_COVER_ATTRIBUTION: &str = "© ESA WorldCover project / Contains modi
 const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const FALLBACK_OVERPASS_URL: &str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
-const USER_AGENT: &str = concat!(
-    "toposaic/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/theatrus/toposaic)"
-);
 const MAJOR_HIGHWAYS: &str =
     "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link";
 const MINOR_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified";
@@ -48,14 +46,6 @@ struct SamplePoint {
     output_index: usize,
     longitude: f64,
     latitude: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct GeoBounds {
-    south: f64,
-    north: f64,
-    west: f64,
-    east: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,15 +352,7 @@ fn waterway_print_width(spec: &GenerationSpec, feature: &WaterwayFeature) -> f32
 }
 
 fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
-    let half_lat = spec.ground_span_km / 2.0 / 110.574;
-    let longitude_scale = (111.32 * spec.center_lat.to_radians().cos().abs()).max(20.0);
-    let half_lon = spec.ground_span_km / 2.0 / longitude_scale;
-    GeoBounds {
-        south: (spec.center_lat - half_lat).max(-85.0),
-        north: (spec.center_lat + half_lat).min(85.0),
-        west: spec.center_lon - half_lon,
-        east: spec.center_lon + half_lon,
-    }
+    GeoBounds::around(spec.center_lat, spec.center_lon, spec.ground_span_km)
 }
 
 fn paint_roads_or_trails(
@@ -605,11 +587,8 @@ fn fetch_osm_response(
         return Ok(response);
     }
 
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(45))
-        .build()
-        .context("build OpenStreetMap client")?;
+    let client =
+        http::blocking_client(Duration::from_secs(45)).context("build OpenStreetMap client")?;
     let configured_url = env::var("OVERPASS_BASE_URL").ok();
     let preferred_endpoint = PREFERRED_OVERPASS_ENDPOINT.load(Ordering::Relaxed);
     let urls = overpass_urls(configured_url.as_deref(), preferred_endpoint);
@@ -708,11 +687,16 @@ fn osm_cache_path(spec: &GenerationSpec, cache_dir: &Path, cache_prefix: &str) -
 }
 
 fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
-    let ways = osm_bboxes(bounds)
+    let ways = bounds
+        .split_at_antimeridian()
         .iter()
-        .map(|(south, west, north, east)| {
+        .map(|bounds| {
             format!(
-                "way[\"highway\"~\"^({highway_filter})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+                "way[\"highway\"~\"^({highway_filter})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
             )
         })
         .collect::<String>();
@@ -720,11 +704,16 @@ fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
 }
 
 fn building_query(bounds: GeoBounds) -> String {
-    let ways = osm_bboxes(bounds)
+    let ways = bounds
+        .split_at_antimeridian()
         .iter()
-        .map(|(south, west, north, east)| {
+        .map(|bounds| {
             format!(
-                "way[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+                "way[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
             )
         })
         .collect::<String>();
@@ -732,31 +721,20 @@ fn building_query(bounds: GeoBounds) -> String {
 }
 
 fn water_query(bounds: GeoBounds) -> String {
-    let ways = osm_bboxes(bounds)
+    let ways = bounds
+        .split_at_antimeridian()
         .iter()
-        .map(|(south, west, north, east)| {
+        .map(|bounds| {
             format!(
-                "way[\"waterway\"~\"^({WATERWAYS})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"natural\"=\"water\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"waterway\"=\"riverbank\"]({south:.7},{west:.7},{north:.7},{east:.7});"
+                "way[\"waterway\"~\"^({WATERWAYS})$\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"natural\"=\"water\"]({south:.7},{west:.7},{north:.7},{east:.7});way[\"waterway\"=\"riverbank\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
             )
         })
         .collect::<String>();
     format!("[out:json][timeout:30];({ways});out tags geom;")
-}
-
-fn osm_bboxes(bounds: GeoBounds) -> Vec<(f64, f64, f64, f64)> {
-    if bounds.west < -180.0 {
-        vec![
-            (bounds.south, bounds.west + 360.0, bounds.north, 180.0),
-            (bounds.south, -180.0, bounds.north, bounds.east),
-        ]
-    } else if bounds.east > 180.0 {
-        vec![
-            (bounds.south, bounds.west, bounds.north, 180.0),
-            (bounds.south, -180.0, bounds.north, bounds.east - 360.0),
-        ]
-    } else {
-        vec![(bounds.south, bounds.west, bounds.north, bounds.east)]
-    }
 }
 
 fn road_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
@@ -951,10 +929,7 @@ fn cached_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<PathBuf>
         return Ok(path);
     }
     let url = format!("{WORLD_COVER_BASE_URL}/{file_name}");
-    let response = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(300))
-        .build()
+    let response = http::blocking_client(Duration::from_secs(300))
         .context("build ESA WorldCover client")?
         .get(&url)
         .send()
@@ -985,10 +960,6 @@ fn world_cover_tile(longitude: f64, latitude: f64) -> String {
         if west < 0 { 'W' } else { 'E' },
         west.unsigned_abs(),
     )
-}
-
-fn normalize_longitude(longitude: f64) -> f64 {
-    (longitude + 180.0).rem_euclid(360.0) - 180.0
 }
 
 #[cfg(test)]

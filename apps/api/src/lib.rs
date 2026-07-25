@@ -37,6 +37,8 @@ use uuid::Uuid;
 
 mod cache;
 mod elevation;
+mod geo;
+mod http;
 mod surface;
 
 #[derive(Clone)]
@@ -120,10 +122,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .with_context(|| format!("create map cache directory {}", map_cache_dir.display()))?;
     let connection = Connection::open(data_dir.join("toposaic.sqlite3"))?;
     migrate(&connection)?;
-    let geocoder = Client::builder()
-        .user_agent("toposaic/0.1 (+https://github.com/theatrus/terrain-puzzle)")
-        .timeout(Duration::from_secs(12))
-        .build()?;
+    let geocoder = http::async_client(Duration::from_secs(12))?;
 
     let state = AppState {
         db: Arc::new(StdMutex::new(connection)),
@@ -209,7 +208,7 @@ async fn search_places(
     Query(search): Query<PlaceSearch>,
 ) -> Result<Json<Vec<PlaceResult>>, (StatusCode, Json<ApiError>)> {
     let query = search.q.trim();
-    if !(2..=120).contains(&query.len()) {
+    if !valid_place_query_length(query) {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             "place search must be between 2 and 120 characters",
@@ -224,6 +223,10 @@ async fn search_places(
         .await
         .map_err(internal_error)?;
     Ok(Json(results))
+}
+
+fn valid_place_query_length(query: &str) -> bool {
+    (2..=120).contains(&query.chars().count())
 }
 
 fn find_cached_places(state: &AppState, query: &str) -> Result<Option<Vec<PlaceResult>>> {
@@ -302,10 +305,18 @@ impl TryFrom<NominatimPlace> for PlaceResult {
     type Error = anyhow::Error;
 
     fn try_from(place: NominatimPlace) -> Result<Self> {
+        let latitude: f64 = place.lat.parse().context("invalid place latitude")?;
+        let longitude: f64 = place.lon.parse().context("invalid place longitude")?;
+        if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
+            bail!("place latitude is outside the valid range");
+        }
+        if !longitude.is_finite() || !(-180.0..=180.0).contains(&longitude) {
+            bail!("place longitude is outside the valid range");
+        }
         Ok(Self {
             display_name: place.display_name,
-            latitude: place.lat.parse().context("invalid place latitude")?,
-            longitude: place.lon.parse().context("invalid place longitude")?,
+            latitude,
+            longitude,
             category: place.category,
             kind: place.kind,
         })
@@ -792,9 +803,6 @@ fn run_adjacent_grid_job(
 }
 
 fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
-    let latitude_step = spec.ground_span_km / 110.574;
-    let longitude_scale = (111.32 * spec.center_lat.to_radians().cos().abs()).max(20.0);
-    let longitude_step = spec.ground_span_km / longitude_scale;
     let row_anchor = match spec.super_tile_anchor {
         SuperTileAnchor::TopLeft => 0.0,
         SuperTileAnchor::Center => (f64::from(spec.adjacent_rows) - 1.0) / 2.0,
@@ -809,9 +817,12 @@ fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
                 let mut tile = spec.clone();
                 let row_offset = f64::from(row) - row_anchor;
                 let column_offset = f64::from(column) - column_anchor;
-                tile.center_lat = (spec.center_lat - row_offset * latitude_step).clamp(-85.0, 85.0);
-                tile.center_lon =
-                    normalize_longitude(spec.center_lon + column_offset * longitude_step);
+                (tile.center_lat, tile.center_lon) = geo::offset_coordinates(
+                    spec.center_lat,
+                    spec.center_lon,
+                    -row_offset * spec.ground_span_km,
+                    column_offset * spec.ground_span_km,
+                );
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
                 tile
@@ -867,10 +878,6 @@ fn stitch_height_fields(fields: &[HeightField], rows: u32, columns: u32) -> Resu
         *value /= f32::from(count);
     }
     HeightField::new(width, height, sums, "stitched adjacent elevation grid")
-}
-
-fn normalize_longitude(longitude: f64) -> f64 {
-    (longitude + 180.0).rem_euclid(360.0) - 180.0
 }
 
 fn copy_grid_artifact(
@@ -1072,6 +1079,23 @@ mod tests {
             kind: "unknown".into(),
         });
         assert!(result.is_err());
+
+        let out_of_range = PlaceResult::try_from(NominatimPlace {
+            display_name: "Broken".into(),
+            lat: "91".into(),
+            lon: "181".into(),
+            category: "place".into(),
+            kind: "unknown".into(),
+        });
+        assert!(out_of_range.is_err());
+    }
+
+    #[test]
+    fn place_query_limit_counts_characters_not_utf8_bytes() {
+        assert!(valid_place_query_length("東京"));
+        assert!(valid_place_query_length(&"é".repeat(120)));
+        assert!(!valid_place_query_length("x"));
+        assert!(!valid_place_query_length(&"é".repeat(121)));
     }
 
     #[test]

@@ -296,8 +296,12 @@ npm run test:ui
   binary STL, and standards-based 3MF
 - `apps/api`: global elevation provider, Axum API, SQLite jobs, background
   generation, ESA WorldCover sampling, and downloads
-- `app`: WebGL-free map, color relief preview, print controls, and job downloads
+- `app`: shared map, 3D relief preview, print controls, and job downloads
+- `app/terrain`: React-side terrain contracts, defaults, and quality rules
 - `desktop` and `src-tauri`: shared React entry point and native Tauri shell
+
+See [the architecture guide](docs/architecture.md) for dependency and folder
+rules.
 
 See [the color output plan](docs/color-output-plan.md) for the design and print
 checks behind the rock–forest–snow–water–road 3MF workflow.

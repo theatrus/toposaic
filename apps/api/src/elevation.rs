@@ -10,7 +10,11 @@ use image::{ImageFormat, RgbImage};
 use reqwest::{StatusCode, blocking::Client};
 use terrain_core::{ElevationSource, GenerationSpec, HeightField};
 
-use crate::cache;
+use crate::{
+    cache,
+    geo::{GeoBounds, normalize_longitude},
+    http,
+};
 
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const SOURCE_SAMPLES_PER_MESH_INTERVAL: f64 = 2.0;
@@ -117,13 +121,7 @@ fn fetch_height_field_at_size(
     let client = elevation_client()?;
     let mut tiles = HashMap::new();
     let mut missing_tiles = HashSet::new();
-    let half_lat = spec.ground_span_km / 2.0 / 110.574;
-    let longitude_scale = (111.32 * spec.center_lat.to_radians().cos().abs()).max(20.0);
-    let half_lon = spec.ground_span_km / 2.0 / longitude_scale;
-    let south = (spec.center_lat - half_lat).max(-85.0);
-    let north = (spec.center_lat + half_lat).min(85.0);
-    let west = spec.center_lon - half_lon;
-    let east = spec.center_lon + half_lon;
+    let bounds = GeoBounds::around(spec.center_lat, spec.center_lon, spec.ground_span_km);
     let mut values_m = Vec::with_capacity(sample_width * sample_height);
     let mut sampler = ElevationSampler {
         client: &client,
@@ -136,10 +134,10 @@ fn fetch_height_field_at_size(
 
     for row in 0..sample_height {
         let v = row as f64 / (sample_height - 1) as f64;
-        let latitude = south + (north - south) * v;
+        let latitude = bounds.south + (bounds.north - bounds.south) * v;
         for column in 0..sample_width {
             let u = column as f64 / (sample_width - 1) as f64;
-            let longitude = normalize_longitude(west + (east - west) * u);
+            let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
             values_m.push(sampler.sample(requested_zoom, longitude, latitude)?);
         }
         on_progress((row + 1) as f32 / sample_height as f32)?;
@@ -150,11 +148,7 @@ fn fetch_height_field_at_size(
 }
 
 fn elevation_client() -> Result<Client> {
-    Client::builder()
-        .user_agent("toposaic/0.1 (+local terrain mesh generator)")
-        .timeout(Duration::from_secs(20))
-        .build()
-        .context("build elevation HTTP client")
+    http::blocking_client(Duration::from_secs(20)).context("build elevation HTTP client")
 }
 
 fn available_samples_per_piece(spec: &GenerationSpec, cache_dir: &Path) -> Result<u32> {
@@ -432,10 +426,6 @@ fn cache_path(cache_dir: &Path, provider: ElevationProvider, zoom: u8, x: u32, y
         .join(zoom.to_string())
         .join(x.to_string())
         .join(format!("{y}.{}", provider.extension))
-}
-
-fn normalize_longitude(longitude: f64) -> f64 {
-    (longitude + 180.0).rem_euclid(360.0) - 180.0
 }
 
 #[cfg(test)]
