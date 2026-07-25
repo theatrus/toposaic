@@ -93,6 +93,14 @@ export const terrainApi = {
   saveSetup(name: string, spec: GenerationSpec) {
     return requestJson<SavedSetup>("/api/setups", jsonBody({ name, spec }));
   },
+  renameSetup(id: string, name: string, signal?: AbortSignal) {
+    return requestJson<SavedSetup>(`/api/setups/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+      signal,
+    });
+  },
   async deleteSetup(id: string) {
     const response = await fetch(
       `${API_URL}/api/setups/${encodeURIComponent(id)}`,

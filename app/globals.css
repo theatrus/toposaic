@@ -73,9 +73,8 @@ a {
 
 .setup-manager {
   align-items: center;
-  display: grid;
-  gap: 3px 6px;
-  grid-template-columns: auto minmax(90px, 130px) auto;
+  display: flex;
+  gap: 8px;
 }
 
 .setup-picker {
@@ -90,8 +89,7 @@ a {
   white-space: nowrap;
 }
 
-.setup-picker select,
-.setup-name {
+.setup-picker select {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--ink);
@@ -101,12 +99,98 @@ a {
   padding: 4px 5px;
 }
 
-.setup-name::placeholder {
+.setup-menu {
+  position: relative;
+}
+
+.setup-menu-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--moss);
+  cursor: pointer;
+  display: flex;
+  font-size: 9px;
+  font-weight: 760;
+  gap: 5px;
+  letter-spacing: 0.06em;
+  padding: 5px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.setup-menu-button[aria-expanded="true"] {
+  background: var(--panel);
+}
+
+.setup-menu-list {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  display: grid;
+  min-width: 170px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+}
+
+.setup-menu-list [role="menuitem"] {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  padding: 7px 9px;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.setup-menu-list [role="menuitem"]:enabled:hover,
+.setup-menu-list [role="menuitem"]:focus-visible {
+  background: rgba(38, 63, 52, 0.09);
+  outline: 2px solid var(--moss);
+  outline-offset: -2px;
+}
+
+.setup-menu-list [role="menuitem"]:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.65;
+}
+
+.setup-menu-list .confirm-delete {
+  color: #8f493b;
+}
+
+.setup-menu-name-row {
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 5px 5px;
+}
+
+.setup-menu-name-row input {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  min-width: 0;
+  padding: 4px 5px;
+  width: 130px;
+}
+
+.setup-menu-name-row input::placeholder {
   color: var(--muted);
 }
 
-.setup-save,
-.setup-tools button {
+.setup-menu-name-row button {
   background: transparent;
   border: 0;
   color: var(--moss);
@@ -118,30 +202,18 @@ a {
   white-space: nowrap;
 }
 
-.setup-save:disabled,
-.setup-tools button:disabled {
+.setup-menu-name-row button:disabled {
   color: var(--muted);
   cursor: default;
   opacity: 0.65;
 }
 
-.setup-save:focus-visible,
-.setup-tools button:focus-visible,
+.setup-menu-button:focus-visible,
 .setup-picker select:focus-visible,
-.setup-name:focus-visible {
+.setup-menu-name-row input:focus-visible,
+.setup-menu-name-row button:focus-visible {
   outline: 2px solid var(--moss);
   outline-offset: 2px;
-}
-
-.setup-tools {
-  align-items: center;
-  display: flex;
-  gap: 2px;
-  grid-column: 1 / -1;
-}
-
-.setup-tools .confirm-delete {
-  color: #8f493b;
 }
 
 .setup-status {
@@ -2147,8 +2219,7 @@ fieldset.control-section .road-options {
     gap: 8px;
   }
 
-  .setup-name,
-  .setup-tools {
+  .setup-status {
     display: none;
   }
 

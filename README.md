@@ -35,10 +35,12 @@ builds.
 larger and can be resized with the horizontal divider. A second divider between
 the map and the 3D preview sets their side-by-side split.*
 
-The top bar keeps a list of saved setups. Save the current model under a name,
-recall it later, and delete entries you no longer need. Saving an existing name
-overwrites that setup. Export writes every setup to a `toposaic-setups.json`
-file, and Import reads such a file back, so setups can move between machines.
+The top bar keeps a list of saved setups. Pick one from the dropdown to recall
+it. The Setups menu next to it holds the file actions: Save overwrites the
+selected setup (or asks for a name when none is selected), Save as forks the
+current model under a new name, and Rename and Delete act on the selected
+setup. Export writes every setup to a `toposaic-setups.json` file, and Import
+reads such a file back, so setups can move between machines.
 
 ![TopoSaic model controls showing boxed map coordinates and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
