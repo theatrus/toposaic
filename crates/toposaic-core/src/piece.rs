@@ -9,7 +9,7 @@ use crate::heightfield::height_range_for_spec;
 use crate::heightfield::{HeightField, normalized_height};
 use crate::jigsaw::{EdgePattern, edge_noise, edge_sign, puzzle_edge_point, shared_edge_pattern};
 use crate::mesh::{
-    Mesh, MeshBuilder, distance_squared, point_in_polygon, point_line_distance,
+    Mesh, MeshBuilder, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
     triangulate_constraints, unit_vector,
 };
 use crate::spec::{BridgeStructure, GenerationSpec, SurfaceClass};
@@ -270,11 +270,17 @@ pub(crate) fn build_piece_with_height_range(
     }
     let grid_columns = ((maximum_x - minimum_x) / terrain_spacing).ceil() as usize;
     let grid_rows = ((maximum_y - minimum_y) / terrain_spacing).ceil() as usize;
+    // The densified outline reaches thousands of points at high detail, and
+    // both the grid seeding below and the face filter after triangulation
+    // run one containment query per sample. The strip index answers each
+    // query from roughly one grid row's worth of edges instead of the whole
+    // outline while returning exactly what point_in_polygon would.
+    let outline_index = PolygonStripIndex::new(&outline, grid_rows.max(1));
     for grid_y in 0..grid_rows {
         let y = minimum_y + (grid_y as f32 + 0.5) * terrain_spacing;
         for grid_x in 0..grid_columns {
             let x = minimum_x + (grid_x as f32 + 0.5) * terrain_spacing;
-            if point_in_polygon([x, y], &outline) {
+            if outline_index.contains([x, y]) {
                 push_unique_triangulation_point(&mut points, &mut point_keys, [x, y]);
             }
         }
@@ -315,7 +321,7 @@ pub(crate) fn build_piece_with_height_range(
             ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
             ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
         ];
-        if !point_in_polygon(centroid, &outline) {
+        if !outline_index.contains(centroid) {
             continue;
         }
         let face_indices = face_vertices.map(|vertex| vertex.fix().index());

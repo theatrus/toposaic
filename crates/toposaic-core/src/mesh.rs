@@ -169,6 +169,83 @@ pub(crate) fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
     inside
 }
 
+/// Even-odd point-in-polygon queries accelerated by a strip index over y.
+///
+/// Edges are bucketed by the strips their y-span covers; a query walks only
+/// the edges in its own strip and runs the exact crossing test from
+/// [`point_in_polygon`] on each. An edge whose y-span excludes the query
+/// point contributes no crossing there (both endpoint comparisons agree), so
+/// walking the strip's superset of candidate edges returns exactly the same
+/// answer as walking the whole outline.
+pub(crate) struct PolygonStripIndex<'a> {
+    polygon: &'a [[f32; 2]],
+    minimum_y: f32,
+    maximum_y: f32,
+    strips_per_unit: f32,
+    strips: Vec<Vec<u32>>,
+}
+
+impl<'a> PolygonStripIndex<'a> {
+    pub(crate) fn new(polygon: &'a [[f32; 2]], strip_count: usize) -> Self {
+        debug_assert!(polygon.len() >= 3);
+        let (minimum_y, maximum_y) = polygon.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), point| (minimum.min(point[1]), maximum.max(point[1])),
+        );
+        let strip_count = strip_count.clamp(1, polygon.len());
+        let strips_per_unit = strip_count as f32 / (maximum_y - minimum_y).max(f32::EPSILON);
+        let mut strips = vec![Vec::new(); strip_count];
+        let mut previous = polygon.len() - 1;
+        for current in 0..polygon.len() {
+            let low = polygon[current][1].min(polygon[previous][1]);
+            let high = polygon[current][1].max(polygon[previous][1]);
+            let first = (((low - minimum_y) * strips_per_unit) as usize).min(strip_count - 1);
+            let last = (((high - minimum_y) * strips_per_unit) as usize).min(strip_count - 1);
+            for strip in &mut strips[first..=last] {
+                strip.push(current as u32);
+            }
+            previous = current;
+        }
+        Self {
+            polygon,
+            minimum_y,
+            maximum_y,
+            strips_per_unit,
+            strips,
+        }
+    }
+
+    /// Returns exactly `point_in_polygon(point, polygon)`.
+    pub(crate) fn contains(&self, point: [f32; 2]) -> bool {
+        // Outside the polygon's y-range no edge can cross, so the full walk
+        // would return false too. This also rejects NaN.
+        if !(point[1] >= self.minimum_y && point[1] <= self.maximum_y) {
+            return false;
+        }
+        let strip = (((point[1] - self.minimum_y) * self.strips_per_unit) as usize)
+            .min(self.strips.len() - 1);
+        let mut inside = false;
+        for &edge in &self.strips[strip] {
+            let current = edge as usize;
+            let previous = if current == 0 {
+                self.polygon.len() - 1
+            } else {
+                current - 1
+            };
+            let a = self.polygon[current];
+            let b = self.polygon[previous];
+            // Keep this test identical to point_in_polygon, including the
+            // comparison operators, so ties on vertices behave the same.
+            let crosses = (a[1] > point[1]) != (b[1] > point[1])
+                && point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0];
+            if crosses {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn assert_watertight(mesh: &Mesh) {
     let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
@@ -199,4 +276,38 @@ pub(crate) fn assert_watertight(mesh: &Mesh) {
         })
         .collect::<Vec<_>>();
     assert!(bad_edges.is_empty(), "non-manifold edges: {bad_edges:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_index_matches_the_full_point_in_polygon_walk() {
+        // A wavy closed outline with several local extrema per strip.
+        let outline = (0..400)
+            .map(|index| {
+                let angle = index as f32 / 400.0 * std::f32::consts::TAU;
+                let radius = 10.0 + (angle * 9.0).sin() * 3.0;
+                [radius * angle.cos(), radius * angle.sin()]
+            })
+            .collect::<Vec<_>>();
+        for strip_count in [1, 7, 64] {
+            let index = PolygonStripIndex::new(&outline, strip_count);
+            for y_step in -32..=32 {
+                for x_step in -32..=32 {
+                    let point = [x_step as f32 * 0.45, y_step as f32 * 0.45];
+                    assert_eq!(
+                        index.contains(point),
+                        point_in_polygon(point, &outline),
+                        "strips={strip_count}, point={point:?}"
+                    );
+                }
+            }
+            // Vertex ties and out-of-range queries behave identically too.
+            for point in [outline[13], outline[0], [0.0, 99.0], [0.0, -99.0]] {
+                assert_eq!(index.contains(point), point_in_polygon(point, &outline));
+            }
+        }
+    }
 }
