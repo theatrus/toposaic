@@ -205,12 +205,14 @@ export function TerrainStudio() {
   const [selectedSetupId, setSelectedSetupId] = useState("");
   const [setupMenuOpen, setSetupMenuOpen] = useState(false);
   const [setupNameMode, setSetupNameMode] = useState<
-    "save" | "rename" | null
+    { kind: "save" } | { kind: "rename"; id: string } | null
   >(null);
   const [setupNameDraft, setSetupNameDraft] = useState("");
   const [setupStatus, setSetupStatus] = useState<string | null>(null);
   const [savingSetup, setSavingSetup] = useState(false);
-  const [confirmingSetupDelete, setConfirmingSetupDelete] = useState(false);
+  const [confirmingSetupDeleteId, setConfirmingSetupDeleteId] = useState<
+    string | null
+  >(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const resizePointerRef = useRef<number | null>(null);
   const visualColumnRef = useRef<HTMLElement>(null);
@@ -219,6 +221,9 @@ export function TerrainStudio() {
   const setupMenuRef = useRef<HTMLDivElement>(null);
   const setupMenuButtonRef = useRef<HTMLButtonElement>(null);
   const setupNameInputRef = useRef<HTMLInputElement>(null);
+  // "__first" focuses the first enabled item; a setup id focuses that row.
+  const setupFocusRef = useRef<string | null>(null);
+  const skipSetupNameBlurRef = useRef(false);
 
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -710,7 +715,7 @@ export function TerrainStudio() {
   const closeSetupMenu = useCallback((focusButton: boolean) => {
     setSetupMenuOpen(false);
     setSetupNameMode(null);
-    setConfirmingSetupDelete(false);
+    setConfirmingSetupDeleteId(null);
     if (focusButton) setupMenuButtonRef.current?.focus();
   }, []);
 
@@ -737,16 +742,33 @@ export function TerrainStudio() {
     setupNameInputRef.current?.select();
   }, [setupNameMode]);
 
+  // Runs after every render so freshly refreshed rows can take focus.
+  useEffect(() => {
+    const target = setupFocusRef.current;
+    if (target === null) return;
+    setupFocusRef.current = null;
+    const root = setupMenuRef.current;
+    if (!root) return;
+    const element =
+      target === "__first"
+        ? root.querySelector<HTMLButtonElement>('[role="menuitem"]:enabled')
+        : (root.querySelector<HTMLButtonElement>(
+            `[data-setup-button="${target}"]`,
+          ) ??
+          root.querySelector<HTMLButtonElement>('[role="menuitem"]:enabled'));
+    element?.focus();
+  });
+
   const setupMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!setupMenuOpen) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       if (setupNameMode !== null) {
+        skipSetupNameBlurRef.current = true;
+        setupFocusRef.current =
+          setupNameMode.kind === "rename" ? setupNameMode.id : "__first";
         setSetupNameMode(null);
-        setupMenuRef.current
-          ?.querySelector<HTMLButtonElement>('[role="menuitem"]:enabled')
-          ?.focus();
         return;
       }
       closeSetupMenu(true);
@@ -781,14 +803,18 @@ export function TerrainStudio() {
     items[nextIndex]?.focus();
   };
 
-  const openSetupNameRow = (mode: "save" | "rename") => {
-    setConfirmingSetupDelete(false);
-    setSetupNameDraft(
-      mode === "rename"
-        ? (selectedSetup?.name ?? "")
-        : (selectedSetup?.name ?? spec.place_name.trim()),
-    );
-    setSetupNameMode(mode);
+  const openSaveRow = () => {
+    setConfirmingSetupDeleteId(null);
+    skipSetupNameBlurRef.current = false;
+    setSetupNameDraft(selectedSetup?.name ?? spec.place_name.trim());
+    setSetupNameMode({ kind: "save" });
+  };
+
+  const openRenameRow = (setup: SavedSetup) => {
+    setConfirmingSetupDeleteId(null);
+    skipSetupNameBlurRef.current = false;
+    setSetupNameDraft(setup.name);
+    setSetupNameMode({ kind: "rename", id: setup.id });
   };
 
   const saveSetupAs = async (name: string) => {
@@ -808,24 +834,18 @@ export function TerrainStudio() {
     }
   };
 
-  const saveFromMenu = async () => {
-    if (savingSetup) return;
-    if (!selectedSetup) {
-      openSetupNameRow("save");
-      return;
-    }
-    await saveSetupAs(selectedSetup.name);
-  };
-
-  const renameSelectedSetup = async (name: string) => {
-    if (!selectedSetupId) return;
+  const renameSetup = async (id: string, name: string) => {
     setSavingSetup(true);
     try {
-      const renamed = await terrainApi.renameSetup(selectedSetupId, name);
+      const renamed = await terrainApi.renameSetup(id, name);
       setSetupStatus(`Renamed to “${renamed.name}”.`);
       await refreshSetups();
-      closeSetupMenu(true);
+      skipSetupNameBlurRef.current = true;
+      setupFocusRef.current = id;
+      setSetupNameMode(null);
     } catch (error) {
+      // A conflict (409) or other failure keeps the input open so the
+      // name can be corrected; the status line carries the message.
       setSetupStatus(
         error instanceof Error ? error.message : "The setup was not renamed.",
       );
@@ -835,50 +855,91 @@ export function TerrainStudio() {
   };
 
   const submitSetupName = async () => {
-    if (savingSetup) return;
+    if (savingSetup || setupNameMode === null) return;
     const trimmed = setupNameDraft.trim();
-    if (setupNameMode === "rename") {
+    if (setupNameMode.kind === "rename") {
       if (trimmed === "") return;
-      await renameSelectedSetup(trimmed);
+      const current = setups.find(
+        (candidate) => candidate.id === setupNameMode.id,
+      );
+      if (current && current.name === trimmed) {
+        // Nothing changed; leave the name as it is.
+        skipSetupNameBlurRef.current = true;
+        setupFocusRef.current = setupNameMode.id;
+        setSetupNameMode(null);
+        return;
+      }
+      await renameSetup(setupNameMode.id, trimmed);
       return;
     }
     await saveSetupAs(trimmed === "" ? defaultSetupName : trimmed);
   };
 
-  const recallSetup = (id: string) => {
-    setSelectedSetupId(id);
-    setConfirmingSetupDelete(false);
-    if (!id) return;
-    const setup = setups.find((candidate) => candidate.id === id);
-    if (!setup) return;
+  const setupNameBlur = () => {
+    if (skipSetupNameBlurRef.current) {
+      skipSetupNameBlurRef.current = false;
+      return;
+    }
+    if (setupNameMode?.kind !== "rename") return;
+    void submitSetupName();
+  };
+
+  const recallSetup = (setup: SavedSetup) => {
+    setSelectedSetupId(setup.id);
     // Merge over the client defaults so setups saved before a field existed
     // still get a value, then drop stale generated output like a place change.
     setSpec(mergeSpecDefaults(setup.spec));
     setGeneratedPreview(null);
     setAdjacentMessage(null);
     setSetupStatus(`Recalled “${setup.name}”.`);
+    closeSetupMenu(true);
   };
 
-  const deleteSelectedSetup = async () => {
-    if (!selectedSetupId) return;
-    if (!confirmingSetupDelete) {
+  const duplicateSetup = async (setup: SavedSetup) => {
+    if (savingSetup) return;
+    setConfirmingSetupDeleteId(null);
+    setSavingSetup(true);
+    try {
+      const names = new Set(setups.map((candidate) => candidate.name));
+      let copy = 2;
+      while (names.has(`${setup.name} (${copy})`)) copy += 1;
+      const saved = await terrainApi.saveSetup(
+        `${setup.name} (${copy})`,
+        setup.spec,
+      );
+      setSetupStatus(`Duplicated “${setup.name}” as “${saved.name}”.`);
+      await refreshSetups();
+      // Drop the new row straight into rename mode so it can be retitled.
+      skipSetupNameBlurRef.current = false;
+      setSetupNameDraft(saved.name);
+      setSetupNameMode({ kind: "rename", id: saved.id });
+    } catch (error) {
+      setSetupStatus(
+        error instanceof Error ? error.message : "The setup was not copied.",
+      );
+    } finally {
+      setSavingSetup(false);
+    }
+  };
+
+  const deleteSetup = async (setup: SavedSetup) => {
+    if (confirmingSetupDeleteId !== setup.id) {
       setSetupNameMode(null);
-      setConfirmingSetupDelete(true);
+      setConfirmingSetupDeleteId(setup.id);
       return;
     }
-    setConfirmingSetupDelete(false);
-    const setup = setups.find((candidate) => candidate.id === selectedSetupId);
+    setConfirmingSetupDeleteId(null);
     try {
-      await terrainApi.deleteSetup(selectedSetupId);
-      setSelectedSetupId("");
-      setSetupStatus(setup ? `Deleted “${setup.name}”.` : "Setup deleted.");
+      await terrainApi.deleteSetup(setup.id);
+      if (selectedSetupId === setup.id) setSelectedSetupId("");
+      setSetupStatus(`Deleted “${setup.name}”.`);
       await refreshSetups();
+      setupFocusRef.current = "__first";
     } catch (error) {
       setSetupStatus(
         error instanceof Error ? error.message : "The setup was not deleted.",
       );
     }
-    closeSetupMenu(true);
   };
 
   const exportSetups = () => {
@@ -909,7 +970,7 @@ export function TerrainStudio() {
   };
 
   const importSetups = async (file: File) => {
-    setConfirmingSetupDelete(false);
+    setConfirmingSetupDeleteId(null);
     const entries = parseSetupsExport(await file.text());
     if (entries === null) {
       setSetupStatus("That file is not a version-1 TopoSaic setups export.");
@@ -1218,22 +1279,6 @@ export function TerrainStudio() {
         </a>
         <div className="topbar-actions">
           <div className="setup-manager">
-            <label className="setup-picker">
-              <span>Saved setups</span>
-              <select
-                value={selectedSetupId}
-                onChange={(event) => recallSetup(event.target.value)}
-              >
-                <option value="">
-                  {setups.length === 0 ? "None saved yet" : "Recall a setup…"}
-                </option>
-                {setups.map((setup) => (
-                  <option key={setup.id} value={setup.id}>
-                    {setup.name}
-                  </option>
-                ))}
-              </select>
-            </label>
             <div
               className="setup-menu"
               onKeyDown={setupMenuKeyDown}
@@ -1250,102 +1295,167 @@ export function TerrainStudio() {
                 ref={setupMenuButtonRef}
                 type="button"
               >
-                Setups
+                <span className="setup-menu-label">
+                  {selectedSetup?.name ?? "Saved setups"}
+                </span>
                 <span aria-hidden="true">▾</span>
               </button>
               {setupMenuOpen && (
                 <div
-                  aria-label="Setup actions"
+                  aria-label="Saved setups"
                   className="setup-menu-list"
                   role="menu"
                 >
-                  <button
-                    disabled={savingSetup}
-                    onClick={() => void saveFromMenu()}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {savingSetup ? "Saving…" : "Save"}
-                  </button>
-                  <button
-                    disabled={savingSetup}
-                    onClick={() => openSetupNameRow("save")}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Save as…
-                  </button>
-                  <button
-                    disabled={savingSetup || selectedSetupId === ""}
-                    onClick={() => openSetupNameRow("rename")}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Rename…
-                  </button>
-                  <button
-                    className={confirmingSetupDelete ? "confirm-delete" : ""}
-                    disabled={selectedSetupId === ""}
-                    onClick={() => void deleteSelectedSetup()}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {confirmingSetupDelete ? "Confirm delete" : "Delete…"}
-                  </button>
-                  <button
-                    disabled={setups.length === 0}
-                    onClick={exportSetups}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Export
-                  </button>
-                  <button
-                    onClick={() => {
-                      setupImportRef.current?.click();
-                      closeSetupMenu(true);
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    Import
-                  </button>
-                  {setupNameMode !== null && (
-                    <div className="setup-menu-name-row">
-                      <input
-                        aria-label={
-                          setupNameMode === "rename"
-                            ? "New setup name"
-                            : "Setup name"
-                        }
-                        maxLength={48}
-                        onChange={(event) =>
-                          setSetupNameDraft(event.target.value)
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            void submitSetupName();
+                  {setups.length === 0 ? (
+                    <p className="setup-menu-empty">No saved setups yet</p>
+                  ) : (
+                    <ul className="setup-rows" role="none">
+                      {setups.map((setup) => {
+                        const renaming =
+                          setupNameMode?.kind === "rename" &&
+                          setupNameMode.id === setup.id;
+                        const confirming =
+                          confirmingSetupDeleteId === setup.id;
+                        return (
+                          <li className="setup-row" key={setup.id} role="none">
+                            {renaming ? (
+                              <input
+                                aria-label={`New name for ${setup.name}`}
+                                className="setup-row-input"
+                                maxLength={48}
+                                onBlur={setupNameBlur}
+                                onChange={(event) =>
+                                  setSetupNameDraft(event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    void submitSetupName();
+                                  }
+                                }}
+                                ref={setupNameInputRef}
+                                type="text"
+                                value={setupNameDraft}
+                              />
+                            ) : (
+                              <button
+                                aria-current={
+                                  setup.id === selectedSetupId
+                                    ? "true"
+                                    : undefined
+                                }
+                                className="setup-row-name"
+                                data-setup-button={setup.id}
+                                onClick={() => recallSetup(setup)}
+                                role="menuitem"
+                                type="button"
+                              >
+                                {setup.id === selectedSetupId && (
+                                  <span
+                                    aria-hidden="true"
+                                    className="setup-row-check"
+                                  >
+                                    ✓{" "}
+                                  </span>
+                                )}
+                                {setup.name}
+                              </button>
+                            )}
+                            <span className="setup-row-actions">
+                              <button
+                                aria-label={`Rename ${setup.name}`}
+                                disabled={savingSetup}
+                                onClick={() => openRenameRow(setup)}
+                                role="menuitem"
+                                type="button"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                aria-label={`Duplicate ${setup.name}`}
+                                disabled={savingSetup}
+                                onClick={() => void duplicateSetup(setup)}
+                                role="menuitem"
+                                type="button"
+                              >
+                                Duplicate
+                              </button>
+                              <button
+                                aria-label={
+                                  confirming
+                                    ? `Confirm deleting ${setup.name}`
+                                    : `Delete ${setup.name}`
+                                }
+                                className={confirming ? "confirm-delete" : ""}
+                                onClick={() => void deleteSetup(setup)}
+                                role="menuitem"
+                                type="button"
+                              >
+                                {confirming ? "Confirm" : "Delete"}
+                              </button>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                  <div className="setup-menu-tools">
+                    {setupNameMode?.kind === "save" ? (
+                      <div className="setup-menu-name-row">
+                        <input
+                          aria-label="Setup name"
+                          maxLength={48}
+                          onChange={(event) =>
+                            setSetupNameDraft(event.target.value)
                           }
-                        }}
-                        placeholder={defaultSetupName}
-                        ref={setupNameInputRef}
-                        type="text"
-                        value={setupNameDraft}
-                      />
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void submitSetupName();
+                            }
+                          }}
+                          placeholder={defaultSetupName}
+                          ref={setupNameInputRef}
+                          type="text"
+                          value={setupNameDraft}
+                        />
+                        <button
+                          disabled={savingSetup}
+                          onClick={() => void submitSetupName()}
+                          type="button"
+                        >
+                          {savingSetup ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                    ) : (
                       <button
                         disabled={savingSetup}
-                        onClick={() => void submitSetupName()}
+                        onClick={openSaveRow}
+                        role="menuitem"
                         type="button"
                       >
-                        {savingSetup
-                          ? "Saving…"
-                          : setupNameMode === "rename"
-                            ? "Rename"
-                            : "Save"}
+                        Save current setup
                       </button>
-                    </div>
-                  )}
+                    )}
+                    <button
+                      disabled={setups.length === 0}
+                      onClick={exportSetups}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Export
+                    </button>
+                    <button
+                      onClick={() => {
+                        setupImportRef.current?.click();
+                        closeSetupMenu(true);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Import
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1415,12 +1525,10 @@ export function TerrainStudio() {
               )}
             </aside>
           )}
-          {/* On the desktop the engine is embedded, so the idle chip says
-              nothing; on the web it signals whether the local engine runs. */}
-          {(job !== null || !IS_TAURI) && (
-            <div className={`build-state ${job?.status ?? "idle"}`}>
+          {job !== null && (
+            <div className={`build-state ${job.status}`}>
               <span />
-              {job ? statusLabel : "Local engine · SQLite"}
+              {statusLabel}
             </div>
           )}
           <button

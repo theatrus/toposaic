@@ -85,12 +85,12 @@ test("server-renders TopoSaic", async () => {
     /Tagged bridges can use thick floating decks or solid support/,
   );
   assert.match(html, /#B8A890/i);
-  assert.match(html, /SQLite/);
+  assert.match(html, /class="setup-menu-button"/);
   assert.match(html, /Saved setups/);
-  assert.match(html, /None saved yet/);
   assert.match(html, /aria-haspopup="menu"/);
-  assert.match(html, />Setups</);
   assert.match(html, /aria-label="Import setups file"/);
+  assert.doesNotMatch(html, /Local engine/);
+  assert.doesNotMatch(html, /None saved yet/);
   assert.match(html, /Resize map and preview panes/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

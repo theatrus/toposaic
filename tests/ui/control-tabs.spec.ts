@@ -1029,20 +1029,21 @@ test("lists saved setups and recalls one over the generated preview", async ({
   ]);
   await page.goto("/");
 
-  const picker = page.getByLabel("Saved setups");
-  await expect(picker).toBeVisible();
-  await expect(picker.locator("option")).toContainText([
-    "Recall a setup…",
-    "Alps close-up",
-  ]);
+  const trigger = page.locator(".setup-menu-button");
+  await expect(trigger).toHaveText(/Saved setups/);
 
   await page.getByRole("button", { name: /^Generate/ }).click();
   await expect(page.getByText("Generated terrain").first()).toBeVisible({
     timeout: 15_000,
   });
 
-  await picker.selectOption({ label: "Alps close-up" });
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
+  await menu.getByRole("menuitem", { name: "Alps close-up", exact: true }).click();
   await expect(page.getByText(/Recalled .Alps close-up/)).toBeVisible();
+  await expect(menu).toBeHidden();
+  await expect(trigger).toHaveText(/Alps close-up/);
+  await expect(trigger).toBeFocused();
   await expect(page.getByText("Generated terrain")).toBeHidden();
   await page.getByRole("tab", { name: "Model" }).click();
   await expect(page.getByRole("slider", { name: "Ground span" })).toHaveValue(
@@ -1052,22 +1053,27 @@ test("lists saved setups and recalls one over the generated preview", async ({
     "data-ground-span-km",
     "3",
   );
+
+  // Reopening marks the recalled setup in the list.
+  await trigger.click();
+  await expect(
+    menu.getByRole("menuitem", { name: "Alps close-up", exact: true }),
+  ).toHaveAttribute("aria-current", "true");
 });
 
-test("saves the current spec under a typed name and refreshes the list", async ({
+test("saves the current spec under a typed name and overwrites it", async ({
   page,
 }) => {
   const state = await mockSetupsService(page, []);
   await page.goto("/");
 
-  const picker = page.getByLabel("Saved setups");
-  await expect(picker.locator("option")).toContainText(["None saved yet"]);
-  const menuButton = page.getByRole("button", { name: "Setups" });
-  await menuButton.click();
-  const menu = page.getByRole("menu", { name: "Setup actions" });
-  await expect(menu.getByRole("menuitem", { name: /^Rename/ })).toBeDisabled();
-  await expect(menu.getByRole("menuitem", { name: /^Delete/ })).toBeDisabled();
-  await menu.getByRole("menuitem", { name: "Save", exact: true }).click();
+  const trigger = page.locator(".setup-menu-button");
+  await expect(trigger).toHaveText(/Saved setups/);
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
+  await expect(menu.getByText("No saved setups yet")).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Export" })).toBeDisabled();
+  await menu.getByRole("menuitem", { name: "Save current setup" }).click();
 
   const setupName = page.getByLabel("Setup name");
   await expect(setupName).toHaveValue("Mount Rainier");
@@ -1076,21 +1082,112 @@ test("saves the current spec under a typed name and refreshes the list", async (
 
   await expect(page.getByText(/Saved .My ridge/)).toBeVisible();
   await expect(menu).toBeHidden();
-  await expect(menuButton).toBeFocused();
+  await expect(trigger).toBeFocused();
+  await expect(trigger).toHaveText(/My ridge/);
   expect(state.saved).toHaveLength(1);
   expect(state.saved[0].name).toBe("My ridge");
   expect(state.saved[0].spec.place_name).toBe("Mount Rainier");
   expect(state.saved[0].spec.ground_span_km).toBe(18);
-  await expect(
-    picker.locator("option", { hasText: "My ridge" }),
-  ).toHaveCount(1);
 
-  // With the fresh save selected, Save now overwrites under the same name.
-  await menuButton.click();
-  await menu.getByRole("menuitem", { name: "Save", exact: true }).click();
+  // With the fresh save recalled, the name row prefills it and saving
+  // under the same name overwrites.
+  await trigger.click();
+  await expect(
+    menu.getByRole("menuitem", { name: "My ridge", exact: true }),
+  ).toHaveAttribute("aria-current", "true");
+  await menu.getByRole("menuitem", { name: "Save current setup" }).click();
+  await expect(setupName).toHaveValue("My ridge");
+  await setupName.press("Enter");
   await expect(menu).toBeHidden();
   await expect.poll(() => state.saved.length).toBe(2);
   expect(state.saved[1].name).toBe("My ridge");
+});
+
+test("duplicates a setup under a free derived name and starts a rename", async ({
+  page,
+}) => {
+  const state = await mockSetupsService(page, [
+    {
+      id: "setup-alps",
+      name: "Alps close-up",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-02T00:00:00Z",
+      spec: { place_name: "Alps close-up", ground_span_km: 3 },
+    },
+    {
+      id: "setup-alps-2",
+      name: "Alps close-up (2)",
+      created_at: "2026-07-03T00:00:00Z",
+      updated_at: "2026-07-03T00:00:00Z",
+      spec: { place_name: "Alps close-up", ground_span_km: 3 },
+    },
+  ]);
+  await page.goto("/");
+
+  const trigger = page.locator(".setup-menu-button");
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
+  await menu
+    .getByRole("menuitem", { name: "Duplicate Alps close-up", exact: true })
+    .click();
+
+  // The copy skips taken names and lands in rename mode right away.
+  await expect(
+    page.getByText(/Duplicated .Alps close-up. as .Alps close-up \(3\)/),
+  ).toBeVisible();
+  const nameInput = page.getByLabel("New name for Alps close-up (3)");
+  await expect(nameInput).toBeVisible();
+  await expect(nameInput).toHaveValue("Alps close-up (3)");
+  await expect(nameInput).toBeFocused();
+  expect(state.saved).toHaveLength(1);
+  expect(state.saved[0].name).toBe("Alps close-up (3)");
+  expect(state.saved[0].spec.ground_span_km).toBe(3);
+
+  await nameInput.fill("Alps fork");
+  await nameInput.press("Enter");
+  await expect(page.getByText(/Renamed to .Alps fork/)).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Alps fork", exact: true })).toBeVisible();
+  await expect(
+    menu.getByRole("menuitem", { name: "Alps close-up", exact: true }),
+  ).toBeVisible();
+});
+
+test("deletes a setup after an in-row confirmation", async ({ page }) => {
+  await mockSetupsService(page, [
+    {
+      id: "setup-alps",
+      name: "Alps close-up",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-02T00:00:00Z",
+      spec: { place_name: "Alps close-up", ground_span_km: 3 },
+    },
+    {
+      id: "setup-rainier",
+      name: "Rainier tray",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-02T00:00:00Z",
+      spec: { place_name: "Mount Rainier", width_mm: 240 },
+    },
+  ]);
+  await page.goto("/");
+
+  await page.locator(".setup-menu-button").click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
+  await menu.getByRole("menuitem", { name: "Delete Alps close-up" }).click();
+  const confirm = menu.getByRole("menuitem", {
+    name: "Confirm deleting Alps close-up",
+  });
+  await expect(confirm).toBeVisible();
+  await confirm.click();
+
+  await expect(page.getByText(/Deleted .Alps close-up/)).toBeVisible();
+  await expect(menu).toBeVisible();
+  await expect(
+    menu.getByRole("menuitem", { name: "Alps close-up", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    menu.getByRole("menuitem", { name: "Rainier tray", exact: true }),
+  ).toBeVisible();
 });
 
 test("exports saved setups as a version-1 JSON download", async ({ page }) => {
@@ -1112,14 +1209,13 @@ test("exports saved setups as a version-1 JSON download", async ({ page }) => {
   ]);
   await page.goto("/");
 
+  await page.locator(".setup-menu-button").click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
   await expect(
-    page.getByLabel("Saved setups").locator("option", {
-      hasText: "Rainier tray",
-    }),
-  ).toHaveCount(1);
-  await page.getByRole("button", { name: "Setups" }).click();
+    menu.getByRole("menuitem", { name: "Rainier tray", exact: true }),
+  ).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("menuitem", { name: "Export" }).click();
+  await menu.getByRole("menuitem", { name: "Export" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("toposaic-setups.json");
   const downloadPath = await download.path();
@@ -1139,7 +1235,7 @@ test("imports setups from a JSON file and skips invalid entries", async ({
 }) => {
   const state = await mockSetupsService(page, []);
   await page.goto("/");
-  await expect(page.getByLabel("Saved setups")).toBeVisible();
+  await expect(page.locator(".setup-menu-button")).toBeVisible();
 
   const payload = {
     version: 1,
@@ -1163,11 +1259,12 @@ test("imports setups from a JSON file and skips invalid entries", async ({
   ]);
   expect(state.saved[0].spec.ground_span_km).toBe(2);
   expect(state.saved[0].spec.width_mm).toBe(180);
+  await page.locator(".setup-menu-button").click();
   await expect(
-    page.getByLabel("Saved setups").locator("option", {
-      hasText: "Alps close-up",
-    }),
-  ).toHaveCount(1);
+    page
+      .getByRole("menu", { name: "Saved setups" })
+      .getByRole("menuitem", { name: "Alps close-up", exact: true }),
+  ).toBeVisible();
 });
 
 test("renames a saved setup and surfaces name conflicts", async ({ page }) => {
@@ -1189,32 +1286,39 @@ test("renames a saved setup and surfaces name conflicts", async ({ page }) => {
   ]);
   await page.goto("/");
 
-  const picker = page.getByLabel("Saved setups");
-  await picker.selectOption({ label: "Alps close-up" });
-  await page.getByRole("button", { name: "Setups" }).click();
-  const menu = page.getByRole("menu", { name: "Setup actions" });
-  await menu.getByRole("menuitem", { name: /^Rename/ }).click();
+  await page.locator(".setup-menu-button").click();
+  const menu = page.getByRole("menu", { name: "Saved setups" });
+  await menu.getByRole("menuitem", { name: "Rename Alps close-up" }).click();
 
-  const nameInput = page.getByLabel("New setup name");
+  const nameInput = page.getByLabel("New name for Alps close-up");
   await expect(nameInput).toHaveValue("Alps close-up");
   await nameInput.fill("Rainier tray");
   await nameInput.press("Enter");
   await expect(
     page.getByText("A setup named “Rainier tray” already exists."),
   ).toBeVisible();
-  await expect(menu).toBeVisible();
+  // The conflict keeps the input open for a corrected name.
+  await expect(nameInput).toBeVisible();
 
   await nameInput.fill("Alps wide");
   await nameInput.press("Enter");
   await expect(page.getByText(/Renamed to .Alps wide/)).toBeVisible();
-  await expect(menu).toBeHidden();
   expect(state.renamed).toEqual([{ id: "setup-alps", name: "Alps wide" }]);
+  const renamedRow = menu.getByRole("menuitem", { name: "Alps wide", exact: true });
+  await expect(renamedRow).toBeVisible();
+  await expect(renamedRow).toBeFocused();
   await expect(
-    picker.locator("option", { hasText: "Alps wide" }),
-  ).toHaveCount(1);
-  await expect(
-    picker.locator("option", { hasText: "Alps close-up" }),
+    menu.getByRole("menuitem", { name: "Alps close-up", exact: true }),
   ).toHaveCount(0);
+
+  // Escape cancels an open rename and returns focus to the row.
+  await menu.getByRole("menuitem", { name: "Rename Rainier tray" }).click();
+  await expect(page.getByLabel("New name for Rainier tray")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeVisible();
+  await expect(
+    menu.getByRole("menuitem", { name: "Rainier tray", exact: true }),
+  ).toBeFocused();
 });
 
 test("drives the setups menu from the keyboard", async ({ page }) => {
@@ -1229,22 +1333,24 @@ test("drives the setups menu from the keyboard", async ({ page }) => {
   ]);
   await page.goto("/");
 
-  const menuButton = page.getByRole("button", { name: "Setups" });
+  const menuButton = page.locator(".setup-menu-button");
   await expect(menuButton).toHaveAttribute("aria-haspopup", "menu");
   await menuButton.click();
-  const menu = page.getByRole("menu", { name: "Setup actions" });
+  const menu = page.getByRole("menu", { name: "Saved setups" });
   await expect(menu).toBeVisible();
   await expect(menuButton).toHaveAttribute("aria-expanded", "true");
 
-  const save = menu.getByRole("menuitem", { name: "Save", exact: true });
-  const saveAs = menu.getByRole("menuitem", { name: /^Save as/ });
-  await expect(save).toBeFocused();
+  const row = menu.getByRole("menuitem", { name: "Alps close-up", exact: true });
+  const rename = menu.getByRole("menuitem", { name: "Rename Alps close-up" });
+  await expect(row).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(saveAs).toBeFocused();
+  await expect(rename).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(save).toBeFocused();
+  await expect(row).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await expect(menu.getByRole("menuitem", { name: "Import" })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(row).toBeFocused();
 
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();

@@ -77,28 +77,6 @@ a {
   gap: 8px;
 }
 
-.setup-picker {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font-size: 9px;
-  font-weight: 700;
-  gap: 6px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.setup-picker select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
-  font-size: 10px;
-  max-width: 150px;
-  padding: 4px 5px;
-}
-
 .setup-menu {
   position: relative;
 }
@@ -123,17 +101,111 @@ a {
   background: var(--panel);
 }
 
+.setup-menu-label {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setup-menu-list {
   background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   display: grid;
-  min-width: 170px;
   padding: 4px;
+  width: min(400px, calc(100vw - 28px));
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
   z-index: 30;
+}
+
+.setup-menu-empty {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  margin: 0;
+  padding: 8px 9px;
+}
+
+.setup-rows {
+  display: grid;
+  list-style: none;
+  margin: 0;
+  max-height: 264px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.setup-row {
+  min-width: 0;
+}
+
+.setup-row {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.setup-row:hover {
+  background: rgba(38, 63, 52, 0.05);
+}
+
+.setup-menu-list .setup-row-name {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+}
+
+.setup-row-check {
+  color: var(--moss);
+}
+
+.setup-row-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.setup-menu-list .setup-row-actions [role="menuitem"] {
+  color: var(--muted);
+  font-size: 8px;
+  padding: 7px 5px;
+}
+
+.setup-menu-list .setup-row-actions [role="menuitem"]:enabled:hover,
+.setup-menu-list .setup-row-actions [role="menuitem"]:focus-visible {
+  color: var(--moss);
+}
+
+.setup-menu-list .setup-row-actions .confirm-delete,
+.setup-menu-list .setup-row-actions .confirm-delete:enabled:hover {
+  color: #8f493b;
+}
+
+.setup-row-input {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  flex: 1;
+  font: inherit;
+  font-size: 11px;
+  margin: 3px;
+  min-width: 0;
+  padding: 4px 5px;
+}
+
+.setup-menu-tools {
+  border-top: 1px solid var(--line);
+  display: grid;
+  margin-top: 4px;
+  padding-top: 4px;
 }
 
 .setup-menu-list [role="menuitem"] {
@@ -168,22 +240,20 @@ a {
 }
 
 .setup-menu-name-row {
-  border-top: 1px solid var(--line);
   display: flex;
   gap: 6px;
-  margin-top: 4px;
-  padding: 8px 5px 5px;
+  padding: 5px;
 }
 
 .setup-menu-name-row input {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--ink);
+  flex: 1;
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   min-width: 0;
   padding: 4px 5px;
-  width: 130px;
 }
 
 .setup-menu-name-row input::placeholder {
@@ -209,7 +279,7 @@ a {
 }
 
 .setup-menu-button:focus-visible,
-.setup-picker select:focus-visible,
+.setup-row-input:focus-visible,
 .setup-menu-name-row input:focus-visible,
 .setup-menu-name-row button:focus-visible {
   outline: 2px solid var(--moss);
@@ -2223,8 +2293,12 @@ fieldset.control-section .road-options {
     display: none;
   }
 
-  .setup-picker span {
-    display: none;
+  .setup-menu-label {
+    max-width: 96px;
+  }
+
+  .setup-menu-button {
+    padding: 5px 6px;
   }
 
   .update-notice {
