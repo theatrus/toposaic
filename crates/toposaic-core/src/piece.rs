@@ -14,7 +14,7 @@ use crate::heightfield::{HeightField, normalized_height};
 use crate::jigsaw::{EdgePattern, edge_noise, edge_sign, puzzle_edge_point, shared_edge_pattern};
 use crate::mesh::{
     Mesh, MeshBuilder, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
-    quantize_export_coordinate, triangulate_constraints, unit_vector,
+    quantize_export_coordinate, triangulate_constraints, unit_vector, weld_export_mesh,
 };
 use crate::spec::{BridgeStructure, GenerationSpec, SurfaceClass};
 use crate::surface::{
@@ -449,6 +449,7 @@ pub(crate) fn build_piece_with_height_range(
             building_union.as_ref(),
         )?;
     }
+    weld_export_mesh(&mut mesh);
     Ok(mesh)
 }
 

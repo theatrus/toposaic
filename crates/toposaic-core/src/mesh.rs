@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 
 use crate::spec::SurfaceClass;
@@ -155,6 +156,140 @@ pub(crate) fn quantize_export_coordinate(value: f32) -> f32 {
     let snapped = (f64::from(value) * 100_000.0).round() / 100_000.0;
     if snapped == 0.0 { 0.0 } else { snapped as f32 }
 }
+
+/// Final deterministic weld and cleanup for a finished export mesh.
+///
+/// Every vertex snaps to the exact grid the 3MF writer's `{:.5}` formatting
+/// emits, vertices landing on the same snapped position merge (the first
+/// occurrence wins), triangles whose corners collapse together drop, extra
+/// same-winding copies of a face drop (the first stays), and unused
+/// vertices compact away in first-use order. The pass is stable over
+/// triangle order, and afterwards the in-memory index topology, an STL
+/// bit-exact vertex weld, and a 3MF five-decimal weld all reconstruct the
+/// same mesh — a slicer sees exactly what the generator validated.
+pub(crate) fn weld_export_mesh(mesh: &mut Mesh) {
+    // Weld by the snapped bit pattern. Keying on bits (not on the decimal
+    // grid index) matters: above 168 mm one f32 step exceeds the grid, so
+    // two grid cells can share one representable float.
+    let quantized_input = mesh
+        .vertices
+        .par_iter()
+        .map(|vertex| vertex.map(quantize_export_coordinate))
+        .collect::<Vec<_>>();
+    let mut canonical = HashMap::<u128, u32, BuildKeyHasher>::with_capacity_and_hasher(
+        mesh.vertices.len(),
+        BuildKeyHasher::default(),
+    );
+    let mut quantized = Vec::<[f32; 3]>::with_capacity(mesh.vertices.len());
+    let mut welded = Vec::<u32>::with_capacity(mesh.vertices.len());
+    for snapped in quantized_input {
+        let bits = snapped.map(f32::to_bits);
+        let key = u128::from(bits[0]) << 64 | u128::from(bits[1]) << 32 | u128::from(bits[2]);
+        let next = quantized.len() as u32;
+        let index = *canonical.entry(key).or_insert(next);
+        if index == next {
+            quantized.push(snapped);
+        }
+        welded.push(index);
+    }
+
+    let mut kept_triangles = Vec::with_capacity(mesh.triangles.len());
+    let mut kept_materials = Vec::with_capacity(mesh.materials.len());
+    // A welded vertex set has at most two distinct cyclic windings, so the
+    // first-seen rotation plus an opposite-winding flag captures every
+    // duplicate without per-face allocation.
+    let mut face_windings =
+        HashMap::<u128, ([u32; 3], bool), BuildKeyHasher>::with_capacity_and_hasher(
+            mesh.triangles.len(),
+            BuildKeyHasher::default(),
+        );
+    for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
+        let mapped = triangle.map(|index| welded[index as usize]);
+        if mapped[0] == mapped[1] || mapped[1] == mapped[2] || mapped[2] == mapped[0] {
+            continue;
+        }
+        // Rotate the smallest index first; two triangles on one vertex set
+        // share this form exactly when they have the same cyclic winding.
+        let smallest = (0..3)
+            .min_by_key(|position| mapped[*position])
+            .expect("triangle has three corners");
+        let rotation = [
+            mapped[smallest],
+            mapped[(smallest + 1) % 3],
+            mapped[(smallest + 2) % 3],
+        ];
+        let mut sorted = mapped;
+        sorted.sort_unstable();
+        let key = u128::from(sorted[0]) << 64 | u128::from(sorted[1]) << 32 | u128::from(sorted[2]);
+        match face_windings.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let (first, opposite_seen) = entry.get_mut();
+                if *first == rotation || *opposite_seen {
+                    continue;
+                }
+                *opposite_seen = true;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((rotation, false));
+            }
+        }
+        kept_triangles.push(mapped);
+        kept_materials.push(*material);
+    }
+
+    let mut compacted = vec![u32::MAX; quantized.len()];
+    let mut vertices = Vec::with_capacity(quantized.len());
+    for triangle in &mut kept_triangles {
+        for index in triangle {
+            let slot = &mut compacted[*index as usize];
+            if *slot == u32::MAX {
+                *slot = vertices.len() as u32;
+                vertices.push(quantized[*index as usize]);
+            }
+            *index = *slot;
+        }
+    }
+    mesh.vertices = vertices;
+    mesh.triangles = kept_triangles;
+    mesh.materials = kept_materials;
+}
+
+/// splitmix64's finalizer: a fast, well-mixing hash step for fixed-width
+/// keys.
+fn mix_bits(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    value
+}
+
+/// Hasher for the weld pass's packed `u128` keys: two splitmix rounds over
+/// the halves. Far faster than SipHash for these fixed-width keys and
+/// mixing enough for hash-table bucketing; key equality stays exact.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl std::hash::Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0_u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 = mix_bits(self.0 ^ u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u128(&mut self, value: u128) {
+        self.0 = mix_bits(mix_bits(value as u64) ^ (value >> 64) as u64);
+    }
+}
+
+type BuildKeyHasher = std::hash::BuildHasherDefault<KeyHasher>;
 
 pub(crate) fn unit_vector(vector: [f32; 2]) -> [f32; 2] {
     let length = vector[0].hypot(vector[1]);
