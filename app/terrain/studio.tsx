@@ -36,6 +36,7 @@ import {
   formatGroundSpacing,
   groundMeshSpacing,
   initialSpec,
+  mergeSpecDefaults,
 } from "./config";
 import type {
   Artifact,
@@ -44,6 +45,7 @@ import type {
   Job,
   PlaceResult,
   PreviewData,
+  SavedSetup,
 } from "./contracts";
 import { type AdjacentDirection, adjacentCenter } from "./geo";
 import { ArtifactDownloads } from "./downloads";
@@ -64,6 +66,51 @@ const MIN_VISUAL_HEIGHT_PERCENT = 28;
 const MAX_VISUAL_HEIGHT_PERCENT = 76;
 const VISUAL_HEIGHT_KEYBOARD_STEP = 4;
 const WORKSPACE_RESIZER_HEIGHT_PX = 14;
+
+const DEFAULT_MAP_SHARE_PERCENT = 50;
+const MIN_MAP_SHARE_PERCENT = 25;
+const MAX_MAP_SHARE_PERCENT = 75;
+const MAP_SHARE_KEYBOARD_STEP = 4;
+const VISUAL_RESIZER_WIDTH_PX = 14;
+
+const SETUPS_EXPORT_VERSION = 1;
+
+type SetupsExport = {
+  version: number;
+  setups: Array<{ name: string; spec: GenerationSpec }>;
+};
+
+function parseSetupsExport(text: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as { version?: unknown }).version !== SETUPS_EXPORT_VERSION ||
+    !Array.isArray((parsed as { setups?: unknown }).setups)
+  ) {
+    return null;
+  }
+  return (parsed as { setups: unknown[] }).setups;
+}
+
+function isImportableSetup(
+  entry: unknown,
+): entry is { name: string; spec: Partial<GenerationSpec> } {
+  if (typeof entry !== "object" || entry === null) return false;
+  const candidate = entry as { name?: unknown; spec?: unknown };
+  return (
+    typeof candidate.name === "string" &&
+    candidate.name.trim() !== "" &&
+    typeof candidate.spec === "object" &&
+    candidate.spec !== null &&
+    !Array.isArray(candidate.spec)
+  );
+}
 
 const ADJACENT_GRID_SIZES = Array.from(
   { length: MAX_SUPER_TILE_SIDE },
@@ -151,8 +198,20 @@ export function TerrainStudio() {
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
   const [adjacentMessage, setAdjacentMessage] = useState<string | null>(null);
   const [searchingPlaces, setSearchingPlaces] = useState(false);
+  const [mapSharePercent, setMapSharePercent] = useState(
+    DEFAULT_MAP_SHARE_PERCENT,
+  );
+  const [setups, setSetups] = useState<SavedSetup[]>([]);
+  const [selectedSetupId, setSelectedSetupId] = useState("");
+  const [setupName, setSetupName] = useState("");
+  const [setupStatus, setSetupStatus] = useState<string | null>(null);
+  const [savingSetup, setSavingSetup] = useState(false);
+  const [confirmingSetupDelete, setConfirmingSetupDelete] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const resizePointerRef = useRef<number | null>(null);
+  const visualColumnRef = useRef<HTMLElement>(null);
+  const visualResizePointerRef = useRef<number | null>(null);
+  const setupImportRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -262,6 +321,75 @@ export function TerrainStudio() {
       );
     },
     [visualHeightPercent],
+  );
+
+  const setMapShareFromPointer = useCallback((clientX: number) => {
+    const bounds = visualColumnRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= VISUAL_RESIZER_WIDTH_PX) return;
+    const usableWidth = bounds.width - VISUAL_RESIZER_WIDTH_PX;
+    const mapWidth = clientX - bounds.left - VISUAL_RESIZER_WIDTH_PX / 2;
+    const nextPercent = (mapWidth / usableWidth) * 100;
+    setMapSharePercent(
+      Math.min(
+        MAX_MAP_SHARE_PERCENT,
+        Math.max(MIN_MAP_SHARE_PERCENT, nextPercent),
+      ),
+    );
+  }, []);
+
+  const visualResizePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      visualResizePointerRef.current = event.pointerId;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setMapShareFromPointer(event.clientX);
+    },
+    [setMapShareFromPointer],
+  );
+
+  const visualResizePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (visualResizePointerRef.current !== event.pointerId) return;
+      setMapShareFromPointer(event.clientX);
+    },
+    [setMapShareFromPointer],
+  );
+
+  const visualResizePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (visualResizePointerRef.current !== event.pointerId) return;
+      setMapShareFromPointer(event.clientX);
+      visualResizePointerRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [setMapShareFromPointer],
+  );
+
+  const visualResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      let nextPercent: number | null = null;
+      if (event.key === "ArrowLeft") {
+        nextPercent = mapSharePercent - MAP_SHARE_KEYBOARD_STEP;
+      } else if (event.key === "ArrowRight") {
+        nextPercent = mapSharePercent + MAP_SHARE_KEYBOARD_STEP;
+      } else if (event.key === "Home") {
+        nextPercent = MIN_MAP_SHARE_PERCENT;
+      } else if (event.key === "End") {
+        nextPercent = MAX_MAP_SHARE_PERCENT;
+      }
+      if (nextPercent === null) return;
+      event.preventDefault();
+      setMapSharePercent(
+        Math.min(
+          MAX_MAP_SHARE_PERCENT,
+          Math.max(MIN_MAP_SHARE_PERCENT, nextPercent),
+        ),
+      );
+    },
+    [mapSharePercent],
   );
 
   const update = useCallback(
@@ -550,6 +678,138 @@ export function TerrainStudio() {
     setGeneratedPreview(null);
   };
 
+  const refreshSetups = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const nextSetups = await terrainApi.listSetups(signal);
+      if (signal?.aborted) return;
+      setSetups(nextSetups);
+    } catch {
+      // The picker stays as it was when the service is unreachable.
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      await refreshSetups(controller.signal);
+    })();
+    return () => controller.abort();
+  }, [refreshSetups]);
+
+  const defaultSetupName = spec.place_name.trim() || "Saved setup";
+
+  const saveCurrentSetup = async () => {
+    if (savingSetup) return;
+    const name = setupName.trim() || defaultSetupName;
+    setSavingSetup(true);
+    setConfirmingSetupDelete(false);
+    try {
+      const saved = await terrainApi.saveSetup(name, spec);
+      setSelectedSetupId(saved.id);
+      setSetupStatus(`Saved “${saved.name}”.`);
+      await refreshSetups();
+    } catch (error) {
+      setSetupStatus(
+        error instanceof Error ? error.message : "The setup was not saved.",
+      );
+    } finally {
+      setSavingSetup(false);
+    }
+  };
+
+  const recallSetup = (id: string) => {
+    setSelectedSetupId(id);
+    setConfirmingSetupDelete(false);
+    if (!id) return;
+    const setup = setups.find((candidate) => candidate.id === id);
+    if (!setup) return;
+    // Merge over the client defaults so setups saved before a field existed
+    // still get a value, then drop stale generated output like a place change.
+    setSpec(mergeSpecDefaults(setup.spec));
+    setGeneratedPreview(null);
+    setAdjacentMessage(null);
+    setSetupName(setup.name);
+    setSetupStatus(`Recalled “${setup.name}”.`);
+  };
+
+  const deleteSelectedSetup = async () => {
+    if (!selectedSetupId) return;
+    if (!confirmingSetupDelete) {
+      setConfirmingSetupDelete(true);
+      return;
+    }
+    setConfirmingSetupDelete(false);
+    const setup = setups.find((candidate) => candidate.id === selectedSetupId);
+    try {
+      await terrainApi.deleteSetup(selectedSetupId);
+      setSelectedSetupId("");
+      setSetupStatus(setup ? `Deleted “${setup.name}”.` : "Setup deleted.");
+      await refreshSetups();
+    } catch (error) {
+      setSetupStatus(
+        error instanceof Error ? error.message : "The setup was not deleted.",
+      );
+    }
+  };
+
+  const exportSetups = () => {
+    const payload: SetupsExport = {
+      version: SETUPS_EXPORT_VERSION,
+      setups: setups.map(({ name, spec: savedSpec }) => ({
+        name,
+        spec: savedSpec,
+      })),
+    };
+    // A plain blob download works in browsers and in the Tauri webview; the
+    // native save_artifact command only copies files a job already produced.
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "toposaic-setups.json";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setSetupStatus(
+      `Exported ${setups.length} ${setups.length === 1 ? "setup" : "setups"}.`,
+    );
+  };
+
+  const importSetups = async (file: File) => {
+    setConfirmingSetupDelete(false);
+    const entries = parseSetupsExport(await file.text());
+    if (entries === null) {
+      setSetupStatus("That file is not a version-1 TopoSaic setups export.");
+      return;
+    }
+    let imported = 0;
+    let skipped = 0;
+    for (const entry of entries) {
+      if (!isImportableSetup(entry)) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        await terrainApi.saveSetup(
+          entry.name.trim(),
+          mergeSpecDefaults(entry.spec),
+        );
+        imported += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+    setSetupStatus(
+      skipped > 0
+        ? `Imported ${imported}, skipped ${skipped} invalid.`
+        : `Imported ${imported} ${imported === 1 ? "setup" : "setups"}.`,
+    );
+    await refreshSetups();
+  };
+
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
     const polledJobId = job.id;
@@ -827,6 +1087,85 @@ export function TerrainStudio() {
           </span>
         </a>
         <div className="topbar-actions">
+          <div className="setup-manager">
+            <label className="setup-picker">
+              <span>Saved setups</span>
+              <select
+                value={selectedSetupId}
+                onChange={(event) => recallSetup(event.target.value)}
+              >
+                <option value="">
+                  {setups.length === 0 ? "None saved yet" : "Recall a setup…"}
+                </option>
+                {setups.map((setup) => (
+                  <option key={setup.id} value={setup.id}>
+                    {setup.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <input
+              aria-label="Setup name"
+              className="setup-name"
+              maxLength={48}
+              onChange={(event) => setSetupName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void saveCurrentSetup();
+                }
+              }}
+              placeholder={defaultSetupName}
+              type="text"
+              value={setupName}
+            />
+            <button
+              className="setup-save"
+              disabled={savingSetup}
+              onClick={() => void saveCurrentSetup()}
+              type="button"
+            >
+              {savingSetup ? "Saving…" : "Save"}
+            </button>
+            <div className="setup-tools">
+              <button
+                disabled={setups.length === 0}
+                onClick={exportSetups}
+                type="button"
+              >
+                Export
+              </button>
+              <button
+                onClick={() => setupImportRef.current?.click()}
+                type="button"
+              >
+                Import
+              </button>
+              <button
+                className={confirmingSetupDelete ? "confirm-delete" : ""}
+                disabled={selectedSetupId === ""}
+                onClick={() => void deleteSelectedSetup()}
+                type="button"
+              >
+                {confirmingSetupDelete ? "Confirm delete" : "Delete"}
+              </button>
+              <small aria-live="polite" className="setup-status" role="status">
+                {setupStatus}
+              </small>
+            </div>
+            <input
+              accept="application/json"
+              aria-label="Import setups file"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void importSetups(file);
+              }}
+              ref={setupImportRef}
+              type="file"
+            />
+          </div>
           {availableUpdate && !updateDismissed && (
             <aside
               className={`update-notice ${availableUpdate.urgency}`}
@@ -912,13 +1251,46 @@ export function TerrainStudio() {
           } as CSSProperties
         }
       >
-        <section className="visual-column" aria-label="Place and model preview">
+        <section
+          className="visual-column"
+          aria-label="Place and model preview"
+          ref={visualColumnRef}
+          style={
+            {
+              "--map-share": `${mapSharePercent}fr`,
+              "--preview-share": `${100 - mapSharePercent}fr`,
+            } as CSSProperties
+          }
+        >
           <TerrainMap
             spec={spec}
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
             }
+          />
+          <div
+            aria-label="Resize map and preview panes"
+            aria-orientation="vertical"
+            aria-valuemax={MAX_MAP_SHARE_PERCENT}
+            aria-valuemin={MIN_MAP_SHARE_PERCENT}
+            aria-valuenow={Math.round(mapSharePercent)}
+            aria-valuetext={`${Math.round(mapSharePercent)}% map width`}
+            className="visual-resizer"
+            onDoubleClick={() => setMapSharePercent(DEFAULT_MAP_SHARE_PERCENT)}
+            onKeyDown={visualResizeKeyDown}
+            onLostPointerCapture={() => {
+              visualResizePointerRef.current = null;
+            }}
+            onPointerCancel={() => {
+              visualResizePointerRef.current = null;
+            }}
+            onPointerDown={visualResizePointerDown}
+            onPointerMove={visualResizePointerMove}
+            onPointerUp={visualResizePointerUp}
+            role="separator"
+            tabIndex={0}
+            title="Drag to resize the map and 3D preview panes"
           />
           <Suspense
             fallback={

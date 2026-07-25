@@ -86,6 +86,14 @@ test("server-renders TopoSaic", async () => {
   );
   assert.match(html, /#B8A890/i);
   assert.match(html, /SQLite/);
+  assert.match(html, /Saved setups/);
+  assert.match(html, /None saved yet/);
+  assert.match(html, /aria-label="Setup name"/);
+  assert.match(html, />Export</);
+  assert.match(html, />Import</);
+  assert.match(html, />Delete</);
+  assert.match(html, /aria-label="Import setups file"/);
+  assert.match(html, /Resize map and preview panes/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
 

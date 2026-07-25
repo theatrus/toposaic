@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
 const appVersion = JSON.parse(
@@ -9,6 +9,110 @@ const appVersion = JSON.parse(
 ).version as string;
 const [appMajor, appMinor] = appVersion.split(".").map(Number);
 const newerVersion = `${appMajor}.${appMinor + 1}.0`;
+
+type StoredSetup = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  spec: Record<string, unknown>;
+};
+
+// Serve a fake /api/setups store on both the web (8787) and desktop (38787)
+// API ports, plus quiet /api/preview and /api/jobs endpoints so the studio
+// settles and can finish a generation.
+async function mockSetupsService(page: Page, setups: StoredSetup[]) {
+  const state = {
+    setups,
+    saved: [] as Array<{ name: string; spec: Record<string, unknown> }>,
+  };
+  let nextId = setups.length + 1;
+  let jobSpec: Record<string, unknown> = {};
+  const jobId = "saved-setup-job";
+  const handler = async (route: import("@playwright/test").Route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: jobId,
+          status: "queued",
+          progress: 0,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}` && request.method() === "GET") {
+      await route.fulfill({
+        json: {
+          id: jobId,
+          status: "complete",
+          progress: 100,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}/downloads/preview.json`) {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0.2, 0.4, 0.6, 0.8] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/setups" && request.method() === "GET") {
+      await route.fulfill({ json: state.setups });
+      return;
+    }
+    if (url.pathname === "/api/setups" && request.method() === "POST") {
+      const body = request.postDataJSON() as {
+        name: string;
+        spec: Record<string, unknown>;
+      };
+      state.saved.push(body);
+      const now = new Date().toISOString();
+      let setup = state.setups.find((entry) => entry.name === body.name);
+      if (setup) {
+        setup.spec = body.spec;
+        setup.updated_at = now;
+      } else {
+        setup = {
+          id: `setup-${nextId++}`,
+          name: body.name,
+          created_at: now,
+          updated_at: now,
+          spec: body.spec,
+        };
+        state.setups = [setup, ...state.setups];
+      }
+      await route.fulfill({ json: setup });
+      return;
+    }
+    const deleteMatch = url.pathname.match(/^\/api\/setups\/([^/]+)$/);
+    if (deleteMatch && request.method() === "DELETE") {
+      state.setups = state.setups.filter(
+        (entry) => entry.id !== decodeURIComponent(deleteMatch[1]),
+      );
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.abort();
+  };
+  for (const port of [8787, 38787]) {
+    await page.route(`http://127.0.0.1:${port}/api/**`, handler);
+  }
+  return state;
+}
 
 test("switches between the reflowed control panels", async ({ page }) => {
   await page.goto("/");
@@ -872,4 +976,182 @@ test("keeps direct artifact downloads in the web app", async ({ page }) => {
   await expect(
     page.getByRole("link", { name: /piece-01\.stl/ }),
   ).toHaveAttribute("href", /\/downloads\/piece-01\.stl$/);
+});
+
+test("lists saved setups and recalls one over the generated preview", async ({
+  page,
+}) => {
+  await mockSetupsService(page, [
+    {
+      id: "setup-alps",
+      name: "Alps close-up",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-02T00:00:00Z",
+      spec: {
+        place_name: "Alps close-up",
+        ground_span_km: 3,
+        center_lat: 46.2,
+        center_lon: 7.9,
+      },
+    },
+  ]);
+  await page.goto("/");
+
+  const picker = page.getByLabel("Saved setups");
+  await expect(picker).toBeVisible();
+  await expect(picker.locator("option")).toContainText([
+    "Recall a setup…",
+    "Alps close-up",
+  ]);
+
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await expect(page.getByText("Generated terrain").first()).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await picker.selectOption({ label: "Alps close-up" });
+  await expect(page.getByText(/Recalled .Alps close-up/)).toBeVisible();
+  await expect(page.getByText("Generated terrain")).toBeHidden();
+  await page.getByRole("tab", { name: "Model" }).click();
+  await expect(page.getByRole("slider", { name: "Ground span" })).toHaveValue(
+    "3",
+  );
+  await expect(page.locator(".map-selection")).toHaveAttribute(
+    "data-ground-span-km",
+    "3",
+  );
+});
+
+test("saves the current spec under a typed name and refreshes the list", async ({
+  page,
+}) => {
+  const state = await mockSetupsService(page, []);
+  await page.goto("/");
+
+  const picker = page.getByLabel("Saved setups");
+  await expect(picker.locator("option")).toContainText(["None saved yet"]);
+  const setupName = page.getByLabel("Setup name");
+  await expect(setupName).toHaveAttribute("placeholder", "Mount Rainier");
+  await setupName.fill("My ridge");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect(page.getByText(/Saved .My ridge/)).toBeVisible();
+  expect(state.saved).toHaveLength(1);
+  expect(state.saved[0].name).toBe("My ridge");
+  expect(state.saved[0].spec.place_name).toBe("Mount Rainier");
+  expect(state.saved[0].spec.ground_span_km).toBe(18);
+  await expect(
+    picker.locator("option", { hasText: "My ridge" }),
+  ).toHaveCount(1);
+});
+
+test("exports saved setups as a version-1 JSON download", async ({ page }) => {
+  await mockSetupsService(page, [
+    {
+      id: "setup-alps",
+      name: "Alps close-up",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-02T00:00:00Z",
+      spec: { place_name: "Alps close-up", ground_span_km: 3 },
+    },
+    {
+      id: "setup-rainier",
+      name: "Rainier tray",
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-02T00:00:00Z",
+      spec: { place_name: "Mount Rainier", width_mm: 240 },
+    },
+  ]);
+  await page.goto("/");
+
+  await expect(
+    page.getByLabel("Saved setups").locator("option", {
+      hasText: "Rainier tray",
+    }),
+  ).toHaveCount(1);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("toposaic-setups.json");
+  const downloadPath = await download.path();
+  const payload = JSON.parse(readFileSync(downloadPath, "utf8"));
+  expect(payload.version).toBe(1);
+  expect(payload.setups).toHaveLength(2);
+  expect(payload.setups.map((entry: { name: string }) => entry.name)).toEqual([
+    "Alps close-up",
+    "Rainier tray",
+  ]);
+  expect(payload.setups[0].spec.ground_span_km).toBe(3);
+  await expect(page.getByText("Exported 2 setups.")).toBeVisible();
+});
+
+test("imports setups from a JSON file and skips invalid entries", async ({
+  page,
+}) => {
+  const state = await mockSetupsService(page, []);
+  await page.goto("/");
+  await expect(page.getByLabel("Saved setups")).toBeVisible();
+
+  const payload = {
+    version: 1,
+    setups: [
+      { name: "Alps close-up", spec: { ground_span_km: 2 } },
+      { name: "Rainier tray", spec: { width_mm: 120 } },
+      { name: "", spec: {} },
+      "junk",
+    ],
+  };
+  await page.getByLabel("Import setups file").setInputFiles({
+    name: "toposaic-setups.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(payload)),
+  });
+
+  await expect(page.getByText("Imported 2, skipped 2 invalid.")).toBeVisible();
+  expect(state.saved.map((entry) => entry.name)).toEqual([
+    "Alps close-up",
+    "Rainier tray",
+  ]);
+  expect(state.saved[0].spec.ground_span_km).toBe(2);
+  expect(state.saved[0].spec.width_mm).toBe(180);
+  await expect(
+    page.getByLabel("Saved setups").locator("option", {
+      hasText: "Alps close-up",
+    }),
+  ).toHaveCount(1);
+});
+
+test("keeps the map and preview split adjustable from the keyboard", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const resizer = page.getByRole("separator", {
+    name: "Resize map and preview panes",
+  });
+  await expect(resizer).toBeVisible();
+  await expect(resizer).toHaveAttribute("aria-orientation", "vertical");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "50");
+
+  const mapShell = page.locator(".map-shell");
+  const initialBounds = await mapShell.boundingBox();
+  expect(initialBounds).not.toBeNull();
+
+  await resizer.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "46");
+  await page.keyboard.press("ArrowRight");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "50");
+  await page.keyboard.press("Home");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "25");
+
+  const narrowBounds = await mapShell.boundingBox();
+  expect(narrowBounds).not.toBeNull();
+  expect(narrowBounds!.width).toBeLessThan(initialBounds!.width);
+
+  await page.keyboard.press("End");
+  await expect(resizer).toHaveAttribute("aria-valuenow", "75");
+  await resizer.dblclick();
+  await expect(resizer).toHaveAttribute("aria-valuenow", "50");
 });

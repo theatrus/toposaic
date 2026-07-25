@@ -32,7 +32,13 @@ builds.
 ![TopoSaic light workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
 
 *Choose a place beside a live, rotatable preview. The lower workspace starts
-larger and can be resized with the horizontal divider.*
+larger and can be resized with the horizontal divider. A second divider between
+the map and the 3D preview sets their side-by-side split.*
+
+The top bar keeps a list of saved setups. Save the current model under a name,
+recall it later, and delete entries you no longer need. Saving an existing name
+overwrites that setup. Export writes every setup to a `toposaic-setups.json`
+file, and Import reads such a file back, so setups can move between machines.
 
 ![TopoSaic model controls showing boxed map coordinates and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 

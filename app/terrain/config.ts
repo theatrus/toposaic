@@ -67,6 +67,18 @@ export const initialSpec: GenerationSpec = {
   },
 };
 
+// Fill any field a saved spec is missing with the client default, so setups
+// saved before a field existed still recall cleanly.
+export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpec {
+  return {
+    ...initialSpec,
+    ...saved,
+    buildings: { ...initialSpec.buildings, ...saved.buildings },
+    tray: { ...initialSpec.tray, ...saved.tray },
+    color_output: { ...initialSpec.color_output, ...saved.color_output },
+  };
+}
+
 export const MIN_GROUND_SPAN_KM = 0.25;
 export const MAX_GROUND_SPAN_KM = 80;
 export const MAX_SUPER_TILE_SIDE = 12;

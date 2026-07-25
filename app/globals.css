@@ -71,6 +71,88 @@ a {
   gap: 16px;
 }
 
+.setup-manager {
+  align-items: center;
+  display: grid;
+  gap: 3px 6px;
+  grid-template-columns: auto minmax(90px, 130px) auto;
+}
+
+.setup-picker {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 9px;
+  font-weight: 700;
+  gap: 6px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.setup-picker select,
+.setup-name {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  max-width: 150px;
+  padding: 4px 5px;
+}
+
+.setup-name::placeholder {
+  color: var(--muted);
+}
+
+.setup-save,
+.setup-tools button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 760;
+  padding: 4px 3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.setup-save:disabled,
+.setup-tools button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.65;
+}
+
+.setup-save:focus-visible,
+.setup-tools button:focus-visible,
+.setup-picker select:focus-visible,
+.setup-name:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+
+.setup-tools {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  grid-column: 1 / -1;
+}
+
+.setup-tools .confirm-delete {
+  color: #8f493b;
+}
+
+.setup-status {
+  color: var(--muted);
+  font-size: 9px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .topbar-generate {
   align-items: center;
   background: var(--moss);
@@ -285,11 +367,44 @@ a {
 }
 
 .visual-column {
+  --map-share: 50fr;
+  --preview-share: 50fr;
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  grid-template-columns:
+    minmax(0, var(--map-share))
+    14px
+    minmax(0, var(--preview-share));
   min-height: 0;
   min-width: 0;
+}
+
+.visual-resizer {
+  align-items: center;
+  cursor: col-resize;
+  display: flex;
+  justify-content: center;
+  min-width: 14px;
+  outline: none;
+  touch-action: none;
+}
+
+.visual-resizer::before {
+  background: rgba(48, 64, 57, 0.28);
+  border-radius: 999px;
+  content: "";
+  height: 92px;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    height 140ms ease;
+  width: 4px;
+}
+
+.visual-resizer:hover::before,
+.visual-resizer:focus-visible::before {
+  background: var(--moss);
+  box-shadow: 0 0 0 3px rgba(47, 91, 64, 0.13);
+  height: 112px;
 }
 
 .map-shell,
@@ -1954,11 +2069,13 @@ fieldset.control-section .road-options {
     margin-top: 16px;
   }
 
-  .workspace-resizer {
+  .workspace-resizer,
+  .visual-resizer {
     display: none;
   }
 
   .visual-column {
+    gap: 14px;
     grid-template-columns: 1fr;
   }
 
@@ -2007,6 +2124,10 @@ fieldset.control-section .road-options {
   .update-notice small {
     display: none;
   }
+
+  .setup-status {
+    max-width: 110px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -2024,6 +2145,15 @@ fieldset.control-section .road-options {
 
   .topbar-actions {
     gap: 8px;
+  }
+
+  .setup-name,
+  .setup-tools {
+    display: none;
+  }
+
+  .setup-picker span {
+    display: none;
   }
 
   .update-notice {
