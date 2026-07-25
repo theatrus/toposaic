@@ -295,8 +295,10 @@ export function ReliefPreview({
     water_color,
     road_color,
     building_color,
+    trail_color,
   } = spec.color_output;
   const buildingsEnabled = spec.buildings.enabled;
+  const trailsPresent = spec.trails.length > 0;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -380,6 +382,7 @@ export function ReliefPreview({
       water: preview?.surface_palette?.water ?? water_color,
       road: preview?.surface_palette?.road ?? road_color,
       building: preview?.surface_palette?.building ?? building_color,
+      trail: preview?.surface_palette?.trail ?? trail_color,
     };
     const classColor = (surfaceClass?: number) =>
       surfaceClass === 1
@@ -392,9 +395,11 @@ export function ReliefPreview({
               ? palette.road
               : surfaceClass === 5
                 ? palette.building
-                : colorOutputEnabled
-                  ? palette.rock
-                  : "#74846B";
+                : surfaceClass === 6
+                  ? palette.trail
+                  : colorOutputEnabled
+                    ? palette.rock
+                    : "#74846B";
     const positions: number[] = [];
     const colors: number[] = [];
     const normals: number[] = [];
@@ -436,7 +441,7 @@ export function ReliefPreview({
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
         const surfaceClass =
-          colorOutputEnabled || buildingsEnabled
+          colorOutputEnabled || buildingsEnabled || trailsPresent
             ? preview?.surface_classes?.[y * sampleWidth + x]
             : undefined;
         const color = new Color(classColor(surfaceClass));
@@ -707,12 +712,14 @@ export function ReliefPreview({
     straight_piece_sides,
     colorOutputEnabled,
     buildingsEnabled,
+    trailsPresent,
     rock_color,
     forest_color,
     snow_color,
     water_color,
     road_color,
     building_color,
+    trail_color,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -774,7 +781,9 @@ export function ReliefPreview({
           Reset view
         </button>
       </div>
-      {(spec.color_output.enabled || spec.buildings.enabled) && (
+      {(spec.color_output.enabled ||
+        spec.buildings.enabled ||
+        trailsPresent) && (
         <div className="color-legend" aria-label="Surface color legend">
           {(
             [
@@ -784,10 +793,14 @@ export function ReliefPreview({
               ["Water", "water", spec.color_output.water_color],
               ["Route", "road", spec.color_output.road_color],
               ["Building", "building", spec.color_output.building_color],
+              ["Trail", "trail", spec.color_output.trail_color],
             ] as const
           )
             .filter(
               ([, key]) => {
+                if (key === "trail") {
+                  return trailsPresent;
+                }
                 if (!spec.color_output.enabled) {
                   return (
                     key === "rock" ||
@@ -809,7 +822,9 @@ export function ReliefPreview({
                 />
                 {label}
                 {preview?.surface_coverage && (
-                  <small>{preview.surface_coverage[key].toFixed(0)}%</small>
+                  <small>
+                    {(preview.surface_coverage[key] ?? 0).toFixed(0)}%
+                  </small>
                 )}
               </span>
             ))}

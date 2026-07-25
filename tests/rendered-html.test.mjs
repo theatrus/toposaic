@@ -93,6 +93,13 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /demotes snow\s+to rock above the slope limit/);
   // The snow slope limit renders with its own gate, which defaults on.
   assert.match(html, /Snow slope limit/);
+  assert.match(html, /Imported trails/);
+  assert.match(html, /Import GPX or KML files/);
+  assert.match(html, /aria-label="Import trail files"/);
+  assert.match(html, /saved setups and exported setup files carry\s+them/);
+  // Trail color and width controls only render once a trail is imported.
+  assert.doesNotMatch(html, /Trail print width/);
+  assert.doesNotMatch(html, /Trail color/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);

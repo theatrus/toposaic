@@ -58,6 +58,9 @@ export const initialSpec: GenerationSpec = {
     water_color: "#2F76B5",
     road_color: "#D8A33C",
     building_color: "#B8A890",
+    // High-vis raspberry magenta, clearly apart from the gold route color.
+    trail_color: "#D6336C",
+    trail_width_mm: 0.7,
     roads_enabled: true,
     road_detail: "automatic",
     adaptive_road_widths: true,
@@ -77,6 +80,7 @@ export const initialSpec: GenerationSpec = {
     snow_slope_gate: true,
     snow_slope_limit_degrees: 65,
   },
+  trails: [],
 };
 
 // Fill any field a saved spec is missing with the client default, so setups
@@ -88,6 +92,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     tray: { ...initialSpec.tray, ...saved.tray },
     color_output: { ...initialSpec.color_output, ...saved.color_output },
+    trails: saved.trails ?? [],
   };
 }
 

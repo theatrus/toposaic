@@ -112,6 +112,10 @@ pub fn generate_tray_artifacts(
     tray_spec.color_output.water_color = spec.tray.tray_color.clone();
     tray_spec.color_output.road_color = spec.tray.tray_color.clone();
     tray_spec.color_output.building_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.trail_color = spec.tray.tray_color.clone();
+    // Trays never draw trails; dropping them keeps the tray 3MF at its
+    // six-slot layout even when the terrain model carries trails.
+    tray_spec.trails = Vec::new();
 
     let tray_meshes = build_tray_segments(spec, height_field)?;
     let mut artifacts = Vec::with_capacity(tray_meshes.len() * 2);
@@ -151,6 +155,9 @@ fn generate_project_inner(
     }
     if spec.buildings.enabled && surface_field.is_none() {
         bail!("building output requires OpenStreetMap building data");
+    }
+    if spec.uses_trails() && surface_field.is_none() {
+        bail!("imported trails require surface data to draw on");
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;

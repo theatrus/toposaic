@@ -12,6 +12,12 @@ const MAX_FINE_DEM_ASSEMBLED_SAMPLES: u32 = 2_048;
 const FINE_DEM_TARGET_RESOLUTION_M: f64 = 0.25;
 const FINE_DEM_MAX_SPAN_KM: f64 = 2.0;
 const DETAIL_SAMPLE_STEP: u32 = 8;
+/// Caps for imported hiker trails. A GPX track logger easily emits tens of
+/// thousands of points; 20k per trail keeps memory and paint time bounded
+/// while exceeding one-second GPS logs of any printable route.
+const MAX_TRAILS: usize = 20;
+const MAX_TRAIL_POINTS: usize = 20_000;
+const MAX_TRAIL_NAME_CHARS: usize = 80;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -46,6 +52,10 @@ pub struct GenerationSpec {
     pub tray: TraySpec,
     pub buildings: BuildingSpec,
     pub color_output: ColorOutputSpec,
+    /// Imported hiker trails (GPX/KML routes) drawn on the model in the
+    /// dedicated trail color. Empty for every spec saved before the field
+    /// existed, so old projects regenerate byte-identically.
+    pub trails: Vec<TrailRoute>,
 }
 
 impl Default for GenerationSpec {
@@ -81,6 +91,7 @@ impl Default for GenerationSpec {
             tray: TraySpec::default(),
             buildings: BuildingSpec::default(),
             color_output: ColorOutputSpec::default(),
+            trails: Vec::new(),
         }
     }
 }
@@ -171,7 +182,21 @@ impl GenerationSpec {
         self.tray.validate()?;
         self.buildings.validate()?;
         self.color_output.validate()?;
+        if self.trails.len() > MAX_TRAILS {
+            bail!("at most {MAX_TRAILS} imported trails are supported");
+        }
+        for trail in &self.trails {
+            trail.validate()?;
+        }
         Ok(())
+    }
+
+    /// Whether the spec carries imported hiker trails. Every trail-only
+    /// behavior — the seventh color slot, its paint code, the extra
+    /// filament settings — hangs off this, so specs without trails produce
+    /// byte-identical artifacts to builds that predate trails.
+    pub fn uses_trails(&self) -> bool {
+        !self.trails.is_empty()
     }
 
     pub fn height_mm(&self) -> f32 {
@@ -257,7 +282,26 @@ impl GenerationSpec {
     }
 
     pub(crate) fn uses_color_materials(&self) -> bool {
-        self.color_output.enabled || self.buildings.enabled
+        self.color_output.enabled || self.buildings.enabled || self.uses_trails()
+    }
+
+    /// The color of every emitted material slot, ordered by
+    /// `SurfaceClass::material_index`. The trail slot exists only when the
+    /// spec carries trails, so slot count and colors stay exactly as before
+    /// for every spec without them.
+    pub(crate) fn material_colors(&self) -> Vec<&str> {
+        let mut colors = vec![
+            self.color_output.rock_color.as_str(),
+            self.color_output.forest_color.as_str(),
+            self.color_output.snow_color.as_str(),
+            self.color_output.water_color.as_str(),
+            self.color_output.road_color.as_str(),
+            self.color_output.building_color.as_str(),
+        ];
+        if self.uses_trails() {
+            colors.push(self.color_output.trail_color.as_str());
+        }
+        colors
     }
 
     fn mesh_piece_count(&self) -> u32 {
@@ -281,6 +325,44 @@ fn scale_detail_samples(base: u32, ground_span_km: f64, maximum: u32) -> u32 {
 
 fn samples_per_piece_for_total(total: u32, piece_count: u32) -> u32 {
     total.div_ceil(piece_count.max(1))
+}
+
+/// One imported hiker trail: an ordered polyline of geographic positions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailRoute {
+    pub name: String,
+    /// Ordered (latitude, longitude) pairs in degrees.
+    pub points: Vec<[f64; 2]>,
+}
+
+impl TrailRoute {
+    fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() || self.name.chars().count() > MAX_TRAIL_NAME_CHARS {
+            bail!("trail names must contain between 1 and {MAX_TRAIL_NAME_CHARS} characters");
+        }
+        if self.name.chars().any(char::is_control) {
+            bail!("trail names cannot contain control characters");
+        }
+        if self.points.len() < 2 {
+            bail!("trails need at least 2 points");
+        }
+        if self.points.len() > MAX_TRAIL_POINTS {
+            bail!("trails are capped at {MAX_TRAIL_POINTS} points");
+        }
+        for point in &self.points {
+            let [latitude, longitude] = *point;
+            if !latitude.is_finite() || !longitude.is_finite() {
+                bail!("trail coordinates must be finite");
+            }
+            if !(-90.0..=90.0).contains(&latitude) {
+                bail!("trail latitudes must be between -90 and 90 degrees");
+            }
+            if !(-180.0..=180.0).contains(&longitude) {
+                bail!("trail longitudes must be between -180 and 180 degrees");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +606,12 @@ pub struct ColorOutputSpec {
     pub water_color: String,
     pub road_color: String,
     pub building_color: String,
+    /// Color of imported hiker trails. Only emitted into artifacts when the
+    /// spec actually carries trails, so the default never changes existing
+    /// output.
+    pub trail_color: String,
+    /// Print width of imported trail lines, like `road_width_mm` for roads.
+    pub trail_width_mm: f32,
     pub roads_enabled: bool,
     pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
@@ -574,6 +662,10 @@ impl Default for ColorOutputSpec {
             water_color: "#2F76B5".into(),
             road_color: "#D8A33C".into(),
             building_color: "#B8A890".into(),
+            // High-vis raspberry magenta: reads on every default terrain
+            // color and stays clearly apart from the gold route color.
+            trail_color: "#D6336C".into(),
+            trail_width_mm: 0.7,
             roads_enabled: true,
             road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
@@ -616,6 +708,7 @@ impl ColorOutputSpec {
             ("water", &self.water_color),
             ("road", &self.road_color),
             ("building", &self.building_color),
+            ("trail", &self.trail_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -623,6 +716,9 @@ impl ColorOutputSpec {
         }
         if !(0.4..=5.0).contains(&self.road_width_mm) {
             bail!("road line width must be between 0.4 and 5 mm");
+        }
+        if !(0.4..=5.0).contains(&self.trail_width_mm) {
+            bail!("trail line width must be between 0.4 and 5 mm");
         }
         if !(0.0..=100.0).contains(&self.waterway_coverage_percent) {
             bail!("waterway coverage cutoff must be between 0 and 100 percent");
@@ -672,17 +768,22 @@ pub enum SurfaceClass {
     Water,
     Road,
     Building,
+    /// Imported hiker trails. The class only ever appears in generated
+    /// output when a spec carries trails, so its seventh material slot is
+    /// invisible to every existing project.
+    Trail,
 }
 
 impl SurfaceClass {
     /// Every class, ordered by `material_index`.
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
         Self::Water,
         Self::Road,
         Self::Building,
+        Self::Trail,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -693,6 +794,7 @@ impl SurfaceClass {
             Self::Water => 3,
             Self::Road => 4,
             Self::Building => 5,
+            Self::Trail => 6,
         }
     }
 }
@@ -805,6 +907,80 @@ mod tests {
         // Specs saved before the 3MF style existed keep today's project
         // output, embedded slicer settings included.
         assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Project);
+        // Specs saved before trails existed carry no trails, keep the new
+        // defaults, and stay off the trail-only code paths entirely.
+        assert!(spec.trails.is_empty());
+        assert!(!spec.uses_trails());
+        assert_eq!(spec.color_output.trail_color, "#D6336C");
+        assert_eq!(spec.color_output.trail_width_mm, 0.7);
+    }
+
+    fn trail(points: Vec<[f64; 2]>) -> TrailRoute {
+        TrailRoute {
+            name: "Wonderland Trail".into(),
+            points,
+        }
+    }
+
+    #[test]
+    fn trail_specs_validate_coordinates_and_caps() {
+        let mut spec = GenerationSpec {
+            trails: vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])],
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+        assert!(spec.uses_trails());
+
+        spec.trails[0].points = vec![[46.85, -121.76]];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("at least 2 points"));
+
+        spec.trails[0].points = vec![[91.0, 0.0], [0.0, 0.0]];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("latitudes"));
+
+        spec.trails[0].points = vec![[0.0, -181.0], [0.0, 0.0]];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("longitudes"));
+
+        spec.trails[0].points = vec![[f64::NAN, 0.0], [0.0, 0.0]];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("finite"));
+
+        spec.trails[0].points = vec![[0.0, 0.0]; 20_001];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("capped at 20000 points"));
+
+        spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]]); 21];
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("at most 20 imported trails"));
+
+        spec.trails.truncate(20);
+        assert!(spec.validate().is_ok());
+
+        spec.trails.truncate(1);
+        spec.trails[0].name = "  ".into();
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("trail names"));
+
+        spec.trails[0].name = "OK".into();
+        spec.color_output.trail_width_mm = 0.2;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("trail line width"));
+
+        spec.color_output.trail_width_mm = 0.7;
+        spec.color_output.trail_color = "magenta".into();
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("trail color"));
+    }
+
+    #[test]
+    fn trails_activate_color_materials_on_their_own() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = false;
+        assert!(!spec.uses_color_materials());
+        spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])];
+        assert!(spec.uses_color_materials());
     }
 
     #[test]

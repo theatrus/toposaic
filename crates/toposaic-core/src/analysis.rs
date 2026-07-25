@@ -111,6 +111,7 @@ fn triangle_feature(mesh: &Mesh, triangle_index: usize) -> String {
     match material {
         SurfaceClass::Building => format!("building-shell {orientation}"),
         SurfaceClass::Road => format!("road-shell {orientation}"),
+        SurfaceClass::Trail => format!("trail-shell {orientation}"),
         _ => {
             let zeroes = corners
                 .iter()
@@ -657,6 +658,18 @@ mod tests {
             );
         }
         assert_eq!(report.quantization_collisions, 0);
+    }
+
+    #[test]
+    fn trail_shell_triangles_attribute_to_their_own_feature() {
+        let mesh = Mesh {
+            name: "piece".into(),
+            vertices: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+            triangles: vec![[0, 1, 2]],
+            materials: vec![SurfaceClass::Trail],
+            quantization_collisions: Vec::new(),
+        };
+        assert_eq!(triangle_feature(&mesh, 0), "trail-shell top");
     }
 
     #[test]

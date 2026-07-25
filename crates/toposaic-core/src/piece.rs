@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use geo::{
     Area, BooleanOps, Buffer, Centroid, Contains, Coord, InteriorPoint, LineString, MultiPolygon,
-    Point, Polygon, unary_union,
+    Point, Polygon, Simplify, unary_union,
 };
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
@@ -431,8 +431,7 @@ pub(crate) fn build_piece_with_height_range(
             assembled_height,
         )?);
     }
-    if spec.color_output.enabled
-        && spec.color_output.roads_enabled
+    if ((spec.color_output.enabled && spec.color_output.roads_enabled) || spec.uses_trails())
         && let Some(field) = surface_field
     {
         append_road_geometry(
@@ -1399,32 +1398,41 @@ fn append_road_geometry(
             ]
         },
     );
+    let overlaps_piece = |line: &&VectorSurfaceLine| {
+        let half_width = line.width_mm * 0.5;
+        let line_bounds = line.points_mm.iter().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |bounds, point| {
+                [
+                    bounds[0].min(point[0] - half_width),
+                    bounds[1].min(point[1] - half_width),
+                    bounds[2].max(point[0] + half_width),
+                    bounds[3].max(point[1] + half_width),
+                ]
+            },
+        );
+        bounds_overlap(piece_bounds, line_bounds) && line.points_mm.len() >= 2
+    };
     let roads = surface_field
         .vector_lines
         .iter()
         .filter(|line| line.class == SurfaceClass::Road)
-        .filter(|line| {
-            let half_width = line.width_mm * 0.5;
-            let line_bounds = line.points_mm.iter().fold(
-                [
-                    f32::INFINITY,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::NEG_INFINITY,
-                ],
-                |bounds, point| {
-                    [
-                        bounds[0].min(point[0] - half_width),
-                        bounds[1].min(point[1] - half_width),
-                        bounds[2].max(point[0] + half_width),
-                        bounds[3].max(point[1] + half_width),
-                    ]
-                },
-            );
-            bounds_overlap(piece_bounds, line_bounds) && line.points_mm.len() >= 2
-        })
+        .filter(overlaps_piece)
         .collect::<Vec<_>>();
-    if roads.is_empty() {
+    // Imported trails are Trail-class lines; they only exist when the spec
+    // carries trails, so specs without trails walk the exact road-only path.
+    let trail_lines = surface_field
+        .vector_lines
+        .iter()
+        .filter(|line| line.class == SurfaceClass::Trail)
+        .filter(overlaps_piece)
+        .collect::<Vec<_>>();
+    if roads.is_empty() && trail_lines.is_empty() {
         return Ok(());
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
@@ -1592,7 +1600,7 @@ fn append_road_geometry(
     for shell in regular_shells {
         mesh.append_isolated(shell);
     }
-    for (ordinal, (group_lines, deck_area)) in decks.into_iter().enumerate() {
+    for (ordinal, (group_lines, deck_area)) in decks.iter().enumerate() {
         // Each deck group embeds a fraction deeper than the last. Supported
         // decks of *different* groups follow the same terrain-hugging
         // bottom, and where two groups meet at a shared road node their
@@ -1602,7 +1610,7 @@ fn append_road_geometry(
         let embed_mm = quantize_export_coordinate(
             OVERLAY_TERRAIN_EMBED_MM + ((ordinal % 64) as f32 + 1.0) * 0.000_05,
         );
-        let deck_area = sanitize_footprint_group(deck_area, true);
+        let deck_area = sanitize_footprint_group(deck_area.clone(), true);
         let group_shells = deck_area
             .0
             .par_iter()
@@ -1611,7 +1619,7 @@ fn append_road_geometry(
                 build_road_polygon_shell_with_embed(
                     polygon,
                     spec,
-                    &group_lines,
+                    group_lines,
                     height_field,
                     height_range,
                     origin_x,
@@ -1625,6 +1633,97 @@ fn append_road_geometry(
         for shell in group_shells {
             mesh.append_isolated(shell);
         }
+    }
+    if !trail_lines.is_empty() {
+        append_trail_geometry(
+            mesh,
+            spec,
+            &trail_lines,
+            &clip_ribbon,
+            &road_area,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+    }
+    Ok(())
+}
+
+/// Builds the imported-trail shells of one piece: terrain-following ribbons
+/// raised by the road layer height, in the Trail material. Trail footprints
+/// are clipped and unioned exactly like plain roads and additionally keep
+/// [`OVERLAY_SEPARATION_MM`] clear of the road union and every bridge deck,
+/// so a trail crossing a road never leaves coincident top or bottom faces
+/// for a slicer weld to fuse into non-manifold edges.
+#[allow(clippy::too_many_arguments)]
+fn append_trail_geometry(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    trail_lines: &[&VectorSurfaceLine],
+    clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
+    road_area: &MultiPolygon<f64>,
+    decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<()> {
+    let trail_clips = trail_lines
+        .par_iter()
+        .map(|line| clip_ribbon(line))
+        .collect::<Vec<_>>();
+    let mut trail_area = unary_union(trail_clips.iter());
+    let grown = |area: &MultiPolygon<f64>| {
+        let buffered = area
+            .0
+            .iter()
+            .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
+            .collect::<Vec<_>>();
+        unary_union(buffered.iter())
+    };
+    if !road_area.0.is_empty() {
+        trail_area = trail_area.difference(&grown(road_area));
+    }
+    for (_, deck_area) in decks {
+        if !deck_area.0.is_empty() {
+            trail_area = trail_area.difference(&grown(deck_area));
+        }
+    }
+    // The differences above leave hair-thin slivers where a trail border
+    // runs nearly tangent to a road border: boundary vertices one export
+    // quantum apart that triangulate into zero-area faces. A Douglas-Peucker
+    // pass at a tenth of the separation gap removes those vertices without
+    // visibly moving the outline; sanitizing then handles exact duplicates.
+    let trail_area =
+        sanitize_footprint_group(trail_area.simplify(OVERLAY_SEPARATION_MM * 0.1), true);
+    let surface_z = |point: [f32; 2]| {
+        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+        terrain_z_at(spec, height_field, height_range, u, v)
+    };
+    let trail_shells = trail_area
+        .0
+        .par_iter()
+        .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+        .map(|polygon| {
+            build_polygon_shell(
+                polygon,
+                |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
+                |point| surface_z(point) + spec.color_output.road_height_mm,
+                None,
+                SurfaceClass::Trail,
+                "triangulate imported trail ribbon",
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for shell in trail_shells {
+        mesh.append_isolated(shell);
     }
     Ok(())
 }
@@ -2853,6 +2952,65 @@ mod tests {
         assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
         assert!(!flat.materials.contains(&SurfaceClass::Road));
         assert_watertight(&raised);
+    }
+
+    #[test]
+    fn imported_trails_ride_the_raised_road_treatment() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "trails").unwrap();
+        // A road across the piece and a trail crossing it.
+        field.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        field.paint_polyline(&[[0.5, 0.1], [0.5, 0.9]], 60.0, 0.7, SurfaceClass::Trail);
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_height_mm: 0.2,
+                ..ColorOutputSpec::default()
+            },
+            trails: vec![crate::spec::TrailRoute {
+                name: "Crossing".into(),
+                points: vec![[46.8, -121.8], [46.9, -121.7]],
+            }],
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let trail_vertices = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Trail)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(trail_vertices.len() > 100);
+        let minimum_z = trail_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = trail_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        // Same raised layer as roads: embedded bottom, road-height top.
+        assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
+        assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
+        assert_watertight(&mesh);
+
+        // Without spec trails the Trail lines paint nothing and the piece
+        // carries no Trail material — the byte-level no-op in mesh form.
+        let mut no_trail_spec = spec.clone();
+        no_trail_spec.trails.clear();
+        let mut road_only = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "trails").unwrap();
+        road_only.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        let plain =
+            build_piece(&no_trail_spec, Some(&height_field), Some(&road_only), 0, 0).unwrap();
+        assert!(!plain.materials.contains(&SurfaceClass::Trail));
     }
 
     #[test]

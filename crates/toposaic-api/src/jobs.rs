@@ -271,7 +271,8 @@ fn run_job(
         "generation phase complete"
     );
     update_job(state, id, "running", 40, &[], None)?;
-    let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
+    let surface_field = if spec.color_output.enabled || spec.buildings.enabled || spec.uses_trails()
+    {
         update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
@@ -382,7 +383,10 @@ fn run_adjacent_grid_job(
         let row = index as u32 / spec.adjacent_columns;
         let column = index as u32 % spec.adjacent_columns;
         let tile_dir = output_dir.join(format!(".tile-{}-{}", row + 1, column + 1));
-        let surface_field = if tile_spec.color_output.enabled || tile_spec.buildings.enabled {
+        let surface_field = if tile_spec.color_output.enabled
+            || tile_spec.buildings.enabled
+            || tile_spec.uses_trails()
+        {
             Some(surface::fetch_surface_field(
                 tile_spec,
                 height_field,

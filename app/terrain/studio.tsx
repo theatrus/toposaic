@@ -46,7 +46,9 @@ import type {
   PlaceResult,
   PreviewData,
   SavedSetup,
+  TrailRoute,
 } from "./contracts";
+import { MAX_TRAILS, MAX_TRAIL_POINTS, parseTrailFile } from "./trails";
 import { type AdjacentDirection, adjacentCenter } from "./geo";
 import { ArtifactDownloads } from "./downloads";
 import { TerrainMap } from "./map";
@@ -212,6 +214,7 @@ export function TerrainStudio() {
   >(null);
   const [setupNameDraft, setSetupNameDraft] = useState("");
   const [setupStatus, setSetupStatus] = useState<string | null>(null);
+  const [trailNotice, setTrailNotice] = useState<string | null>(null);
   const [savingSetup, setSavingSetup] = useState(false);
   const [confirmingSetupDeleteId, setConfirmingSetupDeleteId] = useState<
     string | null
@@ -463,6 +466,47 @@ export function TerrainStudio() {
     },
     [],
   );
+  const importTrailFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    const notices: string[] = [];
+    const imported: TrailRoute[] = [];
+    for (const file of files) {
+      try {
+        const parsed = parseTrailFile(file.name, await file.text());
+        if (parsed.trails.length === 0) {
+          notices.push(`No trails found in ${file.name}.`);
+        }
+        imported.push(...parsed.trails);
+        for (const name of parsed.downsampled) {
+          notices.push(
+            `${name} was thinned to ${MAX_TRAIL_POINTS.toLocaleString()} points.`,
+          );
+        }
+      } catch {
+        notices.push(`Could not read ${file.name}.`);
+      }
+    }
+    const room = Math.max(0, MAX_TRAILS - spec.trails.length);
+    const kept = imported.slice(0, room);
+    if (imported.length > kept.length) {
+      notices.push(`A model holds at most ${MAX_TRAILS} trails.`);
+    }
+    if (kept.length > 0) {
+      notices.unshift(
+        `Imported ${kept.length} ${kept.length === 1 ? "trail" : "trails"}.`,
+      );
+      update("trails", [...spec.trails, ...kept]);
+    }
+    setTrailNotice(notices.length > 0 ? notices.join(" ") : null);
+  };
+  const removeTrail = (index: number) => {
+    update(
+      "trails",
+      spec.trails.filter((_, position) => position !== index),
+    );
+    setTrailNotice(null);
+  };
+
   const setSuperTileAnchor = useCallback(
     (anchor: GenerationSpec["super_tile_anchor"]) => {
       const columns =
@@ -2441,6 +2485,86 @@ export function TerrainStudio() {
                 </p>
               </>
             )}
+            <div
+              className="road-options trail-import"
+              role="group"
+              aria-label="Imported trails"
+            >
+              <strong>Imported trails</strong>
+              <label className="trail-import-input">
+                Import GPX or KML files
+                <input
+                  aria-label="Import trail files"
+                  type="file"
+                  accept=".gpx,.kml"
+                  multiple
+                  onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = "";
+                    void importTrailFiles(files);
+                  }}
+                />
+              </label>
+              {spec.trails.length > 0 && (
+                <ul className="trail-list">
+                  {spec.trails.map((trail, index) => (
+                    <li key={`${trail.name}-${index}`}>
+                      <span>{trail.name}</span>
+                      <small>
+                        {trail.points.length.toLocaleString()} points
+                      </small>
+                      <button
+                        type="button"
+                        aria-label={`Remove trail ${trail.name}`}
+                        onClick={() => removeTrail(index)}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {trailNotice && (
+                <small className="trail-notice" role="status">
+                  {trailNotice}
+                </small>
+              )}
+              {spec.trails.length > 0 && (
+                <>
+                  <div className="color-swatches trail-color-swatch">
+                    <label>
+                      <input
+                        aria-label="Trail color"
+                        type="color"
+                        value={spec.color_output.trail_color}
+                        onChange={(event) =>
+                          updateColor("trail_color", event.target.value)
+                        }
+                      />
+                      <span>Trail color</span>
+                      <code>
+                        {spec.color_output.trail_color.toUpperCase()}
+                      </code>
+                    </label>
+                  </div>
+                  <RangeField
+                    label="Trail print width"
+                    value={spec.color_output.trail_width_mm}
+                    unit=" mm"
+                    min={0.4}
+                    max={4}
+                    step={0.1}
+                    onChange={(value) => updateColor("trail_width_mm", value)}
+                  />
+                </>
+              )}
+              <small>
+                Each hiking route from a GPX or KML file prints as a raised
+                line in its own trail color, like roads. Trails live in the
+                model spec, so saved setups and exported setup files carry
+                them.
+              </small>
+            </div>
           </fieldset>
 
           <fieldset
