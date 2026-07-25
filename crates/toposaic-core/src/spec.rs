@@ -526,6 +526,14 @@ pub struct ColorOutputSpec {
     /// What demoted steep forest becomes: rock everywhere, or snow above
     /// the local snowline.
     pub steep_forest_target: SteepForestTarget,
+    /// Reclassify snow as rock where the local ground slope exceeds
+    /// `snow_slope_limit_degrees`. Like the forest gate this only removes a
+    /// physical impossibility — snow does not hold on near-vertical faces,
+    /// but WorldCover bleeds snow onto cliff walls exactly like tree cover
+    /// — so it defaults on. Runs after the forest gate, so forest the
+    /// forest gate demoted to snow is gated too.
+    pub snow_slope_gate: bool,
+    pub snow_slope_limit_degrees: f32,
 }
 
 impl Default for ColorOutputSpec {
@@ -561,6 +569,12 @@ impl Default for ColorOutputSpec {
             // 10 m land-cover pixels paint green.
             forest_slope_limit_degrees: 55.0,
             steep_forest_target: SteepForestTarget::Rock,
+            snow_slope_gate: true,
+            // Snow patches persist on steeper ground than closed forest:
+            // couloirs and clingy north faces hold snow past 55 degrees,
+            // but faces past roughly 65 degrees shed. DEM smoothing
+            // understates slope, so the default errs high.
+            snow_slope_limit_degrees: 65.0,
         }
     }
 }
@@ -596,6 +610,9 @@ impl ColorOutputSpec {
         }
         if !(30.0..=85.0).contains(&self.forest_slope_limit_degrees) {
             bail!("forest slope limit must be between 30 and 85 degrees");
+        }
+        if !(30.0..=85.0).contains(&self.snow_slope_limit_degrees) {
+            bail!("snow slope limit must be between 30 and 85 degrees");
         }
         // Below 1 cell the 4 by 4 kriging neighbourhood barely overlaps the
         // variogram range and borders stay blocky; above 8 cells borders
@@ -755,6 +772,8 @@ mod tests {
             spec.color_output.steep_forest_target,
             SteepForestTarget::Rock
         );
+        assert!(spec.color_output.snow_slope_gate);
+        assert_eq!(spec.color_output.snow_slope_limit_degrees, 65.0);
     }
 
     #[test]
@@ -776,11 +795,16 @@ mod tests {
     #[test]
     fn class_border_modes_parse_and_slope_limits_validate() {
         let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
-            "color_output": { "class_borders": "smooth", "forest_slope_gate": false }
+            "color_output": {
+                "class_borders": "smooth",
+                "forest_slope_gate": false,
+                "snow_slope_gate": false
+            }
         }))
         .unwrap();
         assert_eq!(spec.color_output.class_borders, ClassBorders::Smooth);
         assert!(!spec.color_output.forest_slope_gate);
+        assert!(!spec.color_output.snow_slope_gate);
         assert_eq!(spec.color_output.border_smoothing_range_cells, 2.5);
         assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
 
@@ -788,6 +812,12 @@ mod tests {
         spec.color_output.forest_slope_limit_degrees = 20.0;
         assert!(spec.validate().is_err());
         spec.color_output.forest_slope_limit_degrees = 85.0;
+        assert!(spec.validate().is_ok());
+
+        spec.color_output.snow_slope_limit_degrees = 89.0;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("snow slope limit"));
+        spec.color_output.snow_slope_limit_degrees = 30.0;
         assert!(spec.validate().is_ok());
     }
 

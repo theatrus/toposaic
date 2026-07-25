@@ -221,6 +221,28 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await forestSlopeGate.check();
   await expect(forestSlopeLimit).toBeVisible();
   await expect(steepForestTarget).toHaveValue("snow");
+  const snowSlopeGate = surfaceColors.getByRole("checkbox", {
+    name: "Keep snow off sheer faces",
+  });
+  const snowSlopeLimit = surfaceColors.getByRole("slider", {
+    name: "Snow slope limit",
+  });
+  await expect(snowSlopeGate).toBeChecked();
+  await expect(snowSlopeLimit).toHaveValue("65");
+  await snowSlopeLimit.fill("75");
+  await expect(snowSlopeLimit).toHaveValue("75");
+  await snowSlopeGate.uncheck();
+  await expect(snowSlopeGate).not.toBeChecked();
+  await expect(snowSlopeLimit).toBeHidden();
+  // The two gates are independent: the forest controls stay put.
+  await expect(forestSlopeLimit).toBeVisible();
+  await snowSlopeGate.check();
+  await expect(snowSlopeLimit).toBeVisible();
+  await expect(snowSlopeLimit).toHaveValue("75");
+  await forestSlopeGate.uncheck();
+  await expect(forestSlopeLimit).toBeHidden();
+  await expect(snowSlopeLimit).toBeVisible();
+  await forestSlopeGate.check();
   await expect(floatingBridge).toBeChecked();
   await expect(bridgeThickness).toHaveValue("1.2");
   await supportedBridge.check();

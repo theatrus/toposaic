@@ -14,8 +14,8 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, ResolvedRoadDetail, SurfaceClass,
-    SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, ResolvedRoadDetail, SlopeGates,
+    SurfaceClass, SurfaceField,
 };
 use tracing::warn;
 
@@ -180,25 +180,48 @@ pub fn fetch_surface_field(
     let mut field = SurfaceField::new(width, height, classes, source)?;
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
-        if spec.color_output.forest_slope_gate {
-            let demoted = field.demote_steep_forest(
+        if spec.color_output.forest_slope_gate || spec.color_output.snow_slope_gate {
+            // One call gates both classes so the slope per sample is
+            // computed once, whichever gates are on.
+            let demoted = field.demote_steep_classes(
                 height_field,
                 ground_span_m,
-                spec.color_output.forest_slope_limit_degrees,
-                spec.color_output.steep_forest_target,
+                SlopeGates {
+                    forest_limit_degrees: spec
+                        .color_output
+                        .forest_slope_gate
+                        .then_some(spec.color_output.forest_slope_limit_degrees),
+                    steep_forest_target: spec.color_output.steep_forest_target,
+                    snow_limit_degrees: spec
+                        .color_output
+                        .snow_slope_gate
+                        .then_some(spec.color_output.snow_slope_limit_degrees),
+                },
             );
             if demoted.total() > 0 {
-                let mut audit = format!(
-                    "steep-slope gate: {} forest samples steeper than {:.0} degrees reclassified as rock",
-                    demoted.to_rock, spec.color_output.forest_slope_limit_degrees
-                );
-                if demoted.to_snow > 0 {
-                    audit.push_str(&format!(
-                        " and {} as snow above the snowline",
-                        demoted.to_snow
+                let mut parts = Vec::new();
+                if demoted.forest_to_rock > 0 {
+                    parts.push(format!(
+                        "{} forest samples steeper than {:.0} degrees reclassified as rock",
+                        demoted.forest_to_rock, spec.color_output.forest_slope_limit_degrees
                     ));
                 }
-                append_source(&mut field.source, audit);
+                if demoted.forest_to_snow > 0 {
+                    parts.push(format!(
+                        "{} forest samples steeper than {:.0} degrees reclassified as snow above the snowline",
+                        demoted.forest_to_snow, spec.color_output.forest_slope_limit_degrees
+                    ));
+                }
+                if demoted.snow_to_rock > 0 {
+                    parts.push(format!(
+                        "{} snow samples steeper than {:.0} degrees reclassified as rock",
+                        demoted.snow_to_rock, spec.color_output.snow_slope_limit_degrees
+                    ));
+                }
+                append_source(
+                    &mut field.source,
+                    format!("steep-slope gates: {}", parts.join("; ")),
+                );
             }
         }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);

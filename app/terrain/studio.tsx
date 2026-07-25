@@ -1547,6 +1547,35 @@ export function TerrainStudio() {
                   <label className="color-toggle">
                     <input
                       type="checkbox"
+                      checked={spec.color_output.snow_slope_gate}
+                      onChange={(event) =>
+                        updateColor("snow_slope_gate", event.target.checked)
+                      }
+                    />
+                    <span>Keep snow off sheer faces</span>
+                  </label>
+                  <small>
+                    WorldCover bleeds snow onto cliff walls. This demotes snow
+                    to rock above the slope limit.
+                  </small>
+                </div>
+                {spec.color_output.snow_slope_gate && (
+                  <RangeField
+                    label="Snow slope limit"
+                    value={spec.color_output.snow_slope_limit_degrees}
+                    unit="°"
+                    min={30}
+                    max={85}
+                    step={1}
+                    onChange={(value) =>
+                      updateColor("snow_slope_limit_degrees", value)
+                    }
+                  />
+                )}
+                <div className="road-options">
+                  <label className="color-toggle">
+                    <input
+                      type="checkbox"
                       checked={spec.color_output.osm_water_enabled}
                       onChange={(event) =>
                         updateColor("osm_water_enabled", event.target.checked)

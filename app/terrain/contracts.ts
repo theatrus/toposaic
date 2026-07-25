@@ -68,6 +68,8 @@ export type GenerationSpec = {
     forest_slope_gate: boolean;
     forest_slope_limit_degrees: number;
     steep_forest_target: "rock" | "snow";
+    snow_slope_gate: boolean;
+    snow_slope_limit_degrees: number;
   };
 };
 

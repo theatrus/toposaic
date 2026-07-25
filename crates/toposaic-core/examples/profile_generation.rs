@@ -18,8 +18,8 @@ use std::{
 };
 
 use toposaic_core::{
-    BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, NativeClassGrid, SteepForestTarget,
-    SurfaceClass, SurfaceField, generate_project_with_fields,
+    BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, NativeClassGrid, SlopeGates,
+    SteepForestTarget, SurfaceClass, SurfaceField, generate_project_with_fields,
 };
 
 fn argument(index: usize, default: &str) -> String {
@@ -205,7 +205,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gate_started = Instant::now();
         let demoted = field
-            .demote_steep_forest(&height_field, ground_span_m, 55.0, SteepForestTarget::Rock)
+            .demote_steep_classes(
+                &height_field,
+                ground_span_m,
+                SlopeGates {
+                    forest_limit_degrees: Some(55.0),
+                    steep_forest_target: SteepForestTarget::Rock,
+                    snow_limit_degrees: Some(65.0),
+                },
+            )
             .total();
         let gate_elapsed = gate_started.elapsed();
         // Time the recovered-grid fallback on a clone, then the true-lattice

@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use toposaic_core::{HeightField, SteepForestTarget, SurfaceClass, SurfaceField};
+use toposaic_core::{HeightField, SlopeGates, SteepForestTarget, SurfaceClass, SurfaceField};
 
 /// Sample grid: 481 samples over a 480 m span is 1 m per sample, so each
 /// 10 m native cell covers 10 samples, like a zoomed-in map.
@@ -138,7 +138,15 @@ fn main() {
         &cover.classes,
     );
     let demoted = cover
-        .demote_steep_forest(&heights, GROUND_SPAN_M, 55.0, SteepForestTarget::Rock)
+        .demote_steep_classes(
+            &heights,
+            GROUND_SPAN_M,
+            SlopeGates {
+                forest_limit_degrees: Some(55.0),
+                steep_forest_target: SteepForestTarget::Rock,
+                snow_limit_degrees: Some(65.0),
+            },
+        )
         .total();
     write_ppm(
         &out_dir.join("slope-gate-after.ppm"),

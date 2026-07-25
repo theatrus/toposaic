@@ -86,17 +86,40 @@ pub(crate) struct SurfaceSample {
     pub(crate) building_height_m: f32,
 }
 
-/// How many samples the steep-slope forest gate reclassified, split by what
-/// they became.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SteepForestDemotion {
-    pub to_rock: usize,
-    pub to_snow: usize,
+/// Per-class steep-slope gate configuration for `demote_steep_classes`.
+/// A `None` limit turns that class's gate off.
+#[derive(Debug, Clone, Copy)]
+pub struct SlopeGates {
+    /// Demote forest steeper than this many degrees.
+    pub forest_limit_degrees: Option<f32>,
+    /// What demoted steep forest becomes: rock everywhere, or snow above
+    /// the snowline. Ignored when the forest gate is off.
+    pub steep_forest_target: SteepForestTarget,
+    /// Demote snow steeper than this many degrees to rock. Applies after
+    /// the forest gate, so it also gates forest just demoted to snow.
+    pub snow_limit_degrees: Option<f32>,
 }
 
-impl SteepForestDemotion {
+/// How many samples the steep-slope gates reclassified, split by the class
+/// they left and the class they became.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SlopeGateDemotion {
+    pub forest_to_rock: usize,
+    pub forest_to_snow: usize,
+    pub snow_to_rock: usize,
+}
+
+impl SlopeGateDemotion {
     pub fn total(self) -> usize {
-        self.to_rock + self.to_snow
+        self.forest_to_rock + self.forest_to_snow + self.snow_to_rock
+    }
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            forest_to_rock: self.forest_to_rock + other.forest_to_rock,
+            forest_to_snow: self.forest_to_snow + other.forest_to_snow,
+            snow_to_rock: self.snow_to_rock + other.snow_to_rock,
+        }
     }
 }
 
@@ -201,31 +224,43 @@ impl SurfaceField {
         self.base_classes.clone_from(&self.classes);
     }
 
-    /// Reclassifies forest wherever the local ground slope exceeds
-    /// `limit_degrees`, using central differences on the height field over
-    /// the real ground spacing. Demoted samples become rock, or — with
-    /// `SteepForestTarget::Snow` — snow when they sit above the snowline
-    /// estimated from the samples already classed snow (and rock below it,
-    /// or everywhere when the scene has no snowcap). Applies to both the
-    /// working and the base class rasters, so call it before painting
-    /// vector overlays. Returns how many samples were reclassified, split
-    /// by what they became.
-    pub fn demote_steep_forest(
+    /// Reclassifies forest and snow wherever the local ground slope exceeds
+    /// their per-class limits, using central differences on the height
+    /// field over the real ground spacing. Steep forest becomes rock, or —
+    /// with `SteepForestTarget::Snow` — snow when it sits above the
+    /// snowline estimated from the samples already classed snow (and rock
+    /// below it, or everywhere when the scene has no snowcap). Steep snow
+    /// becomes rock; the snow gate runs after the forest gate, so a face
+    /// steeper than both limits ends as rock even with the snow target.
+    /// The snowline always comes from the pre-demotion snow samples, and
+    /// each sample's slope is computed once and shared by both gates.
+    /// Applies to both the working and the base class rasters, so call it
+    /// before painting vector overlays. Returns how many samples were
+    /// reclassified, split by the class they left and became.
+    pub fn demote_steep_classes(
         &mut self,
         height_field: &HeightField,
         ground_span_m: f32,
-        limit_degrees: f32,
-        target: SteepForestTarget,
-    ) -> SteepForestDemotion {
+        gates: SlopeGates,
+    ) -> SlopeGateDemotion {
         if !ground_span_m.is_finite() || ground_span_m <= 0.0 {
-            return SteepForestDemotion::default();
+            return SlopeGateDemotion::default();
+        }
+        if gates.forest_limit_degrees.is_none() && gates.snow_limit_degrees.is_none() {
+            return SlopeGateDemotion::default();
         }
         // The snowline comes from the classes before any demotion, so the
         // demoted samples themselves cannot move it.
-        let snowline_m = (target == SteepForestTarget::Snow)
+        let snowline_m = (gates.forest_limit_degrees.is_some()
+            && gates.steep_forest_target == SteepForestTarget::Snow)
             .then(|| self.snowline_m(height_field))
             .flatten();
-        let tan_limit = limit_degrees.to_radians().tan();
+        let tan_forest_limit = gates
+            .forest_limit_degrees
+            .map(|degrees| degrees.to_radians().tan());
+        let tan_snow_limit = gates
+            .snow_limit_degrees
+            .map(|degrees| degrees.to_radians().tan());
         let width = self.width;
         let du = 1.0 / (width - 1) as f32;
         let dv = 1.0 / (self.height - 1) as f32;
@@ -237,9 +272,17 @@ impl SurfaceField {
                 let v = y as f32 * dv;
                 let v0 = (v - dv).max(0.0);
                 let v1 = (v + dv).min(1.0);
-                let mut demoted = SteepForestDemotion::default();
+                let mut demoted = SlopeGateDemotion::default();
                 for (x, class) in row.iter_mut().enumerate() {
-                    if *class != SurfaceClass::Forest {
+                    // Only forest under the forest gate and snow under the
+                    // snow gate need a slope; everything else keeps its
+                    // class without touching the height field.
+                    let gated = match *class {
+                        SurfaceClass::Forest => tan_forest_limit.is_some(),
+                        SurfaceClass::Snow => tan_snow_limit.is_some(),
+                        _ => false,
+                    };
+                    if !gated {
                         continue;
                     }
                     let u = x as f32 * du;
@@ -251,27 +294,34 @@ impl SurfaceField {
                         height_field.elevation_m_at(u, v1) - height_field.elevation_m_at(u, v0);
                     let gradient_x = rise_x / ((u1 - u0) * ground_span_m);
                     let gradient_y = rise_y / ((v1 - v0) * ground_span_m);
-                    if gradient_x.hypot(gradient_y) > tan_limit {
+                    let gradient = gradient_x.hypot(gradient_y);
+                    // Forest pass first: its snow output feeds the snow
+                    // gate below, exactly as if the passes ran in
+                    // sequence over the whole raster.
+                    if *class == SurfaceClass::Forest
+                        && tan_forest_limit.is_some_and(|limit| gradient > limit)
+                    {
                         *class = match snowline_m {
                             Some(snowline) if height_field.elevation_m_at(u, v) >= snowline => {
-                                demoted.to_snow += 1;
+                                demoted.forest_to_snow += 1;
                                 SurfaceClass::Snow
                             }
                             _ => {
-                                demoted.to_rock += 1;
+                                demoted.forest_to_rock += 1;
                                 SurfaceClass::Rock
                             }
                         };
                     }
+                    if *class == SurfaceClass::Snow
+                        && tan_snow_limit.is_some_and(|limit| gradient > limit)
+                    {
+                        demoted.snow_to_rock += 1;
+                        *class = SurfaceClass::Rock;
+                    }
                 }
                 demoted
             })
-            .reduce(SteepForestDemotion::default, |left, right| {
-                SteepForestDemotion {
-                    to_rock: left.to_rock + right.to_rock,
-                    to_snow: left.to_snow + right.to_snow,
-                }
-            });
+            .reduce(SlopeGateDemotion::default, SlopeGateDemotion::add);
         if demoted.total() > 0 {
             self.base_classes.clone_from(&self.classes);
         }
@@ -1554,11 +1604,17 @@ mod tests {
         assert!(!field.class_border_smoothing_applies(f32::NAN, 80.0));
     }
 
-    #[test]
-    fn steep_slope_gate_demotes_forest_on_cliff_faces() {
-        let size = 33;
-        // A 300 m wall at the grid middle: one 31.25 m step, roughly 78
-        // degrees for the central difference; the rest is dead flat.
+    fn forest_gate(limit_degrees: f32, target: SteepForestTarget) -> SlopeGates {
+        SlopeGates {
+            forest_limit_degrees: Some(limit_degrees),
+            steep_forest_target: target,
+            snow_limit_degrees: None,
+        }
+    }
+
+    /// A 300 m wall at the grid middle: one 31.25 m step, roughly 78
+    /// degrees for the central difference; the rest is dead flat.
+    fn cliff_height_field(size: usize) -> HeightField {
         let values = (0..size * size)
             .map(|index| {
                 if (index % size) as f32 / (size - 1) as f32 > 0.5 {
@@ -1568,13 +1624,23 @@ mod tests {
                 }
             })
             .collect();
-        let height_field = HeightField::new(size, size, values, "cliff").unwrap();
+        HeightField::new(size, size, values, "cliff").unwrap()
+    }
+
+    #[test]
+    fn steep_slope_gate_demotes_forest_on_cliff_faces() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
         let mut field =
             SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
-        let demoted =
-            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock);
-        assert!(demoted.to_rock > 0);
-        assert_eq!(demoted.to_snow, 0);
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            forest_gate(55.0, SteepForestTarget::Rock),
+        );
+        assert!(demoted.forest_to_rock > 0);
+        assert_eq!(demoted.forest_to_snow, 0);
+        assert_eq!(demoted.snow_to_rock, 0);
         assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
         assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Forest);
         assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Forest);
@@ -1593,7 +1659,11 @@ mod tests {
             SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
         assert_eq!(
             field
-                .demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock)
+                .demote_steep_classes(
+                    &height_field,
+                    1_000.0,
+                    forest_gate(55.0, SteepForestTarget::Rock),
+                )
                 .total(),
             0
         );
@@ -1603,6 +1673,31 @@ mod tests {
                 .iter()
                 .all(|class| *class == SurfaceClass::Forest)
         );
+    }
+
+    #[test]
+    fn snow_gate_demotes_steep_snow_and_keeps_moderate_snow() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Snow; size * size], "test").unwrap();
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            SlopeGates {
+                forest_limit_degrees: None,
+                steep_forest_target: SteepForestTarget::Rock,
+                snow_limit_degrees: Some(65.0),
+            },
+        );
+        assert!(demoted.snow_to_rock > 0);
+        assert_eq!(demoted.forest_to_rock, 0);
+        assert_eq!(demoted.forest_to_snow, 0);
+        // The wall sheds its snow; the gentle ground either side keeps it.
+        assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Snow);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Snow);
+        assert_eq!(field.base_classes, field.classes);
     }
 
     /// A steep ramp along x (3200 m over 1 km, about 73 degrees everywhere)
@@ -1635,12 +1730,16 @@ mod tests {
     #[test]
     fn snow_target_splits_the_demoted_wall_at_the_snowline() {
         let (height_field, mut field) = snowline_wall();
-        let demoted =
-            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Snow);
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            forest_gate(55.0, SteepForestTarget::Snow),
+        );
         // The whole band is steeper than the limit, and the snowline (the
         // 10th percentile of snow elevations, 2500 m here) splits it.
-        assert!(demoted.to_snow > 0);
-        assert!(demoted.to_rock > 0);
+        assert!(demoted.forest_to_snow > 0);
+        assert!(demoted.forest_to_rock > 0);
+        assert_eq!(demoted.snow_to_rock, 0);
         assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Snow);
         assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Snow);
         assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
@@ -1654,10 +1753,13 @@ mod tests {
     #[test]
     fn rock_target_keeps_the_current_behavior_on_snow_scenes() {
         let (height_field, mut field) = snowline_wall();
-        let demoted =
-            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Rock);
-        assert_eq!(demoted.to_snow, 0);
-        assert!(demoted.to_rock > 0);
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            forest_gate(55.0, SteepForestTarget::Rock),
+        );
+        assert_eq!(demoted.forest_to_snow, 0);
+        assert!(demoted.forest_to_rock > 0);
         // The demoted wall is rock everywhere, snowcap or not.
         assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Rock);
         assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Rock);
@@ -1677,11 +1779,74 @@ mod tests {
             field.classes[index * 33 + 32] = SurfaceClass::Snow;
         }
         field.base_classes.clone_from(&field.classes);
-        let demoted =
-            field.demote_steep_forest(&height_field, 1_000.0, 55.0, SteepForestTarget::Snow);
-        assert_eq!(demoted.to_snow, 0);
-        assert!(demoted.to_rock > 0);
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            forest_gate(55.0, SteepForestTarget::Snow),
+        );
+        assert_eq!(demoted.forest_to_snow, 0);
+        assert!(demoted.forest_to_rock > 0);
         assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Rock);
+    }
+
+    #[test]
+    fn snow_gate_regates_forest_the_forest_gate_turned_into_snow() {
+        let (height_field, mut field) = snowline_wall();
+        // The whole ramp is about 73 degrees: steeper than both limits.
+        // Forest above the snowline becomes snow first, then the snow gate
+        // demotes it — and the original snowcap — to rock.
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            SlopeGates {
+                forest_limit_degrees: Some(55.0),
+                steep_forest_target: SteepForestTarget::Snow,
+                snow_limit_degrees: Some(65.0),
+            },
+        );
+        assert!(demoted.forest_to_snow > 0);
+        assert!(demoted.forest_to_rock > 0);
+        // The snow gate catches the demoted band and the original snowcap.
+        assert!(demoted.snow_to_rock >= demoted.forest_to_snow);
+        assert_eq!(field.terrain_at(1.0, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(1.0, 0.1), SurfaceClass::Rock);
+        assert_eq!(field.base_classes, field.classes);
+    }
+
+    #[test]
+    fn snow_gate_off_keeps_the_forest_gate_result() {
+        // With the snow gate off the forest gate behaves exactly as it did
+        // before the snow gate existed: forest above the snowline turns
+        // snow and stays snow, and the 73-degree original snowcap is never
+        // touched.
+        let (height_field, mut field) = snowline_wall();
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            forest_gate(55.0, SteepForestTarget::Snow),
+        );
+        assert_eq!(demoted.snow_to_rock, 0);
+        assert!(demoted.forest_to_snow > 0);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Snow);
+        assert_eq!(field.terrain_at(1.0, 0.1), SurfaceClass::Snow);
+    }
+
+    #[test]
+    fn slope_gates_with_both_gates_off_change_nothing() {
+        let (height_field, mut field) = snowline_wall();
+        let before = field.classes.clone();
+        let demoted = field.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            SlopeGates {
+                forest_limit_degrees: None,
+                steep_forest_target: SteepForestTarget::Snow,
+                snow_limit_degrees: None,
+            },
+        );
+        assert_eq!(demoted, SlopeGateDemotion::default());
+        assert_eq!(field.classes, before);
     }
 
     #[test]
