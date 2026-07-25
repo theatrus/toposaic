@@ -68,6 +68,12 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
+  assert.match(html, /Terrain class borders/);
+  assert.match(html, /Blocky \(native 10 m data\)/);
+  assert.match(html, /Smoothed borders/);
+  assert.match(html, /Keep forest off steep rock/);
+  assert.match(html, /demotes forest to rock above the slope limit/);
+  assert.match(html, /Forest slope limit/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);

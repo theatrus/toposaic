@@ -1439,6 +1439,56 @@ export function TerrainStudio() {
                   step={0.2}
                   onChange={(value) => updateColor("minimum_patch_mm", value)}
                 />
+                <label className="road-detail-field">
+                  Terrain class borders
+                  <select
+                    value={spec.color_output.class_borders}
+                    onChange={(event) =>
+                      updateColor(
+                        "class_borders",
+                        event.target
+                          .value as GenerationSpec["color_output"]["class_borders"],
+                      )
+                    }
+                  >
+                    <option value="blocky">Blocky (native 10 m data)</option>
+                    <option value="smooth">Smoothed borders</option>
+                  </select>
+                  <small>
+                    Smoothing bends forest, rock, and water borders into curves
+                    using the surrounding data. It only shows at close zooms
+                    where single 10 m cells are visible.
+                  </small>
+                </label>
+                <div className="road-options">
+                  <label className="color-toggle">
+                    <input
+                      type="checkbox"
+                      checked={spec.color_output.forest_slope_gate}
+                      onChange={(event) =>
+                        updateColor("forest_slope_gate", event.target.checked)
+                      }
+                    />
+                    <span>Keep forest off steep rock</span>
+                  </label>
+                  <small>
+                    WorldCover bleeds tree cover onto cliff faces. This demotes
+                    forest to rock above the slope limit.
+                  </small>
+                </div>
+                {spec.color_output.forest_slope_gate && (
+                  <RangeField
+                    label="Forest slope limit"
+                    value={spec.color_output.forest_slope_limit_degrees}
+                    unit="°"
+                    min={30}
+                    max={85}
+                    step={1}
+                    onChange={(value) =>
+                      updateColor("forest_slope_limit_degrees", value)
+                    }
+                  />
+                )}
                 <div className="road-options">
                   <label className="color-toggle">
                     <input

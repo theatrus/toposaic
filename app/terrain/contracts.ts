@@ -62,6 +62,9 @@ export type GenerationSpec = {
     bridge_structure: "floating" | "supported";
     bridge_thickness_mm: number;
     minimum_patch_mm: number;
+    class_borders: "blocky" | "smooth";
+    forest_slope_gate: boolean;
+    forest_slope_limit_degrees: number;
   };
 };
 

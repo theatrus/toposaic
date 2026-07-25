@@ -175,6 +175,28 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     surfaceColors.getByText("The chosen detail applies at every map span."),
   ).toBeVisible();
+  const classBorders = surfaceColors.getByLabel("Terrain class borders");
+  await expect(classBorders).toHaveValue("blocky");
+  await classBorders.selectOption("smooth");
+  await expect(classBorders).toHaveValue("smooth");
+  await expect(
+    surfaceColors.getByText(/Smoothing bends forest, rock, and water borders/),
+  ).toBeVisible();
+  const forestSlopeGate = surfaceColors.getByRole("checkbox", {
+    name: "Keep forest off steep rock",
+  });
+  const forestSlopeLimit = surfaceColors.getByRole("slider", {
+    name: "Forest slope limit",
+  });
+  await expect(forestSlopeGate).toBeChecked();
+  await expect(forestSlopeLimit).toHaveValue("55");
+  await forestSlopeLimit.fill("70");
+  await expect(forestSlopeLimit).toHaveValue("70");
+  await forestSlopeGate.uncheck();
+  await expect(forestSlopeGate).not.toBeChecked();
+  await expect(forestSlopeLimit).toBeHidden();
+  await forestSlopeGate.check();
+  await expect(forestSlopeLimit).toBeVisible();
   await expect(floatingBridge).toBeChecked();
   await expect(bridgeThickness).toHaveValue("1.2");
   await supportedBridge.check();
