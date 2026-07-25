@@ -3,12 +3,35 @@ use std::collections::VecDeque;
 use anyhow::{Result, bail};
 use rayon::prelude::*;
 
+use crate::heightfield::HeightField;
 use crate::mesh::{distance_squared, point_in_polygon};
 use crate::spec::SurfaceClass;
 
 const VECTOR_BUCKET_COLUMNS: usize = 32;
 const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
 pub(crate) const ROAD_VECTOR_STEP_MM: f32 = 0.25;
+
+// Indicator-kriging border smoothing. The estimator interpolates per-class
+// 0/1 indicators from the recovered native-resolution land-cover grid with
+// local ordinary kriging (a 4 by 4 node neighbourhood and a spherical
+// variogram), then keeps the class with the largest estimate. On a regular
+// grid the kriging weights depend only on the fractional position inside a
+// native cell, so they are solved once per quantized offset and applied as
+// fixed stencils.
+/// Nodes per axis in the kriging neighbourhood.
+const KRIGING_NEIGHBORHOOD: usize = 4;
+/// Quantization steps per axis for the fractional-offset weight table.
+const KRIGING_OFFSET_STEPS: usize = 16;
+/// Variogram range in native cells. Beyond it, samples stop informing the
+/// estimate; 2.5 cells keeps the estimate local so borders track the data.
+const VARIOGRAM_RANGE_CELLS: f64 = 2.5;
+/// Variogram nugget as a fraction of the sill. A small nugget keeps the
+/// estimator exact at native nodes while damping the staircase phase noise
+/// that nearest-neighbour upsampling introduces between them.
+const VARIOGRAM_NUGGET: f64 = 0.05;
+/// Below this many samples per native cell the raster already resolves the
+/// source borders and smoothing would only blur real data.
+const MINIMUM_NATIVE_CELL_SAMPLES: f32 = 1.5;
 
 #[derive(Debug, Clone)]
 pub struct SurfaceField {
@@ -96,6 +119,142 @@ impl SurfaceField {
             self.filter_components_smaller_than(minimum_cells);
         }
         self.base_classes.clone_from(&self.classes);
+    }
+
+    /// Reclassifies forest as rock wherever the local ground slope exceeds
+    /// `limit_degrees`, using central differences on the height field over
+    /// the real ground spacing. Applies to both the working and the base
+    /// class rasters, so call it before painting vector overlays. Returns
+    /// how many samples were reclassified.
+    pub fn demote_steep_forest(
+        &mut self,
+        height_field: &HeightField,
+        ground_span_m: f32,
+        limit_degrees: f32,
+    ) -> usize {
+        if !ground_span_m.is_finite() || ground_span_m <= 0.0 {
+            return 0;
+        }
+        let tan_limit = limit_degrees.to_radians().tan();
+        let width = self.width;
+        let du = 1.0 / (width - 1) as f32;
+        let dv = 1.0 / (self.height - 1) as f32;
+        let demoted = self
+            .classes
+            .par_chunks_mut(width)
+            .enumerate()
+            .map(|(y, row)| {
+                let v = y as f32 * dv;
+                let v0 = (v - dv).max(0.0);
+                let v1 = (v + dv).min(1.0);
+                let mut demoted = 0;
+                for (x, class) in row.iter_mut().enumerate() {
+                    if *class != SurfaceClass::Forest {
+                        continue;
+                    }
+                    let u = x as f32 * du;
+                    let u0 = (u - du).max(0.0);
+                    let u1 = (u + du).min(1.0);
+                    let rise_x =
+                        height_field.elevation_m_at(u1, v) - height_field.elevation_m_at(u0, v);
+                    let rise_y =
+                        height_field.elevation_m_at(u, v1) - height_field.elevation_m_at(u, v0);
+                    let gradient_x = rise_x / ((u1 - u0) * ground_span_m);
+                    let gradient_y = rise_y / ((v1 - v0) * ground_span_m);
+                    if gradient_x.hypot(gradient_y) > tan_limit {
+                        *class = SurfaceClass::Rock;
+                        demoted += 1;
+                    }
+                }
+                demoted
+            })
+            .sum();
+        if demoted > 0 {
+            self.base_classes.clone_from(&self.classes);
+        }
+        demoted
+    }
+
+    /// Redraws raster class borders by ordinary kriging of per-class
+    /// indicators. `native_resolution_m` is the ground resolution of the
+    /// land-cover source (10 m for ESA WorldCover) and `ground_span_m` the
+    /// ground distance the raster covers, so the method can recover the
+    /// native grid that nearest-neighbour sampling upscaled. A no-op when
+    /// the raster is not meaningfully finer than the source. Call before
+    /// painting vector overlays; both class rasters are replaced.
+    pub fn smooth_class_borders(&mut self, native_resolution_m: f32, ground_span_m: f32) {
+        if !native_resolution_m.is_finite()
+            || !ground_span_m.is_finite()
+            || native_resolution_m <= 0.0
+            || ground_span_m <= 0.0
+        {
+            return;
+        }
+        let cell_samples_x = native_resolution_m * (self.width - 1) as f32 / ground_span_m;
+        let cell_samples_y = native_resolution_m * (self.height - 1) as f32 / ground_span_m;
+        if cell_samples_x.max(cell_samples_y) < MINIMUM_NATIVE_CELL_SAMPLES {
+            return;
+        }
+        let native_width = (((self.width - 1) as f32 / cell_samples_x).round() as usize).max(1) + 1;
+        let native_height =
+            (((self.height - 1) as f32 / cell_samples_y).round() as usize).max(1) + 1;
+        // Nearest-sample downsampling recovers the native land-cover values
+        // up to half a cell of phase, because the raster itself is a
+        // nearest-neighbour upsample of those values.
+        let native = (0..native_height)
+            .flat_map(|node_y| {
+                let y = ((node_y * (self.height - 1)) as f32 / (native_height - 1) as f32).round()
+                    as usize;
+                (0..native_width).map(move |node_x| (node_x, y))
+            })
+            .map(|(node_x, y)| {
+                let x = ((node_x * (self.width - 1)) as f32 / (native_width - 1) as f32).round()
+                    as usize;
+                self.base_classes[y * self.width + x]
+            })
+            .collect::<Vec<_>>();
+        let weights = kriging_weight_table();
+        let width = self.width;
+        let height = self.height;
+        let mut smoothed = vec![SurfaceClass::Rock; width * self.height];
+        smoothed
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(y, row)| {
+                let grid_y = y as f32 / (height - 1) as f32 * (native_height - 1) as f32;
+                let cell_y = (grid_y.floor() as isize).clamp(0, native_height as isize - 2);
+                let offset_y =
+                    ((grid_y - cell_y as f32) * KRIGING_OFFSET_STEPS as f32).round() as usize;
+                for (x, sample) in row.iter_mut().enumerate() {
+                    let grid_x = x as f32 / (width - 1) as f32 * (native_width - 1) as f32;
+                    let cell_x = (grid_x.floor() as isize).clamp(0, native_width as isize - 2);
+                    let offset_x =
+                        ((grid_x - cell_x as f32) * KRIGING_OFFSET_STEPS as f32).round() as usize;
+                    let stencil = &weights[offset_y * (KRIGING_OFFSET_STEPS + 1) + offset_x];
+                    let mut scores = [0.0_f32; 6];
+                    for node_y in 0..KRIGING_NEIGHBORHOOD {
+                        let native_y = (cell_y + node_y as isize - 1)
+                            .clamp(0, native_height as isize - 1)
+                            as usize;
+                        for node_x in 0..KRIGING_NEIGHBORHOOD {
+                            let native_x = (cell_x + node_x as isize - 1)
+                                .clamp(0, native_width as isize - 1)
+                                as usize;
+                            let class = native[native_y * native_width + native_x];
+                            scores[class.material_index() as usize] +=
+                                stencil[node_y * KRIGING_NEIGHBORHOOD + node_x];
+                        }
+                    }
+                    *sample = SurfaceClass::ALL
+                        .into_iter()
+                        .zip(scores)
+                        .max_by(|first, second| first.1.total_cmp(&second.1))
+                        .map(|(class, _)| class)
+                        .unwrap_or(SurfaceClass::Rock);
+                }
+            });
+        self.base_classes.clone_from(&smoothed);
+        self.classes = smoothed;
     }
 
     pub fn paint_polyline(
@@ -529,6 +688,101 @@ impl SurfaceField {
     }
 }
 
+/// Spherical semivariogram in native-cell units with a small nugget.
+/// Zero at zero distance, so kriging honours the data exactly at nodes.
+fn spherical_variogram(distance: f64) -> f64 {
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    if distance >= VARIOGRAM_RANGE_CELLS {
+        return VARIOGRAM_NUGGET + 1.0;
+    }
+    let ratio = distance / VARIOGRAM_RANGE_CELLS;
+    VARIOGRAM_NUGGET + 1.5 * ratio - 0.5 * ratio.powi(3)
+}
+
+/// Ordinary-kriging stencils for every quantized fractional position inside
+/// a native cell, indexed `offset_y * (KRIGING_OFFSET_STEPS + 1) + offset_x`.
+/// Each stencil holds the weights of the 4 by 4 surrounding nodes.
+fn kriging_weight_table() -> Vec<[f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD]> {
+    let mut table = Vec::with_capacity((KRIGING_OFFSET_STEPS + 1) * (KRIGING_OFFSET_STEPS + 1));
+    for offset_y in 0..=KRIGING_OFFSET_STEPS {
+        for offset_x in 0..=KRIGING_OFFSET_STEPS {
+            table.push(kriging_weights(
+                offset_x as f64 / KRIGING_OFFSET_STEPS as f64,
+                offset_y as f64 / KRIGING_OFFSET_STEPS as f64,
+            ));
+        }
+    }
+    table
+}
+
+/// Solves the ordinary-kriging system for a target at fractional position
+/// (`target_x`, `target_y`) inside the central cell of a 4 by 4 node
+/// neighbourhood whose nodes sit at integer offsets -1..=2 on each axis.
+fn kriging_weights(
+    target_x: f64,
+    target_y: f64,
+) -> [f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD] {
+    const NODES: usize = KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD;
+    // Unknowns: one weight per node plus the Lagrange multiplier that
+    // enforces the weights summing to one.
+    const SIZE: usize = NODES + 1;
+    let position = |node: usize| {
+        [
+            (node % KRIGING_NEIGHBORHOOD) as f64 - 1.0,
+            (node / KRIGING_NEIGHBORHOOD) as f64 - 1.0,
+        ]
+    };
+    let mut matrix = [[0.0_f64; SIZE + 1]; SIZE];
+    for (row, row_values) in matrix.iter_mut().enumerate().take(NODES) {
+        let from = position(row);
+        for (column, value) in row_values.iter_mut().enumerate().take(NODES) {
+            let to = position(column);
+            *value = spherical_variogram((from[0] - to[0]).hypot(from[1] - to[1]));
+        }
+        row_values[NODES] = 1.0;
+        row_values[SIZE] = spherical_variogram((from[0] - target_x).hypot(from[1] - target_y));
+    }
+    matrix[NODES][..NODES].fill(1.0);
+    matrix[NODES][NODES] = 0.0;
+    matrix[NODES][SIZE] = 1.0;
+    // Gaussian elimination with partial pivoting; the system is small and
+    // solved only (KRIGING_OFFSET_STEPS + 1)^2 times per smoothing pass.
+    for pivot in 0..SIZE {
+        let best = (pivot..SIZE)
+            .max_by(|left, right| {
+                matrix[*left][pivot]
+                    .abs()
+                    .total_cmp(&matrix[*right][pivot].abs())
+            })
+            .unwrap_or(pivot);
+        matrix.swap(pivot, best);
+        let pivot_value = matrix[pivot][pivot];
+        if pivot_value.abs() < f64::EPSILON {
+            continue;
+        }
+        let pivot_row = matrix[pivot];
+        for (row, row_values) in matrix.iter_mut().enumerate() {
+            if row == pivot {
+                continue;
+            }
+            let factor = row_values[pivot] / pivot_value;
+            if factor == 0.0 {
+                continue;
+            }
+            for (value, pivot_value) in row_values.iter_mut().zip(pivot_row).skip(pivot) {
+                *value -= factor * pivot_value;
+            }
+        }
+    }
+    let mut weights = [0.0_f32; NODES];
+    for (node, weight) in weights.iter_mut().enumerate() {
+        *weight = (matrix[node][SIZE] / matrix[node][node]) as f32;
+    }
+    weights
+}
+
 pub(crate) fn surface_area_bounds(points: &[[f32; 2]]) -> [f32; 4] {
     points.iter().fold(
         [
@@ -819,6 +1073,125 @@ mod tests {
         );
         assert_eq!(field.at(0.5, 0.5), SurfaceClass::Water);
         assert_eq!(field.at(0.6, 0.5), SurfaceClass::Rock);
+    }
+
+    /// Nearest-neighbour upsample of a 9 by 9 native diagonal split onto a
+    /// 65 by 65 sample grid: the blocky staircase the smoother should bend.
+    fn blocky_diagonal_field() -> SurfaceField {
+        let size = 65;
+        let native_side = 8.0;
+        let classes = (0..size * size)
+            .map(|index| {
+                let x = (index % size) as f32 / (size - 1) as f32;
+                let y = (index / size) as f32 / (size - 1) as f32;
+                let node_x = (x * native_side).round();
+                let node_y = (y * native_side).round();
+                if node_x + node_y > native_side {
+                    SurfaceClass::Forest
+                } else {
+                    SurfaceClass::Rock
+                }
+            })
+            .collect();
+        SurfaceField::new(size, size, classes, "test").unwrap()
+    }
+
+    #[test]
+    fn kriging_weights_sum_to_one() {
+        for stencil in kriging_weight_table() {
+            let total: f32 = stencil.iter().sum();
+            assert!((total - 1.0).abs() < 1e-4, "weights sum to {total}");
+        }
+        // At a node position the estimator is exact: all weight on the node.
+        let at_node = kriging_weights(0.0, 0.0);
+        assert!(at_node[KRIGING_NEIGHBORHOOD + 1] > 0.99);
+    }
+
+    #[test]
+    fn border_smoothing_skips_rasters_at_native_resolution() {
+        let mut field = blocky_diagonal_field();
+        let original = field.base_classes.clone();
+        // 64 sample steps over 1 km is 15.6 m per sample: coarser than the
+        // 10 m source, so there is nothing to reconstruct.
+        field.smooth_class_borders(10.0, 1_000.0);
+        assert_eq!(field.base_classes, original);
+        assert_eq!(field.classes, original);
+    }
+
+    #[test]
+    fn border_smoothing_bends_staircase_borders_deterministically() {
+        let mut first = blocky_diagonal_field();
+        let mut second = first.clone();
+        let original = first.base_classes.clone();
+        // 10 m cells over an 80 m span put 8 samples in each native cell.
+        first.smooth_class_borders(10.0, 80.0);
+        second.smooth_class_borders(10.0, 80.0);
+        assert_eq!(first.base_classes, second.base_classes);
+        assert_eq!(first.classes, first.base_classes);
+        let changed = first
+            .base_classes
+            .iter()
+            .zip(&original)
+            .filter(|(after, before)| after != before)
+            .count();
+        assert!(changed > 0, "staircase corners should move");
+        assert!(
+            changed < original.len() / 4,
+            "smoothing should only touch the border region, changed {changed}"
+        );
+        // No class invented, and the far corners keep their classes.
+        assert!(
+            first
+                .base_classes
+                .iter()
+                .all(|class| matches!(class, SurfaceClass::Rock | SurfaceClass::Forest))
+        );
+        assert_eq!(first.base_classes[2 * 65 + 2], SurfaceClass::Rock);
+        assert_eq!(first.base_classes[62 * 65 + 62], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn steep_slope_gate_demotes_forest_on_cliff_faces() {
+        let size = 33;
+        // A 300 m wall at the grid middle: one 31.25 m step, roughly 78
+        // degrees for the central difference; the rest is dead flat.
+        let values = (0..size * size)
+            .map(|index| {
+                if (index % size) as f32 / (size - 1) as f32 > 0.5 {
+                    300.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let height_field = HeightField::new(size, size, values, "cliff").unwrap();
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
+        let demoted = field.demote_steep_forest(&height_field, 1_000.0, 55.0);
+        assert!(demoted > 0);
+        assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Forest);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Forest);
+        assert_eq!(field.base_classes, field.classes);
+    }
+
+    #[test]
+    fn steep_slope_gate_keeps_forest_on_ordinary_slopes() {
+        let size = 33;
+        // A uniform 300 m rise over 1 km is under 17 degrees.
+        let values = (0..size * size)
+            .map(|index| (index % size) as f32 / (size - 1) as f32 * 300.0)
+            .collect();
+        let height_field = HeightField::new(size, size, values, "hill").unwrap();
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Forest; size * size], "test").unwrap();
+        assert_eq!(field.demote_steep_forest(&height_field, 1_000.0, 55.0), 0);
+        assert!(
+            field
+                .classes
+                .iter()
+                .all(|class| *class == SurfaceClass::Forest)
+        );
     }
 
     #[test]

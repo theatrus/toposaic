@@ -461,6 +461,19 @@ impl ResolvedRoadDetail {
     }
 }
 
+/// How raster land-cover class borders are drawn. `Blocky` keeps the
+/// nearest-sample staircase borders of the 10 m source pixels; `Smooth`
+/// re-estimates every sample by ordinary kriging of per-class indicators on
+/// the recovered native-resolution grid, which bends borders into curves
+/// that still honour the source pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassBorders {
+    #[default]
+    Blocky,
+    Smooth,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
@@ -481,6 +494,13 @@ pub struct ColorOutputSpec {
     pub bridge_structure: BridgeStructure,
     pub bridge_thickness_mm: f32,
     pub minimum_patch_mm: f32,
+    pub class_borders: ClassBorders,
+    /// Reclassify forest as rock where the local ground slope exceeds
+    /// `forest_slope_limit_degrees`. Fixes 10 m land-cover pixels that bleed
+    /// tree cover onto near-vertical faces (for example the sides of Devils
+    /// Tower), so it defaults on.
+    pub forest_slope_gate: bool,
+    pub forest_slope_limit_degrees: f32,
 }
 
 impl Default for ColorOutputSpec {
@@ -503,6 +523,13 @@ impl Default for ColorOutputSpec {
             bridge_structure: BridgeStructure::Floating,
             bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
+            class_borders: ClassBorders::default(),
+            forest_slope_gate: true,
+            // Closed forest is rare above roughly 45 degrees and absent from
+            // true cliff faces; 55 degrees keeps legitimately steep forested
+            // gorge and fjord walls while catching near-vertical rock that
+            // 10 m land-cover pixels paint green.
+            forest_slope_limit_degrees: 55.0,
         }
     }
 }
@@ -536,6 +563,9 @@ impl ColorOutputSpec {
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
         }
+        if !(30.0..=85.0).contains(&self.forest_slope_limit_degrees) {
+            bail!("forest slope limit must be between 30 and 85 degrees");
+        }
         Ok(())
     }
 }
@@ -558,6 +588,16 @@ pub enum SurfaceClass {
 }
 
 impl SurfaceClass {
+    /// Every class, ordered by `material_index`.
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Rock,
+        Self::Forest,
+        Self::Snow,
+        Self::Water,
+        Self::Road,
+        Self::Building,
+    ];
+
     pub(crate) fn material_index(self) -> u32 {
         match self {
             Self::Rock => 0,
@@ -664,6 +704,25 @@ mod tests {
             BridgeStructure::Floating
         );
         assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
+        assert_eq!(spec.color_output.class_borders, ClassBorders::Blocky);
+        assert!(spec.color_output.forest_slope_gate);
+        assert_eq!(spec.color_output.forest_slope_limit_degrees, 55.0);
+    }
+
+    #[test]
+    fn class_border_modes_parse_and_slope_limits_validate() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "class_borders": "smooth", "forest_slope_gate": false }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.class_borders, ClassBorders::Smooth);
+        assert!(!spec.color_output.forest_slope_gate);
+
+        let mut spec = GenerationSpec::default();
+        spec.color_output.forest_slope_limit_degrees = 20.0;
+        assert!(spec.validate().is_err());
+        spec.color_output.forest_slope_limit_degrees = 85.0;
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

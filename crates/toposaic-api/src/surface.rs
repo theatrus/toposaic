@@ -13,7 +13,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
-use toposaic_core::{GenerationSpec, HeightField, ResolvedRoadDetail, SurfaceClass, SurfaceField};
+use toposaic_core::{
+    ClassBorders, GenerationSpec, HeightField, ResolvedRoadDetail, SurfaceClass, SurfaceField,
+};
 use tracing::warn;
 
 use crate::{
@@ -26,6 +28,7 @@ const WORLD_COVER_BASE_URL: &str =
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map";
 const WORLD_COVER_INFO_URL: &str = "https://worldcover2021.esa.int/download";
 const WORLD_COVER_ATTRIBUTION: &str = "© ESA WorldCover project / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium";
+const WORLD_COVER_RESOLUTION_M: f32 = 10.0;
 const DEFAULT_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
 const FALLBACK_OVERPASS_URL: &str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter";
 const OPENSTREETMAP_COPYRIGHT_URL: &str = "https://www.openstreetmap.org/copyright";
@@ -171,7 +174,31 @@ pub fn fetch_surface_field(
 
     let mut field = SurfaceField::new(width, height, classes, source)?;
     if spec.color_output.enabled {
+        let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
+        if spec.color_output.forest_slope_gate {
+            let demoted = field.demote_steep_forest(
+                height_field,
+                ground_span_m,
+                spec.color_output.forest_slope_limit_degrees,
+            );
+            if demoted > 0 {
+                append_source(
+                    &mut field.source,
+                    format!(
+                        "steep-slope gate: {demoted} forest samples steeper than {:.0} degrees reclassified as rock",
+                        spec.color_output.forest_slope_limit_degrees
+                    ),
+                );
+            }
+        }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
+        if spec.color_output.class_borders == ClassBorders::Smooth {
+            field.smooth_class_borders(WORLD_COVER_RESOLUTION_M, ground_span_m);
+            append_source(
+                &mut field.source,
+                "class borders smoothed by indicator kriging of the 10 m land-cover grid",
+            );
+        }
         if spec.color_output.osm_water_enabled {
             match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
                 Ok(counts) => append_source(

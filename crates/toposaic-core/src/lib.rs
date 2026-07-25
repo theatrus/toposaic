@@ -18,7 +18,7 @@ pub use project::{
     generate_tray_artifacts,
 };
 pub use spec::{
-    BridgeStructure, BuildingSpec, ColorOutputSpec, ElevationSource, GenerationSpec,
+    BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec, ElevationSource, GenerationSpec,
     ResolvedRoadDetail, RoadDetail, SuperTileAnchor, SurfaceClass, TraySpec,
 };
 pub use surface::SurfaceField;

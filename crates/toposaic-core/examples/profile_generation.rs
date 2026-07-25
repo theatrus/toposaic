@@ -1,8 +1,12 @@
 //! Wall-time profile of the full generation path with synthetic inputs.
 //!
 //! Usage:
-//!   profile_generation [solid|puzzle] [samples_across] [plain|color] \
-//!       [rows] [columns] [out_dir]
+//!   profile_generation [solid|puzzle] [samples_across] \
+//!       [plain|color|color-smooth] [rows] [columns] [out_dir]
+//!
+//! `color-smooth` matches `color` but uses a 1 km ground span, builds the
+//! surface raster at the full sample grid, and reports the extra cost of
+//! the steep-slope forest gate and the kriged border smoothing.
 //!
 //! Defaults: puzzle 1024 plain 6 6, artifacts in a temp dir that is removed
 //! after the run. Pass an out_dir to keep the artifacts (for hashing).
@@ -52,8 +56,7 @@ fn synthetic_height_field(width: usize, height: usize) -> HeightField {
     HeightField::new(width, height, values_m, "synthetic profile surface").unwrap()
 }
 
-fn synthetic_surface_field(spec: &GenerationSpec) -> SurfaceField {
-    let size = 641;
+fn synthetic_surface_field(spec: &GenerationSpec, size: usize) -> SurfaceField {
     let classes = (0..size)
         .flat_map(|y| {
             (0..size).map(move |x| {
@@ -126,13 +129,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows: u32 = argument(4, "6").parse()?;
     let columns: u32 = argument(5, "6").parse()?;
     let keep_dir = env::args().nth(6).map(PathBuf::from);
-    let color = match surface.as_str() {
-        "color" => true,
-        "plain" => false,
+    let (color, smooth) = match surface.as_str() {
+        "color" => (true, false),
+        "color-smooth" => (true, true),
+        "plain" => (false, false),
         other => return Err(format!("unknown surface mode {other}").into()),
     };
 
     let spec = GenerationSpec {
+        // A close-in span, where 10 m land-cover pixels turn blocky and the
+        // border smoother has native cells to reconstruct.
+        ground_span_km: if smooth { 1.0 } else { 18.0 },
         rows,
         columns,
         solid_model: mode == "solid",
@@ -152,7 +159,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (field_width, field_height) =
         spec.sample_grid_dimensions(spec.effective_samples_per_piece());
     let height_field = synthetic_height_field(field_width, field_height);
-    let surface_field = color.then(|| synthetic_surface_field(&spec));
+    let surface_size = if smooth { field_width } else { 641 };
+    let mut surface_field = color.then(|| synthetic_surface_field(&spec, surface_size));
+    if let (true, Some(field)) = (smooth, surface_field.as_mut()) {
+        let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
+        let gate_started = Instant::now();
+        let demoted = field.demote_steep_forest(&height_field, ground_span_m, 55.0);
+        let gate_elapsed = gate_started.elapsed();
+        let smooth_started = Instant::now();
+        field.smooth_class_borders(10.0, ground_span_m);
+        let smooth_elapsed = smooth_started.elapsed();
+        println!(
+            "slope gate: {:.3}s ({demoted} demoted); border smoothing: {:.3}s",
+            gate_elapsed.as_secs_f64(),
+            smooth_elapsed.as_secs_f64()
+        );
+    }
 
     let output_dir = keep_dir.clone().unwrap_or_else(|| {
         let unique = SystemTime::now()
