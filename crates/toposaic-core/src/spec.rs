@@ -915,6 +915,15 @@ mod tests {
 
     #[test]
     fn old_color_specs_gain_new_default_colors() {
+        // An empty document is the default spec, field for field.
+        let empty: GenerationSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::to_value(GenerationSpec::default()).unwrap()
+        );
+
+        // A pre-color-era document that already sets some color_output keys
+        // keeps them and gains the defaults for every field it omits.
         let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
             "color_output": {
                 "enabled": true,
@@ -925,56 +934,22 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(spec.elevation_source, ElevationSource::Mapzen);
-        assert!(!spec.solid_model);
-        assert!(!spec.straight_piece_sides);
-        assert!(spec.puzzle_tabs);
-        assert_eq!(spec.overlay_samples_per_piece, 112);
+        let mut expected = GenerationSpec::default();
+        expected.color_output.enabled = true;
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+
+        // Spot checks on the defaults whose stability matters most. Specs
+        // saved before the 3MF style existed keep today's project output,
+        // embedded slicer settings included; specs saved before trails
+        // existed carry none and stay off the trail-only code paths.
         assert_eq!(spec.place_name, "Mount Rainier");
-        assert!(!spec.tray.enabled);
-        assert!(!spec.buildings.enabled);
-        assert_eq!(spec.buildings.z_scale, 5.0);
-        assert_eq!(spec.color_output.water_color, "#2F76B5");
-        assert_eq!(spec.color_output.road_color, "#D8A33C");
-        assert_eq!(spec.color_output.building_color, "#B8A890");
-        assert!(spec.color_output.roads_enabled);
-        assert_eq!(spec.color_output.road_detail, RoadDetail::Automatic);
-        assert!(spec.color_output.adaptive_road_widths);
-        assert!(spec.color_output.osm_water_enabled);
-        assert_eq!(spec.color_output.waterway_coverage_percent, 12.0);
-        assert_eq!(spec.color_output.road_width_mm, 0.7);
-        assert_eq!(spec.color_output.road_height_mm, 0.2);
-        assert_eq!(
-            spec.color_output.bridge_structure,
-            BridgeStructure::Floating
-        );
-        assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
-        assert_eq!(
-            spec.color_output.borders.class_borders,
-            ClassBorders::Blocky
-        );
-        assert_eq!(spec.color_output.borders.border_smoothing_range_cells, 2.5);
-        assert_eq!(spec.color_output.borders.border_smoothing_nugget, 0.05);
-        assert!(spec.color_output.slope_gates.forest_slope_gate);
-        assert_eq!(
-            spec.color_output.slope_gates.forest_slope_limit_degrees,
-            55.0
-        );
-        assert_eq!(
-            spec.color_output.slope_gates.steep_forest_target,
-            SteepForestTarget::Rock
-        );
-        assert!(spec.color_output.slope_gates.snow_slope_gate);
-        assert_eq!(spec.color_output.slope_gates.snow_slope_limit_degrees, 65.0);
-        // Specs saved before the 3MF style existed keep today's project
-        // output, embedded slicer settings included.
         assert_eq!(spec.color_output.threemf_style, ThreeMfStyle::Project);
-        // Specs saved before trails existed carry no trails, keep the new
-        // defaults, and stay off the trail-only code paths entirely.
         assert!(spec.trails.is_empty());
         assert!(!spec.uses_trails());
         assert_eq!(spec.color_output.trail_color, "#D6336C");
-        assert_eq!(spec.color_output.trail_width_mm, 0.7);
     }
 
     /// The exact serialization of `GenerationSpec::default()` captured
