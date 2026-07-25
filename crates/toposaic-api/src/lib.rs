@@ -23,11 +23,13 @@ mod grid;
 mod http;
 mod jobs;
 mod settings;
+mod setups;
 mod surface;
 
 use database::migrate;
 use geocoding::search_places;
 pub(crate) use jobs::Job;
+pub(crate) use setups::SavedSetup;
 
 #[derive(Clone)]
 struct AppState {
@@ -95,6 +97,14 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
             get(jobs::get_job).delete(jobs::cancel_job),
         )
         .route("/api/jobs/{id}/downloads/{name}", get(jobs::download))
+        .route(
+            "/api/setups",
+            get(setups::list_setups).post(setups::save_setup),
+        )
+        .route(
+            "/api/setups/{id}",
+            axum::routing::delete(setups::delete_setup),
+        )
         .layer(http::cors_layer(settings::allowed_origins()))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -137,6 +147,22 @@ async fn health() -> Json<Health> {
         status: "ok",
         storage: "sqlite",
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_state() -> AppState {
+    let connection = Connection::open_in_memory().unwrap();
+    migrate(&connection).unwrap();
+    let data_dir = std::env::temp_dir().join(format!("toposaic-api-test-{}", std::process::id()));
+    AppState {
+        db: Arc::new(StdMutex::new(connection)),
+        jobs_dir: Arc::new(data_dir.join("jobs")),
+        map_cache_dir: Arc::new(data_dir.join("cache")),
+        geocoder: Client::new(),
+        geocoder_base_url: Arc::new("https://example.invalid".into()),
+        last_geocode_request: Arc::new(AsyncMutex::new(Instant::now())),
+        active_jobs: Arc::new(StdMutex::new(HashMap::new())),
+    }
 }
 
 fn api_error(status: StatusCode, message: impl ToString) -> (StatusCode, Json<ApiError>) {
