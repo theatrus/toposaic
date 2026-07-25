@@ -367,7 +367,16 @@ pub(crate) fn build_piece_with_height_range(
         ]);
         materials.push(SurfaceClass::Rock);
     }
-    for (_, [from, to]) in edge_uses.into_values().filter(|(uses, _)| *uses == 1) {
+    // HashMap iteration order is randomized per process; sort the boundary
+    // edges so the emitted mesh (and every artifact hashed from it) is
+    // byte-for-byte reproducible across runs.
+    let mut boundary_edges = edge_uses
+        .into_values()
+        .filter(|(uses, _)| *uses == 1)
+        .map(|(_, edge)| edge)
+        .collect::<Vec<_>>();
+    boundary_edges.sort_unstable();
+    for [from, to] in boundary_edges {
         triangles.push([from, to + top_count as u32, to]);
         materials.push(SurfaceClass::Rock);
         triangles.push([from, from + top_count as u32, to + top_count as u32]);
@@ -874,7 +883,14 @@ fn build_polygon_shell(
             material,
         );
     }
-    for (_, [from, to]) in edge_uses.into_values().filter(|(uses, _)| *uses == 1) {
+    // Sorted for the same run-to-run reproducibility as the terrain walls.
+    let mut boundary_edges = edge_uses
+        .into_values()
+        .filter(|(uses, _)| *uses == 1)
+        .map(|(_, edge)| edge)
+        .collect::<Vec<_>>();
+    boundary_edges.sort_unstable();
+    for [from, to] in boundary_edges {
         let start = vertex_positions[&from];
         let end = vertex_positions[&to];
         output.quad(
