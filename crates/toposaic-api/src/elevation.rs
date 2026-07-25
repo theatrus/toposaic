@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use image::{ImageFormat, RgbImage};
 use reqwest::{StatusCode, blocking::Client};
 use toposaic_core::{ElevationSource, GenerationSpec, HeightField};
+use tracing::warn;
 
 use crate::{
     cache,
@@ -380,30 +381,50 @@ fn load_tile(
     y: u32,
 ) -> Result<Option<RgbImage>> {
     let path = cache_path(cache_dir, provider, zoom, x, y);
-    let bytes = if path.is_file() {
-        fs::read(&path).with_context(|| format!("read cached tile {}", path.display()))?
-    } else {
-        let response = client
-            .get(provider.tile_url(zoom, x, y))
-            .send()
-            .with_context(|| format!("download elevation tile {zoom}/{x}/{y}"))?;
-        if response.status() == StatusCode::NOT_FOUND && provider.allows_parent_fallback() {
-            return Ok(None);
+    if path.is_file() {
+        let bytes =
+            fs::read(&path).with_context(|| format!("read cached tile {}", path.display()))?;
+        // A corrupt cached tile must not fail every future job in the area:
+        // drop it and fall through to a fresh download.
+        match decode_tile(&bytes, provider, zoom, x, y) {
+            Ok(image) => return Ok(Some(image)),
+            Err(error) => {
+                warn!(%error, tile = %path.display(), "cached elevation tile is corrupt; refetching");
+                fs::remove_file(&path)
+                    .with_context(|| format!("remove corrupt tile {}", path.display()))?;
+            }
         }
-        if !response.status().is_success() {
-            bail!(
-                "{} elevation tile {zoom}/{x}/{y} returned {}",
-                provider.name,
-                response.status()
-            );
-        }
-        let bytes = response.bytes()?.to_vec();
-        cache::store(&path, &bytes)
-            .with_context(|| format!("cache elevation tile {}", path.display()))?;
-        bytes
-    };
+    }
 
-    let image = image::load_from_memory_with_format(&bytes, provider.image_format)
+    let response = client
+        .get(provider.tile_url(zoom, x, y))
+        .send()
+        .with_context(|| format!("download elevation tile {zoom}/{x}/{y}"))?;
+    if response.status() == StatusCode::NOT_FOUND && provider.allows_parent_fallback() {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        bail!(
+            "{} elevation tile {zoom}/{x}/{y} returned {}",
+            provider.name,
+            response.status()
+        );
+    }
+    let bytes = response.bytes()?.to_vec();
+    let image = decode_tile(&bytes, provider, zoom, x, y)?;
+    cache::store(&path, &bytes)
+        .with_context(|| format!("cache elevation tile {}", path.display()))?;
+    Ok(Some(image))
+}
+
+fn decode_tile(
+    bytes: &[u8],
+    provider: ElevationProvider,
+    zoom: u8,
+    x: u32,
+    y: u32,
+) -> Result<RgbImage> {
+    let image = image::load_from_memory_with_format(bytes, provider.image_format)
         .with_context(|| format!("decode elevation tile {zoom}/{x}/{y}"))?
         .to_rgb8();
     if image.width() != provider.tile_size || image.height() != provider.tile_size {
@@ -414,7 +435,7 @@ fn load_tile(
             image.height()
         );
     }
-    Ok(Some(image))
+    Ok(image)
 }
 
 fn cache_path(cache_dir: &Path, provider: ElevationProvider, zoom: u8, x: u32, y: u32) -> PathBuf {

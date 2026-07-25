@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
-use toposaic_core::{GenerationSpec, HeightField, RoadDetail, SurfaceClass, SurfaceField};
+use toposaic_core::{GenerationSpec, HeightField, ResolvedRoadDetail, SurfaceClass, SurfaceField};
 use tracing::warn;
 
 use crate::{
@@ -75,7 +75,7 @@ struct RouteCounts {
     roads: usize,
     trails: usize,
     bridges: usize,
-    detail: RoadDetail,
+    detail: ResolvedRoadDetail,
     highway_filter: &'static str,
     fallback: bool,
 }
@@ -134,23 +134,39 @@ pub fn fetch_surface_field(
         }
         let mut tile_names = tiles.keys().cloned().collect::<Vec<_>>();
         tile_names.sort();
+        // A tile that fails (missing over open ocean, outside coverage, or a
+        // download error) degrades to the default Rock class instead of
+        // failing the whole generation, matching the other overlays.
+        let mut missing_tiles = Vec::new();
         for tile_name in &tile_names {
             let points = tiles
                 .remove(tile_name)
                 .context("land-cover tile group disappeared")?;
-            sample_tile(
+            if let Err(error) = sample_tile(
                 tile_name,
                 &points,
                 width,
                 height,
                 &mut classes,
                 &map_cache_dir.join("world-cover"),
-            )?;
+            ) {
+                warn!(%error, tile = %tile_name, "ESA WorldCover tile unavailable; using rock");
+                missing_tiles.push(tile_name.clone());
+            }
         }
         source = format!(
             "ESA WorldCover 2021 v200, 10 m, EPSG:4326, tiles {}; CC BY 4.0; source: {WORLD_COVER_INFO_URL}; {WORLD_COVER_ATTRIBUTION}",
             tile_names.join(", ")
         );
+        if !missing_tiles.is_empty() {
+            append_source(
+                &mut source,
+                format!(
+                    "WorldCover unavailable for tiles {}; defaulted to rock",
+                    missing_tiles.join(", ")
+                ),
+            );
+        }
     }
 
     let mut field = SurfaceField::new(width, height, classes, source)?;
@@ -199,7 +215,7 @@ pub fn fetch_surface_field(
                         counts.roads,
                         counts.trails,
                         counts.bridges,
-                        road_detail_name(counts.detail),
+                        counts.detail.name(),
                         counts.highway_filter,
                     ),
                 );
@@ -368,7 +384,7 @@ fn paint_roads_or_trails(
     let routes = fetch_osm_ways(spec, bounds, cache_dir, cache_prefix, highway_filter)?;
     let (road_count, trail_count, bridge_count) =
         paint_osm_ways(spec, height_field, bounds, field, routes);
-    if road_count + trail_count > 0 || detail == RoadDetail::All {
+    if road_count + trail_count > 0 || detail == ResolvedRoadDetail::All {
         return Ok(RouteCounts {
             roads: road_count,
             trails: trail_count,
@@ -461,33 +477,21 @@ fn paint_osm_ways(
     )
 }
 
-fn road_highway_filter(detail: RoadDetail) -> &'static str {
+fn road_highway_filter(detail: ResolvedRoadDetail) -> &'static str {
     match detail {
-        RoadDetail::Automatic => unreachable!("automatic road detail must be resolved"),
-        RoadDetail::Major => MAJOR_HIGHWAYS,
-        RoadDetail::Minor => MINOR_HIGHWAYS,
-        RoadDetail::Streets => STREET_HIGHWAYS,
-        RoadDetail::All => ALL_ROUTE_HIGHWAYS,
+        ResolvedRoadDetail::Major => MAJOR_HIGHWAYS,
+        ResolvedRoadDetail::Minor => MINOR_HIGHWAYS,
+        ResolvedRoadDetail::Streets => STREET_HIGHWAYS,
+        ResolvedRoadDetail::All => ALL_ROUTE_HIGHWAYS,
     }
 }
 
-fn road_cache_prefix(detail: RoadDetail) -> &'static str {
+fn road_cache_prefix(detail: ResolvedRoadDetail) -> &'static str {
     match detail {
-        RoadDetail::Automatic => unreachable!("automatic road detail must be resolved"),
-        RoadDetail::Major => "roads-v2-major",
-        RoadDetail::Minor => "roads-v2-minor",
-        RoadDetail::Streets => "roads-v2-streets",
-        RoadDetail::All => "roads-v2-all",
-    }
-}
-
-fn road_detail_name(detail: RoadDetail) -> &'static str {
-    match detail {
-        RoadDetail::Automatic => "automatic",
-        RoadDetail::Major => "major",
-        RoadDetail::Minor => "minor",
-        RoadDetail::Streets => "streets",
-        RoadDetail::All => "all",
+        ResolvedRoadDetail::Major => "roads-v2-major",
+        ResolvedRoadDetail::Minor => "roads-v2-minor",
+        ResolvedRoadDetail::Streets => "roads-v2-streets",
+        ResolvedRoadDetail::All => "roads-v2-all",
     }
 }
 
@@ -648,8 +652,19 @@ fn read_cached_osm_response(
                 warn!(
                     %error,
                     path = %cache_path.display(),
-                    "ignoring incomplete OpenStreetMap cache entry"
+                    "removing incomplete OpenStreetMap cache entry"
                 );
+                // cache::store never overwrites, so the bad entry must go or
+                // the fresh download can never replace it.
+                if let Err(remove_error) = fs::remove_file(cache_path)
+                    && remove_error.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(
+                        error = %remove_error,
+                        path = %cache_path.display(),
+                        "could not remove incomplete OpenStreetMap cache entry"
+                    );
+                }
                 Ok(None)
             }
         },
@@ -812,8 +827,23 @@ fn sample_tile(
     cache_dir: &Path,
 ) -> Result<()> {
     let path = cached_world_cover_tile(tile_name, cache_dir)?;
-    let geotiff = GeoTiffFile::open(&path)
-        .with_context(|| format!("open cached ESA WorldCover tile {}", path.display()))?;
+    // A corrupt cached tile must not fail this area forever: drop it and
+    // fetch a fresh copy once before giving up.
+    let geotiff = match GeoTiffFile::open(&path) {
+        Ok(geotiff) => geotiff,
+        Err(error) => {
+            warn!(
+                %error,
+                tile = %path.display(),
+                "cached ESA WorldCover tile is unreadable; refetching"
+            );
+            fs::remove_file(&path)
+                .with_context(|| format!("remove corrupt WorldCover tile {}", path.display()))?;
+            let path = cached_world_cover_tile(tile_name, cache_dir)?;
+            GeoTiffFile::open(&path)
+                .with_context(|| format!("open cached ESA WorldCover tile {}", path.display()))?
+        }
+    };
     if geotiff.epsg() != Some(4326) {
         bail!(
             "ESA WorldCover tile {tile_name} uses unexpected CRS {:?}",
@@ -910,12 +940,10 @@ fn sample_tile(
         let column = (column.round() as isize).clamp(col_min as isize, col_max as isize) as usize;
         let row = (row.round() as isize).clamp(row_min as isize, row_max as isize) as usize;
         let value = window[[row - row_min, column - col_min]];
+        // Nodata (open ocean or a coverage gap) keeps the default Rock class
+        // instead of failing the whole generation.
         if value == 0 {
-            bail!(
-                "ESA WorldCover has no data at {}, {}",
-                point.latitude,
-                point.longitude
-            );
+            continue;
         }
         output[point.output_index] = classify_world_cover(value);
     }
@@ -1049,13 +1077,16 @@ mod tests {
 
     #[test]
     fn road_detail_controls_query_scope_and_cache_key() {
-        assert_eq!(road_highway_filter(RoadDetail::Major), MAJOR_HIGHWAYS);
-        assert!(!road_highway_filter(RoadDetail::Minor).contains("residential"));
-        assert!(road_highway_filter(RoadDetail::Streets).contains("residential"));
-        assert!(road_highway_filter(RoadDetail::All).contains("footway"));
+        assert_eq!(
+            road_highway_filter(ResolvedRoadDetail::Major),
+            MAJOR_HIGHWAYS
+        );
+        assert!(!road_highway_filter(ResolvedRoadDetail::Minor).contains("residential"));
+        assert!(road_highway_filter(ResolvedRoadDetail::Streets).contains("residential"));
+        assert!(road_highway_filter(ResolvedRoadDetail::All).contains("footway"));
         assert_ne!(
-            road_cache_prefix(RoadDetail::Major),
-            road_cache_prefix(RoadDetail::Streets)
+            road_cache_prefix(ResolvedRoadDetail::Major),
+            road_cache_prefix(ResolvedRoadDetail::Streets)
         );
     }
 
@@ -1166,9 +1197,10 @@ mod tests {
         second.color_output.adaptive_road_widths = false;
         second.color_output.osm_water_enabled = false;
         second.color_output.waterway_coverage_percent = 3.0;
+        let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
         assert_eq!(
-            osm_cache_path(&first, Path::new("/cache"), "roads"),
-            osm_cache_path(&second, Path::new("/cache"), "roads")
+            osm_cache_path(&first, Path::new("/cache"), prefix),
+            osm_cache_path(&second, Path::new("/cache"), prefix)
         );
     }
 
