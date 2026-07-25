@@ -13,13 +13,13 @@ colors.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.2.0](https://github.com/theatrus/toposaic/releases/tag/v0.2.0).
+[TopoSaic v0.3.0](https://github.com/theatrus/toposaic/releases/tag/v0.3.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.2.0/TopoSaic-0.2.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -34,10 +34,10 @@ builds.
 *Choose a place beside a live, rotatable preview. The lower workspace starts
 larger and can be resized with the horizontal divider.*
 
-![TopoSaic model controls showing compact model choices and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
+![TopoSaic model controls showing boxed map coordinates and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
-*Move by one tile or export a straight 4×3 mosaic under one shared height
-frame. Optional tabs join both terrain tiles and matching tray sections.*
+*Set the map center beside the full super-tile controls. Move by one tile or
+export a straight 4×3 mosaic under one shared height frame.*
 
 ![TopoSaic light workspace showing terrain colors, mapped water and road controls, and bridge structure choices](docs/images/toposaic-surface-controls.png)
 
@@ -50,9 +50,21 @@ and floating or supported bridges in place.*
 road, and building materials ready for a color print. Bambu Studio and
 OrcaSlicer load the six palette colors as filament assignments.*
 
-Version 0.2 adds signed update notices, Mapterhorn elevation tiles, resizable
-map and preview space, synchronized map zoom and ground span, adjacent `N×M`
-super-tile exports, shared height frames, and matching split trays.
+## Version 0.3 highlights
+
+- The map now draws every super-tile before export and supports top-left or
+  center anchoring. Centered grids keep a real center tile by using odd row and
+  column counts.
+- Mapterhorn fine-detail mode can use available terrain data toward a 0.25 m
+  sample target for areas up to 2 km wide. Draft through Ultra mesh budgets now
+  scale with the selected area and apply equally to puzzles and solid terrain.
+- Close views use smoother elevation sampling, while the 3D preview shows the
+  selected terrain height at print scale. Its east-west direction and default
+  south-facing camera now match the map.
+- Standard 3MF color data now loads in OrcaSlicer as well as Bambu Studio.
+- Model, map-center, super-tile, and tray controls now follow the order in which
+  a model is set up. The tray place name lives with the tray settings, and the
+  model type sits directly above the jigsaw layout.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
