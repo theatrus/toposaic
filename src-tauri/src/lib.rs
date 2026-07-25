@@ -19,7 +19,7 @@ fn source_artifact_path(
         .hyphenated()
         .to_string();
     let output_dir = data_dir.join("jobs").join(job_id);
-    terrain_core::artifact_path(&output_dir, artifact_name)
+    toposaic_core::artifact_path(&output_dir, artifact_name)
         .ok_or_else(|| "The requested print file does not exist.".to_owned())
 }
 
@@ -85,7 +85,7 @@ pub fn run() {
             ENGINE_STARTED.get_or_init(|| {
                 tauri::async_runtime::spawn(async move {
                     if let Err(error) =
-                        terrain_api::run_with(data_dir, "127.0.0.1:38787".into()).await
+                        toposaic_api::run_with(data_dir, "127.0.0.1:38787".into()).await
                     {
                         eprintln!("terrain engine stopped: {error:#}");
                         app_handle.exit(1);

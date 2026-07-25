@@ -4405,42 +4405,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "terrain-api"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "directories",
- "geotiff-reader",
- "image",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "terrain-core",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "terrain-core"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "geo",
- "rayon",
- "serde",
- "serde_json",
- "spade",
- "ttf-parser",
- "zip",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4747,6 +4711,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
+name = "toposaic-api"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "directories",
+ "geotiff-reader",
+ "image",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "toposaic-core",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "toposaic-core"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "geo",
+ "rayon",
+ "serde",
+ "serde_json",
+ "spade",
+ "ttf-parser",
+ "zip",
+]
+
+[[package]]
 name = "toposaic-desktop"
 version = "0.3.0"
 dependencies = [
@@ -4756,9 +4757,9 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-updater",
- "terrain-api",
- "terrain-core",
  "tokio",
+ "toposaic-api",
+ "toposaic-core",
  "uuid",
 ]
 

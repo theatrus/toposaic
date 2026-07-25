@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { buildReleaseFeeds } from "../scripts/release-feeds.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("normal desktop bundles include a valid updater configuration", async () => {
   const config = JSON.parse(
@@ -19,6 +24,38 @@ test("normal desktop bundles include a valid updater configuration", async () =>
     "https://github.com/theatrus/toposaic/releases/latest/download/updater.json",
   ]);
   assert.equal(config.plugins.updater.windows.installMode, "passive");
+});
+
+test("signed release builds reuse the Tauri updater configuration", async () => {
+  const config = JSON.parse(
+    await readFile(
+      new URL("../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const directory = await mkdtemp(path.join(os.tmpdir(), "toposaic-updater-"));
+  const outputPath = path.join(directory, "toposaic-updater.json");
+
+  await execFileAsync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("../scripts/write-updater-config.mjs", import.meta.url)),
+      outputPath,
+    ],
+    { env: { ...process.env, TOPOSAIC_UPDATER_PUBLIC_KEY: "test-public-key" } },
+  );
+
+  const written = JSON.parse(await readFile(outputPath, "utf8"));
+  assert.equal(written.bundle.createUpdaterArtifacts, true);
+  assert.equal(written.plugins.updater.pubkey, "test-public-key");
+  assert.deepEqual(
+    written.plugins.updater.endpoints,
+    config.plugins.updater.endpoints,
+  );
+  assert.deepEqual(
+    written.plugins.updater.windows,
+    config.plugins.updater.windows,
+  );
 });
 
 test("builds Tauri and website feeds from inline signatures", async () => {

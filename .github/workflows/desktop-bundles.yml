@@ -39,7 +39,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: npx playwright install chrome
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:ui
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings

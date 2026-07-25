@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/api", "crates/terrain-core", "src-tauri"]
+members = ["crates/toposaic-api", "crates/toposaic-core", "src-tauri"]
 resolver = "3"
 
 [workspace.package]
@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 spade = "2.15"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
