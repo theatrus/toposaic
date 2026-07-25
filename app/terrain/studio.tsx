@@ -84,6 +84,7 @@ function RangeField({
   max,
   step,
   onChange,
+  note,
 }: {
   label: string;
   value: number;
@@ -93,6 +94,7 @@ function RangeField({
   max: number;
   step: number;
   onChange: (value: number) => void;
+  note?: string;
 }) {
   return (
     <label className="range-field">
@@ -109,6 +111,7 @@ function RangeField({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
+      {note && <small>{note}</small>}
     </label>
   );
 }
@@ -1460,6 +1463,34 @@ export function TerrainStudio() {
                     where single 10 m cells are visible.
                   </small>
                 </label>
+                {spec.color_output.class_borders === "smooth" && (
+                  <>
+                    <RangeField
+                      label="Border bend range"
+                      value={spec.color_output.border_smoothing_range_cells}
+                      unit=" cells"
+                      min={1}
+                      max={8}
+                      step={0.5}
+                      onChange={(value) =>
+                        updateColor("border_smoothing_range_cells", value)
+                      }
+                      note="How far borders bend to follow nearby data, in 10 m land-cover cells."
+                    />
+                    <RangeField
+                      label="Border noise damping"
+                      value={spec.color_output.border_smoothing_nugget}
+                      unit=""
+                      min={0}
+                      max={0.5}
+                      step={0.01}
+                      onChange={(value) =>
+                        updateColor("border_smoothing_nugget", value)
+                      }
+                      note="Higher damping smooths staircase artifacts but blurs single-cell features."
+                    />
+                  </>
+                )}
                 <div className="road-options">
                   <label className="color-toggle">
                     <input

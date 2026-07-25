@@ -193,10 +193,19 @@ pub fn fetch_surface_field(
         }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if spec.color_output.class_borders == ClassBorders::Smooth {
-            field.smooth_class_borders(WORLD_COVER_RESOLUTION_M, ground_span_m);
+            field.smooth_class_borders(
+                WORLD_COVER_RESOLUTION_M,
+                ground_span_m,
+                spec.color_output.border_smoothing_range_cells,
+                spec.color_output.border_smoothing_nugget,
+            );
             append_source(
                 &mut field.source,
-                "class borders smoothed by indicator kriging of the 10 m land-cover grid",
+                format!(
+                    "class borders smoothed by indicator kriging of the 10 m land-cover grid (range {:.1} cells, nugget {:.2})",
+                    spec.color_output.border_smoothing_range_cells,
+                    spec.color_output.border_smoothing_nugget
+                ),
             );
         }
         if spec.color_output.osm_water_enabled {

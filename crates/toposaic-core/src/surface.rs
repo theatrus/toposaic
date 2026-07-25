@@ -22,13 +22,6 @@ pub(crate) const ROAD_VECTOR_STEP_MM: f32 = 0.25;
 const KRIGING_NEIGHBORHOOD: usize = 4;
 /// Quantization steps per axis for the fractional-offset weight table.
 const KRIGING_OFFSET_STEPS: usize = 16;
-/// Variogram range in native cells. Beyond it, samples stop informing the
-/// estimate; 2.5 cells keeps the estimate local so borders track the data.
-const VARIOGRAM_RANGE_CELLS: f64 = 2.5;
-/// Variogram nugget as a fraction of the sill. A small nugget keeps the
-/// estimator exact at native nodes while damping the staircase phase noise
-/// that nearest-neighbour upsampling introduces between them.
-const VARIOGRAM_NUGGET: f64 = 0.05;
 /// Below this many samples per native cell the raster already resolves the
 /// source borders and smoothing would only blur real data.
 const MINIMUM_NATIVE_CELL_SAMPLES: f32 = 1.5;
@@ -179,14 +172,28 @@ impl SurfaceField {
     /// indicators. `native_resolution_m` is the ground resolution of the
     /// land-cover source (10 m for ESA WorldCover) and `ground_span_m` the
     /// ground distance the raster covers, so the method can recover the
-    /// native grid that nearest-neighbour sampling upscaled. A no-op when
-    /// the raster is not meaningfully finer than the source. Call before
-    /// painting vector overlays; both class rasters are replaced.
-    pub fn smooth_class_borders(&mut self, native_resolution_m: f32, ground_span_m: f32) {
+    /// native grid that nearest-neighbour sampling upscaled.
+    /// `range_cells` is the variogram range in native cells: how far a
+    /// border bends to follow surrounding data. `nugget` is the variogram
+    /// nugget as a fraction of the sill: higher values damp staircase phase
+    /// noise but blur single-cell features. A no-op when the raster is not
+    /// meaningfully finer than the source. Call before painting vector
+    /// overlays; both class rasters are replaced.
+    pub fn smooth_class_borders(
+        &mut self,
+        native_resolution_m: f32,
+        ground_span_m: f32,
+        range_cells: f32,
+        nugget: f32,
+    ) {
         if !native_resolution_m.is_finite()
             || !ground_span_m.is_finite()
             || native_resolution_m <= 0.0
             || ground_span_m <= 0.0
+            || !range_cells.is_finite()
+            || range_cells <= 0.0
+            || !nugget.is_finite()
+            || nugget < 0.0
         {
             return;
         }
@@ -213,7 +220,7 @@ impl SurfaceField {
                 self.base_classes[y * self.width + x]
             })
             .collect::<Vec<_>>();
-        let weights = kriging_weight_table();
+        let weights = kriging_weight_table(range_cells as f64, nugget as f64);
         let width = self.width;
         let height = self.height;
         let mut smoothed = vec![SurfaceClass::Rock; width * self.height];
@@ -688,29 +695,35 @@ impl SurfaceField {
     }
 }
 
-/// Spherical semivariogram in native-cell units with a small nugget.
-/// Zero at zero distance, so kriging honours the data exactly at nodes.
-fn spherical_variogram(distance: f64) -> f64 {
+/// Spherical semivariogram in native-cell units with a nugget expressed as
+/// a fraction of the sill. Zero at zero distance, so kriging honours the
+/// data exactly at nodes.
+fn spherical_variogram(distance: f64, range_cells: f64, nugget: f64) -> f64 {
     if distance <= 0.0 {
         return 0.0;
     }
-    if distance >= VARIOGRAM_RANGE_CELLS {
-        return VARIOGRAM_NUGGET + 1.0;
+    if distance >= range_cells {
+        return nugget + 1.0;
     }
-    let ratio = distance / VARIOGRAM_RANGE_CELLS;
-    VARIOGRAM_NUGGET + 1.5 * ratio - 0.5 * ratio.powi(3)
+    let ratio = distance / range_cells;
+    nugget + 1.5 * ratio - 0.5 * ratio.powi(3)
 }
 
 /// Ordinary-kriging stencils for every quantized fractional position inside
 /// a native cell, indexed `offset_y * (KRIGING_OFFSET_STEPS + 1) + offset_x`.
 /// Each stencil holds the weights of the 4 by 4 surrounding nodes.
-fn kriging_weight_table() -> Vec<[f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD]> {
+fn kriging_weight_table(
+    range_cells: f64,
+    nugget: f64,
+) -> Vec<[f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD]> {
     let mut table = Vec::with_capacity((KRIGING_OFFSET_STEPS + 1) * (KRIGING_OFFSET_STEPS + 1));
     for offset_y in 0..=KRIGING_OFFSET_STEPS {
         for offset_x in 0..=KRIGING_OFFSET_STEPS {
             table.push(kriging_weights(
                 offset_x as f64 / KRIGING_OFFSET_STEPS as f64,
                 offset_y as f64 / KRIGING_OFFSET_STEPS as f64,
+                range_cells,
+                nugget,
             ));
         }
     }
@@ -723,6 +736,8 @@ fn kriging_weight_table() -> Vec<[f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHO
 fn kriging_weights(
     target_x: f64,
     target_y: f64,
+    range_cells: f64,
+    nugget: f64,
 ) -> [f32; KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD] {
     const NODES: usize = KRIGING_NEIGHBORHOOD * KRIGING_NEIGHBORHOOD;
     // Unknowns: one weight per node plus the Lagrange multiplier that
@@ -739,10 +754,18 @@ fn kriging_weights(
         let from = position(row);
         for (column, value) in row_values.iter_mut().enumerate().take(NODES) {
             let to = position(column);
-            *value = spherical_variogram((from[0] - to[0]).hypot(from[1] - to[1]));
+            *value = spherical_variogram(
+                (from[0] - to[0]).hypot(from[1] - to[1]),
+                range_cells,
+                nugget,
+            );
         }
         row_values[NODES] = 1.0;
-        row_values[SIZE] = spherical_variogram((from[0] - target_x).hypot(from[1] - target_y));
+        row_values[SIZE] = spherical_variogram(
+            (from[0] - target_x).hypot(from[1] - target_y),
+            range_cells,
+            nugget,
+        );
     }
     matrix[NODES][..NODES].fill(1.0);
     matrix[NODES][NODES] = 0.0;
@@ -1096,14 +1119,20 @@ mod tests {
         SurfaceField::new(size, size, classes, "test").unwrap()
     }
 
+    /// The defaults `smooth_class_borders` gained when its range and nugget
+    /// became parameters; passing these must reproduce the old constants'
+    /// output exactly.
+    const DEFAULT_RANGE_CELLS: f32 = 2.5;
+    const DEFAULT_NUGGET: f32 = 0.05;
+
     #[test]
     fn kriging_weights_sum_to_one() {
-        for stencil in kriging_weight_table() {
+        for stencil in kriging_weight_table(DEFAULT_RANGE_CELLS as f64, DEFAULT_NUGGET as f64) {
             let total: f32 = stencil.iter().sum();
             assert!((total - 1.0).abs() < 1e-4, "weights sum to {total}");
         }
         // At a node position the estimator is exact: all weight on the node.
-        let at_node = kriging_weights(0.0, 0.0);
+        let at_node = kriging_weights(0.0, 0.0, DEFAULT_RANGE_CELLS as f64, DEFAULT_NUGGET as f64);
         assert!(at_node[KRIGING_NEIGHBORHOOD + 1] > 0.99);
     }
 
@@ -1113,7 +1142,7 @@ mod tests {
         let original = field.base_classes.clone();
         // 64 sample steps over 1 km is 15.6 m per sample: coarser than the
         // 10 m source, so there is nothing to reconstruct.
-        field.smooth_class_borders(10.0, 1_000.0);
+        field.smooth_class_borders(10.0, 1_000.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
         assert_eq!(field.base_classes, original);
         assert_eq!(field.classes, original);
     }
@@ -1124,8 +1153,8 @@ mod tests {
         let mut second = first.clone();
         let original = first.base_classes.clone();
         // 10 m cells over an 80 m span put 8 samples in each native cell.
-        first.smooth_class_borders(10.0, 80.0);
-        second.smooth_class_borders(10.0, 80.0);
+        first.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        second.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
         assert_eq!(first.base_classes, second.base_classes);
         assert_eq!(first.classes, first.base_classes);
         let changed = first
@@ -1148,6 +1177,33 @@ mod tests {
         );
         assert_eq!(first.base_classes[2 * 65 + 2], SurfaceClass::Rock);
         assert_eq!(first.base_classes[62 * 65 + 62], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn border_smoothing_range_and_nugget_change_the_result() {
+        let mut default_range = blocky_diagonal_field();
+        let mut wide_range = default_range.clone();
+        let mut damped = default_range.clone();
+        default_range.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        wide_range.smooth_class_borders(10.0, 80.0, 8.0, DEFAULT_NUGGET);
+        damped.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, 0.5);
+        assert_ne!(
+            default_range.base_classes, wide_range.base_classes,
+            "a wider variogram range should move the smoothed borders"
+        );
+        assert_ne!(
+            default_range.base_classes, damped.base_classes,
+            "a heavier nugget should move the smoothed borders"
+        );
+        // Both variants still only redraw borders between the two classes.
+        for field in [&wide_range, &damped] {
+            assert!(
+                field
+                    .base_classes
+                    .iter()
+                    .all(|class| matches!(class, SurfaceClass::Rock | SurfaceClass::Forest))
+            );
+        }
     }
 
     #[test]

@@ -1280,6 +1280,14 @@ fieldset.control-section .road-options {
   width: 100%;
 }
 
+.range-field small {
+  color: var(--muted);
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  margin-top: 4px;
+}
+
 .color-controls {
   border-top: 1px solid var(--line);
   margin: 0;

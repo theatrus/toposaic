@@ -176,12 +176,30 @@ test("switches between the reflowed control panels", async ({ page }) => {
     surfaceColors.getByText("The chosen detail applies at every map span."),
   ).toBeVisible();
   const classBorders = surfaceColors.getByLabel("Terrain class borders");
+  const bendRange = surfaceColors.getByRole("slider", {
+    name: "Border bend range",
+  });
+  const noiseDamping = surfaceColors.getByRole("slider", {
+    name: "Border noise damping",
+  });
   await expect(classBorders).toHaveValue("blocky");
+  await expect(bendRange).toBeHidden();
+  await expect(noiseDamping).toBeHidden();
   await classBorders.selectOption("smooth");
   await expect(classBorders).toHaveValue("smooth");
   await expect(
     surfaceColors.getByText(/Smoothing bends forest, rock, and water borders/),
   ).toBeVisible();
+  await expect(bendRange).toHaveValue("2.5");
+  await expect(noiseDamping).toHaveValue("0.05");
+  await bendRange.fill("4");
+  await expect(bendRange).toHaveValue("4");
+  await classBorders.selectOption("blocky");
+  await expect(bendRange).toBeHidden();
+  await expect(noiseDamping).toBeHidden();
+  await classBorders.selectOption("smooth");
+  await expect(bendRange).toBeVisible();
+  await expect(bendRange).toHaveValue("4");
   const forestSlopeGate = surfaceColors.getByRole("checkbox", {
     name: "Keep forest off steep rock",
   });

@@ -131,7 +131,9 @@ maps tree cover, bare ground, snow or ice, and permanent water to editable
 forest, rock, snow, and water colors. Terrain class borders can stay blocky,
 matching the native 10 m cells, or switch to smoothed borders that bend
 forest, rock, and water edges into curves using the surrounding data; the
-difference only shows at close zooms where single cells are visible. Color
+difference only shows at close zooms where single cells are visible. Expert
+sliders set how far smoothed borders bend (in 10 m cells) and how strongly
+staircase noise is damped at the cost of single-cell detail. Color
 mode also keeps forest off steep rock by default, since WorldCover bleeds
 tree cover onto cliff faces: slopes above an adjustable limit (55° to start)
 print as rock instead of forest. It also reads routes from OpenStreetMap

@@ -71,6 +71,10 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Terrain class borders/);
   assert.match(html, /Blocky \(native 10 m data\)/);
   assert.match(html, /Smoothed borders/);
+  // The border smoothing sliders only render once "Smoothed borders" is
+  // selected; the server renders the blocky default without them.
+  assert.doesNotMatch(html, /Border bend range/);
+  assert.doesNotMatch(html, /Border noise damping/);
   assert.match(html, /Keep forest off steep rock/);
   assert.match(html, /demotes forest to rock above the slope limit/);
   assert.match(html, /Forest slope limit/);

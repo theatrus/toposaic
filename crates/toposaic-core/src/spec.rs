@@ -495,6 +495,15 @@ pub struct ColorOutputSpec {
     pub bridge_thickness_mm: f32,
     pub minimum_patch_mm: f32,
     pub class_borders: ClassBorders,
+    /// How far smoothed borders bend: the indicator-kriging variogram range
+    /// in native (10 m) land-cover cells. Larger values bend borders over a
+    /// wider window; smaller values keep them tight to the source pixels.
+    pub border_smoothing_range_cells: f32,
+    /// Indicator-kriging variogram nugget as a fraction of the sill. Higher
+    /// values damp the staircase phase noise that nearest-neighbour
+    /// upsampling introduces, at the cost of fidelity to single-cell
+    /// features at the native nodes.
+    pub border_smoothing_nugget: f32,
     /// Reclassify forest as rock where the local ground slope exceeds
     /// `forest_slope_limit_degrees`. Fixes 10 m land-cover pixels that bleed
     /// tree cover onto near-vertical faces (for example the sides of Devils
@@ -524,6 +533,11 @@ impl Default for ColorOutputSpec {
             bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
             class_borders: ClassBorders::default(),
+            // 2.5 cells keeps the estimate local so borders track the data;
+            // a 0.05 nugget keeps the estimator near-exact at native nodes
+            // while still damping staircase phase noise between them.
+            border_smoothing_range_cells: 2.5,
+            border_smoothing_nugget: 0.05,
             forest_slope_gate: true,
             // Closed forest is rare above roughly 45 degrees and absent from
             // true cliff faces; 55 degrees keeps legitimately steep forested
@@ -565,6 +579,17 @@ impl ColorOutputSpec {
         }
         if !(30.0..=85.0).contains(&self.forest_slope_limit_degrees) {
             bail!("forest slope limit must be between 30 and 85 degrees");
+        }
+        // Below 1 cell the 4 by 4 kriging neighbourhood barely overlaps the
+        // variogram range and borders stay blocky; above 8 cells borders
+        // detach from the data the stencil can see.
+        if !(1.0..=8.0).contains(&self.border_smoothing_range_cells) {
+            bail!("border smoothing range must be between 1 and 8 native cells");
+        }
+        // Past half the sill the nugget flattens the stencil into a blur
+        // that erases single-cell features.
+        if !(0.0..=0.5).contains(&self.border_smoothing_nugget) {
+            bail!("border smoothing nugget must be between 0 and 0.5");
         }
         Ok(())
     }
@@ -705,6 +730,8 @@ mod tests {
         );
         assert_eq!(spec.color_output.bridge_thickness_mm, 1.2);
         assert_eq!(spec.color_output.class_borders, ClassBorders::Blocky);
+        assert_eq!(spec.color_output.border_smoothing_range_cells, 2.5);
+        assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
         assert!(spec.color_output.forest_slope_gate);
         assert_eq!(spec.color_output.forest_slope_limit_degrees, 55.0);
     }
@@ -717,11 +744,29 @@ mod tests {
         .unwrap();
         assert_eq!(spec.color_output.class_borders, ClassBorders::Smooth);
         assert!(!spec.color_output.forest_slope_gate);
+        assert_eq!(spec.color_output.border_smoothing_range_cells, 2.5);
+        assert_eq!(spec.color_output.border_smoothing_nugget, 0.05);
 
         let mut spec = GenerationSpec::default();
         spec.color_output.forest_slope_limit_degrees = 20.0;
         assert!(spec.validate().is_err());
         spec.color_output.forest_slope_limit_degrees = 85.0;
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn border_smoothing_parameters_validate() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.border_smoothing_range_cells = 0.5;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("between 1 and 8 native cells"));
+        spec.color_output.border_smoothing_range_cells = 8.0;
+        assert!(spec.validate().is_ok());
+
+        spec.color_output.border_smoothing_nugget = 0.6;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("between 0 and 0.5"));
+        spec.color_output.border_smoothing_nugget = 0.0;
         assert!(spec.validate().is_ok());
     }
 

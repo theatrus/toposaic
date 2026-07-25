@@ -20,6 +20,9 @@ const SIZE: usize = 481;
 const GROUND_SPAN_M: f32 = 480.0;
 const NATIVE_RESOLUTION_M: f32 = 10.0;
 const NATIVE_SIDE: usize = 48;
+/// Default indicator-kriging parameters, matching `ColorOutputSpec`.
+const RANGE_CELLS: f32 = 2.5;
+const NUGGET: f32 = 0.05;
 
 fn class_color(class: SurfaceClass) -> [u8; 3] {
     match class {
@@ -119,7 +122,7 @@ fn main() {
         &blocky.classes,
     );
     let mut smoothed = blocky.clone();
-    smoothed.smooth_class_borders(NATIVE_RESOLUTION_M, GROUND_SPAN_M);
+    smoothed.smooth_class_borders(NATIVE_RESOLUTION_M, GROUND_SPAN_M, RANGE_CELLS, NUGGET);
     write_ppm(
         &out_dir.join("borders-after.ppm"),
         SIZE,

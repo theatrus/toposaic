@@ -167,7 +167,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let demoted = field.demote_steep_forest(&height_field, ground_span_m, 55.0);
         let gate_elapsed = gate_started.elapsed();
         let smooth_started = Instant::now();
-        field.smooth_class_borders(10.0, ground_span_m);
+        field.smooth_class_borders(
+            10.0,
+            ground_span_m,
+            spec.color_output.border_smoothing_range_cells,
+            spec.color_output.border_smoothing_nugget,
+        );
         let smooth_elapsed = smooth_started.elapsed();
         println!(
             "slope gate: {:.3}s ({demoted} demoted); border smoothing: {:.3}s",

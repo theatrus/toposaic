@@ -63,6 +63,8 @@ export type GenerationSpec = {
     bridge_thickness_mm: number;
     minimum_patch_mm: number;
     class_borders: "blocky" | "smooth";
+    border_smoothing_range_cells: number;
+    border_smoothing_nugget: number;
     forest_slope_gate: boolean;
     forest_slope_limit_degrees: number;
   };
