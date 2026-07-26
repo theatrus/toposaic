@@ -75,7 +75,7 @@ export const initialSpec: GenerationSpec = {
     bridge_structure: "floating",
     bridge_thickness_mm: 1.2,
     minimum_patch_mm: 1.2,
-    class_borders: "blocky",
+    class_borders: "smooth",
     border_smoothing_range_cells: 2.5,
     border_smoothing_nugget: 0.05,
     forest_slope_gate: true,

@@ -225,12 +225,12 @@ pub fn fetch_surface_field(
         }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if spec.color_output.borders.class_borders == ClassBorders::Smooth {
-            // The native window is only worth reading where smoothing will
-            // actually redraw borders; at wide spans smoothing no-ops and
-            // the read is skipped entirely.
-            let smoothed_native = field
-                .class_border_smoothing_applies(WORLD_COVER_RESOLUTION_M, ground_span_m)
-                && match fetch_native_class_grid(
+            // Smoothing is the default, so the scale gate decides whether it
+            // runs: only a raster that samples each 10 m cell often enough
+            // has borders to bend. Wide views fall short, and there the
+            // native window is not worth reading either.
+            if field.class_border_smoothing_applies(WORLD_COVER_RESOLUTION_M, ground_span_m) {
+                let smoothed_native = match fetch_native_class_grid(
                     bounds,
                     width,
                     height,
@@ -249,30 +249,37 @@ pub fn fetch_surface_field(
                             %error,
                             "native land-cover window unavailable; smoothing the recovered grid"
                         );
+                        field.smooth_class_borders(
+                            WORLD_COVER_RESOLUTION_M,
+                            ground_span_m,
+                            spec.color_output.borders.border_smoothing_range_cells,
+                            spec.color_output.borders.border_smoothing_nugget,
+                        );
                         false
                     }
                 };
-            if !smoothed_native {
-                field.smooth_class_borders(
-                    WORLD_COVER_RESOLUTION_M,
-                    ground_span_m,
-                    spec.color_output.borders.border_smoothing_range_cells,
-                    spec.color_output.borders.border_smoothing_nugget,
+                append_source(
+                    &mut field.source,
+                    format!(
+                        "class borders smoothed by indicator kriging of the 10 m land-cover grid ({} lattice, range {:.1} cells, nugget {:.2})",
+                        if smoothed_native {
+                            "native"
+                        } else {
+                            "recovered"
+                        },
+                        spec.color_output.borders.border_smoothing_range_cells,
+                        spec.color_output.borders.border_smoothing_nugget
+                    ),
+                );
+            } else {
+                // Say so rather than stay silent: the same setting produces
+                // smoothed borders at close views and untouched ones here,
+                // and the difference should be readable in the sources.
+                append_source(
+                    &mut field.source,
+                    "class borders kept at source resolution; smoothing needs finer sampling than 10 m cells",
                 );
             }
-            append_source(
-                &mut field.source,
-                format!(
-                    "class borders smoothed by indicator kriging of the 10 m land-cover grid ({} lattice, range {:.1} cells, nugget {:.2})",
-                    if smoothed_native {
-                        "native"
-                    } else {
-                        "recovered"
-                    },
-                    spec.color_output.borders.border_smoothing_range_cells,
-                    spec.color_output.borders.border_smoothing_nugget
-                ),
-            );
         }
         if spec.color_output.osm_water_enabled {
             match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {

@@ -176,10 +176,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const noiseDamping = surfaceColors.getByRole("slider", {
     name: "Border noise damping",
   });
-  await expect(classBorders).toHaveValue("blocky");
-  await expect(bendRange).toBeHidden();
-  await expect(noiseDamping).toBeHidden();
-  await classBorders.selectOption("smooth");
+  // Smoothing is the default; the scale gate decides where it engages.
   await expect(classBorders).toHaveValue("smooth");
   await expect(
     surfaceColors.getByText(/Smoothing bends forest, rock, and water borders/),
@@ -189,6 +186,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await bendRange.fill("4");
   await expect(bendRange).toHaveValue("4");
   await classBorders.selectOption("blocky");
+  await expect(classBorders).toHaveValue("blocky");
   await expect(bendRange).toBeHidden();
   await expect(noiseDamping).toBeHidden();
   await classBorders.selectOption("smooth");
