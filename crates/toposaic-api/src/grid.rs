@@ -3,9 +3,69 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use toposaic_core::{Artifact, GenerationSpec, HeightField, SuperTileAnchor};
+use toposaic_core::{
+    Artifact, GenerationSpec, HeightField, SuperTileAnchor, WallMountStyle,
+    generate_wall_mount_artifacts,
+};
 
 use crate::geo;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GridTileOutputPlan {
+    pub(crate) row: u32,
+    pub(crate) column: u32,
+    pub(crate) temporary_directory: String,
+    pub(crate) terrain_source: &'static str,
+    pub(crate) terrain_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdjacentGridOutputPlan {
+    pub(crate) tiles: Vec<GridTileOutputPlan>,
+    pub(crate) individual_trays: bool,
+    pub(crate) mosaic_tray: bool,
+    pub(crate) wall_hardware: bool,
+}
+
+impl AdjacentGridOutputPlan {
+    pub(crate) fn new(spec: &GenerationSpec) -> Self {
+        let terrain_source = if spec.solid_model {
+            "terrain-solid.3mf"
+        } else {
+            "toposaic.3mf"
+        };
+        let tiles = (0..spec.adjacent_rows)
+            .flat_map(|row| {
+                (0..spec.adjacent_columns).map(move |column| GridTileOutputPlan {
+                    row,
+                    column,
+                    temporary_directory: format!(".tile-{}-{}", row + 1, column + 1),
+                    terrain_source,
+                    terrain_name: format!("terrain-r{:02}-c{:02}.3mf", row + 1, column + 1),
+                })
+            })
+            .collect();
+        Self {
+            tiles,
+            individual_trays: spec.tray.enabled && spec.tray.individual_tiles,
+            mosaic_tray: spec.tray.enabled && !spec.tray.individual_tiles,
+            wall_hardware: spec.wall_mount.style != WallMountStyle::None
+                && spec.wall_mount.export_hardware,
+        }
+    }
+
+    pub(crate) fn terrain_spec(&self, tile_spec: &GenerationSpec) -> GenerationSpec {
+        let mut terrain_spec = tile_spec.clone();
+        terrain_spec.wall_mount.export_hardware = false;
+        if self.individual_trays {
+            terrain_spec.tray.segment_columns = 1;
+            terrain_spec.tray.segment_rows = 1;
+        } else {
+            terrain_spec.tray.enabled = false;
+        }
+        terrain_spec
+    }
+}
 
 pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
     let row_anchor = match spec.super_tile_anchor {
@@ -106,6 +166,24 @@ pub(crate) fn copy_grid_artifact(
     Ok(())
 }
 
+pub(crate) fn publish_grid_wall_hardware(
+    plan: &AdjacentGridOutputPlan,
+    spec: &GenerationSpec,
+    output_dir: &Path,
+    artifacts: &mut Vec<Artifact>,
+) -> Result<Vec<String>> {
+    if !plan.wall_hardware {
+        return Ok(Vec::new());
+    }
+    let hardware = generate_wall_mount_artifacts(spec, output_dir)?;
+    let names = hardware
+        .iter()
+        .map(|artifact| artifact.name.clone())
+        .collect::<Vec<_>>();
+    artifacts.extend(hardware);
+    Ok(names)
+}
+
 pub(crate) fn local_artifact(path: &Path, name: &str, media_type: &str) -> Result<Artifact> {
     Ok(Artifact {
         name: name.to_owned(),
@@ -189,6 +267,83 @@ mod tests {
         assert_eq!(tray.tray.segment_rows, 2);
         assert_eq!(tray.tray.segment_columns, 3);
         assert!(tray.adjacent_interlocks);
+    }
+
+    #[test]
+    fn output_plan_names_tiles_and_lists_shared_outputs() {
+        let spec = GenerationSpec {
+            adjacent_columns: 3,
+            adjacent_rows: 2,
+            tray: toposaic_core::TraySpec {
+                enabled: true,
+                ..toposaic_core::TraySpec::default()
+            },
+            wall_mount: toposaic_core::WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                export_hardware: true,
+                ..toposaic_core::WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let plan = AdjacentGridOutputPlan::new(&spec);
+
+        assert_eq!(plan.tiles.len(), 6);
+        assert_eq!(plan.tiles[0].temporary_directory, ".tile-1-1");
+        assert_eq!(plan.tiles[0].terrain_name, "terrain-r01-c01.3mf");
+        assert_eq!(plan.tiles[5].terrain_name, "terrain-r02-c03.3mf");
+        assert!(plan.mosaic_tray);
+        assert!(plan.wall_hardware);
+
+        let tile = adjacent_tile_specs(&spec).remove(0);
+        let terrain_spec = plan.terrain_spec(&tile);
+        assert!(!terrain_spec.tray.enabled);
+        assert!(!terrain_spec.wall_mount.export_hardware);
+
+        let mut individual_spec = spec.clone();
+        individual_spec.tray.individual_tiles = true;
+        let individual_plan = AdjacentGridOutputPlan::new(&individual_spec);
+        let individual_tile = adjacent_tile_specs(&individual_spec).remove(0);
+        let individual_terrain = individual_plan.terrain_spec(&individual_tile);
+        assert!(individual_terrain.tray.enabled);
+        assert_eq!(individual_terrain.tray.segment_columns, 1);
+        assert_eq!(individual_terrain.tray.segment_rows, 1);
+        assert!(individual_plan.individual_trays);
+        assert!(!individual_plan.mosaic_tray);
+    }
+
+    #[test]
+    fn super_tile_wall_hardware_is_published_once_in_the_job_directory() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-grid-wall-hardware-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        std::fs::create_dir_all(&output_dir).unwrap();
+        let spec = GenerationSpec {
+            adjacent_columns: 2,
+            adjacent_rows: 2,
+            wall_mount: toposaic_core::WallMountSpec {
+                style: WallMountStyle::StraightPin,
+                export_hardware: true,
+                ..toposaic_core::WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let plan = AdjacentGridOutputPlan::new(&spec);
+        let mut artifacts = Vec::new();
+        let names = publish_grid_wall_hardware(&plan, &spec, &output_dir, &mut artifacts).unwrap();
+
+        assert_eq!(
+            names,
+            ["wall-mount-hardware.stl", "wall-mount-hardware.3mf"]
+        );
+        assert_eq!(artifacts.len(), 2);
+        for name in names {
+            assert!(output_dir.join(name).is_file());
+        }
+        std::fs::remove_dir_all(output_dir).unwrap();
     }
 
     #[test]

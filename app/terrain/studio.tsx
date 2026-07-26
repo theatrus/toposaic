@@ -56,9 +56,9 @@ import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ModelPanel } from "./panels/model-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
+import { MountingPanel } from "./panels/mounting-panel";
 import { OutputPanel } from "./panels/output-panel";
 import { SurfacePanel } from "./panels/surface-panel";
-import { TrayPanel } from "./panels/tray-panel";
 import { displayVersion, isVersionNewer } from "../updates/version";
 
 const ReliefPreview = lazy(() =>
@@ -151,7 +151,7 @@ export function TerrainStudio() {
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
   const [activeSection, setActiveSection] = useState<
-    "model" | "surface" | "buildings" | "tray" | "output"
+    "model" | "surface" | "buildings" | "mounting" | "output"
   >("model");
   const [job, setJob] = useState<Job | null>(null);
   const [generatedPreview, setGeneratedPreview] =
@@ -1737,7 +1737,7 @@ export function TerrainStudio() {
                 ["model", "Model"],
                 ["surface", "Surface"],
                 ["buildings", "Buildings"],
-                ["tray", "Tray"],
+                ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
             ).map(([key, label]) => (
@@ -1802,8 +1802,8 @@ export function TerrainStudio() {
             update={update}
           />
 
-          <TrayPanel
-            hidden={activeSection !== "tray"}
+          <MountingPanel
+            hidden={activeSection !== "mounting"}
             spec={spec}
             update={update}
             updateTray={updateTray}

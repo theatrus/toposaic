@@ -1136,7 +1136,7 @@ fieldset.control-section {
 }
 
 fieldset.control-section > .color-heading,
-fieldset.control-section > .wall-mount-heading,
+fieldset.control-section > .mounting-section-heading,
 fieldset.control-section > .color-note,
 fieldset.control-section > .control-hint {
   grid-column: 1 / -1;
@@ -1606,7 +1606,7 @@ fieldset.control-section .road-options {
   color: var(--moss);
 }
 
-.tray-chunk-toggle {
+.option-toggle {
   align-items: center;
   border: 1px solid var(--line);
   display: flex;
@@ -1615,20 +1615,20 @@ fieldset.control-section .road-options {
   padding: 9px;
 }
 
-.tray-chunk-toggle input {
+.option-toggle input {
   accent-color: var(--moss);
 }
 
-.tray-chunk-toggle strong,
-.tray-chunk-toggle small {
+.option-toggle strong,
+.option-toggle small {
   display: block;
 }
 
-.tray-chunk-toggle strong {
+.option-toggle strong {
   font-size: 10px;
 }
 
-.tray-chunk-toggle small {
+.option-toggle small {
   color: var(--muted);
   font-size: 8px;
   margin-top: 3px;
@@ -1708,16 +1708,16 @@ fieldset.control-section .road-options {
   padding: 15px 0 0;
 }
 
-.tray-controls {
+.mounting-controls {
   margin-top: 0;
 }
 
-.tray-controls > .place-label-field {
+.mounting-controls > .place-label-field {
   grid-column: 1 / -1;
   margin: 0;
 }
 
-.wall-mount-heading {
+.mounting-section-heading {
   align-items: center;
   border-top: 1px solid var(--line);
   display: flex;
@@ -1727,7 +1727,7 @@ fieldset.control-section .road-options {
   padding-top: 14px;
 }
 
-.wall-mount-heading p {
+.mounting-section-heading p {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;

@@ -1,144 +1,35 @@
 import { useEffect } from "react";
 
 import type { GenerationSpec } from "../contracts";
+import { maximumMountDepth, wallHardwareQuantity } from "../mounting";
+import type { UpdateWallMount } from "./mounting-types";
 import { RangeField } from "./range-field";
 
 export function WallMountControls({
   spec,
-  updatePuzzleRetention,
   updateWallMount,
 }: {
   spec: GenerationSpec;
-  updatePuzzleRetention: <Key extends keyof GenerationSpec["puzzle_retention"]>(
-    key: Key,
-    value: GenerationSpec["puzzle_retention"][Key],
-  ) => void;
-  updateWallMount: <Key extends keyof GenerationSpec["wall_mount"]>(
-    key: Key,
-    value: GenerationSpec["wall_mount"][Key],
-  ) => void;
+  updateWallMount: UpdateWallMount;
 }) {
   const mountEnabled = spec.wall_mount.style !== "none";
-  const mountThickness =
-    spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
-  const maximumMountDepth = Math.max(0.4, Math.min(3, mountThickness - 0.4));
-  const maximumRetentionHeight = Math.max(
-    0.4,
-    Math.min(3, spec.base_mm - spec.puzzle_retention.clearance_mm - 0.4),
-  );
-  const superTileCount = spec.adjacent_columns * spec.adjacent_rows;
-  const hardwareQuantity =
-    spec.wall_mount.target === "tray"
-      ? superTileCount > 1
-        ? superTileCount
-        : spec.tray.segment_columns * spec.tray.segment_rows
-      : superTileCount * (spec.solid_model ? 1 : spec.rows * spec.columns);
+  const maximumDepth = maximumMountDepth(spec);
+  const hardwareQuantity = wallHardwareQuantity(spec);
 
   useEffect(() => {
-    if (mountEnabled && spec.wall_mount.depth_mm > maximumMountDepth) {
-      updateWallMount("depth_mm", maximumMountDepth);
+    if (mountEnabled && spec.wall_mount.depth_mm > maximumDepth) {
+      updateWallMount("depth_mm", maximumDepth);
     }
   }, [
-    maximumMountDepth,
+    maximumDepth,
     mountEnabled,
     spec.wall_mount.depth_mm,
     updateWallMount,
   ]);
 
-  useEffect(() => {
-    if (
-      spec.puzzle_retention.enabled &&
-      spec.puzzle_retention.pin_height_mm > maximumRetentionHeight
-    ) {
-      updatePuzzleRetention("pin_height_mm", maximumRetentionHeight);
-    }
-  }, [
-    maximumRetentionHeight,
-    spec.puzzle_retention.enabled,
-    spec.puzzle_retention.pin_height_mm,
-    updatePuzzleRetention,
-  ]);
-
-  useEffect(() => {
-    if (
-      spec.puzzle_retention.enabled &&
-      mountEnabled &&
-      spec.wall_mount.target === "terrain"
-    ) {
-      updateWallMount("target", "tray");
-    }
-  }, [
-    mountEnabled,
-    spec.puzzle_retention.enabled,
-    spec.wall_mount.target,
-    updateWallMount,
-  ]);
-
   return (
     <>
-      <div className="wall-mount-heading">
-        <div>
-          <strong className="color-title">Puzzle retention</strong>
-          <p>Pin the terrain into the tray for an upright display.</p>
-        </div>
-      </div>
-      <label className="tray-chunk-toggle">
-        <input
-          aria-label="Pin puzzle into tray"
-          type="checkbox"
-          checked={spec.puzzle_retention.enabled}
-          disabled={!spec.tray.enabled}
-          onChange={(event) => {
-            updatePuzzleRetention("enabled", event.target.checked);
-            if (event.target.checked && mountEnabled) {
-              updateWallMount("target", "tray");
-            }
-          }}
-        />
-        <span>
-          <strong>Retention pins</strong>
-          <small>
-            Add pins to the tray floor and loose-fit sockets to the terrain.
-          </small>
-        </span>
-      </label>
-      {!spec.tray.enabled && (
-        <p className="color-note">Turn on the tray to use retention pins.</p>
-      )}
-      {spec.puzzle_retention.enabled && spec.tray.enabled && (
-        <>
-          <RangeField
-            label="Retention pin diameter"
-            value={spec.puzzle_retention.pin_diameter_mm}
-            unit=" mm"
-            min={2}
-            max={8}
-            step={0.5}
-            onChange={(value) =>
-              updatePuzzleRetention("pin_diameter_mm", value)
-            }
-          />
-          <RangeField
-            label="Retention pin height"
-            value={spec.puzzle_retention.pin_height_mm}
-            unit=" mm"
-            min={0.4}
-            max={maximumRetentionHeight}
-            step={0.2}
-            onChange={(value) => updatePuzzleRetention("pin_height_mm", value)}
-          />
-          <RangeField
-            label="Retention fit clearance"
-            value={spec.puzzle_retention.clearance_mm}
-            unit=" mm"
-            min={0.1}
-            max={0.6}
-            step={0.05}
-            onChange={(value) => updatePuzzleRetention("clearance_mm", value)}
-          />
-        </>
-      )}
-      <div className="wall-mount-heading">
+      <div className="mounting-section-heading">
         <div>
           <strong className="color-title">Wall mounting</strong>
           <p>Cut a receiver into the back and print its wall-side hardware.</p>
@@ -193,7 +84,7 @@ export function WallMountControls({
             value={spec.wall_mount.depth_mm}
             unit=" mm"
             min={0.4}
-            max={maximumMountDepth}
+            max={maximumDepth}
             step={0.2}
             onChange={(value) => updateWallMount("depth_mm", value)}
           />
@@ -244,7 +135,7 @@ export function WallMountControls({
               )}
             </>
           )}
-          <label className="tray-chunk-toggle">
+          <label className="option-toggle">
             <input
               aria-label="Export matching wall hardware"
               type="checkbox"

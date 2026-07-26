@@ -148,7 +148,11 @@ pub fn generate_tray_artifacts(
     Ok(artifacts)
 }
 
-pub fn generate_wall_hardware_artifacts(
+/// Writes the printable wall-side half of an enabled mount.
+///
+/// This is public for the API's super-tile job, which publishes one shared
+/// hardware pair after its temporary terrain folders have been removed.
+pub fn generate_wall_mount_artifacts(
     spec: &GenerationSpec,
     output_dir: &Path,
 ) -> Result<Vec<Artifact>> {
@@ -157,6 +161,13 @@ pub fn generate_wall_hardware_artifacts(
     {
         return Ok(Vec::new());
     }
+    spec.validate()?;
+    fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "create wall-mount output directory {}",
+            output_dir.display()
+        )
+    })?;
     let hardware = build_wall_hardware(&spec.wall_mount)?;
     let stl_path = output_dir.join("wall-mount-hardware.stl");
     write_binary_stl(&hardware, &stl_path)?;
@@ -323,7 +334,7 @@ fn generate_project_inner(
         artifacts.extend(generate_tray_artifacts(spec, height_field, output_dir)?);
     }
     ensure_generation_active(is_cancelled)?;
-    artifacts.extend(generate_wall_hardware_artifacts(spec, output_dir)?);
+    artifacts.extend(generate_wall_mount_artifacts(spec, output_dir)?);
     on_progress(0.95)?;
 
     ensure_generation_active(is_cancelled)?;

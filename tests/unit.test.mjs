@@ -15,6 +15,11 @@ import {
   railLineClass,
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
+import {
+  maximumMountDepth,
+  maximumRetentionHeight,
+  wallHardwareQuantity,
+} from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
 
 test("compares stable and prerelease app versions", () => {
@@ -195,6 +200,27 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     spacer_depth_mm: 2.4,
     screw_hole_diameter_mm: 3.5,
   });
+});
+
+test("derives mounting limits and wall hardware counts from the full model", () => {
+  const puzzleGrid = structuredClone(initialSpec);
+  puzzleGrid.adjacent_columns = 3;
+  puzzleGrid.adjacent_rows = 2;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 600);
+
+  puzzleGrid.wall_mount.target = "tray";
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
+  puzzleGrid.adjacent_columns = 1;
+  puzzleGrid.adjacent_rows = 1;
+  puzzleGrid.tray.segment_columns = 2;
+  puzzleGrid.tray.segment_rows = 3;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
+
+  puzzleGrid.wall_mount.target = "terrain";
+  puzzleGrid.solid_model = true;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 1);
+  assert.equal(maximumMountDepth(puzzleGrid), 2);
+  assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
 });
 
 test("coalesces explicit null sample counts to the client defaults", () => {

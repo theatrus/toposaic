@@ -51,14 +51,14 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, />Model</);
   assert.match(html, />Surface</);
   assert.match(html, />Buildings</);
-  assert.match(html, />Tray</);
+  assert.match(html, />Mounting</);
   assert.match(html, />Output</);
   assert.match(html, /id="terrain-controls"/);
   assert.match(html, /Solid terrain/);
   assert.match(html, /Straight piece sides/);
   assert.match(html, /Interlocking tabs/);
   assert.match(html, /tab-less pieces with plain cuts/);
-  assert.match(html, /Shallow terrain tray/);
+  assert.match(html, /Display base/);
   assert.match(html, /Map center/);
   assert.match(html, /Place name/);
   assert.match(html, /Selected terrain area: 18 km square/);

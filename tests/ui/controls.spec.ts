@@ -266,11 +266,11 @@ test("switches between the reflowed control panels", async ({ page }) => {
       .getByText("Building", { exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("tab", { name: "Tray" }).click();
-  const trayControls = page.getByRole("group", {
-    name: "Shallow terrain tray",
+  await page.getByRole("tab", { name: "Mounting" }).click();
+  const mountingControls = page.getByRole("group", {
+    name: "Mounting and display base",
   });
-  await expect(trayControls).toBeVisible();
+  await expect(mountingControls).toBeVisible();
   await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
   const retention = page.getByRole("checkbox", {
     name: "Pin puzzle into tray",
@@ -299,7 +299,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await wallMountStyle.selectOption("french_cleat");
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
-  await trayControls.getByRole("checkbox").first().uncheck();
+  await mountingControls.getByRole("checkbox").first().uncheck();
   await expect(retention).not.toBeChecked();
   await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
 
@@ -869,7 +869,7 @@ test("locks a height frame and maps a super-tile grid", async ({
   await tileInterlocks.check();
   await expect(tileInterlocks).toBeChecked();
 
-  await page.getByRole("tab", { name: "Tray" }).click();
+  await page.getByRole("tab", { name: "Mounting" }).click();
   const separateTrays = page.getByRole("checkbox", {
     name: /Separate framed trays/,
   });

@@ -1,76 +1,51 @@
 import type { GenerationSpec } from "../contracts";
+import type {
+  UpdateGenerationSpec,
+  UpdateTray,
+} from "./mounting-types";
 import { RangeField } from "./range-field";
-import { WallMountControls } from "./wall-mount-controls";
 
-export function TrayPanel({
-  hidden,
+export function DisplayBaseControls({
   spec,
   update,
   updateTray,
-  updatePuzzleRetention,
-  updateWallMount,
+  setTrayEnabled,
 }: {
-  hidden: boolean;
   spec: GenerationSpec;
-  update: <Key extends keyof GenerationSpec>(
-    key: Key,
-    value: GenerationSpec[Key],
-  ) => void;
-  updateTray: <Key extends keyof GenerationSpec["tray"]>(
-    key: Key,
-    value: GenerationSpec["tray"][Key],
-  ) => void;
-  updatePuzzleRetention: <Key extends keyof GenerationSpec["puzzle_retention"]>(
-    key: Key,
-    value: GenerationSpec["puzzle_retention"][Key],
-  ) => void;
-  updateWallMount: <Key extends keyof GenerationSpec["wall_mount"]>(
-    key: Key,
-    value: GenerationSpec["wall_mount"][Key],
-  ) => void;
+  update: UpdateGenerationSpec;
+  updateTray: UpdateTray;
+  setTrayEnabled: (enabled: boolean) => void;
 }) {
   return (
-    <fieldset
-      className="color-controls tray-controls control-section"
-      aria-label="Shallow terrain tray"
-      hidden={hidden}
-    >
+    <>
       <div className="color-heading">
         <div>
-          <strong className="color-title">Shallow terrain tray</strong>
-          <p>A fitted base for the terrain or puzzle pieces.</p>
+          <strong className="color-title">Display base</strong>
+          <p>A shallow fitted tray for the terrain or puzzle pieces.</p>
         </div>
         <label className="color-toggle">
           <input
+            aria-label="Generate display tray"
             type="checkbox"
             checked={spec.tray.enabled}
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              updateTray("enabled", enabled);
-              if (!enabled) {
-                updatePuzzleRetention("enabled", false);
-                if (spec.wall_mount.target === "tray") {
-                  updateWallMount("target", "terrain");
-                }
-              }
-            }}
+            onChange={(event) => setTrayEnabled(event.target.checked)}
           />
           <span>{spec.tray.enabled ? "On" : "Off"}</span>
         </label>
       </div>
-      <label className="place-label-field">
-        Place name
-        <input
-          type="text"
-          maxLength={48}
-          required
-          value={spec.place_name}
-          onChange={(event) => update("place_name", event.target.value)}
-        />
-        <small>The tray adds the coordinates after this name.</small>
-      </label>
       {spec.tray.enabled && (
         <>
+          <label className="place-label-field">
+            Place name
+            <input
+              type="text"
+              maxLength={48}
+              required
+              value={spec.place_name}
+              onChange={(event) => update("place_name", event.target.value)}
+            />
+            <small>The tray adds the coordinates after this name.</small>
+          </label>
           <div className="color-swatches">
             {(
               [
@@ -83,16 +58,14 @@ export function TrayPanel({
                 <input
                   type="color"
                   value={spec.tray[key]}
-                  onChange={(event) =>
-                    updateTray(key, event.target.value)
-                  }
+                  onChange={(event) => updateTray(key, event.target.value)}
                 />
                 <span>{label}</span>
                 <code>{String(spec.tray[key]).toUpperCase()}</code>
               </label>
             ))}
           </div>
-          <label className="tray-chunk-toggle">
+          <label className="option-toggle">
             <input
               aria-label="Draw contour lines on tray"
               type="checkbox"
@@ -154,7 +127,7 @@ export function TrayPanel({
             />
           )}
           {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
-            <label className="tray-chunk-toggle">
+            <label className="option-toggle">
               <input
                 type="checkbox"
                 checked={spec.tray.individual_tiles}
@@ -179,11 +152,6 @@ export function TrayPanel({
           </p>
         </>
       )}
-      <WallMountControls
-        spec={spec}
-        updatePuzzleRetention={updatePuzzleRetention}
-        updateWallMount={updateWallMount}
-      />
-    </fieldset>
+    </>
   );
 }
