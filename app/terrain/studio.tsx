@@ -440,6 +440,19 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updatePuzzleRetention = useCallback(
+    <Key extends keyof GenerationSpec["puzzle_retention"]>(
+      key: Key,
+      value: GenerationSpec["puzzle_retention"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        puzzle_retention: { ...current.puzzle_retention, [key]: value },
+      }));
+    },
+    [],
+  );
   const updateBuildings = useCallback(
     <Key extends keyof GenerationSpec["buildings"]>(
       key: Key,
@@ -1794,6 +1807,7 @@ export function TerrainStudio() {
             spec={spec}
             update={update}
             updateTray={updateTray}
+            updatePuzzleRetention={updatePuzzleRetention}
             updateWallMount={updateWallMount}
           />
 

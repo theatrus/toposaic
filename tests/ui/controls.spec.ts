@@ -272,6 +272,13 @@ test("switches between the reflowed control panels", async ({ page }) => {
   });
   await expect(trayControls).toBeVisible();
   await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
+  const retention = page.getByRole("checkbox", {
+    name: "Pin puzzle into tray",
+  });
+  await expect(retention).not.toBeChecked();
+  await retention.check();
+  await expect(page.getByText("Retention pin diameter")).toBeVisible();
+  await expect(page.getByText("Retention pin height")).toBeVisible();
   const trayContours = page.getByRole("checkbox", {
     name: "Draw contour lines on tray",
   });
@@ -280,12 +287,21 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByText("Contour line count")).toBeHidden();
   const wallMountStyle = page.getByLabel("Wall mount style");
   await wallMountStyle.selectOption("angled_pin");
-  await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
-  await page.getByLabel("Wall mount target").selectOption("tray");
+  await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
   await expect(page.getByText("Mount cut depth")).toBeVisible();
-  await expect(page.getByText("Pin diameter")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Pin diameter", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "Export matching wall hardware" }),
+  ).toBeChecked();
+  await expect(page.getByText("Wall spacer depth")).toBeVisible();
   await wallMountStyle.selectOption("french_cleat");
   await expect(page.getByText("Cleat slot height")).toBeVisible();
+  await expect(page.getByText("Cleat width")).toBeVisible();
+  await trayControls.getByRole("checkbox").first().uncheck();
+  await expect(retention).not.toBeChecked();
+  await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
@@ -860,6 +876,15 @@ test("locks a height frame and maps a super-tile grid", async ({
   await expect(separateTrays).toBeVisible();
   await separateTrays.check();
   await expect(separateTrays).toBeChecked();
+  const wallMountStyle = page.getByLabel("Wall mount style");
+  await wallMountStyle.selectOption("straight_pin");
+  await expect(
+    page.getByText(/Print 6300 copies of the wall-side hardware/),
+  ).toBeVisible();
+  await page.getByLabel("Wall mount target").selectOption("tray");
+  await expect(
+    page.getByText(/Print 63 copies of the wall-side hardware/),
+  ).toBeVisible();
 });
 
 test("rotates, zooms, and resets the interactive 3D preview", async ({

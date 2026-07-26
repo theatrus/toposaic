@@ -169,17 +169,31 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.equal(withTrail.trails[0].name, "Loop");
 });
 
-test("recalls old setups with tray contours on and wall mounts off", () => {
+test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {
   const oldSpec = structuredClone(initialSpec);
   delete oldSpec.tray.contours_enabled;
+  delete oldSpec.puzzle_retention;
   delete oldSpec.wall_mount;
   const merged = mergeSpecDefaults(oldSpec);
   assert.equal(merged.tray.contours_enabled, true);
+  assert.deepEqual(merged.puzzle_retention, {
+    enabled: false,
+    pin_diameter_mm: 3,
+    pin_height_mm: 1,
+    clearance_mm: 0.2,
+  });
   assert.deepEqual(merged.wall_mount, {
     style: "none",
     target: "terrain",
     depth_mm: 0.8,
     pin_diameter_mm: 4,
+    pin_count: 1,
+    pin_spacing_mm: 32,
+    cleat_width_mm: 12,
+    export_hardware: true,
+    fit_clearance_mm: 0.2,
+    spacer_depth_mm: 2.4,
+    screw_hole_diameter_mm: 3.5,
   });
 });
 

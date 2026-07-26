@@ -2,13 +2,14 @@ use anyhow::{Result, bail};
 use geo::{Area, Contains, Coord, LineString, Point, Polygon};
 use spade::{Point2, Triangulation};
 
-use crate::mesh::{MeshBuilder, triangulate_constraints};
-use crate::spec::{SurfaceClass, WallMountSpec, WallMountStyle};
+use crate::mesh::{Mesh, MeshBuilder, triangulate_constraints, weld_export_mesh};
+use crate::spec::{PuzzleRetentionSpec, SurfaceClass, WallMountSpec, WallMountStyle};
 
 const CIRCLE_SAMPLES: usize = 32;
 const ANGLED_PIN_DEGREES: f32 = 25.0;
 const FRENCH_CLEAT_DEGREES: f32 = 35.0;
 
+#[derive(Clone)]
 struct MountCavity {
     opening: Vec<[f32; 2]>,
     ceiling: Vec<[f32; 2]>,
@@ -47,6 +48,47 @@ pub(crate) fn mount_bottom_polygons(
         .map(|coordinate| [coordinate.x as f32, coordinate.y as f32])
         .collect::<Vec<_>>();
     let cavities = cavities_for_outline(&mount_outline, mount_region, mount)?;
+    bottom_with_cavities(base_polygons, mount_region_index, &cavities, mount.depth_mm)
+}
+
+pub(crate) fn retention_bottom(
+    outline: &[[f32; 2]],
+    centers: &[[f32; 2]],
+    retention: &PuzzleRetentionSpec,
+) -> Result<MeshBuilder> {
+    let outline_polygon = polygon(outline);
+    let radius = retention.socket_diameter_mm() * 0.5;
+    let cavities = centers
+        .iter()
+        .map(|center| MountCavity {
+            opening: circle(*center, radius),
+            ceiling: circle(*center, radius),
+        })
+        .collect::<Vec<_>>();
+    if cavities.iter().any(|cavity| {
+        cavity
+            .opening
+            .iter()
+            .any(|point| !outline_polygon.contains(&Point::new(point[0].into(), point[1].into())))
+    }) {
+        bail!(
+            "tray-retention socket does not fit this piece; reduce the pin size or use fewer pieces"
+        );
+    }
+    bottom_with_cavities(
+        &[outline_polygon],
+        0,
+        &cavities,
+        retention.socket_depth_mm(),
+    )
+}
+
+fn bottom_with_cavities(
+    base_polygons: &[Polygon<f64>],
+    mount_region_index: usize,
+    cavities: &[MountCavity],
+    depth_mm: f32,
+) -> Result<MeshBuilder> {
     let bottom = base_polygons
         .iter()
         .enumerate()
@@ -66,7 +108,7 @@ pub(crate) fn mount_bottom_polygons(
         add_horizontal_polygons(
             &mut mesh,
             &[polygon(&cavity.ceiling)],
-            mount.depth_mm,
+            depth_mm,
             SurfaceClass::Rock,
             true,
         )?;
@@ -82,8 +124,8 @@ pub(crate) fn mount_bottom_polygons(
             mesh.quad(
                 [opening_b[0], opening_b[1], 0.0],
                 [opening_a[0], opening_a[1], 0.0],
-                [ceiling_a[0], ceiling_a[1], mount.depth_mm],
-                [ceiling_b[0], ceiling_b[1], mount.depth_mm],
+                [ceiling_a[0], ceiling_a[1], depth_mm],
+                [ceiling_b[0], ceiling_b[1], depth_mm],
                 SurfaceClass::Rock,
             );
         }
@@ -110,8 +152,11 @@ fn cavities_for_outline(
         WallMountStyle::None => Vec::new(),
         WallMountStyle::StraightPin | WallMountStyle::AngledPin => {
             let radius = mount.pin_diameter_mm * 0.5;
-            let centers = if width >= 60.0 {
-                vec![minimum_x + width * 0.33, minimum_x + width * 0.67]
+            let centers = if mount.pin_count == 2 {
+                vec![
+                    minimum_x + width * 0.5 - mount.pin_spacing_mm * 0.5,
+                    minimum_x + width * 0.5 + mount.pin_spacing_mm * 0.5,
+                ]
             } else {
                 vec![minimum_x + width * 0.5]
             };
@@ -124,7 +169,7 @@ fn cavities_for_outline(
                 .collect()
         }
         WallMountStyle::FrenchCleat => {
-            let half_width = (width * 0.32).min(70.0);
+            let half_width = mount.cleat_width_mm * 0.5;
             let half_height = mount.pin_diameter_mm * 0.5;
             vec![MountCavity {
                 opening: rectangle(minimum_x + width * 0.5, center_y, half_width, half_height),
@@ -150,7 +195,15 @@ fn cavities_for_outline(
     Ok(cavities)
 }
 
-fn circle(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
+pub(crate) fn retention_center(outline: &[[f32; 2]]) -> [f32; 2] {
+    let [minimum_x, minimum_y, maximum_x, maximum_y] = bounds(outline);
+    [
+        minimum_x + (maximum_x - minimum_x) * 0.5,
+        minimum_y + (maximum_y - minimum_y) * 0.5,
+    ]
+}
+
+pub(crate) fn circle_points(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
     (0..CIRCLE_SAMPLES)
         .map(|index| {
             let angle = std::f32::consts::TAU * index as f32 / CIRCLE_SAMPLES as f32;
@@ -160,6 +213,187 @@ fn circle(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
             ]
         })
         .collect()
+}
+
+fn circle(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
+    circle_points(center, radius)
+}
+
+/// Builds the wall-side half of the selected mount. The flat plate is both a
+/// screw flange and the requested wall spacer; its peg or cleat uses the same
+/// angle as the receiver, reduced by the chosen fit clearance.
+pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
+    let engagement = (mount.depth_mm - mount.fit_clearance_mm).max(0.2);
+    let shift = match mount.style {
+        WallMountStyle::AngledPin => engagement * ANGLED_PIN_DEGREES.to_radians().tan(),
+        WallMountStyle::FrenchCleat => engagement * FRENCH_CLEAT_DEGREES.to_radians().tan(),
+        WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
+    };
+    let features = match mount.style {
+        WallMountStyle::None => Vec::new(),
+        WallMountStyle::StraightPin | WallMountStyle::AngledPin => {
+            let radius = (mount.pin_diameter_mm - mount.fit_clearance_mm) * 0.5;
+            let centers = if mount.pin_count == 2 {
+                vec![-mount.pin_spacing_mm * 0.5, mount.pin_spacing_mm * 0.5]
+            } else {
+                vec![0.0]
+            };
+            centers
+                .into_iter()
+                .map(|center_x| MountCavity {
+                    opening: circle([center_x, 0.0], radius),
+                    ceiling: circle([center_x, shift], radius),
+                })
+                .collect::<Vec<_>>()
+        }
+        WallMountStyle::FrenchCleat => {
+            let half_width = (mount.cleat_width_mm - mount.fit_clearance_mm) * 0.5;
+            let half_height = (mount.pin_diameter_mm - mount.fit_clearance_mm) * 0.5;
+            vec![MountCavity {
+                opening: rectangle(0.0, 0.0, half_width, half_height),
+                ceiling: rectangle(0.0, shift, half_width, half_height),
+            }]
+        }
+    };
+    if features.is_empty() {
+        bail!("wall hardware needs an enabled mount style");
+    }
+
+    let feature_bounds = features
+        .iter()
+        .flat_map(|feature| feature.opening.iter().chain(&feature.ceiling))
+        .fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |mut bounds, point| {
+                bounds[0] = bounds[0].min(point[0]);
+                bounds[1] = bounds[1].min(point[1]);
+                bounds[2] = bounds[2].max(point[0]);
+                bounds[3] = bounds[3].max(point[1]);
+                bounds
+            },
+        );
+    let plate = rectangle(
+        (feature_bounds[0] + feature_bounds[2]) * 0.5,
+        (feature_bounds[1] + feature_bounds[3]) * 0.5,
+        (feature_bounds[2] - feature_bounds[0]) * 0.5 + 12.0,
+        (feature_bounds[3] - feature_bounds[1]) * 0.5 + 8.0,
+    );
+    let plate_bounds = bounds(&plate);
+    let screw_radius = mount.screw_hole_diameter_mm * 0.5;
+    let screw_holes = [
+        circle(
+            [
+                plate_bounds[0] + 5.5,
+                (plate_bounds[1] + plate_bounds[3]) * 0.5,
+            ],
+            screw_radius,
+        ),
+        circle(
+            [
+                plate_bounds[2] - 5.5,
+                (plate_bounds[1] + plate_bounds[3]) * 0.5,
+            ],
+            screw_radius,
+        ),
+    ];
+    let bottom = Polygon::new(
+        ring(&plate),
+        screw_holes.iter().map(|hole| ring(hole)).collect(),
+    );
+    let top = Polygon::new(
+        ring(&plate),
+        screw_holes
+            .iter()
+            .map(|hole| ring(hole))
+            .chain(features.iter().map(|feature| ring(&feature.opening)))
+            .collect(),
+    );
+    let mut mesh = MeshBuilder::default();
+    add_horizontal_polygons(&mut mesh, &[bottom], 0.0, SurfaceClass::Rock, true)?;
+    add_horizontal_polygons(
+        &mut mesh,
+        &[top],
+        mount.spacer_depth_mm,
+        SurfaceClass::Rock,
+        false,
+    )?;
+    add_ring_wall(&mut mesh, &plate, 0.0, mount.spacer_depth_mm, false);
+    for hole in &screw_holes {
+        add_ring_wall(&mut mesh, hole, 0.0, mount.spacer_depth_mm, true);
+    }
+    for feature in &features {
+        add_horizontal_polygons(
+            &mut mesh,
+            &[polygon(&feature.ceiling)],
+            mount.spacer_depth_mm + engagement,
+            SurfaceClass::Rock,
+            false,
+        )?;
+        for index in 0..feature.opening.len() {
+            let next = (index + 1) % feature.opening.len();
+            let lower_a = feature.opening[index];
+            let lower_b = feature.opening[next];
+            let upper_a = feature.ceiling[index];
+            let upper_b = feature.ceiling[next];
+            mesh.quad(
+                [lower_a[0], lower_a[1], mount.spacer_depth_mm],
+                [lower_b[0], lower_b[1], mount.spacer_depth_mm],
+                [upper_b[0], upper_b[1], mount.spacer_depth_mm + engagement],
+                [upper_a[0], upper_a[1], mount.spacer_depth_mm + engagement],
+                SurfaceClass::Rock,
+            );
+        }
+    }
+    let mut result = mesh.finish("Wall mount hardware");
+    let [minimum_x, minimum_y, _, _] = bounds(
+        &result
+            .vertices
+            .iter()
+            .map(|point| [point[0], point[1]])
+            .collect::<Vec<_>>(),
+    );
+    for vertex in &mut result.vertices {
+        vertex[0] -= minimum_x;
+        vertex[1] -= minimum_y;
+    }
+    weld_export_mesh(&mut result);
+    Ok(result)
+}
+
+fn add_ring_wall(
+    mesh: &mut MeshBuilder,
+    points: &[[f32; 2]],
+    lower_z: f32,
+    upper_z: f32,
+    inward: bool,
+) {
+    for index in 0..points.len() {
+        let next = (index + 1) % points.len();
+        let a = points[index];
+        let b = points[next];
+        if inward {
+            mesh.quad(
+                [b[0], b[1], lower_z],
+                [a[0], a[1], lower_z],
+                [a[0], a[1], upper_z],
+                [b[0], b[1], upper_z],
+                SurfaceClass::Rock,
+            );
+        } else {
+            mesh.quad(
+                [a[0], a[1], lower_z],
+                [b[0], b[1], lower_z],
+                [b[0], b[1], upper_z],
+                [a[0], a[1], upper_z],
+                SurfaceClass::Rock,
+            );
+        }
+    }
 }
 
 fn rectangle(center_x: f32, center_y: f32, half_width: f32, half_height: f32) -> Vec<[f32; 2]> {
@@ -253,4 +487,33 @@ fn add_horizontal_polygons(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::assert_watertight;
+
+    #[test]
+    fn every_wall_hardware_style_is_watertight() {
+        for style in [
+            WallMountStyle::StraightPin,
+            WallMountStyle::AngledPin,
+            WallMountStyle::FrenchCleat,
+        ] {
+            let mount = WallMountSpec {
+                style,
+                pin_count: 2,
+                ..WallMountSpec::default()
+            };
+            let hardware = build_wall_hardware(&mount).unwrap();
+            assert_watertight(&hardware);
+            assert!(
+                hardware
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex[2] > mount.spacer_depth_mm)
+            );
+        }
+    }
 }

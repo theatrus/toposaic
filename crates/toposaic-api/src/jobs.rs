@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
     Artifact, GenerationSpec, artifact_path, generate_project_with_fields_cancellable,
-    generate_tray_artifacts,
+    generate_tray_artifacts, generate_wall_hardware_artifacts,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -434,6 +434,9 @@ fn run_adjacent_grid_job(
             None
         };
         let mut terrain_spec = tile_spec.clone();
+        // The wall-side part is shared by the full run. Export it once in
+        // the final job folder instead of once per temporary terrain tile.
+        terrain_spec.wall_mount.export_hardware = false;
         if !spec.tray.individual_tiles {
             terrain_spec.tray.enabled = false;
         } else {
@@ -539,6 +542,14 @@ fn run_adjacent_grid_job(
             .with_context(|| format!("remove temporary tray directory {}", tray_dir.display()))?;
     }
 
+    ensure_job_active(cancellation)?;
+    let wall_hardware = generate_wall_hardware_artifacts(spec, &output_dir)?;
+    let wall_hardware_names = wall_hardware
+        .iter()
+        .map(|artifact| artifact.name.clone())
+        .collect::<Vec<_>>();
+    artifacts.extend(wall_hardware);
+
     let manifest_name = "manifest.json";
     let manifest_path = output_dir.join(manifest_name);
     fs::write(
@@ -553,6 +564,7 @@ fn run_adjacent_grid_job(
             },
             "tiles": tile_manifest,
             "mosaic_trays": mosaic_tray_names,
+            "wall_hardware": wall_hardware_names,
         }))?,
     )?;
     artifacts.push(local_artifact(

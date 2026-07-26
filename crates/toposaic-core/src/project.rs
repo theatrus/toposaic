@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::export::{ThreeMfWriter, write_binary_stl};
 use crate::heightfield::{HeightField, height_range_for_spec, validate_height_frame};
 use crate::mesh::Mesh;
+use crate::mount::build_wall_hardware;
 use crate::piece::build_piece_with_height_range;
 use crate::preview::{build_preview, preview_sample_count};
 use crate::spec::GenerationSpec;
@@ -145,6 +146,34 @@ pub fn generate_tray_artifacts(
         artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
     }
     Ok(artifacts)
+}
+
+pub fn generate_wall_hardware_artifacts(
+    spec: &GenerationSpec,
+    output_dir: &Path,
+) -> Result<Vec<Artifact>> {
+    if spec.wall_mount.style == crate::spec::WallMountStyle::None
+        || !spec.wall_mount.export_hardware
+    {
+        return Ok(Vec::new());
+    }
+    let hardware = build_wall_hardware(&spec.wall_mount)?;
+    let stl_path = output_dir.join("wall-mount-hardware.stl");
+    write_binary_stl(&hardware, &stl_path)?;
+
+    let mut hardware_spec = spec.clone();
+    hardware_spec.solid_model = true;
+    hardware_spec.color_output.enabled = false;
+    hardware_spec.buildings.enabled = false;
+    hardware_spec.trails.clear();
+    let three_mf_path = output_dir.join("wall-mount-hardware.3mf");
+    let mut writer = ThreeMfWriter::new(&hardware_spec, None, &three_mf_path)?;
+    writer.write_mesh(&hardware)?;
+    writer.finish()?;
+    Ok(vec![
+        file_artifact(&stl_path, "model/stl")?,
+        file_artifact(&three_mf_path, "model/3mf")?,
+    ])
 }
 
 fn generate_project_inner(
@@ -293,6 +322,8 @@ fn generate_project_inner(
         ensure_generation_active(is_cancelled)?;
         artifacts.extend(generate_tray_artifacts(spec, height_field, output_dir)?);
     }
+    ensure_generation_active(is_cancelled)?;
+    artifacts.extend(generate_wall_hardware_artifacts(spec, output_dir)?);
     on_progress(0.95)?;
 
     ensure_generation_active(is_cancelled)?;
@@ -385,7 +416,9 @@ mod tests {
     use std::{collections::HashMap, fs::File, io::Read};
 
     use crate::piece::{build_piece, solid_outline};
-    use crate::spec::{BuildingSpec, ColorOutputSpec, SurfaceClass};
+    use crate::spec::{
+        BuildingSpec, ColorOutputSpec, SurfaceClass, WallMountSpec, WallMountStyle, WallMountTarget,
+    };
 
     #[test]
     fn project_writes_print_artifacts() {
@@ -430,6 +463,41 @@ mod tests {
         assert!(progress.windows(2).all(|values| values[0] <= values[1]));
         assert_eq!(progress.last().copied(), Some(1.0));
 
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn wall_mount_jobs_export_matching_printable_hardware() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-wall-hardware-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            solid_model: true,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                target: WallMountTarget::Terrain,
+                export_hardware: true,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+        for name in ["wall-mount-hardware.stl", "wall-mount-hardware.3mf"] {
+            assert!(output_dir.join(name).is_file());
+            assert!(
+                manifest
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.name == name)
+            );
+        }
         std::fs::remove_dir_all(output_dir).unwrap();
     }
 

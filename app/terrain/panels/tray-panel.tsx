@@ -7,6 +7,7 @@ export function TrayPanel({
   spec,
   update,
   updateTray,
+  updatePuzzleRetention,
   updateWallMount,
 }: {
   hidden: boolean;
@@ -18,6 +19,10 @@ export function TrayPanel({
   updateTray: <Key extends keyof GenerationSpec["tray"]>(
     key: Key,
     value: GenerationSpec["tray"][Key],
+  ) => void;
+  updatePuzzleRetention: <Key extends keyof GenerationSpec["puzzle_retention"]>(
+    key: Key,
+    value: GenerationSpec["puzzle_retention"][Key],
   ) => void;
   updateWallMount: <Key extends keyof GenerationSpec["wall_mount"]>(
     key: Key,
@@ -39,9 +44,16 @@ export function TrayPanel({
           <input
             type="checkbox"
             checked={spec.tray.enabled}
-            onChange={(event) =>
-              updateTray("enabled", event.target.checked)
-            }
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              updateTray("enabled", enabled);
+              if (!enabled) {
+                updatePuzzleRetention("enabled", false);
+                if (spec.wall_mount.target === "tray") {
+                  updateWallMount("target", "terrain");
+                }
+              }
+            }}
           />
           <span>{spec.tray.enabled ? "On" : "Off"}</span>
         </label>
@@ -167,7 +179,11 @@ export function TrayPanel({
           </p>
         </>
       )}
-      <WallMountControls spec={spec} updateWallMount={updateWallMount} />
+      <WallMountControls
+        spec={spec}
+        updatePuzzleRetention={updatePuzzleRetention}
+        updateWallMount={updateWallMount}
+      />
     </fieldset>
   );
 }

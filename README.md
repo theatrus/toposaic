@@ -105,10 +105,19 @@ left out for a simpler tray. The bundled Atkinson
 Hyperlegible font keeps the label shape the same on every OS and remains under
 its included SIL Open Font License.
 
+Tray-retention controls add a fitted pin beneath each puzzle piece, or each
+section of a solid model, so a completed puzzle stays in an upright tray. Pin
+diameter, height, and fit clearance are adjustable. Split trays move pins away
+from their joins and give each solid-model section its own mating socket.
+
 Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
 French-cleat receiver into the flat back. The cut can go into each puzzle piece
-or solid terrain model, or into each tray section. Cut depth and pin or slot
-size are adjustable, and TopoSaic keeps a printable skin below the front face.
+or solid terrain model, or into each tray section. It stays separate from tray
+retention, so one tray can both hold the puzzle and hang on a wall. Each job can
+also export matching wall hardware as STL and 3MF: a peg or male cleat on an
+integral spacer plate with two screw holes. Controls set pin count and spacing,
+cleat width and height, cut depth, fit clearance, spacer depth, and screw-hole
+diameter. TopoSaic keeps a printable skin below the front face.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with a straight outer edge and no puzzle seams. It keeps the full source

@@ -12,7 +12,7 @@ use crate::mesh::{
     Mesh, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
     quantize_export_coordinate, unit_vector, weld_export_mesh,
 };
-use crate::mount::mount_bottom;
+use crate::mount::{mount_bottom, retention_bottom, retention_center};
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
 use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_contour_segments};
@@ -225,7 +225,10 @@ pub(crate) fn build_piece_with_height_range(
     let outline = if spec.solid_model {
         solid_outline(spec, samples)?
     } else {
-        piece_outline(spec, row, column, false)?
+        local_piece_outline(spec, row, column)?
+            .into_iter()
+            .map(|[x, y]| [x + origin_x, y + origin_y])
+            .collect()
     }
     .into_iter()
     .map(|[x, y]| [x - origin_x, y - origin_y])
@@ -377,11 +380,13 @@ pub(crate) fn build_piece_with_height_range(
 
     let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
     let mut materials = Vec::with_capacity(triangles.capacity());
+    let retained_back = spec.puzzle_retention.active(spec.tray.enabled);
     let mounted_back = spec.wall_mount.cuts_terrain();
+    let rebuilt_back = mounted_back || retained_back;
     for (top, material) in top_triangles.into_iter().zip(top_materials) {
         triangles.push(top);
         materials.push(material);
-        if !mounted_back {
+        if !rebuilt_back {
             triangles.push([
                 top[0] + top_count as u32,
                 top[2] + top_count as u32,
@@ -419,6 +424,12 @@ pub(crate) fn build_piece_with_height_range(
     };
     if mounted_back {
         mesh.append_isolated(mount_bottom(&outline, &spec.wall_mount)?);
+    } else if retained_back {
+        mesh.append_isolated(retention_bottom(
+            &outline,
+            &retention_centers_local(spec, row, column, &outline),
+            &spec.puzzle_retention,
+        )?);
     }
     let mut building_union = None;
     if spec.buildings.enabled
@@ -954,6 +965,106 @@ fn piece_outline(
     Ok(outline)
 }
 
+pub(crate) fn local_piece_outline(
+    spec: &GenerationSpec,
+    row: u32,
+    column: u32,
+) -> Result<Vec<[f32; 2]>> {
+    let piece_width = spec.width_mm / spec.columns as f32;
+    let piece_height = spec.height_mm() / spec.rows as f32;
+    let origin_x = column as f32 * piece_width;
+    let origin_y = row as f32 * piece_height;
+    Ok(piece_outline(spec, row, column, false)?
+        .into_iter()
+        .map(|[x, y]| [x - origin_x, y - origin_y])
+        .collect())
+}
+
+pub(crate) fn retention_centers_local(
+    spec: &GenerationSpec,
+    row: u32,
+    column: u32,
+    outline: &[[f32; 2]],
+) -> Vec<[f32; 2]> {
+    if spec.solid_model {
+        return (0..spec.tray.segment_rows)
+            .flat_map(|segment_row| {
+                (0..spec.tray.segment_columns).map(move |segment_column| {
+                    [
+                        spec.width_mm * (segment_column as f32 + 0.5)
+                            / spec.tray.segment_columns as f32,
+                        spec.height_mm() * (segment_row as f32 + 0.5)
+                            / spec.tray.segment_rows as f32,
+                    ]
+                })
+            })
+            .collect();
+    }
+
+    let mut center = retention_center(outline);
+    let radius = spec.puzzle_retention.socket_diameter_mm() * 0.5;
+    let [minimum_x, minimum_y, maximum_x, maximum_y] = outline.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |mut bounds, point| {
+            bounds[0] = bounds[0].min(point[0]);
+            bounds[1] = bounds[1].min(point[1]);
+            bounds[2] = bounds[2].max(point[0]);
+            bounds[3] = bounds[3].max(point[1]);
+            bounds
+        },
+    );
+    move_center_off_segment_seams(
+        &mut center[0],
+        column as f32 * spec.width_mm / spec.columns as f32,
+        spec.width_mm,
+        spec.tray.segment_columns,
+        minimum_x,
+        maximum_x,
+        radius,
+    );
+    move_center_off_segment_seams(
+        &mut center[1],
+        row as f32 * spec.height_mm() / spec.rows as f32,
+        spec.height_mm(),
+        spec.tray.segment_rows,
+        minimum_y,
+        maximum_y,
+        radius,
+    );
+    vec![center]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn move_center_off_segment_seams(
+    center: &mut f32,
+    piece_origin: f32,
+    assembled_size: f32,
+    segment_count: u32,
+    minimum: f32,
+    maximum: f32,
+    radius: f32,
+) {
+    let margin = radius + 0.35;
+    for segment in 1..segment_count {
+        let seam = assembled_size * segment as f32 / segment_count as f32 - piece_origin;
+        if (*center - seam).abs() >= margin {
+            continue;
+        }
+        let left = seam - margin;
+        let right = seam + margin;
+        *center = if left - minimum >= maximum - right {
+            left
+        } else {
+            right
+        };
+    }
+}
+
 fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
     let piece_width = spec.width_mm / spec.columns as f32;
     let piece_height = spec.height_mm() / spec.rows as f32;
@@ -1117,7 +1228,9 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::mesh::assert_watertight;
-    use crate::spec::{WallMountSpec, WallMountStyle, WallMountTarget};
+    use crate::spec::{
+        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    };
 
     #[test]
     fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
@@ -1310,6 +1423,7 @@ mod tests {
                     target: WallMountTarget::Terrain,
                     depth_mm: 0.8,
                     pin_diameter_mm: 4.0,
+                    ..WallMountSpec::default()
                 },
                 ..GenerationSpec::default()
             };
@@ -1321,6 +1435,29 @@ mod tests {
                     .any(|vertex| { (vertex[2] - spec.wall_mount.depth_mm).abs() < 0.000_01 })
             );
         }
+    }
+
+    #[test]
+    fn tray_retention_adds_a_watertight_piece_socket() {
+        let spec = GenerationSpec {
+            width_mm: 80.0,
+            rows: 2,
+            columns: 2,
+            tray: TraySpec {
+                enabled: true,
+                ..TraySpec::default()
+            },
+            puzzle_retention: PuzzleRetentionSpec {
+                enabled: true,
+                ..PuzzleRetentionSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(mesh.vertices.iter().any(|vertex| {
+            (vertex[2] - spec.puzzle_retention.socket_depth_mm()).abs() < 0.000_01
+        }));
     }
 
     #[test]
