@@ -63,7 +63,9 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Place name/);
   assert.match(html, /Selected terrain area: 18 km square/);
   assert.match(html, /Mapped buildings/);
-  assert.match(html, /Building color/);
+  // The building color swatch renders only once buildings are enabled,
+  // which they are not by default.
+  assert.doesNotMatch(html, /Building color/);
   assert.match(html, /Render roads/);
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
@@ -116,7 +118,8 @@ test("server-renders TopoSaic", async () => {
     html,
     /Tagged bridges can use thick floating decks or solid support/,
   );
-  assert.match(html, /#B8A890/i);
+  // The default building color appears only in the gated swatch.
+  assert.doesNotMatch(html, /#B8A890/i);
   assert.match(html, /class="setup-menu-button"/);
   assert.match(html, /Saved setups/);
   assert.match(html, /aria-haspopup="menu"/);

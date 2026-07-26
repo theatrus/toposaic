@@ -5,6 +5,8 @@ import type { TrailRoute } from "./contracts";
 export const MAX_TRAILS = 20;
 export const MAX_TRAIL_POINTS = 20000;
 const MAX_TRAIL_NAME_CHARS = 80;
+/** Refuse trail files past this size; real GPX/KML logs stay far under it. */
+export const MAX_TRAIL_FILE_BYTES = 32 * 1024 * 1024;
 
 export type ParsedTrailFile = {
   trails: TrailRoute[];
@@ -23,17 +25,42 @@ function stripComments(text: string) {
   return text.replace(/<!--[\s\S]*?-->/g, "");
 }
 
-function decodeXmlText(value: string) {
-  const withoutCdata = value.replace(
-    /<!\[CDATA\[([\s\S]*?)\]\]>/g,
-    (_, inner: string) => inner,
+// CDATA is character data, never markup, so a `<trkpt>` inside a CDATA
+// section must not reach the tag scan. Escaping the section's specials
+// turns it into plain entity-encoded text: names in CDATA still decode
+// correctly through decodeXmlText, and fake tags stay inert. Comments are
+// stripped BEFORE this runs (see parseTrailFile) so a comment cannot hide
+// or splice a CDATA opener; keep that order.
+function escapeCdataSections(text: string) {
+  return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, inner: string) =>
+    inner
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;"),
   );
-  return withoutCdata
+}
+
+// Surrogate halves (0xD800-0xDFFF) and codes past 0x10FFFF are not XML
+// characters; String.fromCodePoint would throw on them. Decode to the
+// replacement character instead, the way browsers render bad references.
+function decodedCodePoint(code: number) {
+  if (
+    !Number.isInteger(code) ||
+    code > 0x10ffff ||
+    (code >= 0xd800 && code <= 0xdfff)
+  ) {
+    return "�";
+  }
+  return String.fromCodePoint(code);
+}
+
+function decodeXmlText(value: string) {
+  return value
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) =>
-      String.fromCodePoint(Number.parseInt(hex, 16)),
+      decodedCodePoint(Number.parseInt(hex, 16)),
     )
     .replace(/&#([0-9]+);/g, (_, decimal: string) =>
-      String.fromCodePoint(Number.parseInt(decimal, 10)),
+      decodedCodePoint(Number.parseInt(decimal, 10)),
     )
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
@@ -84,18 +111,32 @@ function validPoint(latitude: number, longitude: number) {
   );
 }
 
-function blockName(block: string) {
-  const name = innerBlocks(block, "name")[0];
+/** Strips control and format characters; every trail name passes through. */
+function scrubName(name: string) {
+  return name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+}
+
+/** The text of `text` before the first `<tag …>`, or all of it. */
+function textBeforeFirstTag(text: string, tag: string) {
+  const match = new RegExp(`<(?:[A-Za-z0-9_.-]+:)?${tag}[\\s/>]`).exec(text);
+  return match ? text.slice(0, match.index) : text;
+}
+
+function blockName(block: string, pointTag?: string) {
+  // Only text before the first point can name the trail; points such as
+  // rtept carry their own <name> children, which must not shadow it.
+  const scope = pointTag ? textBeforeFirstTag(block, pointTag) : block;
+  const name = innerBlocks(scope, "name")[0];
   if (!name) return undefined;
-  const decoded = decodeXmlText(name)
-    .replace(/[\p{Cc}\p{Cf}]/gu, "")
-    .trim();
+  const decoded = scrubName(decodeXmlText(name));
   return decoded === "" ? undefined : decoded;
 }
 
 function trimName(name: string) {
-  return name.length > MAX_TRAIL_NAME_CHARS
-    ? name.slice(0, MAX_TRAIL_NAME_CHARS).trimEnd()
+  // Slice by code points, never inside a surrogate pair.
+  const codePoints = Array.from(name);
+  return codePoints.length > MAX_TRAIL_NAME_CHARS
+    ? codePoints.slice(0, MAX_TRAIL_NAME_CHARS).join("").trimEnd()
     : name;
 }
 
@@ -122,7 +163,7 @@ function gpxTrails(text: string): RawTrail[] {
           points.push([latitude, longitude]);
         }
       }
-      trails.push({ name: blockName(block), points });
+      trails.push({ name: blockName(block, pointTag), points });
     }
   }
   return trails;
@@ -186,7 +227,14 @@ function downsample(points: [number, number][]): [number, number][] {
  * stride and reported in `downsampled`.
  */
 export function parseTrailFile(fileName: string, text: string): ParsedTrailFile {
-  const clean = stripComments(text);
+  if (text.length > MAX_TRAIL_FILE_BYTES) {
+    throw new Error(
+      `${fileName} is larger than the 32 MB trail import limit.`,
+    );
+  }
+  // Order matters: strip comments first so a comment cannot hide or splice
+  // a CDATA opener, then neutralize CDATA so tags inside it stay inert.
+  const clean = escapeCdataSections(stripComments(text));
   const extension = fileName.toLowerCase().split(".").pop();
   let raw: RawTrail[];
   if (extension === "gpx") {
@@ -197,7 +245,10 @@ export function parseTrailFile(fileName: string, text: string): ParsedTrailFile 
     raw = gpxTrails(clean);
     if (raw.length === 0) raw = kmlTrails(clean);
   }
-  const fallbackName = fileName.replace(/\.[^.]+$/, "") || "Imported trail";
+  // File names pass through the same scrub as parsed names: strip control
+  // and format characters, trim, and never end up empty.
+  const fallbackName =
+    scrubName(fileName.replace(/\.[^.]+$/, "")) || "Imported trail";
   const usable = raw.filter((trail) => trail.points.length >= 2);
   const downsampled: string[] = [];
   const trails = usable.map((trail, index) => {

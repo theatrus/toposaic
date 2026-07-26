@@ -34,6 +34,11 @@ import {
 import { assembledMeshSamples, effectiveMeshSamples } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
 
+// The terrain color the mesh renders when color output is off but trails
+// or buildings still force color materials. The legend must show the same
+// value, not the palette rock color.
+const NEUTRAL_TERRAIN_COLOR = "#74846B";
+
 function cubicBezier(
   start: [number, number],
   controlA: [number, number],
@@ -399,7 +404,7 @@ export function ReliefPreview({
                   ? palette.trail
                   : colorOutputEnabled
                     ? palette.rock
-                    : "#74846B";
+                    : NEUTRAL_TERRAIN_COLOR;
     const positions: number[] = [];
     const colors: number[] = [];
     const normals: number[] = [];
@@ -817,7 +822,12 @@ export function ReliefPreview({
               <span key={key}>
                 <i
                   style={{
-                    background: preview?.surface_palette?.[key] ?? color,
+                    background:
+                      // With color output off, the mesh renders the neutral
+                      // terrain color for rock; the legend must match it.
+                      key === "rock" && !spec.color_output.enabled
+                        ? NEUTRAL_TERRAIN_COLOR
+                        : (preview?.surface_palette?.[key] ?? color),
                   }}
                 />
                 {label}

@@ -40,22 +40,22 @@ export function BuildingsPanel({
           <span>{spec.buildings.enabled ? "On" : "Off"}</span>
         </label>
       </div>
-      <div className="color-swatches building-color-swatch">
-        <label>
-          <input
-            aria-label="Building color"
-            type="color"
-            value={spec.color_output.building_color}
-            onChange={(event) =>
-              updateColor("building_color", event.target.value)
-            }
-          />
-          <span>Building color</span>
-          <code>{spec.color_output.building_color.toUpperCase()}</code>
-        </label>
-      </div>
       {spec.buildings.enabled && (
         <>
+          <div className="color-swatches building-color-swatch">
+            <label>
+              <input
+                aria-label="Building color"
+                type="color"
+                value={spec.color_output.building_color}
+                onChange={(event) =>
+                  updateColor("building_color", event.target.value)
+                }
+              />
+              <span>Building color</span>
+              <code>{spec.color_output.building_color.toUpperCase()}</code>
+            </label>
+          </div>
           <RangeField
             label="Building Z scale"
             value={spec.buildings.z_scale}

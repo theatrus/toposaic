@@ -25,8 +25,10 @@ export type GenerationSpec = {
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
-  mesh_samples_across: number;
-  overlay_samples_across: number;
+  // Option<u32> on the wire: null means "let the backend pick". Specs that
+  // arrive from the service or from setup files can carry explicit nulls.
+  mesh_samples_across: number | null;
+  overlay_samples_across: number | null;
   fine_dem_detail: boolean;
   solid_model: boolean;
   straight_piece_sides: boolean;

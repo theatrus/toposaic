@@ -80,7 +80,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
   await puzzleModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeVisible();
-  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
+  // 2048 samples across 10 pieces round up to 205 per piece, so the
+  // assembled model carries 2050 — the same figure the backend reports.
+  await expect(page.getByText(/2050 across · about 0\.98 m ground spacing/)).toBeVisible();
   const pieceShape = page.getByRole("group", { name: "Piece shape" });
   const preview = page.getByLabel("Interactive 3D terrain preview");
   const straightGrid = pieceShape.getByRole("checkbox", {
@@ -249,14 +251,17 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByRole("group", { name: "Mapped buildings" }),
   ).toBeVisible();
+  // The color swatch renders only once buildings are enabled, like the
+  // other per-feature controls.
   const buildingColor = page.getByLabel("Building color");
-  await expect(buildingColor).toHaveValue("#b8a890");
-  await buildingColor.fill("#8a5b3d");
-  await expect(buildingColor).toHaveValue("#8a5b3d");
+  await expect(buildingColor).toBeHidden();
   await page
     .getByRole("group", { name: "Mapped buildings" })
     .getByRole("checkbox")
     .check();
+  await expect(buildingColor).toHaveValue("#b8a890");
+  await buildingColor.fill("#8a5b3d");
+  await expect(buildingColor).toHaveValue("#8a5b3d");
   await expect(
     page
       .getByLabel("Surface color legend")
@@ -395,8 +400,10 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   await expect(
     meshDetail.getByRole("radio", { name: /Ultra/ }),
   ).toHaveAttribute("aria-checked", "true");
+  // Ultra's 2048 samples round up to 205 per piece across 10 pieces, so
+  // the assembled label reads 2050, matching the backend.
   await expect(
-    page.getByText(/2048 across · about 8\.8 m ground spacing/),
+    page.getByText(/2050 across · about 8\.8 m ground spacing/),
   ).toBeVisible();
   await meshDetail.getByRole("radio", { name: /Standard/ }).click();
   await expect(
