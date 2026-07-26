@@ -248,41 +248,59 @@ struct ElevationSampler<'a> {
 
 impl ElevationSampler<'_> {
     fn sample(&mut self, requested_zoom: u8, longitude: f64, latitude: f64) -> Result<f32> {
+        let zoom = self.zoom_holding_data(requested_zoom, longitude, latitude)?;
         let (global_x, global_y) =
-            global_pixel_position(self.provider.tile_size, requested_zoom, longitude, latitude);
-        let centered_x = global_x - 0.5;
-        let centered_y = global_y - 0.5;
-        let x0 = centered_x.floor() as i64;
-        let y0 = centered_y.floor() as i64;
-        let tx = (centered_x - x0 as f64) as f32;
-        let ty = (centered_y - y0 as f64) as f32;
-        let bottom_left = self.sample_global_pixel(requested_zoom, x0, y0)?;
-        let bottom_right = self.sample_global_pixel(requested_zoom, x0 + 1, y0)?;
-        let top_left = self.sample_global_pixel(requested_zoom, x0, y0 + 1)?;
-        let top_right = self.sample_global_pixel(requested_zoom, x0 + 1, y0 + 1)?;
-        Ok(bilinear_elevation(
-            [bottom_left, bottom_right, top_left, top_right],
-            tx,
-            ty,
-        ))
+            global_pixel_position(self.provider.tile_size, zoom, longitude, latitude);
+        sample_lattice(global_x, global_y, |x, y| {
+            self.sample_global_pixel(zoom, x, y).map(|(value, _)| value)
+        })
     }
 
-    fn sample_global_pixel(
+    /// The highest zoom at or below `requested_zoom` that really has a tile
+    /// over this point.
+    ///
+    /// Interpolating on a finer lattice than the data actually holds is not
+    /// harmless: with parent fallback every neighbour in the finer lattice
+    /// collapses onto the same parent pixel, the interpolation weights cancel,
+    /// and the surface comes out as flat parent-sized plateaus with hard steps
+    /// between them.
+    fn zoom_holding_data(
         &mut self,
         requested_zoom: u8,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<u8> {
+        if !self.provider.allows_parent_fallback() {
+            return Ok(requested_zoom);
+        }
+        let (global_x, global_y) =
+            global_pixel_position(self.provider.tile_size, requested_zoom, longitude, latitude);
+        let (_, zoom) = self.sample_global_pixel(
+            requested_zoom,
+            global_x.floor() as i64,
+            global_y.floor() as i64,
+        )?;
+        Ok(zoom)
+    }
+
+    /// The elevation at one pixel of the `ceiling_zoom` lattice, with the zoom
+    /// that supplied it.
+    fn sample_global_pixel(
+        &mut self,
+        ceiling_zoom: u8,
         global_x: i64,
         global_y: i64,
-    ) -> Result<f32> {
+    ) -> Result<(f32, u8)> {
         let minimum_zoom = if self.provider.allows_parent_fallback() {
             self.provider.minimum_zoom
         } else {
-            requested_zoom
+            ceiling_zoom
         };
-        let requested_total_pixels = i64::from(self.provider.tile_size) * (1_i64 << requested_zoom);
-        let global_x = global_x.rem_euclid(requested_total_pixels);
-        let global_y = global_y.clamp(0, requested_total_pixels - 1);
-        for zoom in (minimum_zoom..=requested_zoom).rev() {
-            let scale = 1_i64 << (requested_zoom - zoom);
+        let ceiling_total_pixels = i64::from(self.provider.tile_size) * (1_i64 << ceiling_zoom);
+        let global_x = global_x.rem_euclid(ceiling_total_pixels);
+        let global_y = global_y.clamp(0, ceiling_total_pixels - 1);
+        for zoom in (minimum_zoom..=ceiling_zoom).rev() {
+            let scale = 1_i64 << (ceiling_zoom - zoom);
             let pixel_x = global_x / scale;
             let pixel_y = global_y / scale;
             let tile_size = i64::from(self.provider.tile_size);
@@ -320,10 +338,10 @@ impl ElevationSampler<'_> {
                 .context("elevation tile cache lost a tile")?
                 .get_pixel(location.pixel_x, location.pixel_y);
             self.used_zooms.insert(zoom);
-            return Ok(decode_terrarium_pixel(pixel.0));
+            return Ok((decode_terrarium_pixel(pixel.0), zoom));
         }
         bail!(
-            "{} has no elevation tile for this point at or below z{requested_zoom}",
+            "{} has no elevation tile for this point at or below z{ceiling_zoom}",
             self.provider.name
         )
     }
@@ -366,10 +384,61 @@ fn decode_terrarium_pixel(pixel: [u8; 3]) -> f32 {
     pixel[0] as f32 * 256.0 + pixel[1] as f32 + pixel[2] as f32 / 256.0 - 32_768.0
 }
 
-fn bilinear_elevation(corners: [f32; 4], tx: f32, ty: f32) -> f32 {
-    let bottom = corners[0] * (1.0 - tx) + corners[1] * tx;
-    let top = corners[2] * (1.0 - tx) + corners[3] * tx;
-    bottom * (1.0 - ty) + top * ty
+/// Reads the 4 by 4 source pixels around `(x, y)` and interpolates between
+/// them.
+///
+/// `x` and `y` are pixel coordinates on the source lattice, where whole
+/// numbers fall on pixel edges and pixel centres sit at the half-way points.
+fn sample_lattice(x: f64, y: f64, mut source: impl FnMut(i64, i64) -> Result<f32>) -> Result<f32> {
+    let centered_x = x - 0.5;
+    let centered_y = y - 0.5;
+    let x0 = centered_x.floor() as i64;
+    let y0 = centered_y.floor() as i64;
+    let tx = (centered_x - x0 as f64) as f32;
+    let ty = (centered_y - y0 as f64) as f32;
+    let mut neighbourhood = [[0.0f32; 4]; 4];
+    for (row_index, row) in neighbourhood.iter_mut().enumerate() {
+        for (column_index, value) in row.iter_mut().enumerate() {
+            *value = source(x0 + column_index as i64 - 1, y0 + row_index as i64 - 1)?;
+        }
+    }
+    Ok(catmull_rom_patch(neighbourhood, tx, ty))
+}
+
+/// Catmull-Rom over a 4 by 4 neighbourhood, clamped to that neighbourhood's
+/// own range.
+///
+/// Bilinear interpolation is continuous but its slope is not: it is flat
+/// inside every source pixel and bends only at pixel edges, which prints as a
+/// rectilinear grid of creases once the model samples finer than the source.
+/// Catmull-Rom passes through every source pixel and keeps its slope
+/// continuous, so the grid disappears. The clamp holds the classic cubic
+/// overshoot at cliffs: without it a ridge or dam edge grows a lip taller than
+/// any real reading nearby.
+fn catmull_rom_patch(neighbourhood: [[f32; 4]; 4], tx: f32, ty: f32) -> f32 {
+    let mut rows = [0.0f32; 4];
+    for (value, row) in rows.iter_mut().zip(neighbourhood.iter()) {
+        *value = catmull_rom(*row, tx);
+    }
+    let interpolated = catmull_rom(rows, ty);
+    let mut minimum = f32::INFINITY;
+    let mut maximum = f32::NEG_INFINITY;
+    for value in neighbourhood.iter().flatten() {
+        minimum = minimum.min(*value);
+        maximum = maximum.max(*value);
+    }
+    interpolated.clamp(minimum, maximum)
+}
+
+/// The uniform Catmull-Rom spline through `values[1]` and `values[2]`, at
+/// `t` between them. It reproduces straight and quadratic runs of samples
+/// exactly and joins neighbouring spans with a matching slope.
+fn catmull_rom(values: [f32; 4], t: f32) -> f32 {
+    let [p0, p1, p2, p3] = values;
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    ((a * t + b) * t + c) * t + p1
 }
 
 fn load_tile(
@@ -547,10 +616,63 @@ mod tests {
         assert_eq!(fallback, 1_024);
     }
 
+    /// Reads a synthetic source lattice the way the sampler reads tiles.
+    fn lattice(field: impl Fn(i64, i64) -> f32, x: f64, y: f64) -> f32 {
+        sample_lattice(x, y, |pixel_x, pixel_y| Ok(field(pixel_x, pixel_y))).unwrap()
+    }
+
     #[test]
     fn elevation_pixels_blend_in_both_axes() {
-        assert!((bilinear_elevation([0.0, 10.0, 20.0, 30.0], 0.5, 0.5) - 15.0).abs() < 1e-6);
-        assert!((bilinear_elevation([0.0, 10.0, 20.0, 30.0], 0.25, 0.75) - 17.5).abs() < 1e-6);
+        // A plane through the pixel centres comes back exactly, in both axes.
+        let plane = |x: i64, y: i64| 3.0 * x as f32 + 7.0 * y as f32;
+        for (x, y) in [(4.5, 6.5), (4.75, 6.25), (5.0, 7.0), (5.5, 6.9)] {
+            let expected = 3.0 * (x as f32 - 0.5) + 7.0 * (y as f32 - 0.5);
+            assert!((lattice(plane, x, y) - expected).abs() < 1e-3);
+        }
+    }
+
+    /// The stair-step grid the user sees is a slope that jumps at every source
+    /// pixel edge. Sampling a curved surface far finer than the source must
+    /// return an evenly curved profile, not a run of flats hinged at the pixel
+    /// edges. Bilinear interpolation fails this: it reads back zero curvature
+    /// inside each pixel and a spike of about 0.25 m at every edge.
+    #[test]
+    fn sampling_finer_than_the_source_keeps_the_slope_continuous() {
+        let bowl = |x: i64, y: i64| 0.5 * (x * x) as f32 + 0.25 * (y * y) as f32;
+        let steps_per_pixel = 8;
+        let step = 1.0 / f64::from(steps_per_pixel);
+        let profile = (0..steps_per_pixel * 4)
+            .map(|index| lattice(bowl, 3.0 + f64::from(index) * step, 5.25))
+            .collect::<Vec<_>>();
+        // A quadratic sampled at spacing h has the same second difference
+        // everywhere: curvature * h^2.
+        let expected = 1.0 * (step * step) as f32;
+
+        for window in profile.windows(3) {
+            let second_difference = window[0] - 2.0 * window[1] + window[2];
+            assert!(
+                (second_difference - expected).abs() < 1e-4,
+                "second difference {second_difference} strays from {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn cliffs_do_not_grow_a_lip_above_the_source_readings() {
+        let cliff = |x: i64, _: i64| if x < 4 { 0.0 } else { 100.0 };
+        // Unclamped, the cubic rings above the plateau it has just climbed on
+        // to: the span after the step overshoots by several metres.
+        assert!(catmull_rom([0.0, 100.0, 100.0, 100.0], 0.5) > 105.0);
+
+        for index in 0..64 {
+            let value = lattice(cliff, 3.0 + f64::from(index) / 16.0, 5.5);
+            assert!((0.0..=100.0).contains(&value), "cliff sample {value}");
+        }
+    }
+
+    #[test]
+    fn flat_ground_stays_flat() {
+        assert_eq!(lattice(|_, _| 12.5, 4.3, 9.8), 12.5);
     }
 
     #[test]
