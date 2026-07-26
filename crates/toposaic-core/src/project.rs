@@ -183,19 +183,29 @@ fn generate_project_inner(
     // thread and feed it finished meshes in index order over a bounded
     // channel: batch k's 3MF write overlaps batch k+1's builds. The writer
     // consumes meshes in send order, so the file bytes are unchanged.
-    let abort_project_write = AtomicBool::new(false);
+    //
+    // The writer finalizes the archive only when the build side explicitly
+    // declared success first. The flag starts false, so a build error, a
+    // cancel, AND a panic unwinding out of a piece builder (which drops the
+    // sender mid-stream without ever reaching the success store) all leave
+    // it unset — a truncated archive can never be finished into one that
+    // looks complete.
+    let build_completed = AtomicBool::new(false);
     let (mesh_sender, mesh_receiver) = mpsc::sync_channel::<Mesh>(piece_batch_size);
+    // However this function exits before the disarm below — error, cancel,
+    // or panic — the partial, unfinished project archive is removed.
+    let mut partial_archive_guard = RemoveFileOnDrop::new(&project_path);
     std::thread::scope(|scope| -> Result<()> {
-        let abort_flag = &abort_project_write;
+        let completed_flag = &build_completed;
         let writer_path = &project_path;
         let writer = scope.spawn(move || -> Result<()> {
             let mut project_writer = ThreeMfWriter::new(spec, writer_path)?;
             for mesh in mesh_receiver {
                 project_writer.write_mesh(&mesh)?;
             }
-            if abort_flag.load(Ordering::Acquire) {
-                // The building side failed or was canceled; skip finalizing
-                // the archive, its error is reported instead.
+            if !completed_flag.load(Ordering::Acquire) {
+                // The building side failed, was canceled, or panicked; skip
+                // finalizing the archive, its error is reported instead.
                 return Ok(());
             }
             project_writer.finish()
@@ -253,14 +263,15 @@ fn generate_project_inner(
             }
             ensure_generation_active(is_cancelled)
         })();
-        if build_result.is_err() {
-            abort_project_write.store(true, Ordering::Release);
+        if build_result.is_ok() {
+            build_completed.store(true, Ordering::Release);
         }
         drop(mesh_sender);
         let write_result = writer.join().expect("3MF writer thread panicked");
         build_result?;
         write_result
     })?;
+    partial_archive_guard.disarm();
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
     if spec.tray.enabled {
@@ -298,6 +309,31 @@ fn generate_project_inner(
         .push(file_artifact(&manifest_path, "application/json")?);
     on_progress(1.0)?;
     Ok(complete)
+}
+
+/// Removes a file when dropped unless disarmed: keeps a partially written
+/// project archive from surviving an error, a cancel, or a panic.
+struct RemoveFileOnDrop<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> RemoveFileOnDrop<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RemoveFileOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(self.path);
+        }
+    }
 }
 
 fn ensure_generation_active(is_cancelled: &(dyn Fn() -> bool + Sync)) -> Result<()> {
@@ -597,6 +633,74 @@ mod tests {
         assert!(model.contains("p1=\"5\""));
 
         std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn mid_build_cancel_removes_the_partial_project_archive() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-midcancel-core-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        // Let the first batch build and stream into the archive, then
+        // cancel: the writer must not finalize what it already wrote.
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let result = generate_project_inner(
+            &spec,
+            None,
+            None,
+            &output_dir,
+            &|| cancel.load(std::sync::atomic::Ordering::Acquire),
+            &|_| {
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "generation canceled");
+        assert!(
+            !output_dir.join("toposaic.3mf").exists(),
+            "a canceled build must not leave a partial project archive"
+        );
+        std::fs::remove_dir_all(&output_dir).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_build_leaves_no_complete_looking_archive() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-panic-core-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        // A panic after the first batch drops the mesh sender mid-stream.
+        // Without the completed-normally flag the writer would still
+        // finalize a valid-looking archive holding a subset of the pieces.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_project_inner(&spec, None, None, &output_dir, &|| false, &|_| {
+                panic!("injected build panic")
+            })
+        }));
+
+        assert!(unwound.is_err(), "the injected panic must propagate");
+        assert!(
+            !output_dir.join("toposaic.3mf").exists(),
+            "a panicking build must not leave a project archive behind"
+        );
+        std::fs::remove_dir_all(&output_dir).unwrap();
     }
 
     #[test]

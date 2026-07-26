@@ -158,7 +158,16 @@ impl<'a> ThreeMfWriter<'a> {
     }
 
     pub(crate) fn write_mesh(&mut self, mesh: &Mesh) -> Result<()> {
-        debug_assert_eq!(mesh.triangles.len(), mesh.materials.len());
+        // A real check, not a debug assertion: the triangle loop below zips
+        // the two lists, so in release a short material list would silently
+        // truncate the mesh out of the archive.
+        anyhow::ensure!(
+            mesh.triangles.len() == mesh.materials.len(),
+            "mesh {} has {} triangles but {} materials",
+            mesh.name,
+            mesh.triangles.len(),
+            mesh.materials.len()
+        );
         let object_id = self.object_count + 1;
         // Formatting millions of decimal numbers dominates the serial 3MF
         // write, so format fixed-size ranges in parallel — with the exact
@@ -170,6 +179,10 @@ impl<'a> ThreeMfWriter<'a> {
         // on how its input is chunked, so keeping the write pattern keeps
         // the archive bytes identical, not just the decompressed stream.
         let mut output = BufWriter::with_capacity(64 * 1024, &mut self.zip);
+        // The name is interpolated into XML without escaping. That is safe
+        // only because every mesh name is generator-made ("piece-2-3",
+        // "terrain-tray-r1-c2", "terrain-solid") and never carries XML
+        // metacharacters or user text; escape here first if that changes.
         writeln!(
             output,
             "    <object id=\"{object_id}\" name=\"{}\" type=\"model\"><mesh><vertices>",
@@ -530,6 +543,20 @@ mod tests {
             )));
         }
         assert_eq!(model.matches("<object id=").count(), 2);
+    }
+
+    #[test]
+    fn mismatched_material_lists_fail_the_write_instead_of_truncating() {
+        let path =
+            std::env::temp_dir().join(format!("toposaic-3mf-mismatch-{}.3mf", std::process::id()));
+        let spec = fixture_spec(ThreeMfStyle::Project);
+        let mut writer = ThreeMfWriter::new(&spec, &path).unwrap();
+        let mut mesh = fixture_meshes().remove(0);
+        mesh.materials.pop();
+        let error = writer.write_mesh(&mesh).unwrap_err().to_string();
+        assert!(error.contains("triangles but"), "{error}");
+        drop(writer);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

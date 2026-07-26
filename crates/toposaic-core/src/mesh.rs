@@ -148,10 +148,16 @@ pub(crate) fn triangulate_constraints(
         .context(error_context)
 }
 
-/// Snaps one coordinate to the 3MF export grid: the value the `{:.5}`
-/// formatter in `export.rs` will print is exactly the decimal this rounds to.
-/// Negative values that round to zero return positive zero so the formatted
-/// text never distinguishes `-0.00000` from `0.00000`.
+/// Snaps one coordinate toward the 3MF export grid: the nearest `f32` to
+/// the 5-decimal value the `{:.5}` formatter in `export.rs` prints.
+/// Wherever one `f32` step is below the 1e-5 grid spacing (magnitudes up to
+/// about 168 mm) the formatter prints exactly that decimal back; above
+/// that, neighbouring grid cells share representable floats and the printed
+/// decimal can sit one grid step away from the rounding target. The export
+/// weld therefore keys on the snapped BIT PATTERN, not the decimal, so
+/// welding stays consistent either way. Negative values that round to zero
+/// return positive zero so the formatted text never distinguishes
+/// `-0.00000` from `0.00000`.
 pub(crate) fn quantize_export_coordinate(value: f32) -> f32 {
     let snapped = (f64::from(value) * 100_000.0).round() / 100_000.0;
     if snapped == 0.0 { 0.0 } else { snapped as f32 }
@@ -414,6 +420,13 @@ impl<'a> PolygonStripIndex<'a> {
 /// no collapsed triangles and no same-winding duplicate faces. Any edge
 /// used four or more times after welding means two pieces of geometry
 /// genuinely overlap and is always a hard failure.
+///
+/// This is edge/vertex topology only, not a full manifold proof: shells
+/// that overlap in space without sharing welded vertices (tray contour
+/// ribbons embed into the floor by design), a globally inverted winding,
+/// and slivers above the analyzer's area epsilon all pass. See the
+/// `analysis` module docs for the full list of out-of-scope defect
+/// classes.
 pub(crate) fn assert_watertight(mesh: &Mesh) {
     let report = crate::analysis::analyze_mesh_views(mesh);
     for view in &report.views {
@@ -431,6 +444,12 @@ pub(crate) fn assert_watertight(mesh: &Mesh) {
             view.duplicate_same_winding, 0,
             "{}: {} view has same-winding duplicate faces: {:?}",
             mesh.name, view.view, view.duplicate_examples,
+        );
+        assert_eq!(
+            view.misoriented_edges, 0,
+            "{}: {} view has edges traversed twice in one direction \
+             (neighbouring faces disagree on winding)",
+            mesh.name, view.view,
         );
     }
 }

@@ -16,6 +16,13 @@ use crate::text::{EmbossedLabel, embossing_font};
 const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
 const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
 const TRAY_CONTOUR_SURFACE_OFFSET_MM: f32 = 0.01;
+/// How far inside a segment outline a contour centreline point must sit to
+/// be kept: the ribbon half-width plus the miter allowance
+/// (`add_contour_ribbon` caps a miter at twice the half-width), so no
+/// ribbon vertex can protrude past the segment's cut walls. Fit wins over
+/// contour reach: a contour hugging a cut therefore ends up to this far
+/// from the wall instead of poking through it.
+const TRAY_CONTOUR_CLIP_INSET_MM: f32 = TRAY_CONTOUR_WIDTH_MM;
 
 /// The tray's inner-frame geometry. The one-piece tray, tray segments, and
 /// contour tracing all derive from this one place so segments always match
@@ -176,35 +183,39 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         }
     }
 
+    // The cavity walls wind with their normals facing INTO the cavity (away
+    // from the rim solid), consistent with the up-facing floor and rim tops:
+    // shared edges are then traversed once per direction, which the manifold
+    // analyzer's misoriented-edge counter verifies.
     for x in inner_x.windows(2) {
         mesh.quad(
-            [x[0], inner_y0, floor_z],
             [x[1], inner_y0, floor_z],
-            [x[1], inner_y0, rim_z],
+            [x[0], inner_y0, floor_z],
             [x[0], inner_y0, rim_z],
+            [x[1], inner_y0, rim_z],
             SurfaceClass::Rock,
         );
         mesh.quad(
-            [x[1], inner_y1, floor_z],
             [x[0], inner_y1, floor_z],
-            [x[0], inner_y1, rim_z],
+            [x[1], inner_y1, floor_z],
             [x[1], inner_y1, rim_z],
+            [x[0], inner_y1, rim_z],
             SurfaceClass::Rock,
         );
     }
     for y in inner_y.windows(2) {
         mesh.quad(
-            [inner_x0, y[1], floor_z],
             [inner_x0, y[0], floor_z],
-            [inner_x0, y[0], rim_z],
+            [inner_x0, y[1], floor_z],
             [inner_x0, y[1], rim_z],
+            [inner_x0, y[0], rim_z],
             SurfaceClass::Rock,
         );
         mesh.quad(
-            [inner_x1, y[0], floor_z],
             [inner_x1, y[1], floor_z],
-            [inner_x1, y[1], rim_z],
+            [inner_x1, y[0], floor_z],
             [inner_x1, y[0], rim_z],
+            [inner_x1, y[1], rim_z],
             SurfaceClass::Rock,
         );
     }
@@ -668,24 +679,48 @@ fn add_segment_walls(
                 let b = [edge[1].x as f32, edge[1].y as f32];
                 let inner_edge = on_inner_boundary(a, b);
                 if inner_edge == (side == SegmentWallSide::Inner) {
-                    mesh.quad(
-                        [a[0], a[1], lower_z],
-                        [b[0], b[1], lower_z],
-                        [b[0], b[1], upper_z],
-                        [a[0], a[1], upper_z],
-                        SurfaceClass::Rock,
-                    );
+                    // Outer walls skirt the solid UNDER the polygon, inner
+                    // (cavity) walls rise against the rim solid OUTSIDE it,
+                    // so the two sides wind in opposite ring directions to
+                    // both face away from their solid.
+                    if side == SegmentWallSide::Inner {
+                        mesh.quad(
+                            [b[0], b[1], lower_z],
+                            [a[0], a[1], lower_z],
+                            [a[0], a[1], upper_z],
+                            [b[0], b[1], upper_z],
+                            SurfaceClass::Rock,
+                        );
+                    } else {
+                        mesh.quad(
+                            [a[0], a[1], lower_z],
+                            [b[0], b[1], lower_z],
+                            [b[0], b[1], upper_z],
+                            [a[0], a[1], upper_z],
+                            SurfaceClass::Rock,
+                        );
+                    }
                 }
             }
         }
     }
 }
 
+/// Splits a contour path into the runs that fit inside one tray segment.
+/// A point is kept only when it sits inside the outline AND at least
+/// [`TRAY_CONTOUR_CLIP_INSET_MM`] away from it, so the ribbon built around
+/// the centreline (half-width plus miter) can never protrude past the
+/// segment's cut walls.
 fn clip_contour_path(path: &ContourPath, segment: &Polygon<f64>) -> Vec<ContourPath> {
+    let keep = |point: &[f32; 2]| {
+        segment.contains(&Point::new(f64::from(point[0]), f64::from(point[1])))
+            && polygon_boundary_distance(segment, *point) >= TRAY_CONTOUR_CLIP_INSET_MM
+    };
     let mut paths = Vec::new();
     let mut current = Vec::new();
+    let first_point_kept = path.points.first().is_some_and(&keep);
     for point in &path.points {
-        if segment.contains(&Point::new(f64::from(point[0]), f64::from(point[1]))) {
+        if keep(point) {
             current.push(*point);
         } else if current.len() >= 2 {
             paths.push(ContourPath {
@@ -697,12 +732,52 @@ fn clip_contour_path(path: &ContourPath, segment: &Polygon<f64>) -> Vec<ContourP
         }
     }
     if current.len() >= 2 {
-        paths.push(ContourPath {
-            points: current,
-            closed: path.closed && paths.is_empty(),
-        });
+        if path.closed && first_point_kept && !paths.is_empty() {
+            // A closed contour partially inside the segment can wrap the
+            // point-array seam: its first run (starting at index 0) and its
+            // final run are one continuous arc of the contour. Join them so
+            // the arc comes out as one open path instead of two butted at
+            // the seam.
+            let mut joined = current;
+            joined.extend(paths[0].points.iter().copied());
+            paths[0] = ContourPath {
+                points: joined,
+                closed: false,
+            };
+        } else {
+            // Only a fully surviving loop stays closed; any dropped point
+            // leaves an arc, and closing an arc would bridge the gap.
+            let closed = path.closed && paths.is_empty() && current.len() == path.points.len();
+            paths.push(ContourPath {
+                points: current,
+                closed,
+            });
+        }
     }
     paths
+}
+
+/// Distance from a point to the nearest edge of the polygon's rings.
+fn polygon_boundary_distance(polygon: &Polygon<f64>, point: [f32; 2]) -> f32 {
+    let mut best = f32::INFINITY;
+    for ring in std::iter::once(polygon.exterior()).chain(polygon.interiors()) {
+        for edge in ring.0.windows(2) {
+            let start = [edge[0].x as f32, edge[0].y as f32];
+            let end = [edge[1].x as f32, edge[1].y as f32];
+            let direction = [end[0] - start[0], end[1] - start[1]];
+            let length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+            let t = if length_squared <= f32::EPSILON {
+                0.0
+            } else {
+                (((point[0] - start[0]) * direction[0] + (point[1] - start[1]) * direction[1])
+                    / length_squared)
+                    .clamp(0.0, 1.0)
+            };
+            let nearest = [start[0] + direction[0] * t, start[1] + direction[1] * t];
+            best = best.min(distance_squared(point, nearest));
+        }
+    }
+    best.sqrt()
 }
 
 #[derive(Debug, Clone)]
@@ -1092,35 +1167,39 @@ fn add_contour_ribbon(output: &mut MeshBuilder, path: &ContourPath, bottom_z: f3
             [left[index][0], left[index][1], bottom_z],
             SurfaceClass::Forest,
         );
+        // Walls and caps wind so their normals face away from the ribbon
+        // body, matching the top (+z) and bottom (-z) faces: every shared
+        // edge is then traversed once in each direction, which the manifold
+        // analyzer's misoriented-edge counter checks.
         mesh.quad(
-            [left[index][0], left[index][1], bottom_z],
             [left[next][0], left[next][1], bottom_z],
-            [left[next][0], left[next][1], top_z],
+            [left[index][0], left[index][1], bottom_z],
             [left[index][0], left[index][1], top_z],
+            [left[next][0], left[next][1], top_z],
             SurfaceClass::Forest,
         );
         mesh.quad(
-            [right[next][0], right[next][1], bottom_z],
             [right[index][0], right[index][1], bottom_z],
-            [right[index][0], right[index][1], top_z],
+            [right[next][0], right[next][1], bottom_z],
             [right[next][0], right[next][1], top_z],
+            [right[index][0], right[index][1], top_z],
             SurfaceClass::Forest,
         );
     }
     if !path.closed {
         let last = path.points.len() - 1;
         mesh.quad(
-            [right[0][0], right[0][1], bottom_z],
             [left[0][0], left[0][1], bottom_z],
-            [left[0][0], left[0][1], top_z],
+            [right[0][0], right[0][1], bottom_z],
             [right[0][0], right[0][1], top_z],
+            [left[0][0], left[0][1], top_z],
             SurfaceClass::Forest,
         );
         mesh.quad(
-            [left[last][0], left[last][1], bottom_z],
             [right[last][0], right[last][1], bottom_z],
-            [right[last][0], right[last][1], top_z],
+            [left[last][0], left[last][1], bottom_z],
             [left[last][0], left[last][1], top_z],
+            [right[last][0], right[last][1], top_z],
             SurfaceClass::Forest,
         );
     }
@@ -1372,6 +1451,77 @@ mod tests {
                 .iter()
                 .all(|point| (point[0] - 30.0).abs() < 0.0001)
         );
+    }
+
+    #[test]
+    fn clipped_contours_keep_ribbon_clearance_from_segment_walls() {
+        let segment = rectangle_polygon(0.0, 0.0, 20.0, 20.0);
+        // A straight contour running 0.1 mm inside the right wall: inside
+        // the polygon, but a 0.45 mm-wide mitred ribbon around it would
+        // protrude through the cut. Every point must be dropped.
+        let hugging = ContourPath {
+            points: (0..8)
+                .map(|index| [19.9, 2.0 + index as f32 * 2.0])
+                .collect(),
+            closed: false,
+        };
+        assert!(clip_contour_path(&hugging, &segment).is_empty());
+
+        // A contour crossing the wall keeps only points with clearance for
+        // the ribbon half-width plus its miter allowance.
+        let crossing = ContourPath {
+            points: (0..21).map(|index| [index as f32, 10.0]).collect(),
+            closed: false,
+        };
+        let clipped = clip_contour_path(&crossing, &segment);
+        assert_eq!(clipped.len(), 1);
+        for point in &clipped[0].points {
+            assert!(
+                polygon_boundary_distance(&segment, *point) >= TRAY_CONTOUR_CLIP_INSET_MM,
+                "point {point:?} too close to the segment wall"
+            );
+        }
+    }
+
+    #[test]
+    fn closed_contours_partially_inside_join_across_the_array_seam() {
+        // Only x >= 6 of this 16-point loop is inside the segment. The loop
+        // starts INSIDE (index 0), leaves, and re-enters before wrapping:
+        // the surviving arc crosses the point-array seam and must come out
+        // as ONE open path, not two runs butted at the seam.
+        let segment = rectangle_polygon(6.0, -30.0, 60.0, 30.0);
+        let loop_points = (0..16)
+            .map(|index| {
+                let angle = index as f32 / 16.0 * std::f32::consts::TAU;
+                [12.0 * angle.cos(), 12.0 * angle.sin()]
+            })
+            .collect::<Vec<_>>();
+        let path = ContourPath {
+            points: loop_points.clone(),
+            closed: true,
+        };
+        let clipped = clip_contour_path(&path, &segment);
+        assert_eq!(clipped.len(), 1, "the wrapped arc must join into one path");
+        assert!(!clipped[0].closed, "a partial arc must not close");
+        // The joined path runs the final run first (indices 13..) and then
+        // wraps into the first run (indices 0..): consecutive original
+        // ordering across the seam.
+        let arc = &clipped[0].points;
+        assert!(arc.len() >= 4);
+        assert_eq!(arc.last(), loop_points.get(2));
+        assert!(arc.contains(&loop_points[0]));
+        assert!(arc.contains(&loop_points[14]));
+        let seam = arc
+            .windows(2)
+            .position(|pair| pair[0] == loop_points[15] && pair[1] == loop_points[0]);
+        assert!(seam.is_some(), "the seam neighbours must stay adjacent");
+
+        // A fully inside loop still comes back closed and untouched.
+        let wide = rectangle_polygon(-30.0, -30.0, 30.0, 30.0);
+        let whole = clip_contour_path(&path, &wide);
+        assert_eq!(whole.len(), 1);
+        assert!(whole[0].closed);
+        assert_eq!(whole[0].points, loop_points);
     }
 
     #[test]
