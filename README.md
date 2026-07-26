@@ -442,6 +442,24 @@ tiles and source-specific credits are listed here:
 Generated manifests record the selected source, requested and used zooms,
 fallback policy, and attribution link.
 
+Published tiles carry the occasional bad pixel, most often along a coastline or
+a lake shore, or on a seam in the source mosaic. One reading thousands of metres
+out matters more than it sounds: relief is stretched over the whole range of the
+model, so a single bad sample squeezes every real hill into a fraction of the
+height asked for and punches a needle hole through the base. **Repair stray
+elevation readings**, under the model controls and on by default, replaces such a
+reading with the middle of its neighbours. The bar scales with the distance
+between readings, so it only touches those standing off at better than 80
+degrees, and manifests record how many were replaced. Turn it off to build the
+elevation data exactly as supplied.
+
+The repair runs on each source tile at the tile's own resolution, where a stray
+reading is one pixel wide whatever the model asks for. That matters for close
+views, which space their samples below the width of a source pixel: repairing the
+finished model instead would see one bad pixel smeared over several samples, as a
+block too wide to tell from real ground. A second pass over the finished model
+follows as a backstop for damage too broad to judge pixel by pixel.
+
 Color manifests also record the ESA WorldCover tile and attribution:
 
 <https://esa-worldcover.org/en/data-access>

@@ -12,7 +12,7 @@ mod surface;
 mod text;
 mod tray;
 
-pub use heightfield::HeightField;
+pub use heightfield::{DespikeReport, HeightField};
 pub use preview::build_height_preview;
 pub use project::{
     Artifact, ProjectManifest, artifact_path, generate_project, generate_project_with_fields,
