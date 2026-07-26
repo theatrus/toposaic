@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::export::{ThreeMfWriter, write_binary_stl};
 use crate::heightfield::{HeightField, height_range_for_spec, validate_height_frame};
 use crate::mesh::Mesh;
-use crate::mount::build_wall_hardware;
+use crate::mount::{build_wall_alignment_spacer, build_wall_hardware};
 use crate::piece::build_piece_with_height_range;
 use crate::preview::{build_preview, preview_sample_count};
-use crate::spec::GenerationSpec;
+use crate::spec::{GenerationSpec, WallMountStyle};
 use crate::surface::SurfaceField;
 use crate::tray::build_tray_segments;
 
@@ -181,10 +181,23 @@ pub fn generate_wall_mount_artifacts(
     let mut writer = ThreeMfWriter::new(&hardware_spec, None, &three_mf_path)?;
     writer.write_mesh(&hardware)?;
     writer.finish()?;
-    Ok(vec![
+    let mut artifacts = vec![
         file_artifact(&stl_path, "model/stl")?,
         file_artifact(&three_mf_path, "model/3mf")?,
-    ])
+    ];
+    if spec.wall_mount.style == WallMountStyle::FrenchCleat {
+        let spacer = build_wall_alignment_spacer(spec)?;
+        let spacer_stl_path = output_dir.join("wall-mount-alignment-spacer.stl");
+        write_binary_stl(&spacer, &spacer_stl_path)?;
+        artifacts.push(file_artifact(&spacer_stl_path, "model/stl")?);
+
+        let spacer_3mf_path = output_dir.join("wall-mount-alignment-spacer.3mf");
+        let mut spacer_writer = ThreeMfWriter::new(&hardware_spec, None, &spacer_3mf_path)?;
+        spacer_writer.write_mesh(&spacer)?;
+        spacer_writer.finish()?;
+        artifacts.push(file_artifact(&spacer_3mf_path, "model/3mf")?);
+    }
+    Ok(artifacts)
 }
 
 fn generate_project_inner(
@@ -478,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn wall_mount_jobs_export_matching_printable_hardware() {
+    fn per_piece_wall_mount_jobs_export_hardware_and_alignment_spacer() {
         let output_dir = std::env::temp_dir().join(format!(
             "toposaic-wall-hardware-test-{}",
             std::process::id()
@@ -490,7 +503,6 @@ mod tests {
             rows: 2,
             columns: 2,
             samples_per_piece: 16,
-            solid_model: true,
             wall_mount: WallMountSpec {
                 style: WallMountStyle::FrenchCleat,
                 target: WallMountTarget::Terrain,
@@ -500,7 +512,12 @@ mod tests {
             ..GenerationSpec::default()
         };
         let manifest = generate_project(&spec, &output_dir).unwrap();
-        for name in ["wall-mount-hardware.stl", "wall-mount-hardware.3mf"] {
+        for name in [
+            "wall-mount-hardware.stl",
+            "wall-mount-hardware.3mf",
+            "wall-mount-alignment-spacer.stl",
+            "wall-mount-alignment-spacer.3mf",
+        ] {
             assert!(output_dir.join(name).is_file());
             assert!(
                 manifest

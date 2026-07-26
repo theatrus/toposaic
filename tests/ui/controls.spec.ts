@@ -295,10 +295,14 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByRole("checkbox", { name: "Export matching wall hardware" }),
   ).toBeChecked();
-  await expect(page.getByText("Wall spacer depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Wall stand-off" }),
+  ).toBeVisible();
   await wallMountStyle.selectOption("french_cleat");
+  await expect(page.getByText("Receiver pocket depth")).toBeVisible();
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
+  await expect(page.getByText("flat alignment spacer", { exact: false })).toBeVisible();
   await mountingControls.getByRole("checkbox").first().uncheck();
   await expect(retention).not.toBeChecked();
   await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");

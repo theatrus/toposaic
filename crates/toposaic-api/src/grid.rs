@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use toposaic_core::{
-    Artifact, GenerationSpec, HeightField, SuperTileAnchor, WallMountStyle,
+    Artifact, GenerationSpec, HeightField, SuperTileAnchor, WallMountStyle, WallMountTarget,
     generate_wall_mount_artifacts,
 };
 
@@ -62,6 +62,9 @@ impl AdjacentGridOutputPlan {
             terrain_spec.tray.segment_rows = 1;
         } else {
             terrain_spec.tray.enabled = false;
+            if terrain_spec.wall_mount.target == WallMountTarget::Tray {
+                terrain_spec.wall_mount.style = WallMountStyle::None;
+            }
         }
         terrain_spec
     }
@@ -299,6 +302,16 @@ mod tests {
         assert!(!terrain_spec.tray.enabled);
         assert!(!terrain_spec.wall_mount.export_hardware);
 
+        let mut tray_mount_spec = spec.clone();
+        tray_mount_spec.wall_mount.target = WallMountTarget::Tray;
+        let tray_mount_plan = AdjacentGridOutputPlan::new(&tray_mount_spec);
+        let tray_mount_tile = adjacent_tile_specs(&tray_mount_spec).remove(0);
+        let terrain_without_mosaic_mount = tray_mount_plan.terrain_spec(&tray_mount_tile);
+        assert_eq!(
+            terrain_without_mosaic_mount.wall_mount.style,
+            WallMountStyle::None
+        );
+
         let mut individual_spec = spec.clone();
         individual_spec.tray.individual_tiles = true;
         let individual_plan = AdjacentGridOutputPlan::new(&individual_spec);
@@ -312,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn super_tile_wall_hardware_is_published_once_in_the_job_directory() {
+    fn super_tile_french_cleat_hardware_and_spacer_are_published_once() {
         let output_dir = std::env::temp_dir().join(format!(
             "toposaic-grid-wall-hardware-test-{}",
             std::process::id()
@@ -325,7 +338,7 @@ mod tests {
             adjacent_columns: 2,
             adjacent_rows: 2,
             wall_mount: toposaic_core::WallMountSpec {
-                style: WallMountStyle::StraightPin,
+                style: WallMountStyle::FrenchCleat,
                 export_hardware: true,
                 ..toposaic_core::WallMountSpec::default()
             },
@@ -337,9 +350,14 @@ mod tests {
 
         assert_eq!(
             names,
-            ["wall-mount-hardware.stl", "wall-mount-hardware.3mf"]
+            [
+                "wall-mount-hardware.stl",
+                "wall-mount-hardware.3mf",
+                "wall-mount-alignment-spacer.stl",
+                "wall-mount-alignment-spacer.3mf",
+            ]
         );
-        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts.len(), 4);
         for name in names {
             assert!(output_dir.join(name).is_file());
         }

@@ -13,6 +13,25 @@ export function maximumRetentionHeight(spec: GenerationSpec) {
   );
 }
 
+export function wallMountTargetWidth(spec: GenerationSpec) {
+  if (spec.wall_mount.target === "terrain") {
+    return spec.solid_model ? spec.width_mm : spec.width_mm / spec.columns;
+  }
+
+  const extra = (spec.tray.clearance_mm + spec.tray.rim_width_mm) * 2;
+  const tileWidth = spec.width_mm + extra;
+  if (spec.adjacent_columns > 1 || spec.adjacent_rows > 1) {
+    return spec.tray.individual_tiles ? tileWidth : spec.width_mm;
+  }
+  return spec.tray.segment_columns > 1 || spec.tray.segment_rows > 1
+    ? spec.width_mm / spec.tray.segment_columns
+    : tileWidth;
+}
+
+export function maximumCleatWidth(spec: GenerationSpec) {
+  return Math.max(8, Math.min(400, wallMountTargetWidth(spec) - 4));
+}
+
 export function wallHardwareQuantity(spec: GenerationSpec) {
   const superTileCount = spec.adjacent_columns * spec.adjacent_rows;
   if (spec.wall_mount.target === "tray") {

@@ -16,8 +16,10 @@ import {
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
 import {
+  maximumCleatWidth,
   maximumMountDepth,
   maximumRetentionHeight,
+  wallMountTargetWidth,
   wallHardwareQuantity,
 } from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
@@ -221,6 +223,21 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   assert.equal(wallHardwareQuantity(puzzleGrid), 1);
   assert.equal(maximumMountDepth(puzzleGrid), 2);
   assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
+
+  puzzleGrid.width_mm = 320;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  assert.equal(maximumCleatWidth(puzzleGrid), 316);
+  puzzleGrid.solid_model = false;
+  puzzleGrid.columns = 4;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 80);
+  assert.equal(maximumCleatWidth(puzzleGrid), 76);
+
+  puzzleGrid.wall_mount.target = "tray";
+  puzzleGrid.tray.segment_columns = 1;
+  puzzleGrid.tray.segment_rows = 2;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  puzzleGrid.tray.segment_columns = 2;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 160);
 });
 
 test("coalesces explicit null sample counts to the client defaults", () => {

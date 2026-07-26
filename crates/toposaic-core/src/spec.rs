@@ -195,7 +195,11 @@ impl GenerationSpec {
         self.tray.validate()?;
         self.puzzle_retention
             .validate(self.base_mm, self.tray.enabled)?;
-        self.wall_mount.validate(self.base_mm, self.tray.floor_mm)?;
+        self.wall_mount.validate(
+            self.base_mm,
+            self.tray.floor_mm,
+            self.wall_mount_target_size()[0],
+        )?;
         if self.wall_mount.cuts_tray() && !self.tray.enabled {
             bail!("tray wall mounting needs an enabled tray");
         }
@@ -308,6 +312,41 @@ impl GenerationSpec {
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+
+    pub(crate) fn wall_mount_target_size(&self) -> [f32; 2] {
+        if self.wall_mount.target == WallMountTarget::Terrain {
+            return if self.solid_model {
+                [self.width_mm, self.height_mm()]
+            } else {
+                [
+                    self.width_mm / self.columns as f32,
+                    self.height_mm() / self.rows as f32,
+                ]
+            };
+        }
+
+        let extra = (self.tray.clearance_mm + self.tray.rim_width_mm) * 2.0;
+        let tile_size = [self.width_mm + extra, self.height_mm() + extra];
+        if self.adjacent_columns > 1 || self.adjacent_rows > 1 {
+            if self.tray.individual_tiles {
+                tile_size
+            } else if self.tray.segment_columns > 1 || self.tray.segment_rows > 1 {
+                [
+                    self.width_mm / self.tray.segment_columns as f32,
+                    self.height_mm() / self.tray.segment_rows as f32,
+                ]
+            } else {
+                [self.width_mm, self.height_mm()]
+            }
+        } else if self.tray.segment_columns > 1 || self.tray.segment_rows > 1 {
+            [
+                self.width_mm / self.tray.segment_columns as f32,
+                self.height_mm() / self.tray.segment_rows as f32,
+            ]
+        } else {
+            tile_size
+        }
     }
 
     pub fn effective_samples_per_piece(&self) -> u32 {
@@ -788,7 +827,7 @@ impl WallMountSpec {
         self.style != WallMountStyle::None && self.target == WallMountTarget::Tray
     }
 
-    fn validate(&self, base_mm: f32, tray_floor_mm: f32) -> Result<()> {
+    fn validate(&self, base_mm: f32, tray_floor_mm: f32, target_width_mm: f32) -> Result<()> {
         if self.style == WallMountStyle::None {
             return Ok(());
         }
@@ -804,8 +843,14 @@ impl WallMountSpec {
         if !(12.0..=100.0).contains(&self.pin_spacing_mm) {
             bail!("wall-mount pin spacing must be between 12 and 100 mm");
         }
-        if !(8.0..=100.0).contains(&self.cleat_width_mm) {
-            bail!("wall-mount cleat width must be between 8 and 100 mm");
+        if !(8.0..=400.0).contains(&self.cleat_width_mm) {
+            bail!("wall-mount cleat width must be between 8 and 400 mm");
+        }
+        if self.style == WallMountStyle::FrenchCleat && self.cleat_width_mm > target_width_mm - 4.0
+        {
+            bail!(
+                "wall-mount cleat must leave at least 2 mm on each side of its piece, solid, or tray section"
+            );
         }
         if !(0.1..=0.8).contains(&self.fit_clearance_mm)
             || self.fit_clearance_mm >= self.pin_diameter_mm - 0.8
@@ -1775,6 +1820,34 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("leave at least 0.4 mm")
+        );
+    }
+
+    #[test]
+    fn french_cleats_can_span_large_targets_but_keep_side_walls() {
+        let mut spec = GenerationSpec {
+            width_mm: 320.0,
+            solid_model: true,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                cleat_width_mm: 300.0,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.solid_model = false;
+        spec.rows = 4;
+        spec.columns = 16;
+        spec.wall_mount.cleat_width_mm = 16.0;
+        assert!(spec.validate().is_ok());
+        spec.wall_mount.cleat_width_mm = 16.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("2 mm on each side")
         );
     }
 

@@ -295,7 +295,11 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
                 .take(y_coordinates.len().saturating_sub(2))
                 .map(|y| [0.0, *y]),
         );
-        mesh.append_isolated(mount_bottom(&bottom_outline, &spec.wall_mount)?);
+        mesh.append_isolated(mount_bottom(
+            &bottom_outline,
+            &spec.wall_mount,
+            [0.0, 0.0, outer_width, outer_height],
+        )?);
     } else {
         let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
         let mut boundary = Vec::new();
@@ -448,7 +452,19 @@ fn build_tray_segment(
             .chain(&rim_polygons)
             .cloned()
             .collect::<Vec<_>>();
-        mesh.append_isolated(mount_bottom_polygons(&bottom_polygons, &spec.wall_mount)?);
+        let [terrain_x0, terrain_y0, terrain_x1, terrain_y1] = segment_grid.terrain_bounds;
+        let mount_frame = [
+            terrain_x0 + (terrain_x1 - terrain_x0) * column as f32 / tray.segment_columns as f32,
+            terrain_y0 + (terrain_y1 - terrain_y0) * row as f32 / tray.segment_rows as f32,
+            terrain_x0
+                + (terrain_x1 - terrain_x0) * (column + 1) as f32 / tray.segment_columns as f32,
+            terrain_y0 + (terrain_y1 - terrain_y0) * (row + 1) as f32 / tray.segment_rows as f32,
+        ];
+        mesh.append_isolated(mount_bottom_polygons(
+            &bottom_polygons,
+            &spec.wall_mount,
+            mount_frame,
+        )?);
     } else {
         add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
         add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;

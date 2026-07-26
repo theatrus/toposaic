@@ -424,7 +424,11 @@ pub(crate) fn build_piece_with_height_range(
         quantization_collisions: Vec::new(),
     };
     if mounted_back {
-        mesh.append_isolated(mount_bottom(&outline, &spec.wall_mount)?);
+        mesh.append_isolated(mount_bottom(
+            &outline,
+            &spec.wall_mount,
+            [0.0, 0.0, piece_width, piece_height],
+        )?);
     } else if retained_back {
         mesh.append_isolated(retention_bottom(
             &outline,

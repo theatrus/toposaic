@@ -1,7 +1,11 @@
 import { useEffect } from "react";
 
 import type { GenerationSpec } from "../contracts";
-import { maximumMountDepth, wallHardwareQuantity } from "../mounting";
+import {
+  maximumCleatWidth,
+  maximumMountDepth,
+  wallHardwareQuantity,
+} from "../mounting";
 import type { UpdateWallMount } from "./mounting-types";
 import { RangeField } from "./range-field";
 
@@ -14,6 +18,7 @@ export function WallMountControls({
 }) {
   const mountEnabled = spec.wall_mount.style !== "none";
   const maximumDepth = maximumMountDepth(spec);
+  const maximumWidth = maximumCleatWidth(spec);
   const hardwareQuantity = wallHardwareQuantity(spec);
 
   useEffect(() => {
@@ -24,6 +29,20 @@ export function WallMountControls({
     maximumDepth,
     mountEnabled,
     spec.wall_mount.depth_mm,
+    updateWallMount,
+  ]);
+
+  useEffect(() => {
+    if (
+      spec.wall_mount.style === "french_cleat" &&
+      spec.wall_mount.cleat_width_mm > maximumWidth
+    ) {
+      updateWallMount("cleat_width_mm", maximumWidth);
+    }
+  }, [
+    maximumWidth,
+    spec.wall_mount.cleat_width_mm,
+    spec.wall_mount.style,
     updateWallMount,
   ]);
 
@@ -80,7 +99,11 @@ export function WallMountControls({
             )}
           </label>
           <RangeField
-            label="Mount cut depth"
+            label={
+              spec.wall_mount.style === "french_cleat"
+                ? "Receiver pocket depth"
+                : "Mount cut depth"
+            }
             value={spec.wall_mount.depth_mm}
             unit=" mm"
             min={0.4}
@@ -103,7 +126,7 @@ export function WallMountControls({
               value={spec.wall_mount.cleat_width_mm}
               unit=" mm"
               min={8}
-              max={100}
+              max={maximumWidth}
               step={1}
               onChange={(value) => updateWallMount("cleat_width_mm", value)}
             />
@@ -161,7 +184,7 @@ export function WallMountControls({
                 onChange={(value) => updateWallMount("fit_clearance_mm", value)}
               />
               <RangeField
-                label="Wall spacer depth"
+                label="Wall stand-off"
                 value={spec.wall_mount.spacer_depth_mm}
                 unit=" mm"
                 min={1.2}
@@ -183,11 +206,13 @@ export function WallMountControls({
             </>
           )}
           <p className="color-note">
-            Each chosen output gets its own mount. Angled pin sockets and
-            cleat receivers rise toward the map north edge. The cut keeps
-            at least 0.4 mm below the terrain or tray face.
+            Each chosen output gets its own mount. The French cleat uses a
+            flush back pocket with a lower entry box, then slides toward the
+            map north edge to lock. Pocket depth sets its grip; wall stand-off
+            leaves room for an uneven wall. The cut keeps at least 0.4 mm below
+            the terrain or display-base face.
             {spec.wall_mount.export_hardware &&
-              ` Print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} of the wall-side hardware.`}
+              ` Print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} of the wall-side hardware.${spec.wall_mount.style === "french_cleat" ? ` The job also includes a flat alignment spacer; print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} and place their outer edges together to set the cleat grid.` : ""}`}
           </p>
         </>
       )}
