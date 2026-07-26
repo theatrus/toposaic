@@ -85,6 +85,24 @@ export type GenerationSpec = {
   trails: TrailRoute[];
 };
 
+export type CacheCategoryKey = "elevation" | "world_cover" | "osm" | "places";
+
+export type CacheCategory = {
+  key: CacheCategoryKey;
+  bytes: number;
+  entries: number;
+};
+
+export type CacheStats = {
+  total_bytes: number;
+  categories: CacheCategory[];
+};
+
+export type CacheClearResult = {
+  removed_bytes: number;
+  removed_entries: number;
+};
+
 export type SavedSetup = {
   id: string;
   name: string;

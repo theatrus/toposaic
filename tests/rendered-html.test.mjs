@@ -124,6 +124,17 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Saved setups/);
   assert.match(html, /aria-haspopup="menu"/);
   assert.match(html, /aria-label="Import setups file"/);
+  // The settings gear renders on the server; its pane stays closed, so no
+  // cache contents appear until it opens in the browser.
+  assert.match(html, /aria-label="Settings"/);
+  assert.match(html, /class="settings-button"/);
+  assert.doesNotMatch(html, /Map data cache/);
+  // The map advertises its keyboard panning and can take focus.
+  assert.match(
+    html,
+    /aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"/,
+  );
+  assert.match(html, /Arrow keys pan/);
   assert.doesNotMatch(html, /Local engine/);
   assert.doesNotMatch(html, /None saved yet/);
   assert.match(html, /Resize map and preview panes/);

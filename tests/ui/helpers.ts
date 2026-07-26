@@ -18,14 +18,34 @@ export type StoredSetup = {
   spec: Record<string, unknown>;
 };
 
+export type StoredCacheCategory = {
+  key: "elevation" | "world_cover" | "osm" | "places";
+  bytes: number;
+  entries: number;
+};
+
+// 50 MB + 10 MB + 1 MB + 2 KB = 63,965,184 bytes in total.
+export const defaultCacheCategories: StoredCacheCategory[] = [
+  { key: "elevation", bytes: 52_428_800, entries: 120 },
+  { key: "world_cover", bytes: 10_485_760, entries: 8 },
+  { key: "osm", bytes: 1_048_576, entries: 30 },
+  { key: "places", bytes: 2_048, entries: 5 },
+];
+
 // Serve a fake /api/setups store on both the web (8787) and desktop (38787)
 // API ports, plus quiet /api/preview and /api/jobs endpoints so the studio
-// settles and can finish a generation.
+// settles and can finish a generation, and a /api/cache pair for the
+// settings pane. Clearing by age drops the OSM category; clearing all
+// empties every category.
 export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
   const state = {
     setups,
     saved: [] as Array<{ name: string; spec: Record<string, unknown> }>,
     renamed: [] as Array<{ id: string; name: string }>,
+    cacheCategories: defaultCacheCategories.map((category) => ({
+      ...category,
+    })),
+    cleared: [] as Array<number | null>,
   };
   let nextId = setups.length + 1;
   let jobSpec: Record<string, unknown> = {};
@@ -71,6 +91,42 @@ export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
       });
       return;
     }
+    if (url.pathname === "/api/cache" && request.method() === "GET") {
+      await route.fulfill({
+        json: {
+          total_bytes: state.cacheCategories.reduce(
+            (sum, category) => sum + category.bytes,
+            0,
+          ),
+          categories: state.cacheCategories,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/cache/clear" && request.method() === "POST") {
+      const body = request.postDataJSON() as {
+        older_than_days: number | null;
+      };
+      state.cleared.push(body.older_than_days);
+      const removable =
+        body.older_than_days === null
+          ? state.cacheCategories
+          : state.cacheCategories.filter((category) => category.key === "osm");
+      const removed_bytes = removable.reduce(
+        (sum, category) => sum + category.bytes,
+        0,
+      );
+      const removed_entries = removable.reduce(
+        (sum, category) => sum + category.entries,
+        0,
+      );
+      for (const category of removable) {
+        category.bytes = 0;
+        category.entries = 0;
+      }
+      await route.fulfill({ json: { removed_bytes, removed_entries } });
+      return;
+    }
     if (url.pathname === "/api/setups" && request.method() === "GET") {
       await route.fulfill({ json: state.setups });
       return;
@@ -83,6 +139,9 @@ export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
       state.saved.push(body);
       const now = new Date().toISOString();
       let setup = state.setups.find((entry) => entry.name === body.name);
+      // The real service answers 201 for a new setup and 200 for an
+      // overwrite; the studio words its status line off the difference.
+      let status = 200;
       if (setup) {
         setup.spec = body.spec;
         setup.updated_at = now;
@@ -95,8 +154,9 @@ export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
           spec: body.spec,
         };
         state.setups = [setup, ...state.setups];
+        status = 201;
       }
-      await route.fulfill({ json: setup });
+      await route.fulfill({ json: setup, status });
       return;
     }
     const setupMatch = url.pathname.match(/^\/api\/setups\/([^/]+)$/);

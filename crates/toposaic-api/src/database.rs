@@ -125,15 +125,21 @@ pub fn recent_jobs(state: &AppState, limit: usize) -> Result<Vec<Job>> {
 /// replaces its spec and bumps `updated_at` in one atomic statement, keeping
 /// the existing row's id and `created_at`. The single `INSERT ... ON
 /// CONFLICT` cannot lose a check-then-write race the way a separate
-/// find-by-name followed by an insert can. Returns the stored row.
-pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<SavedSetup> {
+/// find-by-name followed by an insert can. Returns the stored row straight
+/// from `RETURNING`, plus whether this call created it: the row carries the
+/// caller's freshly minted id only when the insert arm won, so the flag is
+/// as race-free as the upsert itself.
+pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<(SavedSetup, bool)> {
     let connection = connection(state)?;
-    connection.execute(
+    let mut statement = connection.prepare(
         "INSERT INTO saved_setups (id, name, created_at, updated_at, spec_json)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(name) DO UPDATE SET
              spec_json = excluded.spec_json,
-             updated_at = excluded.updated_at",
+             updated_at = excluded.updated_at
+         RETURNING id, name, created_at, updated_at, spec_json",
+    )?;
+    let stored = statement.query_row(
         params![
             setup.id,
             setup.name,
@@ -141,16 +147,10 @@ pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<SavedS
             setup.updated_at.to_rfc3339(),
             serde_json::to_string(&setup.spec)?,
         ],
+        row_to_saved_setup,
     )?;
-    let mut statement = connection.prepare(
-        "SELECT id, name, created_at, updated_at, spec_json
-         FROM saved_setups WHERE name = ?1",
-    )?;
-    let mut rows = statement.query([&setup.name])?;
-    rows.next()?
-        .map(row_to_saved_setup)
-        .transpose()?
-        .ok_or_else(|| anyhow!("upserted setup disappeared"))
+    let created = stored.id == setup.id;
+    Ok((stored, created))
 }
 
 /// Outcome of a rename attempt, so the handler can map a lost name race to
@@ -343,14 +343,16 @@ mod tests {
     #[test]
     fn upsert_keeps_the_winning_row_when_a_name_race_is_lost() {
         let state = test_state();
-        let winner = upsert_saved_setup(&state, &setup("Alps")).unwrap();
+        let (winner, created) = upsert_saved_setup(&state, &setup("Alps")).unwrap();
+        assert!(created);
 
         // A racing save built its own row for the same name before the
         // winner landed; the atomic upsert must fold it into the winner's
         // row instead of failing on the UNIQUE index.
         let mut loser = setup("Alps");
         loser.spec.ground_span_km = 30.0;
-        let stored = upsert_saved_setup(&state, &loser).unwrap();
+        let (stored, created) = upsert_saved_setup(&state, &loser).unwrap();
+        assert!(!created, "an overwrite is not a create");
 
         assert_eq!(stored.id, winner.id);
         assert_eq!(stored.created_at, winner.created_at);
@@ -362,8 +364,8 @@ mod tests {
     #[test]
     fn rename_reports_a_lost_name_race_instead_of_erroring() {
         let state = test_state();
-        let first = upsert_saved_setup(&state, &setup("Alps")).unwrap();
-        let second = upsert_saved_setup(&state, &setup("Rockies")).unwrap();
+        let (first, _) = upsert_saved_setup(&state, &setup("Alps")).unwrap();
+        let (second, _) = upsert_saved_setup(&state, &setup("Rockies")).unwrap();
 
         // The UNIQUE violation a lost race raises maps to NameTaken.
         assert!(matches!(

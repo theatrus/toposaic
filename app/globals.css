@@ -81,7 +81,8 @@ a {
   position: relative;
 }
 
-.setup-menu-button {
+.setup-menu-button,
+.settings-button {
   align-items: center;
   background: transparent;
   border: 1px solid var(--line);
@@ -97,7 +98,8 @@ a {
   white-space: nowrap;
 }
 
-.setup-menu-button[aria-expanded="true"] {
+.setup-menu-button[aria-expanded="true"],
+.settings-button[aria-expanded="true"] {
   background: var(--panel);
 }
 
@@ -279,6 +281,7 @@ a {
 }
 
 .setup-menu-button:focus-visible,
+.settings-button:focus-visible,
 .setup-row-input:focus-visible,
 .setup-menu-name-row input:focus-visible,
 .setup-menu-name-row button:focus-visible {
@@ -293,6 +296,144 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-menu {
+  position: relative;
+}
+
+.settings-button {
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.settings-pane {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  display: grid;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: min(320px, calc(100vw - 28px));
+  z-index: 30;
+}
+
+.settings-cache {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-cache h2 {
+  color: var(--moss);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.settings-cache-rows {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-cache-rows li {
+  display: flex;
+  font-size: 11px;
+  justify-content: space-between;
+  letter-spacing: 0.01em;
+}
+
+.settings-cache-rows li small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.settings-cache-total {
+  border-top: 1px solid var(--line);
+  font-weight: 760;
+  padding-top: 4px;
+}
+
+.settings-clear-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.settings-clear-row label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex: 1;
+  font-size: 9px;
+  gap: 5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-clear-row select {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 4px;
+  text-transform: none;
+}
+
+.settings-clear-row button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  padding: 6px 5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.settings-clear-row button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.65;
+}
+
+.settings-clear-row button.confirm-delete {
+  color: #8f493b;
+}
+
+.settings-clear-row select:focus-visible,
+.settings-clear-row button:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+
+.settings-status {
+  color: var(--moss);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  min-height: 12px;
+}
+
+.settings-note {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.settings-error {
+  color: #8f493b;
 }
 
 .topbar-generate {
@@ -575,6 +716,13 @@ a {
   cursor: grabbing;
 }
 
+/* Matches the 3D preview's focus treatment so keyboard panning reads the
+   same across the visual column. */
+.map-canvas:focus-visible {
+  outline: 3px solid var(--acid);
+  outline-offset: -5px;
+}
+
 .map-tiles {
   inset: 0;
   position: absolute;
@@ -674,6 +822,14 @@ a {
   position: absolute;
   text-transform: uppercase;
   z-index: 4;
+}
+
+.map-instruction small {
+  color: rgba(255, 254, 248, 0.72);
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  margin-top: 3px;
 }
 
 .map-zoom {

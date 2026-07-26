@@ -44,6 +44,13 @@ list, Save current setup stores the model under a typed name (an existing name
 is overwritten), Export writes every setup to a `toposaic-setups.json` file,
 and Import reads such a file back, so setups can move between machines.
 
+Next to it, a gear button opens the settings pane. It shows the map data
+cache — elevation tiles, land cover, OpenStreetMap, and place search — with
+each category's size and entry count plus the total. Clearing is always
+manual: pick an age and clear older entries, or clear everything after a
+confirm click. Nothing expires on its own, and the next generation
+re-downloads what it needs.
+
 ![TopoSaic model controls showing boxed map coordinates and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
 *Set the map center beside the full super-tile controls. Move by one tile or

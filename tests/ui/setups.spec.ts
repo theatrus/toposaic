@@ -83,7 +83,8 @@ test("saves the current spec under a typed name and overwrites it", async ({
   expect(state.saved[0].spec.ground_span_km).toBe(18);
 
   // With the fresh save recalled, the name row prefills it and saving
-  // under the same name overwrites.
+  // under the same name overwrites. The status line says so: the service
+  // answers 200 for an overwrite instead of the fresh save's 201.
   await trigger.click();
   await expect(
     menu.getByRole("menuitem", { name: "My ridge", exact: true }),
@@ -91,6 +92,7 @@ test("saves the current spec under a typed name and overwrites it", async ({
   await menu.getByRole("menuitem", { name: "Save current setup" }).click();
   await expect(setupName).toHaveValue("My ridge");
   await setupName.press("Enter");
+  await expect(page.getByText(/Replaced .My ridge/)).toBeVisible();
   await expect(menu).toBeHidden();
   await expect.poll(() => state.saved.length).toBe(2);
   expect(state.saved[1].name).toBe("My ridge");

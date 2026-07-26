@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -17,6 +18,9 @@ const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
 const MIN_MAP_ZOOM = 2;
 const MAX_MAP_ZOOM = 17;
+// Arrow keys pan the focused map by a share of the current ground span.
+const KEYBOARD_PAN_SHARE = 0.1;
+const KEYBOARD_PAN_SHARE_SHIFT = 0.5;
 function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
   const clampedLatitude = Math.max(
@@ -285,6 +289,33 @@ export function TerrainMap({
     onCenterChange(next.longitude, next.latitude);
   };
 
+  const keyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Only the map surface itself pans; keys aimed at inner controls
+    // (like the zoom buttons) keep their own behavior.
+    if (event.target !== event.currentTarget) return;
+    let east = 0;
+    let north = 0;
+    if (event.key === "ArrowLeft") east = -1;
+    else if (event.key === "ArrowRight") east = 1;
+    else if (event.key === "ArrowUp") north = 1;
+    else if (event.key === "ArrowDown") north = -1;
+    else return;
+    // preventDefault only for handled keys, so Tab and the rest still work
+    // and the page never scrolls under an arrow press.
+    event.preventDefault();
+    const share = event.shiftKey
+      ? KEYBOARD_PAN_SHARE_SHIFT
+      : KEYBOARD_PAN_SHARE;
+    const panPixels = (spec.ground_span_km * 1000 * share) / metresPerPixel;
+    // moveToWorld runs the same unproject as drags, so latitude clamps to
+    // the Mercator range and longitude wraps at the antimeridian.
+    const next = moveToWorld(
+      anchorWorld.x + east * panPixels,
+      anchorWorld.y - north * panPixels,
+    );
+    onCenterChange(next.longitude, next.latitude);
+  };
+
   const changeZoom = useCallback(
     (delta: number) => {
       const nextZoom = Math.max(
@@ -330,7 +361,9 @@ export function TerrainMap({
       <div
         ref={containerRef}
         className="map-canvas"
-        aria-label="Terrain map. Drag to choose a place."
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+        aria-label="Terrain map. Drag to choose a place, or focus the map and pan with the arrow keys."
+        onKeyDown={keyDown}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
         onPointerUp={pointerUp}
@@ -338,6 +371,8 @@ export function TerrainMap({
           dragRef.current = null;
         }}
         role="application"
+        tabIndex={0}
+        title="Arrow keys pan the focused map · Shift for bigger steps"
       >
         <div className="map-tiles" aria-hidden="true">
           {tiles.map((tile) => (
@@ -449,11 +484,16 @@ export function TerrainMap({
         <span />
       </div>
       <div className="map-instruction">
-        {tilesLoaded
-          ? superTileActive
-            ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
-            : "Drag the map to choose a place"
-          : "Loading map tiles…"}
+        {tilesLoaded ? (
+          <>
+            {superTileActive
+              ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
+              : "Drag the map to choose a place"}
+            <small>Arrow keys pan · Shift for bigger steps</small>
+          </>
+        ) : (
+          "Loading map tiles…"
+        )}
       </div>
       <a
         className="map-attribution"

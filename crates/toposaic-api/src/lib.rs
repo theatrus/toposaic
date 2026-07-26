@@ -98,6 +98,8 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/cache", get(cache::cache_summary))
+        .route("/api/cache/clear", axum::routing::post(cache::clear_cache))
         .route("/api/places", get(search_places))
         .route("/api/preview", axum::routing::post(jobs::create_preview))
         .route("/api/jobs", get(jobs::list_jobs).post(jobs::create_job))
