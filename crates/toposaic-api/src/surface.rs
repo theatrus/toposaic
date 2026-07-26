@@ -368,6 +368,23 @@ fn append_source(source: &mut String, addition: impl AsRef<str>) {
     source.push_str(addition.as_ref());
 }
 
+/// Maps one latitude/longitude pair into the model's normalized UV square,
+/// unwrapping the longitude around the date line first. Every overlay —
+/// OpenStreetMap ways and imported trails alike — must share this mapping so
+/// their features land on the same spot of the model.
+fn normalized_map_point(
+    latitude: f64,
+    longitude: f64,
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+) -> [f32; 2] {
+    let longitude = unwrap_longitude(longitude, spec.center_lon);
+    [
+        ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
+        ((latitude - bounds.south) / (bounds.north - bounds.south)) as f32,
+    ]
+}
+
 fn normalized_osm_points(
     way: &OverpassWay,
     spec: &GenerationSpec,
@@ -375,13 +392,7 @@ fn normalized_osm_points(
 ) -> Vec<[f32; 2]> {
     way.geometry
         .iter()
-        .map(|point| {
-            let longitude = unwrap_longitude(point.lon, spec.center_lon);
-            [
-                ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
-                ((point.lat - bounds.south) / (bounds.north - bounds.south)) as f32,
-            ]
-        })
+        .map(|point| normalized_map_point(point.lat, point.lon, spec, bounds))
         .collect()
 }
 
@@ -607,6 +618,10 @@ fn road_cache_prefix(detail: ResolvedRoadDetail) -> &'static str {
     }
 }
 
+// The per-segment length sums here and in `waterway_printed_area` look
+// alike but stay separate on purpose: each applies its own width factor and
+// serves a different rule (waterways budget printed area against a coverage
+// percentage; routes derive one global thinning scale).
 fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 {
     let printed_length = features
         .iter()
@@ -629,11 +644,19 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
     (0.06 / estimated_coverage.max(0.06)).clamp(0.35, 1.0)
 }
 
-/// How far outside the model square a trail keeps painting, in normalized
-/// map units. The margin only has to cover half the widest trail line
-/// (5 mm on a 60 mm print is 0.042), so clipped ends never show a gap at
-/// the model border.
-const TRAIL_CLIP_MARGIN: f32 = 0.05;
+/// How far outside the model square a trail keeps painting, per axis, in
+/// normalized map units. Each margin only has to cover half the trail
+/// line's width on that axis, so clipped ends never show a gap at the model
+/// border. The axes differ on non-square models: the same millimetres are a
+/// larger normalized margin along the shorter side, so a fixed constant
+/// sized for the width under-covers the v axis of a short, wide model.
+fn trail_clip_margins(spec: &GenerationSpec) -> [f32; 2] {
+    let half_line_mm = spec.color_output.trail_width_mm * 0.5;
+    [
+        half_line_mm / spec.width_mm.max(f32::EPSILON),
+        half_line_mm / spec.height_mm().max(f32::EPSILON),
+    ]
+}
 
 /// Paints the spec's imported trails as Trail-class vector polylines, using
 /// the same lat/lon-to-UV normalization as OpenStreetMap routes. Each trail
@@ -647,20 +670,15 @@ fn paint_imported_trails(
     field: &mut SurfaceField,
 ) -> usize {
     let mut painted = 0;
+    let margins = trail_clip_margins(spec);
     for trail in &spec.trails {
         let normalized = trail
             .points
             .iter()
-            .map(|point| {
-                let longitude = unwrap_longitude(point[1], spec.center_lon);
-                [
-                    ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
-                    ((point[0] - bounds.south) / (bounds.north - bounds.south)) as f32,
-                ]
-            })
+            .map(|point| normalized_map_point(point[0], point[1], spec, bounds))
             .collect::<Vec<_>>();
         let mut on_model = false;
-        for chain in clip_polyline_to_unit_box(&normalized, TRAIL_CLIP_MARGIN) {
+        for chain in clip_polyline_to_unit_box(&normalized, margins) {
             if chain.len() >= 2 {
                 field.paint_polyline(
                     &chain,
@@ -678,13 +696,13 @@ fn paint_imported_trails(
     painted
 }
 
-/// Clips a polyline to the unit square expanded by `margin`, splitting it
-/// into the chains that cross the box. Segments are clipped by
+/// Clips a polyline to the unit square expanded by the per-axis `margins`,
+/// splitting it into the chains that cross the box. Segments are clipped by
 /// Liang-Barsky; consecutive surviving segments whose endpoints meet stay
 /// in one chain, and every exit from the box starts a new one.
-fn clip_polyline_to_unit_box(points: &[[f32; 2]], margin: f32) -> Vec<Vec<[f32; 2]>> {
-    let low = -margin;
-    let high = 1.0 + margin;
+fn clip_polyline_to_unit_box(points: &[[f32; 2]], margins: [f32; 2]) -> Vec<Vec<[f32; 2]>> {
+    let low = [-margins[0], -margins[1]];
+    let high = [1.0 + margins[0], 1.0 + margins[1]];
     let mut chains = Vec::new();
     let mut current: Vec<[f32; 2]> = Vec::new();
     let mut flush = |chain: &mut Vec<[f32; 2]>| {
@@ -719,17 +737,17 @@ fn clip_polyline_to_unit_box(points: &[[f32; 2]], margin: f32) -> Vec<Vec<[f32; 
 fn clip_segment_to_box(
     start: [f32; 2],
     end: [f32; 2],
-    low: f32,
-    high: f32,
+    low: [f32; 2],
+    high: [f32; 2],
 ) -> Option<([f32; 2], [f32; 2])> {
     let delta = [end[0] - start[0], end[1] - start[1]];
     let mut enter = 0.0_f32;
     let mut exit = 1.0_f32;
     for (direction, distance) in [
-        (-delta[0], start[0] - low),
-        (delta[0], high - start[0]),
-        (-delta[1], start[1] - low),
-        (delta[1], high - start[1]),
+        (-delta[0], start[0] - low[0]),
+        (delta[0], high[0] - start[0]),
+        (-delta[1], start[1] - low[1]),
+        (delta[1], high[1] - start[1]),
     ] {
         if direction == 0.0 {
             if distance < 0.0 {
@@ -826,9 +844,12 @@ fn fetch_osm_response(
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
         return Ok(response);
     }
+    // A panic while holding the lock poisons it, but the lock only guards
+    // request pacing; recovering the guard costs nothing, while treating the
+    // poison as fatal would disable OSM overlays for the process's lifetime.
     let _request_guard = OVERPASS_REQUEST_LOCK
         .lock()
-        .map_err(|_| anyhow::anyhow!("OpenStreetMap request lock was poisoned"))?;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
         return Ok(response);
     }
@@ -1263,6 +1284,38 @@ fn open_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<GeoTiffFil
     Ok(geotiff)
 }
 
+/// Picks the raster level for a sampling read: the largest overview whose
+/// scaled read window stays within twice the target sample grid, or — when
+/// even the smallest overview reads more than that — the smallest overview,
+/// since any overview is a cheaper read than the full-resolution base image
+/// (a whole WorldCover tile is 36000 by 36000 pixels). `None`, meaning the
+/// base image, only when the file carries no readable overview at all.
+/// Entries are `(overview index, width, height)`.
+fn select_sampling_overview(
+    overviews: &[(usize, u32, u32)],
+    base: (u32, u32),
+    base_window: (usize, usize),
+    target: (usize, usize),
+) -> Option<(usize, u32, u32)> {
+    let pixels = |width: u32, height: u32| u64::from(width) * u64::from(height);
+    overviews
+        .iter()
+        .filter(|(_, width, height)| {
+            let scale_x = f64::from(*width) / f64::from(base.0);
+            let scale_y = f64::from(*height) / f64::from(base.1);
+            let window_width = (base_window.0 as f64 * scale_x).ceil() as usize;
+            let window_height = (base_window.1 as f64 * scale_y).ceil() as usize;
+            window_width <= target.0 * 2 && window_height <= target.1 * 2
+        })
+        .max_by_key(|(_, width, height)| pixels(*width, *height))
+        .or_else(|| {
+            overviews
+                .iter()
+                .min_by_key(|(_, width, height)| pixels(*width, *height))
+        })
+        .copied()
+}
+
 fn sample_tile(
     tile_name: &str,
     points: &[SamplePoint],
@@ -1303,18 +1356,18 @@ fn sample_tile(
         .unwrap_or(base_row_min);
     let base_window_width = base_col_max.saturating_sub(base_col_min) + 1;
     let base_window_height = base_row_max.saturating_sub(base_row_min) + 1;
-    let overview =
-        (0..geotiff.overview_count())
-            .filter_map(|index| {
-                let ifd = geotiff.overview_ifd(index).ok()?;
-                let scale_x = ifd.width() as f64 / geotiff.width() as f64;
-                let scale_y = ifd.height() as f64 / geotiff.height() as f64;
-                let window_width = (base_window_width as f64 * scale_x).ceil() as usize;
-                let window_height = (base_window_height as f64 * scale_y).ceil() as usize;
-                (window_width <= target_width * 2 && window_height <= target_height * 2)
-                    .then_some((index, ifd.width(), ifd.height()))
-            })
-            .max_by_key(|(_, width, height)| u64::from(*width) * u64::from(*height));
+    let overviews = (0..geotiff.overview_count())
+        .filter_map(|index| {
+            let ifd = geotiff.overview_ifd(index).ok()?;
+            Some((index, ifd.width(), ifd.height()))
+        })
+        .collect::<Vec<_>>();
+    let overview = select_sampling_overview(
+        &overviews,
+        (geotiff.width(), geotiff.height()),
+        (base_window_width, base_window_height),
+        (target_width, target_height),
+    );
     let (raster_width, raster_height) = overview
         .map(|(_, width, height)| (width, height))
         .unwrap_or((geotiff.width(), geotiff.height()));
@@ -1710,7 +1763,7 @@ mod tests {
                 [0.6, 0.5],
                 [2.0, 0.5],
             ],
-            0.0,
+            [0.0, 0.0],
         );
         assert_eq!(chains.len(), 2);
         assert_eq!(chains[0].first(), Some(&[0.0, 0.5]));
@@ -1718,7 +1771,68 @@ mod tests {
         assert_eq!(chains[1].first(), Some(&[0.6, 1.0]));
         assert_eq!(chains[1].last(), Some(&[1.0, 0.5]));
         // A polyline that never touches the box produces nothing.
-        assert!(clip_polyline_to_unit_box(&[[-2.0, -2.0], [-1.5, -2.0]], 0.0).is_empty());
+        assert!(clip_polyline_to_unit_box(&[[-2.0, -2.0], [-1.5, -2.0]], [0.0, 0.0]).is_empty());
+    }
+
+    #[test]
+    fn trail_clip_margins_cover_half_the_line_width_on_each_axis() {
+        // A short, wide model: 100 mm across but only 50 mm tall. The same
+        // 5 mm line needs twice the normalized margin along v.
+        let mut spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 2,
+            columns: 4,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.trail_width_mm = 5.0;
+        assert_eq!(spec.height_mm(), 50.0);
+        let margins = trail_clip_margins(&spec);
+        assert!((margins[0] - 0.025).abs() < 1e-6);
+        assert!((margins[1] - 0.05).abs() < 1e-6);
+
+        // The clip box honours each axis's own margin: a vertical chain may
+        // run past the v margin but a horizontal one is cut at the u margin.
+        let close = |point: &[f32; 2], expected: [f32; 2]| {
+            (point[0] - expected[0]).abs() < 1e-5 && (point[1] - expected[1]).abs() < 1e-5
+        };
+        let chains = clip_polyline_to_unit_box(&[[0.5, -1.0], [0.5, 2.0]], margins);
+        assert_eq!(chains.len(), 1);
+        assert!(close(chains[0].first().unwrap(), [0.5, -0.05]));
+        assert!(close(chains[0].last().unwrap(), [0.5, 1.05]));
+        let chains = clip_polyline_to_unit_box(&[[-1.0, 0.5], [2.0, 0.5]], margins);
+        assert!(close(chains[0].first().unwrap(), [-0.025, 0.5]));
+        assert!(close(chains[0].last().unwrap(), [1.025, 0.5]));
+    }
+
+    #[test]
+    fn overview_selection_never_falls_back_to_the_full_resolution_base() {
+        // WorldCover-like pyramid: base 36000^2 with 2x overviews.
+        let overviews = [
+            (0_usize, 18_000_u32, 18_000_u32),
+            (1, 9_000, 9_000),
+            (2, 4_500, 4_500),
+            (3, 2_250, 2_250),
+        ];
+        let base = (36_000, 36_000);
+
+        // A window that fits several overviews takes the largest fitting
+        // one: 1000 base pixels scale to 250 at level 1 (within 2 * 129)
+        // but to 500 at level 0.
+        assert_eq!(
+            select_sampling_overview(&overviews, base, (1_000, 1_000), (129, 129)),
+            Some((1, 9_000, 9_000))
+        );
+        // A huge window (a wide ground span) fits no overview at twice the
+        // target; the smallest overview still beats reading the base image.
+        assert_eq!(
+            select_sampling_overview(&overviews, base, (30_000, 30_000), (129, 129)),
+            Some((3, 2_250, 2_250))
+        );
+        // Only a file with no overviews at all reads the base image.
+        assert_eq!(
+            select_sampling_overview(&[], base, (1_000, 1_000), (129, 129)),
+            None
+        );
     }
 
     #[test]
