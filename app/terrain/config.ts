@@ -178,12 +178,20 @@ export function overlaySamplesPerPiece(spec: GenerationSpec) {
   );
 }
 
+// Mirrors uses_color_materials in crates/toposaic-core/src/spec.rs: the
+// backend raises sampling to the overlay grid whenever color output,
+// buildings, or imported trails are in play — trails alone count too.
+function usesColorMaterials(spec: GenerationSpec) {
+  return (
+    spec.color_output.enabled ||
+    spec.buildings.enabled ||
+    spec.trails.length > 0
+  );
+}
+
 export function effectiveMeshSamples(spec: GenerationSpec) {
   const terrain = terrainSamplesPerPiece(spec);
-  const overlay =
-    spec.color_output.enabled || spec.buildings.enabled
-      ? overlaySamplesPerPiece(spec)
-      : 0;
+  const overlay = usesColorMaterials(spec) ? overlaySamplesPerPiece(spec) : 0;
   return Math.max(terrain, overlay);
 }
 
@@ -193,10 +201,9 @@ export function assembledMeshSamples(spec: GenerationSpec) {
   // samples per piece, so the assembled figure is per-piece × piece count.
   const pieceCount = meshPieceCount(spec);
   const terrain = terrainSamplesPerPiece(spec) * pieceCount;
-  const overlays =
-    spec.color_output.enabled || spec.buildings.enabled
-      ? overlaySamplesPerPiece(spec) * pieceCount
-      : 0;
+  const overlays = usesColorMaterials(spec)
+    ? overlaySamplesPerPiece(spec) * pieceCount
+    : 0;
   return Math.max(terrain, overlays);
 }
 
@@ -206,6 +213,26 @@ export function groundMeshSpacing(spec: GenerationSpec) {
 
 export function formatGroundSpacing(metres: number) {
   return metres < 1 ? metres.toFixed(2) : metres.toFixed(1);
+}
+
+const BYTE_UNITS = ["B", "KB", "MB", "GB"] as const;
+
+// Human cache sizes for the settings pane: whole bytes, then one decimal
+// under ten units, then whole units (1.4 KB, 50 MB, 2.0 GB).
+export function formatBytes(bytes: number) {
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const text =
+    unit === 0
+      ? `${Math.round(value)}`
+      : value >= 10
+        ? value.toFixed(0)
+        : value.toFixed(1);
+  return `${text} ${BYTE_UNITS[unit]}`;
 }
 
 export function deriveHeightFrame(

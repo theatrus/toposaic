@@ -1,4 +1,6 @@
 import type {
+  CacheClearResult,
+  CacheStats,
   GenerationSpec,
   Job,
   PlaceResult,
@@ -49,17 +51,20 @@ async function errorDetail(response: Response): Promise<string | null> {
   return null;
 }
 
-async function requestJson<T>(
+// The status matters to callers that treat 200 and 201 differently, such
+// as saveSetup's created-versus-replaced report. Everyone else goes through
+// requestJson below and keeps its plain-body shape.
+async function requestJsonWithStatus<T>(
   path: string,
   init?: RequestInit,
-): Promise<T> {
+): Promise<{ status: number; body: T }> {
   const response = await fetch(`${API_URL}${path}`, init);
   if (!response.ok) {
     const detail = await errorDetail(response);
     throw new Error(detail ?? `TopoSaic service returned ${response.status}.`);
   }
   try {
-    return (await response.json()) as T;
+    return { status: response.status, body: (await response.json()) as T };
   } catch (error) {
     rethrowAbort(error);
     // A 200 with an unreadable body: keep the friendly message instead of
@@ -68,6 +73,13 @@ async function requestJson<T>(
       `TopoSaic service returned ${response.status}, but the reply was unreadable.`,
     );
   }
+}
+
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  return (await requestJsonWithStatus<T>(path, init)).body;
 }
 
 function jsonBody(value: unknown, signal?: AbortSignal): RequestInit {
@@ -111,8 +123,17 @@ export const terrainApi = {
   listSetups(signal?: AbortSignal) {
     return requestJson<SavedSetup[]>("/api/setups", { signal });
   },
-  saveSetup(name: string, spec: GenerationSpec) {
-    return requestJson<SavedSetup>("/api/setups", jsonBody({ name, spec }));
+  // The service answers 201 for a new setup and 200 for an overwrite; the
+  // studio words its status line off that difference.
+  async saveSetup(
+    name: string,
+    spec: GenerationSpec,
+  ): Promise<{ setup: SavedSetup; created: boolean }> {
+    const { status, body } = await requestJsonWithStatus<SavedSetup>(
+      "/api/setups",
+      jsonBody({ name, spec }),
+    );
+    return { setup: body, created: status === 201 };
   },
   renameSetup(id: string, name: string, signal?: AbortSignal) {
     return requestJson<SavedSetup>(`/api/setups/${encodeURIComponent(id)}`, {
@@ -121,6 +142,15 @@ export const terrainApi = {
       body: JSON.stringify({ name }),
       signal,
     });
+  },
+  cacheStats(signal?: AbortSignal) {
+    return requestJson<CacheStats>("/api/cache", { signal });
+  },
+  clearCache(olderThanDays: number | null) {
+    return requestJson<CacheClearResult>(
+      "/api/cache/clear",
+      jsonBody({ older_than_days: olderThanDays }),
+    );
   },
   // Separate from requestJson because a successful delete has no body.
   async deleteSetup(id: string, signal?: AbortSignal) {

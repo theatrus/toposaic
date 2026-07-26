@@ -50,6 +50,8 @@ import {
 } from "./trails";
 import { type AdjacentDirection, adjacentCenter } from "./geo";
 import { TerrainMap } from "./map";
+import { SettingsMenu } from "./settings-menu";
+import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ModelPanel } from "./panels/model-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
@@ -754,15 +756,11 @@ export function TerrainStudio() {
     if (focusButton) setupMenuButtonRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (!setupMenuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (setupMenuRef.current?.contains(event.target as Node)) return;
-      closeSetupMenu(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [closeSetupMenu, setupMenuOpen]);
+  const dismissSetupMenu = useCallback(
+    () => closeSetupMenu(false),
+    [closeSetupMenu],
+  );
+  useOutsideDismiss(setupMenuRef, setupMenuOpen, dismissSetupMenu);
 
   useEffect(() => {
     if (!setupMenuOpen) return;
@@ -855,9 +853,11 @@ export function TerrainStudio() {
   const saveSetupAs = async (name: string) => {
     setSavingSetup(true);
     try {
-      const saved = await terrainApi.saveSetup(name, spec);
+      const { setup: saved, created } = await terrainApi.saveSetup(name, spec);
       setSelectedSetupId(saved.id);
-      setSetupStatus(`Saved “${saved.name}”.`);
+      setSetupStatus(
+        created ? `Saved “${saved.name}”.` : `Replaced “${saved.name}”.`,
+      );
       await refreshSetups();
       closeSetupMenu(true);
     } catch (error) {
@@ -938,7 +938,7 @@ export function TerrainStudio() {
       const names = new Set(setups.map((candidate) => candidate.name));
       let copy = 2;
       while (names.has(`${setup.name} (${copy})`)) copy += 1;
-      const saved = await terrainApi.saveSetup(
+      const { setup: saved } = await terrainApi.saveSetup(
         `${setup.name} (${copy})`,
         setup.spec,
       );
@@ -1520,6 +1520,7 @@ export function TerrainStudio() {
               type="file"
             />
           </div>
+          <SettingsMenu />
           {availableUpdate && !updateDismissed && (
             <aside
               className={`update-notice ${availableUpdate.urgency}`}

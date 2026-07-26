@@ -78,6 +78,82 @@ test("rethrows aborts instead of wrapping them", () =>
     },
   ));
 
+test("saveSetup reports a 201 as created", () =>
+  withFetch(
+    async () =>
+      new Response(JSON.stringify({ id: "s1", name: "Ridge" }), {
+        status: 201,
+      }),
+    async () => {
+      const result = await terrainApi.saveSetup("Ridge", {});
+      assert.equal(result.created, true);
+      assert.equal(result.setup.name, "Ridge");
+    },
+  ));
+
+test("saveSetup reports a 200 overwrite as not created", () =>
+  withFetch(
+    async () =>
+      new Response(JSON.stringify({ id: "s1", name: "Ridge" }), {
+        status: 200,
+      }),
+    async () => {
+      const result = await terrainApi.saveSetup("Ridge", {});
+      assert.equal(result.created, false);
+      assert.equal(result.setup.id, "s1");
+    },
+  ));
+
+test("saveSetup still surfaces error details", () =>
+  withFetch(
+    async () =>
+      new Response(JSON.stringify({ error: "Name too long." }), {
+        status: 400,
+      }),
+    async () => {
+      await assert.rejects(
+        terrainApi.saveSetup("Ridge", {}),
+        /Name too long\./,
+      );
+    },
+  ));
+
+test("clearCache posts the age and parses the removal counts", () => {
+  let captured;
+  return withFetch(
+    async (url, init) => {
+      captured = { url: String(url), body: init?.body };
+      return new Response(
+        JSON.stringify({ removed_bytes: 4096, removed_entries: 3 }),
+        { status: 200 },
+      );
+    },
+    async () => {
+      const result = await terrainApi.clearCache(30);
+      assert.deepEqual(result, { removed_bytes: 4096, removed_entries: 3 });
+      assert.match(captured.url, /\/api\/cache\/clear$/);
+      assert.deepEqual(JSON.parse(captured.body), { older_than_days: 30 });
+    },
+  );
+});
+
+test("clearCache sends an explicit null for a full clear", () => {
+  let captured;
+  return withFetch(
+    async (_url, init) => {
+      captured = init?.body;
+      return new Response(
+        JSON.stringify({ removed_bytes: 0, removed_entries: 0 }),
+        { status: 200 },
+      );
+    },
+    async () => {
+      await terrainApi.clearCache(null);
+      assert.deepEqual(JSON.parse(captured), { older_than_days: null });
+    },
+  );
+});
+
 test("deleteSetup surfaces the server's error detail", () =>
   withFetch(
     async () =>

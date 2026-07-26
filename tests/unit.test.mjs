@@ -6,6 +6,8 @@ import {
 } from "../app/terrain/preview-orientation.ts";
 import {
   assembledMeshSamples,
+  effectiveMeshSamples,
+  formatBytes,
   groundMeshSpacing,
   initialSpec,
   mergeSpecDefaults,
@@ -94,6 +96,41 @@ test("matches the backend's per-piece round-up in the assembled label", () => {
   );
   // Even totals divide cleanly and stay put.
   assert.equal(assembledMeshSamples(initialSpec), 640);
+});
+
+test("counts trails alone toward the overlay sampling like the backend", () => {
+  // uses_color_materials in crates/toposaic-core/src/spec.rs is true for
+  // color output, buildings, OR imported trails, so a trails-only plain
+  // model samples at the overlay density and the label must match.
+  const trailsOnly = {
+    ...initialSpec,
+    mesh_samples_across: 384,
+    overlay_samples_across: 1024,
+    color_output: { ...initialSpec.color_output, enabled: false },
+    buildings: { ...initialSpec.buildings, enabled: false },
+    trails: [{ name: "Loop", points: [[46.8, -121.7], [46.9, -121.6]] }],
+  };
+  // 1024 across 10 pieces rounds up to 103 per piece, 1030 assembled.
+  assert.equal(effectiveMeshSamples(trailsOnly), 103);
+  assert.equal(assembledMeshSamples(trailsOnly), 1030);
+  // Without trails the plain model keeps its terrain sampling.
+  const plain = { ...trailsOnly, trails: [] };
+  assert.equal(effectiveMeshSamples(plain), 39);
+  assert.equal(assembledMeshSamples(plain), 390);
+});
+
+test("formats cache sizes as B, KB, MB, and GB", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(1023), "1023 B");
+  assert.equal(formatBytes(1024), "1.0 KB");
+  assert.equal(formatBytes(2048), "2.0 KB");
+  assert.equal(formatBytes(1_048_576), "1.0 MB");
+  assert.equal(formatBytes(52_428_800), "50 MB");
+  assert.equal(formatBytes(63_965_184), "61 MB");
+  assert.equal(formatBytes(3_650_722_202), "3.4 GB");
+  // Nothing below zero: a bad reply still renders a sane size.
+  assert.equal(formatBytes(-5), "0 B");
 });
 
 test("keeps east and west in the expected preview positions", () => {
