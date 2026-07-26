@@ -13,13 +13,13 @@ colors.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.3.0](https://github.com/theatrus/toposaic/releases/tag/v0.3.0).
+[TopoSaic v0.4.0](https://github.com/theatrus/toposaic/releases/tag/v0.4.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.3.0/TopoSaic-0.3.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -67,21 +67,21 @@ and floating or supported bridges in place.*
 road, and building materials ready for a color print. Bambu Studio and
 OrcaSlicer load the palette colors as filament assignments.*
 
-## Version 0.3 highlights
+## Version 0.4 highlights
 
-- The map now draws every super-tile before export and supports top-left or
-  center anchoring. Centered grids keep a real center tile by using odd row and
-  column counts.
-- Mapterhorn fine-detail mode can use available terrain data toward a 0.25 m
-  sample target for areas up to 2 km wide. Draft through Ultra mesh budgets now
-  scale with the selected area and apply equally to puzzles and solid terrain.
-- Close views use smoother elevation sampling, while the 3D preview shows the
-  selected terrain height at print scale. Its east-west direction and default
-  south-facing camera now match the map.
-- Standard 3MF color data now loads in OrcaSlicer as well as Bambu Studio.
-- Model, map-center, super-tile, and tray controls now follow the order in which
-  a model is set up. The tray place name lives with the tray settings, and the
-  model type sits directly above the jigsaw layout.
+- Save named model setups, move them between machines as JSON, resize both
+  workspace splits, pan the map with arrow keys, and inspect or clear each map
+  cache from the settings pane.
+- Import GPX and KML routes as their own colored trail layer. Railways and
+  aerial lifts now have separate controls, colors, heights, and optional line
+  history.
+- Choose project, painted, or geometry-based 3MF output to suit Bambu Studio,
+  OrcaSlicer, and other slicers.
+- High and Ultra detail generation use less time and memory. Elevation now
+  follows the source sample lattice, land-cover edges blend at useful scales,
+  and generated previews replace the draft view when jobs finish.
+- Mesh, tray, building, overlay, and export code now reject bad input without
+  crashing. Generated models pass stricter manifold checks before release.
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color

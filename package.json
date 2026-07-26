@@ -1,6 +1,6 @@
 {
   "name": "toposaic-web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "private": true,
   "engines": {
@@ -15,7 +15,7 @@
     "tauri": "tauri",
     "test": "npm run build && node --test --experimental-strip-types tests/*.test.mjs",
     "test:ui": "playwright test",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern target --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern target --ignore-pattern .next --ignore-pattern .claude"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
