@@ -24,29 +24,50 @@ type ApiErrorPayload = {
   message?: unknown;
 };
 
+function rethrowAbort(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    throw error;
+  }
+}
+
+/** The error detail from a failed response's body, if it carries one. */
+async function errorDetail(response: Response): Promise<string | null> {
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (error) {
+    rethrowAbort(error);
+    return null;
+  }
+  try {
+    const payload = JSON.parse(body) as ApiErrorPayload;
+    if (typeof payload.error === "string") return payload.error;
+    if (typeof payload.message === "string") return payload.message;
+  } catch {
+    // The body was not JSON, so fall back to the status.
+  }
+  return null;
+}
+
 async function requestJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, init);
   if (!response.ok) {
-    let detail: string | null = null;
-    try {
-      const payload = (await response.json()) as ApiErrorPayload;
-      if (typeof payload.error === "string") {
-        detail = payload.error;
-      } else if (typeof payload.message === "string") {
-        detail = payload.message;
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw error;
-      }
-      // The body was not JSON, so fall back to the status.
-    }
+    const detail = await errorDetail(response);
     throw new Error(detail ?? `TopoSaic service returned ${response.status}.`);
   }
-  return (await response.json()) as T;
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    rethrowAbort(error);
+    // A 200 with an unreadable body: keep the friendly message instead of
+    // leaking a raw SyntaxError to the interface.
+    throw new Error(
+      `TopoSaic service returned ${response.status}, but the reply was unreadable.`,
+    );
+  }
 }
 
 function jsonBody(value: unknown, signal?: AbortSignal): RequestInit {
@@ -101,13 +122,17 @@ export const terrainApi = {
       signal,
     });
   },
-  async deleteSetup(id: string) {
+  // Separate from requestJson because a successful delete has no body.
+  async deleteSetup(id: string, signal?: AbortSignal) {
     const response = await fetch(
       `${API_URL}/api/setups/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
+      { method: "DELETE", signal },
     );
     if (!response.ok) {
-      throw new Error(`TopoSaic service returned ${response.status}.`);
+      const detail = await errorDetail(response);
+      throw new Error(
+        detail ?? `TopoSaic service returned ${response.status}.`,
+      );
     }
   },
 };

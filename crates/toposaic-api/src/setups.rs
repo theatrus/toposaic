@@ -11,10 +11,10 @@ use toposaic_core::GenerationSpec;
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, api_error,
+    ApiError, AppState, api_error, canonical_uuid,
     database::{
-        delete_saved_setup, find_saved_setup_by_name, insert_saved_setup, list_saved_setups,
-        rename_saved_setup, update_saved_setup,
+        RenameOutcome, delete_saved_setup, find_saved_setup_by_name, list_saved_setups,
+        rename_saved_setup, upsert_saved_setup,
     },
     internal_error,
 };
@@ -57,30 +57,20 @@ pub(crate) async fn save_setup(
         .validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
 
+    // One atomic INSERT ... ON CONFLICT(name) both creates and replaces, so
+    // two concurrent saves of the same new name cannot race a check into a
+    // UNIQUE violation; the loser simply updates the winner's row.
     let now = Utc::now();
-    let setup = match find_saved_setup_by_name(&state, name).map_err(internal_error)? {
-        Some(existing) => {
-            let setup = SavedSetup {
-                updated_at: now,
-                spec: request.spec,
-                ..existing
-            };
-            update_saved_setup(&state, &setup).map_err(internal_error)?;
-            setup
-        }
-        None => {
-            let setup = SavedSetup {
-                id: Uuid::new_v4().to_string(),
-                name: name.to_string(),
-                created_at: now,
-                updated_at: now,
-                spec: request.spec,
-            };
-            insert_saved_setup(&state, &setup).map_err(internal_error)?;
-            setup
-        }
+    let setup = SavedSetup {
+        id: Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        created_at: now,
+        updated_at: now,
+        spec: request.spec,
     };
-    Ok(Json(setup))
+    upsert_saved_setup(&state, &setup)
+        .map(Json)
+        .map_err(internal_error)
 }
 
 pub(crate) async fn rename_setup(
@@ -88,30 +78,33 @@ pub(crate) async fn rename_setup(
     AxumPath(id): AxumPath<String>,
     Json(request): Json<RenameSetupRequest>,
 ) -> Result<Json<SavedSetup>, (StatusCode, Json<ApiError>)> {
-    let id = canonical_setup_id(&id)
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
+    let id =
+        canonical_uuid(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
     let name = validated_setup_name(&request.name)?;
-    if let Some(existing) = find_saved_setup_by_name(&state, name).map_err(internal_error)? {
-        if existing.id == id {
-            return Ok(Json(existing));
-        }
-        return Err(api_error(
+    // The pre-check keeps renaming a setup to its own name a no-op (no
+    // updated_at bump); the atomic rename below still maps a lost name race
+    // to the same conflict instead of a 500.
+    if let Some(existing) = find_saved_setup_by_name(&state, name).map_err(internal_error)?
+        && existing.id == id
+    {
+        return Ok(Json(existing));
+    }
+    match rename_saved_setup(&state, &id, name, Utc::now()).map_err(internal_error)? {
+        RenameOutcome::Renamed(setup) => Ok(Json(*setup)),
+        RenameOutcome::NameTaken => Err(api_error(
             StatusCode::CONFLICT,
             format!("a setup named \"{name}\" already exists"),
-        ));
+        )),
+        RenameOutcome::NotFound => Err(api_error(StatusCode::NOT_FOUND, "setup not found")),
     }
-    rename_saved_setup(&state, &id, name, Utc::now())
-        .map_err(internal_error)?
-        .map(Json)
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))
 }
 
 pub(crate) async fn delete_setup(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let id = canonical_setup_id(&id)
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
+    let id =
+        canonical_uuid(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
     if delete_saved_setup(&state, &id).map_err(internal_error)? {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -134,12 +127,6 @@ fn validated_setup_name(name: &str) -> Result<&str, (StatusCode, Json<ApiError>)
         ));
     }
     Ok(name)
-}
-
-fn canonical_setup_id(id: &str) -> Option<String> {
-    Uuid::parse_str(id)
-        .ok()
-        .map(|value| value.hyphenated().to_string())
 }
 
 #[cfg(test)]

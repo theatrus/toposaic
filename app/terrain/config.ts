@@ -1,5 +1,9 @@
 import type { GenerationSpec } from "./contracts";
 
+// Client default for both sample totals; also stands in when a spec carries
+// an explicit null ("backend picks"), so label math never divides by zero.
+export const DEFAULT_SAMPLES_ACROSS = 640;
+
 export const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
   center_lon: -121.7603,
@@ -21,8 +25,8 @@ export const initialSpec: GenerationSpec = {
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
-  mesh_samples_across: 640,
-  overlay_samples_across: 640,
+  mesh_samples_across: DEFAULT_SAMPLES_ACROSS,
+  overlay_samples_across: DEFAULT_SAMPLES_ACROSS,
   fine_dem_detail: false,
   solid_model: false,
   straight_piece_sides: false,
@@ -89,6 +93,12 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
   return {
     ...initialSpec,
     ...saved,
+    // The wire type is Option<u32>: an explicit null means "backend picks".
+    // Spreading keeps nulls, so coalesce them to the client defaults here.
+    mesh_samples_across:
+      saved.mesh_samples_across ?? initialSpec.mesh_samples_across,
+    overlay_samples_across:
+      saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     tray: { ...initialSpec.tray, ...saved.tray },
     color_output: { ...initialSpec.color_output, ...saved.color_output },
@@ -132,7 +142,8 @@ function samplesPerPieceForTotal(total: number, pieceCount: number) {
 }
 
 export function terrainSamplesAcross(spec: GenerationSpec) {
-  let total = spec.mesh_samples_across;
+  // Specs straight off the wire can carry null; treat it as unset.
+  let total = spec.mesh_samples_across ?? DEFAULT_SAMPLES_ACROSS;
   if (
     spec.fine_dem_detail &&
     spec.elevation_source === "mapterhorn" &&
@@ -160,7 +171,11 @@ export function terrainSamplesPerPiece(spec: GenerationSpec) {
 
 export function overlaySamplesPerPiece(spec: GenerationSpec) {
   const pieceCount = meshPieceCount(spec);
-  return samplesPerPieceForTotal(spec.overlay_samples_across, pieceCount);
+  return samplesPerPieceForTotal(
+    // Specs straight off the wire can carry null; treat it as unset.
+    spec.overlay_samples_across ?? DEFAULT_SAMPLES_ACROSS,
+    pieceCount,
+  );
 }
 
 export function effectiveMeshSamples(spec: GenerationSpec) {
@@ -173,11 +188,16 @@ export function effectiveMeshSamples(spec: GenerationSpec) {
 }
 
 export function assembledMeshSamples(spec: GenerationSpec) {
+  // Match the Rust side (assembled_terrain_samples in
+  // crates/toposaic-core/src/spec.rs): the total rounds up to whole
+  // samples per piece, so the assembled figure is per-piece × piece count.
+  const pieceCount = meshPieceCount(spec);
+  const terrain = terrainSamplesPerPiece(spec) * pieceCount;
   const overlays =
     spec.color_output.enabled || spec.buildings.enabled
-      ? spec.overlay_samples_across
+      ? overlaySamplesPerPiece(spec) * pieceCount
       : 0;
-  return Math.max(terrainSamplesAcross(spec), overlays);
+  return Math.max(terrain, overlays);
 }
 
 export function groundMeshSpacing(spec: GenerationSpec) {

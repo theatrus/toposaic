@@ -16,6 +16,22 @@
 //! The `slicer_edge_defects` number in the stl/3mf views is the count a
 //! PrusaSlicer/Bambu-style checker reports as "non-manifold edges": undirected
 //! edges whose use count is not exactly 2.
+//!
+//! # What this module does NOT detect
+//!
+//! Honest limits, so a clean report is not over-read:
+//!
+//! * **Unwelded overlaps.** Two shells that pass through each other without
+//!   sharing any (welded) vertex — for example a ribbon poking through a
+//!   wall — produce no shared edges and count as clean. In particular, tray
+//!   contour ribbons embed into the tray floor BY DESIGN; that intersection
+//!   is intentional and invisible to every counter here.
+//! * **Global inversion.** A mesh wound consistently inside-out has every
+//!   edge used once per direction and reports clean; only *local* winding
+//!   disagreements show up (see `misoriented_edges`).
+//! * **Sliver thresholds.** `near_zero_area` uses a fixed 1e-8 mm^2 cut.
+//!   Slicers apply their own epsilons, so a triangle can pass here and
+//!   still collapse inside a particular slicer, or the reverse.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -50,6 +66,11 @@ pub struct ViewReport {
     /// open_edges + overused_edges: what a slicer reports as
     /// "non-manifold edges".
     pub slicer_edge_defects: usize,
+    /// Undirected edges some direction of which is traversed by two or more
+    /// faces: neighbouring faces that disagree on winding. Such an edge can
+    /// still count as used exactly twice, so the other edge counters miss
+    /// it.
+    pub misoriented_edges: usize,
     /// Vertices whose incident faces form more than one edge-connected fan.
     pub nonmanifold_vertices: usize,
     /// Feature attribution histogram over every defective triangle and every
@@ -67,6 +88,7 @@ impl ViewReport {
             && self.duplicate_same_winding == 0
             && self.duplicate_opposite_winding == 0
             && self.slicer_edge_defects == 0
+            && self.misoriented_edges == 0
             && self.nonmanifold_vertices == 0
     }
 }
@@ -239,6 +261,7 @@ fn analyze_view(mesh: &Mesh, view_name: &str, vertex_map: &[u32]) -> ViewReport 
         open_edges: 0,
         overused_edges: 0,
         slicer_edge_defects: 0,
+        misoriented_edges: 0,
         nonmanifold_vertices: 0,
         defect_features: BTreeMap::new(),
         degenerate_examples: Vec::new(),
@@ -253,6 +276,7 @@ fn analyze_view(mesh: &Mesh, view_name: &str, vertex_map: &[u32]) -> ViewReport 
 
     // Pass one: welded triangles, degenerates, duplicates, edge counts.
     let mut edge_uses = HashMap::<(u32, u32), u32>::new();
+    let mut directed_edge_uses = HashMap::<(u32, u32), u32>::new();
     let mut face_sets = HashMap::<[u32; 3], Vec<(usize, [u32; 3])>>::new();
     let mut welded = Vec::<(usize, [u32; 3])>::with_capacity(mesh.triangles.len());
     for (triangle_index, triangle) in mesh.triangles.iter().enumerate() {
@@ -297,14 +321,35 @@ fn analyze_view(mesh: &Mesh, view_name: &str, vertex_map: &[u32]) -> ViewReport 
                 (edge.1, edge.0)
             };
             *edge_uses.entry(ordered).or_default() += 1;
+            *directed_edge_uses.entry(edge).or_default() += 1;
         }
         welded.push((triangle_index, mapped));
     }
 
-    for (sorted, faces) in &face_sets {
-        if faces.len() < 2 {
-            continue;
-        }
+    // Two consistently wound neighbours traverse their shared edge in
+    // opposite directions, so a direction used twice means the faces
+    // disagree on winding — even when the undirected count is a clean 2.
+    report.misoriented_edges = directed_edge_uses
+        .iter()
+        .filter(|(_, uses)| **uses >= 2)
+        .map(|((from, to), _)| {
+            if from < to {
+                (*from, *to)
+            } else {
+                (*to, *from)
+            }
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // Sorted by vertex triple so example emission is deterministic —
+    // HashMap iteration order is not.
+    let mut duplicate_sets = face_sets
+        .iter()
+        .filter(|(_, faces)| faces.len() >= 2)
+        .collect::<Vec<_>>();
+    duplicate_sets.sort_unstable_by_key(|(sorted, _)| **sorted);
+    for (sorted, faces) in duplicate_sets {
         let first_rotation = faces[0].1;
         for (triangle_index, rotation) in &faces[1..] {
             if *rotation == first_rotation {
@@ -470,6 +515,10 @@ pub(crate) fn analyze_mesh_views(mesh: &Mesh) -> MeshReport {
 }
 
 /// Builds one piece exactly as production does and analyzes it.
+///
+/// Validates the spec first, exactly like the production entry points: the
+/// builders assume validated ranges (for example a tray contour count of at
+/// least 5) and can panic on values validation would have rejected.
 pub fn analyze_piece(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
@@ -477,6 +526,7 @@ pub fn analyze_piece(
     row: u32,
     column: u32,
 ) -> Result<MeshReport> {
+    spec.validate()?;
     let height_range = height_range_for_spec(spec, height_field);
     let mesh = build_piece_with_height_range(
         spec,
@@ -496,6 +546,7 @@ pub fn analyze_project(
     height_field: Option<&HeightField>,
     surface_field: Option<&SurfaceField>,
 ) -> Result<Vec<MeshReport>> {
+    spec.validate()?;
     let mut reports = Vec::new();
     let (rows, columns) = if spec.solid_model {
         (1, 1)
@@ -529,7 +580,7 @@ pub fn summarize(scenario: &str, reports: &[MeshReport]) -> String {
     let _ = writeln!(output, "=== {scenario}: {} meshes ===", reports.len());
     let _ = writeln!(
         output,
-        "{:<10} {:>7} {:>12} {:>6} {:>8} {:>7} {:>9} {:>8} {:>8} {:>8}",
+        "{:<10} {:>7} {:>12} {:>6} {:>8} {:>7} {:>9} {:>8} {:>8} {:>8} {:>8}",
         "view",
         "meshes*",
         "slicer-edges",
@@ -539,6 +590,7 @@ pub fn summarize(scenario: &str, reports: &[MeshReport]) -> String {
         "zero-area",
         "dup-same",
         "dup-opp",
+        "mis-wind",
         "nm-verts"
     );
     for view_name in ["indexed", "stl-weld", "3mf-weld"] {
@@ -548,7 +600,7 @@ pub fn summarize(scenario: &str, reports: &[MeshReport]) -> String {
             .collect::<Vec<_>>();
         let _ = writeln!(
             output,
-            "{:<10} {:>7} {:>12} {:>6} {:>8} {:>7} {:>9} {:>8} {:>8} {:>8}",
+            "{:<10} {:>7} {:>12} {:>6} {:>8} {:>7} {:>9} {:>8} {:>8} {:>8} {:>8}",
             view_name,
             views.iter().filter(|view| !view.is_clean()).count(),
             views
@@ -569,6 +621,10 @@ pub fn summarize(scenario: &str, reports: &[MeshReport]) -> String {
             views
                 .iter()
                 .map(|view| view.duplicate_opposite_winding)
+                .sum::<usize>(),
+            views
+                .iter()
+                .map(|view| view.misoriented_edges)
                 .sum::<usize>(),
             views
                 .iter()
@@ -695,6 +751,52 @@ mod tests {
         assert_eq!(report.view("indexed").open_edges, 6);
         assert_eq!(report.view("stl-weld").open_edges, 4);
         assert_eq!(report.view("3mf-weld").open_edges, 4);
+    }
+
+    #[test]
+    fn same_direction_shared_edges_count_as_misoriented() {
+        // Two faces sharing edge 0->1 in the SAME direction: the undirected
+        // count is a clean 2, so only the directed counter can see that one
+        // face is wound against its neighbour.
+        let mesh = Mesh {
+            name: "synthetic".into(),
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.5, -1.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 1, 3]],
+            materials: vec![SurfaceClass::Rock; 2],
+            quantization_collisions: Vec::new(),
+        };
+        let report = analyze_mesh_views(&mesh);
+        for view in &report.views {
+            assert_eq!(view.misoriented_edges, 1, "{}", view.view);
+            assert!(!view.is_clean());
+        }
+
+        // Flipping the second face restores opposite traversal.
+        let consistent = Mesh {
+            triangles: vec![[0, 1, 2], [1, 0, 3]],
+            ..mesh
+        };
+        let report = analyze_mesh_views(&consistent);
+        for view in &report.views {
+            assert_eq!(view.misoriented_edges, 0, "{}", view.view);
+        }
+    }
+
+    #[test]
+    fn invalid_specs_are_rejected_before_any_build_runs() {
+        // A zero contour count reaches an arithmetic underflow in the tray
+        // tracer when validation is skipped; the analyzers must validate
+        // exactly like the production entry points.
+        let mut spec = GenerationSpec::default();
+        spec.tray.enabled = true;
+        spec.tray.contour_count = 0;
+        assert!(analyze_project(&spec, None, None).is_err());
+        assert!(analyze_piece(&spec, None, None, 0, 0).is_err());
     }
 
     #[test]

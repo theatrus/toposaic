@@ -199,19 +199,25 @@ export function TerrainMap({
       const y = projected.y - viewWorldCenter.y + size.height / 2;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     };
-    return spec.trails.map((trail) => {
-      const stride = Math.max(1, Math.ceil(trail.points.length / 400));
-      const points = [];
-      for (let index = 0; index < trail.points.length; index += stride) {
-        points.push(toScreen(trail.points[index][0], trail.points[index][1]));
-      }
-      const last = trail.points[trail.points.length - 1];
-      const lastScreen = toScreen(last[0], last[1]);
-      if (points[points.length - 1] !== lastScreen) {
-        points.push(lastScreen);
-      }
-      return points.join(" ");
-    });
+    // Hand-edited setup imports can carry empty or single-point trails;
+    // those have nothing to draw and would otherwise crash the projection.
+    return spec.trails
+      .filter((trail) => trail.points.length >= 2)
+      .map((trail) => {
+        const stride = Math.max(1, Math.ceil(trail.points.length / 400));
+        const points = [];
+        for (let index = 0; index < trail.points.length; index += stride) {
+          points.push(
+            toScreen(trail.points[index][0], trail.points[index][1]),
+          );
+        }
+        const last = trail.points[trail.points.length - 1];
+        const lastScreen = toScreen(last[0], last[1]);
+        if (points[points.length - 1] !== lastScreen) {
+          points.push(lastScreen);
+        }
+        return points.join(" ");
+      });
   }, [anchorWorld.x, mapZoom, size, spec.trails, viewWorldCenter]);
 
   const metresPerPixel =

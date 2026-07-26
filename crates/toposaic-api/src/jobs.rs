@@ -29,7 +29,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, api_error,
+    ApiError, AppState, api_error, canonical_uuid,
     database::{find_job, insert_job, mark_job_canceled, recent_jobs, update_job},
     elevation,
     grid::{
@@ -83,7 +83,7 @@ pub(crate) async fn create_job(
         let result = catch_unwind(AssertUnwindSafe(|| {
             run_job(&worker_state, &id, &spec, &cancellation)
         }));
-        if cancellation.load(Ordering::Acquire) {
+        if job_confirmed_canceled(&worker_state, &id, &cancellation) {
             let output_dir = worker_state.jobs_dir.join(&id);
             if let Err(cleanup_error) = std::fs::remove_dir_all(&output_dir)
                 && cleanup_error.kind() != std::io::ErrorKind::NotFound
@@ -103,7 +103,7 @@ pub(crate) async fn create_job(
                     .flatten()
                     .map(|job| job.progress)
                     .unwrap_or(0);
-                let _ = update_job(&worker_state, &id, "failed", progress, &[], Some(&failure));
+                record_job_failure(&worker_state, &id, progress, &failure);
             }
         }
         if let Ok(mut active_jobs) = worker_state.active_jobs.lock() {
@@ -132,6 +132,32 @@ pub(crate) async fn create_preview(
     Ok(Json(preview))
 }
 
+/// A set cancellation flag alone does not prove the job was canceled: the
+/// cancel handler sets the flag before the database mark, and clears it
+/// again when the mark loses the race with completion. Only a "canceled"
+/// row status makes it safe to delete the artifact directory.
+fn job_confirmed_canceled(state: &AppState, id: &str, cancellation: &AtomicBool) -> bool {
+    cancellation.load(Ordering::Acquire)
+        && find_job(state, id)
+            .ok()
+            .flatten()
+            .is_some_and(|job| job.status == "canceled")
+}
+
+/// Writes the failed status, logging and retrying once on error: silently
+/// dropping this write would leave the job stuck in "running" with no error
+/// message.
+fn record_job_failure(state: &AppState, id: &str, progress: i64, failure: &str) {
+    for attempt in 0..2_u32 {
+        match update_job(state, id, "failed", progress, &[], Some(failure)) {
+            Ok(()) => return,
+            Err(error) => {
+                error!(job_id = %id, %error, attempt, "could not record the job failure");
+            }
+        }
+    }
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         format!("mesh generation panicked: {message}")
@@ -157,31 +183,37 @@ pub(crate) async fn cancel_job(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Job>, (StatusCode, Json<ApiError>)> {
     let id =
-        canonical_job_id(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
-    let job = find_job(&state, &id)
-        .map_err(internal_error)?
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
-    if !matches!(job.status.as_str(), "queued" | "running") {
-        return Err(api_error(StatusCode::CONFLICT, "job is no longer running"));
-    }
-
+        canonical_uuid(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
     // Set the worker's flag before the database flips to canceled: the worker
     // only removes the artifact directory when it sees the flag, so the
     // reverse order can strand artifacts if the job finishes in between.
+    // The compare-exchange records whether THIS request flipped the flag —
+    // when the database mark then loses its race, only the flipper may clear
+    // the flag again, so a duplicate cancel can never clear a flag a
+    // concurrent (winning) cancel still relies on.
     let cancellation = state
         .active_jobs
         .lock()
         .map_err(|_| internal_error("active job lock failed"))?
         .get(&id)
         .cloned();
-    if let Some(cancellation) = &cancellation {
-        cancellation.store(true, Ordering::Release);
-    }
+    let this_request_set_flag = cancellation.as_ref().is_some_and(|cancellation| {
+        cancellation
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    });
+    // The database mark is the one authoritative gate: it only flips rows
+    // that are still queued or running, so completed and already-canceled
+    // jobs land here whatever interleaving got them there.
     if !mark_job_canceled(&state, &id).map_err(internal_error)? {
-        if let Some(cancellation) = &cancellation {
+        if this_request_set_flag && let Some(cancellation) = &cancellation {
             cancellation.store(false, Ordering::Release);
         }
-        return Err(api_error(StatusCode::CONFLICT, "job is no longer running"));
+        return if find_job(&state, &id).map_err(internal_error)?.is_some() {
+            Err(api_error(StatusCode::CONFLICT, "job is no longer running"))
+        } else {
+            Err(api_error(StatusCode::NOT_FOUND, "job not found"))
+        };
     }
     find_job(&state, &id)
         .map_err(internal_error)?
@@ -199,8 +231,20 @@ pub(crate) async fn download(
     State(state): State<AppState>,
     AxumPath((id, name)): AxumPath<(String, String)>,
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
-    let id = canonical_job_id(&id)
+    let id = canonical_uuid(&id)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "artifact not found"))?;
+    // Artifact names are predictable, so an existing file is not enough: a
+    // running job's directory holds half-written outputs. Stream a file only
+    // once the job is complete, or once the job's stored artifact list
+    // already names it.
+    let job = find_job(&state, &id)
+        .map_err(internal_error)?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "artifact not found"))?;
+    let published =
+        job.status == "complete" || job.artifacts.iter().any(|artifact| artifact.name == name);
+    if !published {
+        return Err(api_error(StatusCode::NOT_FOUND, "artifact not found"));
+    }
     let output_dir = state.jobs_dir.join(id);
     let path = artifact_path(&output_dir, &name)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "artifact not found"))?;
@@ -228,12 +272,6 @@ pub(crate) async fn download(
             .map_err(internal_error)?,
     );
     Ok(response)
-}
-
-fn canonical_job_id(id: &str) -> Option<String> {
-    Uuid::parse_str(id)
-        .ok()
-        .map(|value| value.hyphenated().to_string())
 }
 
 fn run_job(
@@ -563,12 +601,196 @@ mod tests {
     #[test]
     fn artifact_downloads_require_uuid_job_directories() {
         assert_eq!(
-            canonical_job_id("395481ef-0e39-4d94-9d94-2c39fea86000").as_deref(),
+            canonical_uuid("395481ef-0e39-4d94-9d94-2c39fea86000").as_deref(),
             Some("395481ef-0e39-4d94-9d94-2c39fea86000")
         );
-        assert_eq!(canonical_job_id(".."), None);
-        assert_eq!(canonical_job_id("../data"), None);
-        assert_eq!(canonical_job_id("not-a-job"), None);
+        assert_eq!(canonical_uuid(".."), None);
+        assert_eq!(canonical_uuid("../data"), None);
+        assert_eq!(canonical_uuid("not-a-job"), None);
+    }
+
+    fn stored_job(state: &AppState, id: &str, status: &str, artifacts: Vec<Artifact>) -> Job {
+        let now = Utc::now();
+        let job = Job {
+            id: id.into(),
+            status: status.into(),
+            progress: 40,
+            created_at: now,
+            updated_at: now,
+            spec: GenerationSpec::default(),
+            artifacts,
+            error: None,
+        };
+        insert_job(state, &job).unwrap();
+        job
+    }
+
+    #[tokio::test]
+    async fn a_lost_cancel_race_clears_only_its_own_flag() {
+        let state = test_state();
+        let id = "395481ef-0e39-4d94-9d94-2c39fea86000";
+        stored_job(&state, id, "complete", Vec::new());
+
+        // This request finds a clear flag, sets it, loses the database mark
+        // (the job already completed), and must clear it again.
+        let own_flag = Arc::new(AtomicBool::new(false));
+        state
+            .active_jobs
+            .lock()
+            .unwrap()
+            .insert(id.into(), own_flag.clone());
+        let (status, _) = cancel_job(State(state.clone()), AxumPath(id.into()))
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(!own_flag.load(Ordering::Acquire));
+
+        // A flag another in-flight cancel already set is not this request's
+        // to clear: losing the mark must leave it set.
+        let foreign_flag = Arc::new(AtomicBool::new(true));
+        state
+            .active_jobs
+            .lock()
+            .unwrap()
+            .insert(id.into(), foreign_flag.clone());
+        let (status, _) = cancel_job(State(state.clone()), AxumPath(id.into()))
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(foreign_flag.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn canceling_a_running_job_flips_the_flag_and_the_row() {
+        let state = test_state();
+        let id = "395481ef-0e39-4d94-9d94-2c39fea86001";
+        stored_job(&state, id, "running", Vec::new());
+        let flag = Arc::new(AtomicBool::new(false));
+        state
+            .active_jobs
+            .lock()
+            .unwrap()
+            .insert(id.into(), flag.clone());
+
+        let canceled = cancel_job(State(state.clone()), AxumPath(id.into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(canceled.status, "canceled");
+        assert!(flag.load(Ordering::Acquire));
+
+        let (status, _) = cancel_job(State(state.clone()), AxumPath("missing".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = cancel_job(
+            State(state.clone()),
+            AxumPath("395481ef-0e39-4d94-9d94-2c39fea86999".into()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn artifact_cleanup_requires_the_canceled_row_status_not_just_the_flag() {
+        let state = test_state();
+        let flag = AtomicBool::new(true);
+
+        // Flag set but the row completed first: the race window where
+        // deleting would destroy a finished job's artifacts.
+        stored_job(
+            &state,
+            "395481ef-0e39-4d94-9d94-2c39fea86002",
+            "complete",
+            Vec::new(),
+        );
+        assert!(!job_confirmed_canceled(
+            &state,
+            "395481ef-0e39-4d94-9d94-2c39fea86002",
+            &flag
+        ));
+
+        // Flag set and the row really canceled: cleanup may proceed.
+        stored_job(
+            &state,
+            "395481ef-0e39-4d94-9d94-2c39fea86003",
+            "canceled",
+            Vec::new(),
+        );
+        assert!(job_confirmed_canceled(
+            &state,
+            "395481ef-0e39-4d94-9d94-2c39fea86003",
+            &flag
+        ));
+
+        // A clear flag never triggers cleanup, whatever the row says.
+        let clear = AtomicBool::new(false);
+        assert!(!job_confirmed_canceled(
+            &state,
+            "395481ef-0e39-4d94-9d94-2c39fea86003",
+            &clear
+        ));
+    }
+
+    #[tokio::test]
+    async fn downloads_stream_only_published_artifacts() {
+        let state = test_state();
+        let id = "395481ef-0e39-4d94-9d94-2c39fea86004";
+        let output_dir = state.jobs_dir.join(id);
+        fs::create_dir_all(&output_dir).unwrap();
+        fs::write(output_dir.join("listed.json"), b"{}").unwrap();
+        fs::write(output_dir.join("half-written.3mf"), b"partial").unwrap();
+        stored_job(
+            &state,
+            id,
+            "running",
+            vec![Artifact {
+                name: "listed.json".into(),
+                media_type: "application/json".into(),
+                bytes: 2,
+            }],
+        );
+
+        // Running: only the artifact list's own names stream.
+        let listed = download(
+            State(state.clone()),
+            AxumPath((id.into(), "listed.json".into())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let (status, _) = download(
+            State(state.clone()),
+            AxumPath((id.into(), "half-written.3mf".into())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Complete: any file in the job directory streams.
+        update_job(&state, id, "complete", 100, &[], None).unwrap();
+        let finished = download(
+            State(state.clone()),
+            AxumPath((id.into(), "half-written.3mf".into())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(finished.status(), StatusCode::OK);
+
+        // Unknown jobs 404 before touching the filesystem.
+        let (status, _) = download(
+            State(state.clone()),
+            AxumPath((
+                "395481ef-0e39-4d94-9d94-2c39fea86999".into(),
+                "listed.json".into(),
+            )),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        fs::remove_dir_all(&output_dir).unwrap();
     }
 
     #[test]

@@ -186,3 +186,13 @@ fn api_error(status: StatusCode, message: impl ToString) -> (StatusCode, Json<Ap
 fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<ApiError>) {
     api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
+
+/// Parses a client-supplied id into its canonical hyphenated UUID form.
+/// Jobs and setups both key their rows (and, for jobs, their artifact
+/// directories) by this form, so path escapes like `../data` parse to
+/// `None` and map to a 404.
+pub(crate) fn canonical_uuid(id: &str) -> Option<String> {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .map(|value| value.hyphenated().to_string())
+}

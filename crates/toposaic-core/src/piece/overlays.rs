@@ -268,12 +268,17 @@ pub(super) fn append_road_geometry(
         mesh.append_isolated(shell);
     }
     for (ordinal, (group_lines, deck_area)) in decks.iter().enumerate() {
-        // Each deck group embeds a fraction deeper than the last. Supported
-        // decks of *different* groups follow the same terrain-hugging
-        // bottom, and where two groups meet at a shared road node their
-        // buffered end caps coincide exactly — distinct embed depths keep
-        // those bottoms from welding into one non-manifold sheet. The
-        // offsets stay far below print resolution, hidden inside terrain.
+        // Deck groups get staggered embed depths. Supported decks of
+        // *different* groups follow the same terrain-hugging bottom, and
+        // where two groups meet at a shared road node their buffered end
+        // caps coincide exactly — distinct embed depths keep those bottoms
+        // from welding into one non-manifold sheet. The depths CYCLE every
+        // 64 groups (the offset must stay far below print resolution, so it
+        // cannot grow without bound): two groups 64 apart do share a depth,
+        // which is only a problem if those two groups also touch — a piece
+        // would need 65 mutually touching same-level deck groups to hit
+        // that, and the level-join pass above merges touching same-level
+        // groups first.
         let embed_mm = quantize_export_coordinate(
             OVERLAY_TERRAIN_EMBED_MM + ((ordinal % 64) as f32 + 1.0) * 0.000_05,
         );
@@ -357,9 +362,28 @@ fn append_trail_geometry(
     if !road_area.0.is_empty() {
         trail_area = trail_area.difference(&grown(road_area));
     }
-    for (_, deck_area) in decks {
-        if !deck_area.0.is_empty() {
-            trail_area = trail_area.difference(&grown(deck_area));
+    // Decks are cut out of the trail only where they sit at trail (terrain)
+    // level — the same [`BRIDGE_DECK_JOIN_MM`] gate the road union uses. An
+    // elevated deck shares no faces with a terrain-following trail, so a
+    // trail under a flyover keeps running instead of getting a gap.
+    for (group_lines, deck_area) in decks {
+        for overlap in trail_area.intersection(deck_area).0 {
+            if overlap.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 {
+                continue;
+            }
+            let Some(sample) = overlap.centroid() else {
+                continue;
+            };
+            let assembled = [sample.x() as f32 + origin_x, sample.y() as f32 + origin_y];
+            let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
+            let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
+            let trail_level = terrain_z_at(spec, height_field, height_range, u, v);
+            let deck_level = nearest_deck_line(group_lines, assembled)
+                .map(|line| bridge_line_z(spec, line, height_field, height_range, u, v))
+                .unwrap_or(trail_level);
+            if (deck_level - trail_level).abs() <= BRIDGE_DECK_JOIN_MM {
+                trail_area = trail_area.difference(&overlap.buffer(OVERLAY_SEPARATION_MM));
+            }
         }
     }
     // The differences above leave hair-thin slivers where a trail border
@@ -867,6 +891,79 @@ mod tests {
         let plain =
             build_piece(&no_trail_spec, Some(&height_field), Some(&road_only), 0, 0).unwrap();
         assert!(!plain.materials.contains(&SurfaceClass::Trail));
+    }
+
+    #[test]
+    fn trails_keep_running_under_elevated_decks_but_yield_at_touchdowns() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_height_mm: 0.2,
+                ..ColorOutputSpec::default()
+            },
+            trails: vec![crate::spec::TrailRoute {
+                name: "Underpass".into(),
+                points: vec![[46.8, -121.8], [46.9, -121.7]],
+            }],
+            ..GenerationSpec::default()
+        };
+        // A valley at 0 m with 100 m walls; the tagged bridge spans the
+        // valley at 100 m, far above the terrain-following trail.
+        let height_field = HeightField::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "flyover",
+        )
+        .unwrap();
+        let build = |deck_elevations: [f32; 2]| {
+            let mut field =
+                SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "flyover").unwrap();
+            field.paint_bridge_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, deck_elevations);
+            field.paint_polyline(&[[0.5, 0.1], [0.5, 0.9]], 60.0, 0.7, SurfaceClass::Trail);
+            build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap()
+        };
+        // A trail cut at the deck keeps the separation gap clear of the
+        // deck strip (y = 29.5..30.5 plus the buffer), so no trail triangle
+        // can span y = 30 after a cut; a continuous trail must have some.
+        let spans_deck_strip = |mesh: &crate::mesh::Mesh| {
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Trail)
+                .any(|(triangle, _)| {
+                    let vertices = triangle.map(|index| mesh.vertices[index as usize]);
+                    let minimum = vertices.iter().map(|v| v[1]).fold(f32::INFINITY, f32::min);
+                    let maximum = vertices
+                        .iter()
+                        .map(|v| v[1])
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    minimum < 29.9 && maximum > 30.1
+                })
+        };
+
+        // Elevated deck (100 m over a 0 m valley): the trail keeps running
+        // under the bridge — no gap in the deck strip around y = 30 mm.
+        let flyover = build([100.0, 100.0]);
+        assert!(
+            spans_deck_strip(&flyover),
+            "the trail must continue beneath an elevated deck"
+        );
+        assert_watertight(&flyover);
+
+        // A deck at terrain level (a touchdown) still cuts the trail so the
+        // two shells cannot leave coincident faces.
+        let touchdown = build([0.0, 0.0]);
+        assert!(
+            !spans_deck_strip(&touchdown),
+            "a deck at trail level must still cut the trail"
+        );
+        assert_watertight(&touchdown);
     }
 
     #[test]

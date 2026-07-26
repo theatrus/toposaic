@@ -406,9 +406,8 @@ impl SurfaceField {
         }
         let cell_samples_x = native_resolution_m * (self.width - 1) as f32 / ground_span_m;
         let cell_samples_y = native_resolution_m * (self.height - 1) as f32 / ground_span_m;
-        let native_width = (((self.width - 1) as f32 / cell_samples_x).round() as usize).max(1) + 1;
-        let native_height =
-            (((self.height - 1) as f32 / cell_samples_y).round() as usize).max(1) + 1;
+        let (native_width, native_height) =
+            recovered_native_dimensions(self.width, self.height, cell_samples_x, cell_samples_y);
         // Nearest-sample downsampling recovers the native land-cover values
         // up to half a cell of phase, because the raster itself is a
         // nearest-neighbour upsample of those values.
@@ -791,19 +790,13 @@ impl SurfaceField {
                 }
             }
             if component.len() < minimum_cells {
+                // `neighbours` is indexed by material_index, so ALL (which
+                // is ordered by material_index) inverts it directly.
                 let replacement = neighbours
                     .into_iter()
                     .enumerate()
                     .max_by_key(|(index, count)| (*count, usize::MAX - *index))
-                    .map(|(index, _)| match index {
-                        1 => SurfaceClass::Forest,
-                        2 => SurfaceClass::Snow,
-                        3 => SurfaceClass::Water,
-                        4 => SurfaceClass::Road,
-                        5 => SurfaceClass::Building,
-                        6 => SurfaceClass::Trail,
-                        _ => SurfaceClass::Rock,
-                    })
+                    .map(|(index, _)| SurfaceClass::ALL[index])
                     .unwrap_or(SurfaceClass::Rock);
                 for index in component {
                     self.classes[index] = replacement;
@@ -992,6 +985,26 @@ impl SurfaceField {
 /// Spherical semivariogram in native-cell units with a nugget expressed as
 /// a fraction of the sill. Zero at zero distance, so kriging honours the
 /// data exactly at nodes.
+/// Node counts of the lattice `smooth_class_borders` recovers, one axis at
+/// a time from that axis's own samples-per-native-cell density. Densities
+/// below one sample per cell clamp to the raster's own resolution: on a
+/// non-square raster (rows unequal to columns over the square ground
+/// bounds) the coarser axis carries FEWER samples than native cells, and
+/// deriving more nodes than it has samples would duplicate raster rows and
+/// pass them off as independent native data — the recovered grid must
+/// never upsample an axis.
+fn recovered_native_dimensions(
+    width: usize,
+    height: usize,
+    cell_samples_x: f32,
+    cell_samples_y: f32,
+) -> (usize, usize) {
+    let nodes = |samples: usize, cell_samples: f32| {
+        (((samples - 1) as f32 / cell_samples.max(1.0)).round() as usize).max(1) + 1
+    };
+    (nodes(width, cell_samples_x), nodes(height, cell_samples_y))
+}
+
 fn spherical_variogram(distance: f64, range_cells: f64, nugget: f64) -> f64 {
     if distance <= 0.0 {
         return 0.0;
@@ -1629,6 +1642,51 @@ mod tests {
         .unwrap();
         coarse.smooth_class_borders_with_native(&unit, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
         assert_eq!(coarse.base_classes, original);
+    }
+
+    #[test]
+    fn recovered_lattice_never_upsamples_an_axis() {
+        // Oversampled on both axes: per-axis node counts follow each
+        // axis's own density (128 / 8 and 4 / 2, plus one).
+        assert_eq!(recovered_native_dimensions(129, 5, 8.0, 2.0), (17, 3));
+        // The y axis carries FEWER samples than native cells (0.5 per
+        // cell). It must clamp to the raster's own resolution instead of
+        // doubling to 9 nodes of duplicated data.
+        assert_eq!(recovered_native_dimensions(129, 5, 8.0, 0.5), (17, 5));
+        assert_eq!(recovered_native_dimensions(5, 129, 0.25, 4.0), (5, 33));
+        // Degenerate densities still never exceed the raster.
+        let (native_width, native_height) = recovered_native_dimensions(65, 3, 0.01, 0.01);
+        assert!(native_width <= 65 && native_height <= 3);
+    }
+
+    #[test]
+    fn non_square_rasters_smooth_deterministically_without_upsampling() {
+        // 65 x 5 samples over 80 m of ground: 8 samples per 10 m cell
+        // along x, half a sample per cell along y — the anisotropic case
+        // where the old reconstruction made the y lattice denser than the
+        // raster. A blocky vertical border must still smooth and stay
+        // deterministic.
+        let width = 65;
+        let height = 5;
+        let classes = (0..height)
+            .flat_map(|_| {
+                (0..width).map(move |x| {
+                    if (x / 8) % 2 == 0 {
+                        SurfaceClass::Rock
+                    } else {
+                        SurfaceClass::Forest
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut first = SurfaceField::new(width, height, classes, "test").unwrap();
+        assert!(first.class_border_smoothing_applies(10.0, 80.0));
+        let mut second = first.clone();
+        first.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        second.smooth_class_borders(10.0, 80.0, DEFAULT_RANGE_CELLS, DEFAULT_NUGGET);
+        assert_eq!(first.classes, second.classes);
+        assert!(first.classes.contains(&SurfaceClass::Rock));
+        assert!(first.classes.contains(&SurfaceClass::Forest));
     }
 
     #[test]

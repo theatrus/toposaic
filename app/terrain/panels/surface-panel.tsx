@@ -413,7 +413,13 @@ export function SurfacePanel({
         {spec.trails.length > 0 && (
           <ul className="trail-list">
             {spec.trails.map((trail, index) => (
-              <li key={`${trail.name}-${index}`}>
+              // Content-based keys stay stable when a trail is removed
+              // from the middle of the list.
+              <li
+                key={`${trail.name}:${trail.points.length}:${
+                  trail.points[0]?.join(",") ?? ""
+                }`}
+              >
                 <span>{trail.name}</span>
                 <small>
                   {trail.points.length.toLocaleString()} points
@@ -430,7 +436,7 @@ export function SurfacePanel({
           </ul>
         )}
         {trailNotice && (
-          <small className="trail-notice" role="status">
+          <small aria-live="polite" className="trail-notice" role="status">
             {trailNotice}
           </small>
         )}

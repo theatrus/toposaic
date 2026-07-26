@@ -42,7 +42,12 @@ import type {
   SavedSetup,
   TrailRoute,
 } from "./contracts";
-import { MAX_TRAILS, MAX_TRAIL_POINTS, parseTrailFile } from "./trails";
+import {
+  MAX_TRAILS,
+  MAX_TRAIL_FILE_BYTES,
+  MAX_TRAIL_POINTS,
+  parseTrailFile,
+} from "./trails";
 import { type AdjacentDirection, adjacentCenter } from "./geo";
 import { TerrainMap } from "./map";
 import { BuildingsPanel } from "./panels/buildings-panel";
@@ -437,6 +442,12 @@ export function TerrainStudio() {
     const notices: string[] = [];
     const imported: TrailRoute[] = [];
     for (const file of files) {
+      if (file.size > MAX_TRAIL_FILE_BYTES) {
+        notices.push(
+          `${file.name} is larger than the 32 MB trail import limit.`,
+        );
+        continue;
+      }
       try {
         const parsed = parseTrailFile(file.name, await file.text());
         if (parsed.trails.length === 0) {
@@ -452,8 +463,10 @@ export function TerrainStudio() {
         notices.push(`Could not read ${file.name}.`);
       }
     }
-    const room = Math.max(0, MAX_TRAILS - spec.trails.length);
-    const kept = imported.slice(0, room);
+    const kept = imported.slice(
+      0,
+      Math.max(0, MAX_TRAILS - spec.trails.length),
+    );
     if (imported.length > kept.length) {
       notices.push(`A model holds at most ${MAX_TRAILS} trails.`);
     }
@@ -461,7 +474,16 @@ export function TerrainStudio() {
       notices.unshift(
         `Imported ${kept.length} ${kept.length === 1 ? "trail" : "trails"}.`,
       );
-      update("trails", [...spec.trails, ...kept]);
+    }
+    if (imported.length > 0) {
+      // Merge inside the updater: the awaits above span renders, so two
+      // overlapping imports would otherwise each merge from a stale
+      // spec.trails and one would drop the other's trails.
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        trails: [...current.trails, ...imported].slice(0, MAX_TRAILS),
+      }));
     }
     setTrailNotice(notices.length > 0 ? notices.join(" ") : null);
   };
@@ -1171,8 +1193,14 @@ export function TerrainStudio() {
     }
     if (
       job.progress < 65 &&
-      (job.spec.color_output.enabled || job.spec.buildings.enabled)
+      (job.spec.color_output.enabled ||
+        job.spec.buildings.enabled ||
+        job.spec.trails.length > 0)
     ) {
+      // The backend runs the surface phase for trail-only jobs too.
+      if (!job.spec.color_output.enabled && !job.spec.buildings.enabled) {
+        return "Mapping imported trails…";
+      }
       if (job.spec.buildings.enabled && !job.spec.color_output.enabled) {
         return "Downloading and mapping building footprints…";
       }
@@ -1193,8 +1221,12 @@ export function TerrainStudio() {
 
   const generationStages = useMemo(() => {
     if (!job) return [];
+    // Trail-only jobs run the surface phase too (uses_trails on the
+    // backend), so they get the same "Map details" stage.
     const hasSurface =
-      job.spec.color_output.enabled || job.spec.buildings.enabled;
+      job.spec.color_output.enabled ||
+      job.spec.buildings.enabled ||
+      job.spec.trails.length > 0;
     const stages = [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
       ...(hasSurface
