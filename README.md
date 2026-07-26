@@ -195,6 +195,65 @@ the model. Set it to 0% for major waterways only or 100% for every mapped
 stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
+Railways and aerial lifts are two layers, each with its own Overpass query
+and its own cache, so switching one never re-downloads roads and never
+re-downloads the other. The railway layer covers heavy rail, light rail,
+metros, trams, narrow gauge, funiculars, monorails, and miniature and
+preserved lines; the aerialway layer covers cable cars, gondolas, mixed
+lifts, chair lifts, drag lifts, T-bars, platters, rope tows, and magic
+carpets. A chairlift up a ski slope and a mainline railway are different
+features, so a ski map can print the lifts without the trains and a city map
+the trains without the lifts. Line width scales with the type, from a
+full-width mainline formation down to a rope-tow cable. Tunnels vanish, as
+they should, and that takes most metros with them; railway bridges and
+viaducts get the same interpolated deck as road bridges.
+
+By default both layers draw in a color of their own — a steel blue-grey for
+railways, a signal violet for lifts — because a railway is not a road and a
+chair lift is neither, and the map is worth more when it says so. Each costs
+exactly one filament slot, and only when the mapped area actually has that
+kind of line: the 3MF emits colors for the features the model really
+contains, so a city with no cable cars is never asked for a cable-car spool,
+and nothing is ever reserved for a layer that draws nothing.
+
+If you would rather spend the spools elsewhere, either layer can be folded in
+instead. "Draw with roads" paints it in the route color at the route width, so
+it still shows up without adding a filament. The lift layer has a third
+choice, "Draw with railways", which folds lifts into the railway layer so the
+two share one color; with the railway layer switched off, that falls back to
+the road color rather than making an enabled layer disappear.
+
+Out-of-service lines are a setting, not a rule. "Operational" is the default
+and draws running lines only. "Disused" adds track and lift lines still in
+place but out of use — the rails, ties, ballast, cable, and pylons are all
+still there. "Abandoned" adds those plus lines whose rails have been lifted
+but whose formation is still the most legible thing in the landscape:
+embankments, cuttings, a dead-straight trackbed, the cleared swath of an old
+lift line. Out-of-service lines print thinner than running ones, and lifted
+formations thinner again — a scar, not a track. Both encodings OpenStreetMap
+uses are read, whether the lifecycle tag sits beside the railway tag or
+replaces it. Lines tagged razed, dismantled, demolished, removed, or historic
+are never drawn at any setting, because nothing is left on the ground to
+print; neither are proposed or under-construction lines, because nothing is
+there yet. The setting is part of the download cache key, so asking for
+abandoned lines fetches them rather than serving a filtered download. One
+setting covers both layers.
+
+The Surface tab switches railways and lifts on and off on their own, apart
+from roads and from each other: streets can print without rails, and rails
+without streets. Each toggle carries its own style picker, and both start on
+"Own color": railways choose between that and "Draw with roads", lifts add
+"Draw with railways". The color swatch and width slider show under "Own
+color" and hide when a layer is folded into another, since that layer's
+values apply instead. One
+"Railway and lift history" picker sits below both toggles and governs both,
+and shows whenever either layer is on. The 3D legend names whatever the
+model actually shows: a layer drawn in its own color gets its own entry,
+and a layer that borrowed another's color is named by that entry instead —
+so lifts following separately colored railways appear under Rail, and
+either layer drawn with roads appears under Route, whether or not roads
+themselves are switched on.
+
 Hikers can import their own routes from GPX or KML files on the Surface tab.
 Each track, route, LineString, or gx:Track becomes one trail, named from the
 file, drawn on the model as a raised vector line like a road, and printed in
@@ -202,8 +261,11 @@ its own seventh color (a high-vis magenta to start). Trail width has its own
 slider, trails show on the map preview and in the 3D legend, and they live in
 the model spec, so saved setups and exported setup files carry them. Files are
 parsed in the browser; tracks longer than 20,000 points are thinned on import,
-and a model holds up to 20 trails. Models without trails keep exactly the
-six-color output they have today.
+and a model holds up to 20 trails. Filament slots are packed, not reserved:
+the 3MF carries a color for each feature the model actually contains and
+nothing for the rest, so folding the rail and lift layers into the roads and
+importing no trails gives exactly the six-color output as before, and each
+extra layer that has something to draw adds exactly one filament.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.

@@ -1,6 +1,8 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::surface::SurfaceField;
+
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
 const MAX_TERRAIN_SAMPLES_PER_PIECE: u32 = 160;
@@ -199,6 +201,89 @@ impl GenerationSpec {
         !self.trails.is_empty()
     }
 
+    /// Whether the railway layer — `railway=*`: trains, trams, metros,
+    /// funiculars, monorails — is drawn at all. Like roads it rides on color
+    /// output, because it comes from the same OpenStreetMap fetch the color
+    /// pipeline runs.
+    pub fn uses_rail(&self) -> bool {
+        self.color_output.enabled && self.color_output.rail_enabled
+    }
+
+    /// Whether the aerialway layer — `aerialway=*`: cable cars, gondolas,
+    /// chair lifts, drag lifts, rope tows — is drawn at all. It switches
+    /// independently of the railway layer: a chairlift up a ski slope and a
+    /// mainline railway are different features, and a map may want one
+    /// without the other.
+    pub fn uses_aerial(&self) -> bool {
+        self.color_output.enabled && self.color_output.aerial_enabled
+    }
+
+    /// Whether either rail-family layer is drawn. The two share a fetch
+    /// pipeline, a lifecycle setting, and the piece-level overlay gate.
+    pub fn uses_rail_or_aerial(&self) -> bool {
+        self.uses_rail() || self.uses_aerial()
+    }
+
+    /// Where the railway layer paints: `Separate` gives it the Rail class,
+    /// color, and filament slot; `WithRoads` paints it as a road, in the
+    /// road color at the road width.
+    ///
+    /// This answers only "how would railways look", so it ignores
+    /// `rail_enabled`; [`Self::uses_rail`] decides whether they are drawn.
+    pub fn rail_line_style(&self) -> LineStyle {
+        match self.color_output.rail_style {
+            RailStyle::Separate => LineStyle {
+                class: SurfaceClass::Rail,
+                width_mm: self.color_output.rail_width_mm,
+            },
+            RailStyle::WithRoads => self.road_line_style(),
+        }
+    }
+
+    /// Where the aerialway layer paints.
+    ///
+    /// `WithRail` follows whatever the railway layer resolves to, so lifts
+    /// and trains share one spool and one look when a user asks for that.
+    ///
+    /// The chain is total. When the railway layer is switched OFF there is
+    /// no rail styling to follow, and `with_rail` falls through to the
+    /// railway layer's own default, `with_roads`. It deliberately does not
+    /// draw nothing — an enabled layer that vanished because an unrelated
+    /// toggle moved would be a trap — and it deliberately does not borrow
+    /// the Rail class, because a switched-off railway layer must not put a
+    /// rail color into the archive.
+    pub fn aerial_line_style(&self) -> LineStyle {
+        match self.color_output.aerial_style {
+            AerialStyle::Separate => LineStyle {
+                class: SurfaceClass::Aerial,
+                width_mm: self.color_output.aerial_width_mm,
+            },
+            AerialStyle::WithRoads => self.road_line_style(),
+            AerialStyle::WithRail if self.color_output.rail_enabled => self.rail_line_style(),
+            AerialStyle::WithRail => self.road_line_style(),
+        }
+    }
+
+    fn road_line_style(&self) -> LineStyle {
+        LineStyle {
+            class: SurfaceClass::Road,
+            width_mm: self.color_output.road_width_mm,
+        }
+    }
+
+    /// Whether drawn railways get their own class, color, and filament slot.
+    pub fn uses_separate_rail(&self) -> bool {
+        self.uses_rail() && self.color_output.rail_style == RailStyle::Separate
+    }
+
+    /// Whether drawn aerialways get their own class, color, and filament
+    /// slot. Note that an aerial layer set to `with_rail` over a
+    /// separately-styled railway layer paints in the RAIL class, so this
+    /// stays false while the Rail slot covers both.
+    pub fn uses_separate_aerial(&self) -> bool {
+        self.uses_aerial() && self.aerial_line_style().class == SurfaceClass::Aerial
+    }
+
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
     }
@@ -285,23 +370,101 @@ impl GenerationSpec {
         self.color_output.enabled || self.buildings.enabled || self.uses_trails()
     }
 
-    /// The color of every emitted material slot, ordered by
-    /// `SurfaceClass::material_index`. The trail slot exists only when the
-    /// spec carries trails, so slot count and colors stay exactly as before
-    /// for every spec without them.
-    pub(crate) fn material_colors(&self) -> Vec<&str> {
-        let mut colors = vec![
-            self.color_output.rock_color.as_str(),
-            self.color_output.forest_color.as_str(),
-            self.color_output.snow_color.as_str(),
-            self.color_output.water_color.as_str(),
-            self.color_output.road_color.as_str(),
-            self.color_output.building_color.as_str(),
-        ];
-        if self.uses_trails() {
-            colors.push(self.color_output.trail_color.as_str());
+    /// The filament palette of one archive: every surface class it can
+    /// emit, in `SurfaceClass::ALL` order, packed into consecutive slots.
+    ///
+    /// The palette is DENSE. A class the archive never paints takes no slot
+    /// and the classes after it move up, so a separately-styled rail layer
+    /// without imported trails is seven colors with rail in slot seven — not
+    /// eight with an unreferenced trail placeholder. It filters
+    /// `SurfaceClass::ALL` rather than reordering it, so the same feature
+    /// always lands in the same relative position, and it is computed once
+    /// per archive, so every mesh in the file agrees on it.
+    ///
+    /// Membership takes TWO tests, and a class needs both.
+    ///
+    /// The spec test asks whether the settings draw the class at all. The
+    /// `surface` test asks whether the drawn data actually contains one —
+    /// because with both rail-family layers coloring themselves by default,
+    /// a settings-only palette would charge a spool for cable cars in a city
+    /// that has none, and the whole point of packing the palette is not to
+    /// bill for what is not there. Passing `None` (a tray, or any archive
+    /// with no surface data) skips the second test, which can only ever make
+    /// the palette larger.
+    ///
+    /// The result is a SUPERSET of what any mesh in the archive paints, and
+    /// that direction is the one that matters:
+    ///
+    /// - The base six are unconditional. Terrain tops sample the field's
+    ///   base classes; every wall, floor, and underside is Rock; building
+    ///   shells are Building; road ribbons and every bridge deck default to
+    ///   Road; and tray meshes, which carry no field at all, use Rock,
+    ///   Forest, and Snow. Holding all six by construction covers each of
+    ///   those without a per-source special case — and keeps every archive
+    ///   written before the palette became dense byte-for-byte unchanged.
+    /// - Trails, railways, and aerialways only ever reach a mesh as vector
+    ///   lines of the surface field, which is exactly what
+    ///   [`SurfaceField::contained_classes`] reports.
+    ///
+    /// So a triangle without a slot is unreachable, and the export can never
+    /// be refused over a thin line the palette missed. The cost is that the
+    /// palette may be slightly LOOSE — a line in the field that no piece
+    /// happens to sample still takes a slot. That is the right way round.
+    pub(crate) fn material_palette<'spec>(
+        &'spec self,
+        surface: Option<&SurfaceField>,
+    ) -> MaterialPalette<'spec> {
+        let contained = surface.map(SurfaceField::contained_classes);
+        let mut palette = MaterialPalette::default();
+        for class in SurfaceClass::ALL {
+            // Only the optional layers consult the data; see above for why
+            // the base six are unconditional.
+            let in_data = matches!(
+                class,
+                SurfaceClass::Rock
+                    | SurfaceClass::Forest
+                    | SurfaceClass::Snow
+                    | SurfaceClass::Water
+                    | SurfaceClass::Road
+                    | SurfaceClass::Building
+            ) || contained
+                .is_none_or(|present| present[class.material_index() as usize]);
+            if !self.emits_class(class) || !in_data {
+                continue;
+            }
+            palette.slots[class.material_index() as usize] = Some(palette.colors.len() as u32);
+            palette.colors.push(self.class_color(class));
         }
-        colors
+        palette
+    }
+
+    /// Whether a spec's SETTINGS draw this class at all.
+    fn emits_class(&self, class: SurfaceClass) -> bool {
+        match class {
+            SurfaceClass::Rock
+            | SurfaceClass::Forest
+            | SurfaceClass::Snow
+            | SurfaceClass::Water
+            | SurfaceClass::Road
+            | SurfaceClass::Building => true,
+            SurfaceClass::Trail => self.uses_trails(),
+            SurfaceClass::Rail => self.uses_separate_rail(),
+            SurfaceClass::Aerial => self.uses_separate_aerial(),
+        }
+    }
+
+    fn class_color(&self, class: SurfaceClass) -> &str {
+        match class {
+            SurfaceClass::Rock => &self.color_output.rock_color,
+            SurfaceClass::Forest => &self.color_output.forest_color,
+            SurfaceClass::Snow => &self.color_output.snow_color,
+            SurfaceClass::Water => &self.color_output.water_color,
+            SurfaceClass::Road => &self.color_output.road_color,
+            SurfaceClass::Building => &self.color_output.building_color,
+            SurfaceClass::Trail => &self.color_output.trail_color,
+            SurfaceClass::Rail => &self.color_output.rail_color,
+            SurfaceClass::Aerial => &self.color_output.aerial_color,
+        }
     }
 
     fn mesh_piece_count(&self) -> u32 {
@@ -310,6 +473,38 @@ impl GenerationSpec {
         } else {
             self.rows.max(self.columns)
         }
+    }
+}
+
+/// One archive's dense filament palette: the colors it emits, in slot order,
+/// and the slot each surface class was packed into.
+///
+/// Built once per 3MF by [`GenerationSpec::material_palette`] and used by
+/// every part of the write that has to agree on a slot number — the color
+/// group, the per-triangle `p1`/`p2`/`p3` indices, the OrcaSlicer paint
+/// codes, and the per-filament project-settings arrays. A slot number used
+/// inconsistently between any two of those would mis-color the print, so
+/// they all read it from here.
+#[derive(Debug, Default)]
+pub(crate) struct MaterialPalette<'spec> {
+    colors: Vec<&'spec str>,
+    slots: [Option<u32>; SurfaceClass::ALL.len()],
+}
+
+impl<'spec> MaterialPalette<'spec> {
+    /// The emitted colors, indexed by slot.
+    pub(crate) fn colors(&self) -> &[&'spec str] {
+        &self.colors
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.colors.len()
+    }
+
+    /// The slot a class paints into, or `None` when the palette does not
+    /// carry it. Callers that must not fail check membership first.
+    pub(crate) fn slot(&self, class: SurfaceClass) -> Option<u32> {
+        self.slots[class.material_index() as usize]
     }
 }
 
@@ -498,6 +693,120 @@ pub enum RoadDetail {
     All,
 }
 
+/// How drawn railways are colored.
+///
+/// `Separate` is the default: a railway is not a road, and a map that paints
+/// it as one has thrown away the distinction the reader came for. Picking it
+/// out in steel is the point of drawing it at all. Because the 3MF emits only
+/// the colors a model actually uses, that costs exactly one filament slot and
+/// nothing else.
+///
+/// `WithRoads` stays available for anyone who would rather spend the spool
+/// elsewhere: it paints railways in the road class, in the road color, at the
+/// road width, so they still show up without adding a filament.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailStyle {
+    /// Railways get their own class, color, and filament slot.
+    #[default]
+    Separate,
+    /// Railways paint as roads, in the road color and at the road width.
+    WithRoads,
+}
+
+/// How drawn aerialways — cable cars, gondolas, chair lifts, drag lifts,
+/// rope tows — are colored.
+///
+/// `Separate` is the default, for the same reason railways default to their
+/// own color: a chair lift up a ski slope is not a road and not a railway,
+/// and the map is worth more when it says so. It costs one filament slot.
+///
+/// `WithRail` folds lifts into the railway layer, so the two rail-family
+/// layers share one spool and one look; `WithRoads` folds them into the
+/// roads. [`GenerationSpec::aerial_line_style`] resolves the chain, including
+/// the case where the railway layer `WithRail` names is switched off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AerialStyle {
+    /// Aerialways get their own class, color, and filament slot.
+    #[default]
+    Separate,
+    /// Aerialways follow the railway layer's style.
+    WithRail,
+    /// Aerialways paint as roads, in the road color and at the road width.
+    WithRoads,
+}
+
+/// Which lifecycle states of railway and aerialway line the map draws.
+///
+/// The settings are CUMULATIVE: each keeps everything the one before it
+/// kept and adds a state. OpenStreetMap writes a line's state either as a
+/// bare key beside the in-service tag (`railway=rail` plus `disused=yes`) or
+/// as a namespace that replaces it (`disused:railway=rail`); both forms mean
+/// the same thing here and are read the same way.
+///
+/// The distinction the settings turn on is what is left on the ground.
+/// `disused:` track still has its rails, ties, and ballast in place and a
+/// disused lift still has its cable and pylons — the feature is intact, just
+/// not running. `abandoned:` track has had the rails lifted, but the
+/// formation is still there and often the most legible line in the
+/// landscape: embankments, cuttings, a dead-straight trackbed, the cleared
+/// swath of an old lift line. Both are worth printing if the user wants
+/// them, and neither is worth printing by default, so the default is
+/// `Operational` and today's output does not move.
+///
+/// Two groups stay excluded at EVERY setting, because a terrain model is a
+/// record of what stands on the ground:
+///
+/// - `razed:`, `dismantled:`, `demolished:`, `removed:`, and `historic:`
+///   mean the structure and its earthworks are gone; the way survives in
+///   OpenStreetMap as a record of where something used to be. Printing it
+///   would raise a ridge across ground that is flat.
+/// - `proposed:` and `construction:` are the mirror image: nothing is there
+///   yet. `construction:` is the arguable one, since a line being built
+///   usually does have a graded formation — but the tag covers everything
+///   from a surveyed alignment on paper to rails going down this week, so it
+///   cannot be read as "there is earthwork here". A model that drew it would
+///   show a feature a visitor would not find.
+///
+/// One setting covers both rail-family layers. The states are one physical
+/// question, OpenStreetMap encodes them identically for `railway` and
+/// `aerialway`, and splitting them would double the fetch-cache matrix to
+/// buy the ability to ask for running trains beside derelict ski lifts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailLifecycle {
+    /// In service only. Today's behavior, and the default.
+    #[default]
+    Operational,
+    /// Adds track and lift lines still in place but out of use.
+    Disused,
+    /// Adds `disused`, plus lifted track whose formation is still visible.
+    Abandoned,
+}
+
+impl RailLifecycle {
+    /// Stable short name, used in the fetch cache key and the data-source
+    /// note. It is part of the CACHE KEY because it changes the Overpass
+    /// query: a download made with out-of-service lines filtered out must
+    /// never be served to a request that asked for them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Operational => "operational",
+            Self::Disused => "disused",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+/// Where a drawn line layer lands: the surface class its geometry carries,
+/// and the print width its per-type scales multiply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineStyle {
+    pub class: SurfaceClass,
+    pub width_mm: f32,
+}
+
 /// A road detail level with `Automatic` already resolved against the map
 /// span, so consumers never have to handle the automatic case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +921,39 @@ pub struct ColorOutputSpec {
     pub trail_color: String,
     /// Print width of imported trail lines, like `road_width_mm` for roads.
     pub trail_width_mm: f32,
+    /// Draw railways — `railway=*`, so trains, trams, metros, funiculars,
+    /// monorails — from OpenStreetMap. On by default: a map that drops the
+    /// rail network is simply wrong, and the default `rail_style` draws it
+    /// without costing a filament slot.
+    pub rail_enabled: bool,
+    /// Color of railways when `rail_style` is `separate`. Ignored — and
+    /// never emitted into any artifact — under the default `with_roads`
+    /// style.
+    pub rail_color: String,
+    /// Print width of railway lines when `rail_style` is `separate`; under
+    /// `with_roads` the road width applies instead.
+    pub rail_width_mm: f32,
+    /// Whether railways get their own color and filament slot (the default)
+    /// or paint as roads.
+    pub rail_style: RailStyle,
+    /// Which lifecycle states of line to draw. Governs the railway AND the
+    /// aerialway layer; see [`RailLifecycle`] for why they share it and for
+    /// what stays excluded whatever it is set to.
+    pub rail_lifecycle: RailLifecycle,
+    /// Draw aerialways — `aerialway=*`, so cable cars, gondolas, chair
+    /// lifts, drag lifts, rope tows — from OpenStreetMap. On by default and
+    /// switchable apart from railways: a ski map wants the lifts without the
+    /// mainline, a city map the mainline without the lifts.
+    pub aerial_enabled: bool,
+    /// Color of aerialways when `aerial_style` is `separate`. Ignored — and
+    /// never emitted into any artifact — otherwise.
+    pub aerial_color: String,
+    /// Print width of aerialway lines when `aerial_style` is `separate`;
+    /// otherwise the width of whichever layer they follow applies.
+    pub aerial_width_mm: f32,
+    /// Whether aerialways get their own color and filament slot (the
+    /// default), follow the railway layer, or paint as roads.
+    pub aerial_style: AerialStyle,
     pub roads_enabled: bool,
     pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
@@ -762,6 +1104,19 @@ impl Default for ColorOutputSpec {
             // color and stays clearly apart from the gold route color.
             trail_color: "#D6336C".into(),
             trail_width_mm: 0.7,
+            rail_enabled: true,
+            // Slate blue-grey: reads as steel against the gold roads and
+            // the raspberry trails without competing with the water blue.
+            rail_color: "#4A5568".into(),
+            rail_width_mm: 0.7,
+            rail_style: RailStyle::default(),
+            rail_lifecycle: RailLifecycle::default(),
+            aerial_enabled: true,
+            // Signal violet: apart from the raspberry trail color, which is
+            // pink-red, and from every terrain color and the water blue.
+            aerial_color: "#6C4CB6".into(),
+            aerial_width_mm: 0.7,
+            aerial_style: AerialStyle::default(),
             roads_enabled: true,
             road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
@@ -788,6 +1143,8 @@ impl ColorOutputSpec {
             ("road", &self.road_color),
             ("building", &self.building_color),
             ("trail", &self.trail_color),
+            ("rail", &self.rail_color),
+            ("aerialway", &self.aerial_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -798,6 +1155,12 @@ impl ColorOutputSpec {
         }
         if !(0.4..=5.0).contains(&self.trail_width_mm) {
             bail!("trail line width must be between 0.4 and 5 mm");
+        }
+        if !(0.4..=5.0).contains(&self.rail_width_mm) {
+            bail!("rail line width must be between 0.4 and 5 mm");
+        }
+        if !(0.4..=5.0).contains(&self.aerial_width_mm) {
+            bail!("aerialway line width must be between 0.4 and 5 mm");
         }
         if !(0.0..=100.0).contains(&self.waterway_coverage_percent) {
             bail!("waterway coverage cutoff must be between 0 and 100 percent");
@@ -833,14 +1196,25 @@ pub enum SurfaceClass {
     Road,
     Building,
     /// Imported hiker trails. The class only ever appears in generated
-    /// output when a spec carries trails, so its seventh material slot is
-    /// invisible to every existing project.
+    /// output when a spec carries trails.
     Trail,
+    /// Railways drawn in their own color, and the aerialways that follow
+    /// them. The class only ever appears when `rail_style` is `separate`.
+    Rail,
+    /// Aerialways drawn in their own color. The class only ever appears when
+    /// `aerial_style` is `separate`.
+    Aerial,
 }
 
 impl SurfaceClass {
-    /// Every class, ordered by `material_index`.
-    pub(crate) const ALL: [Self; 7] = [
+    /// Every class, in `material_index` order.
+    ///
+    /// This order is the CLASS identity used by the preview, the coverage
+    /// histogram, and the mesh materials. It is not a filament slot: the
+    /// 3MF packs whichever of these classes a spec actually emits into
+    /// consecutive slots, so a class that never appears costs nothing. See
+    /// [`GenerationSpec::material_palette`].
+    pub(crate) const ALL: [Self; 9] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -848,6 +1222,8 @@ impl SurfaceClass {
         Self::Road,
         Self::Building,
         Self::Trail,
+        Self::Rail,
+        Self::Aerial,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -859,6 +1235,8 @@ impl SurfaceClass {
             Self::Road => 4,
             Self::Building => 5,
             Self::Trail => 6,
+            Self::Rail => 7,
+            Self::Aerial => 8,
         }
     }
 }
@@ -975,7 +1353,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1039,6 +1417,15 @@ mod tests {
                 "building_color": "#997755",
                 "trail_color": "#CC2266",
                 "trail_width_mm": 1.5,
+                "rail_enabled": false,
+                "rail_color": "#334455",
+                "rail_width_mm": 1.25,
+                "rail_style": "separate",
+                "rail_lifecycle": "abandoned",
+                "aerial_enabled": false,
+                "aerial_color": "#5533AA",
+                "aerial_width_mm": 1.75,
+                "aerial_style": "separate",
                 "roads_enabled": false,
                 "road_detail": "streets",
                 "adaptive_road_widths": false,
@@ -1146,6 +1533,278 @@ mod tests {
         assert!(!spec.uses_color_materials());
         spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])];
         assert!(spec.uses_color_materials());
+    }
+
+    /// Both rail-family layers draw in their OWN color out of the box: that
+    /// is what was asked for, and it is what a map is for. Each costs
+    /// exactly one filament slot, no more, because the palette is dense.
+    #[test]
+    fn rail_defaults_draw_both_layers_in_their_own_colors() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "enabled": true }
+        }))
+        .unwrap();
+        assert!(spec.color_output.rail_enabled);
+        assert!(spec.color_output.aerial_enabled);
+        assert_eq!(spec.color_output.rail_style, RailStyle::Separate);
+        assert_eq!(spec.color_output.aerial_style, AerialStyle::Separate);
+        assert_eq!(spec.color_output.rail_lifecycle, RailLifecycle::Operational);
+        assert_eq!(spec.color_output.rail_color, "#4A5568");
+        assert_eq!(spec.color_output.aerial_color, "#6C4CB6");
+        assert_eq!(spec.color_output.rail_width_mm, 0.7);
+        assert_eq!(spec.color_output.aerial_width_mm, 0.7);
+        assert!(spec.uses_rail());
+        assert!(spec.uses_aerial());
+        assert!(spec.uses_separate_rail());
+        assert!(spec.uses_separate_aerial());
+        assert_eq!(spec.rail_line_style().class, SurfaceClass::Rail);
+        assert_eq!(spec.aerial_line_style().class, SurfaceClass::Aerial);
+        assert_eq!(
+            spec.rail_line_style().width_mm,
+            spec.color_output.rail_width_mm
+        );
+
+        // Eight slots: the base six plus one each, and no trail placeholder
+        // between them.
+        let palette = spec.material_palette(None);
+        assert_eq!(palette.len(), 8);
+        assert_eq!(palette.slot(SurfaceClass::Trail), None);
+        assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
+        assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
+
+        // Both layers ride on color output, like roads, so a model with
+        // color output off pays nothing for either.
+        let mut off = GenerationSpec::default();
+        assert!(!off.color_output.enabled);
+        assert!(!off.uses_rail());
+        assert!(!off.uses_aerial());
+        assert_eq!(off.material_palette(None).len(), 6);
+        off.color_output.enabled = true;
+        assert!(off.uses_rail_or_aerial());
+    }
+
+    /// The merged styles are the offered fallback for anyone who would
+    /// rather not spend the spools: choosing them puts the layers back in
+    /// the road class and the palette back to six.
+    #[test]
+    fn merged_styles_fold_both_layers_back_into_the_roads() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.rail_style = RailStyle::WithRoads;
+        spec.color_output.aerial_style = AerialStyle::WithRail;
+        assert!(spec.uses_rail());
+        assert!(spec.uses_aerial());
+        assert!(!spec.uses_separate_rail());
+        assert!(!spec.uses_separate_aerial());
+        assert_eq!(spec.rail_line_style(), spec.aerial_line_style());
+        assert_eq!(spec.rail_line_style().class, SurfaceClass::Road);
+        assert_eq!(
+            spec.rail_line_style().width_mm,
+            spec.color_output.road_width_mm
+        );
+        assert_eq!(spec.material_palette(None).len(), 6);
+
+        spec.color_output.aerial_style = AerialStyle::WithRoads;
+        assert_eq!(spec.aerial_line_style().class, SurfaceClass::Road);
+        assert_eq!(spec.material_palette(None).len(), 6);
+    }
+
+    /// The two layers switch independently, and each separate style costs
+    /// exactly one slot — no placeholder rides along behind it.
+    #[test]
+    fn each_rail_layer_toggles_and_colors_on_its_own() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        // Start from the merged styles so each slot below is one this test
+        // switched on deliberately.
+        spec.color_output.rail_style = RailStyle::WithRoads;
+        spec.color_output.aerial_style = AerialStyle::WithRail;
+
+        spec.color_output.rail_enabled = false;
+        assert!(!spec.uses_rail());
+        assert!(spec.uses_aerial(), "lifts survive switching off trains");
+        spec.color_output.rail_enabled = true;
+        spec.color_output.aerial_enabled = false;
+        assert!(spec.uses_rail(), "trains survive switching off lifts");
+        assert!(!spec.uses_aerial());
+        spec.color_output.aerial_enabled = true;
+
+        // Separate rail alone: seven colors, rail in slot seven, and no
+        // unreferenced trail placeholder in front of it.
+        spec.color_output.rail_style = RailStyle::Separate;
+        assert!(spec.uses_separate_rail());
+        assert!(
+            !spec.uses_separate_aerial(),
+            "an aerial layer left on with_rail shares the rail slot"
+        );
+        let palette = spec.material_palette(None);
+        assert_eq!(palette.len(), 7);
+        assert_eq!(palette.colors()[6], "#4A5568");
+        assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
+        assert_eq!(palette.slot(SurfaceClass::Trail), None);
+        assert_eq!(palette.slot(SurfaceClass::Building), Some(5));
+
+        // Separate aerial alongside it: eight colors, aerial last.
+        spec.color_output.aerial_style = AerialStyle::Separate;
+        assert!(spec.uses_separate_aerial());
+        let palette = spec.material_palette(None);
+        assert_eq!(palette.len(), 8);
+        assert_eq!(palette.colors()[7], "#6C4CB6");
+        assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
+        assert_eq!(palette.slot(SurfaceClass::Trail), None);
+
+        // Separate aerial WITHOUT rail: seven colors, aerial in slot seven.
+        spec.color_output.rail_style = RailStyle::WithRoads;
+        let palette = spec.material_palette(None);
+        assert_eq!(palette.len(), 7);
+        assert_eq!(palette.colors()[6], "#6C4CB6");
+        assert_eq!(palette.slot(SurfaceClass::Rail), None);
+        assert_eq!(palette.slot(SurfaceClass::Aerial), Some(6));
+
+        // Trails ahead of it push it along, and the order never reorders.
+        spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])];
+        let palette = spec.material_palette(None);
+        assert_eq!(palette.len(), 8);
+        assert_eq!(palette.slot(SurfaceClass::Trail), Some(6));
+        assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
+
+        // Switching both layers off drops the extra slots again.
+        spec.trails.clear();
+        spec.color_output.aerial_enabled = false;
+        spec.color_output.rail_enabled = false;
+        assert_eq!(spec.material_palette(None).len(), 6);
+    }
+
+    /// The aerial style chain is total, including when the railway layer it
+    /// names is switched off.
+    #[test]
+    fn aerial_style_resolves_through_the_rail_layer() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.rail_style = RailStyle::WithRoads;
+        spec.color_output.aerial_style = AerialStyle::WithRail;
+        spec.color_output.road_width_mm = 1.0;
+        spec.color_output.rail_width_mm = 2.0;
+        spec.color_output.aerial_width_mm = 3.0;
+        let road = LineStyle {
+            class: SurfaceClass::Road,
+            width_mm: 1.0,
+        };
+        let rail = LineStyle {
+            class: SurfaceClass::Rail,
+            width_mm: 2.0,
+        };
+        let aerial = LineStyle {
+            class: SurfaceClass::Aerial,
+            width_mm: 3.0,
+        };
+
+        // with_rail over a rail layer set to with_roads.
+        assert_eq!(spec.aerial_line_style(), road);
+
+        // with_rail over a separately-styled rail layer: the rail class and
+        // the RAIL width, so the two layers really are one look.
+        spec.color_output.rail_style = RailStyle::Separate;
+        assert_eq!(spec.aerial_line_style(), rail);
+
+        // with_rail with the rail layer switched OFF falls through to roads.
+        // It cannot draw nothing — the aerial layer's own switch decides
+        // that — and it cannot borrow a rail color the archive never emits.
+        spec.color_output.rail_enabled = false;
+        assert_eq!(spec.aerial_line_style(), road);
+        assert!(!spec.uses_separate_aerial());
+        assert_eq!(spec.material_palette(None).slot(SurfaceClass::Rail), None);
+        spec.color_output.rail_enabled = true;
+
+        // The explicit styles ignore the rail layer entirely.
+        spec.color_output.aerial_style = AerialStyle::WithRoads;
+        assert_eq!(spec.aerial_line_style(), road);
+        spec.color_output.rail_enabled = false;
+        assert_eq!(spec.aerial_line_style(), road);
+        spec.color_output.aerial_style = AerialStyle::Separate;
+        assert_eq!(spec.aerial_line_style(), aerial);
+        spec.color_output.rail_enabled = true;
+        assert_eq!(spec.aerial_line_style(), aerial);
+    }
+
+    #[test]
+    fn lifecycle_settings_are_cumulative_and_default_to_operational() {
+        assert_eq!(RailLifecycle::default(), RailLifecycle::Operational);
+        assert!(RailLifecycle::Disused > RailLifecycle::Operational);
+        assert!(RailLifecycle::Abandoned > RailLifecycle::Disused);
+        assert_eq!(RailLifecycle::Operational.name(), "operational");
+        assert_eq!(RailLifecycle::Disused.name(), "disused");
+        assert_eq!(RailLifecycle::Abandoned.name(), "abandoned");
+
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "rail_lifecycle": "abandoned" }
+        }))
+        .unwrap();
+        assert_eq!(
+            spec.color_output.rail_lifecycle,
+            RailLifecycle::Abandoned,
+            "one setting covers both rail-family layers"
+        );
+        assert_eq!(
+            serde_json::to_value(RailLifecycle::Operational).unwrap(),
+            serde_json::json!("operational")
+        );
+    }
+
+    #[test]
+    fn rail_styles_parse_as_snake_case_and_rail_settings_validate() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "rail_style": "with_roads" }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.rail_style, RailStyle::WithRoads);
+        assert_eq!(
+            serde_json::to_value(RailStyle::WithRoads).unwrap(),
+            serde_json::json!("with_roads")
+        );
+        assert_eq!(
+            serde_json::to_value(RailStyle::Separate).unwrap(),
+            serde_json::json!("separate")
+        );
+
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "aerial_style": "with_roads" }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.aerial_style, AerialStyle::WithRoads);
+        for (style, name) in [
+            (AerialStyle::Separate, "separate"),
+            (AerialStyle::WithRail, "with_rail"),
+            (AerialStyle::WithRoads, "with_roads"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(style).unwrap(),
+                serde_json::json!(name)
+            );
+        }
+
+        let mut spec = GenerationSpec::default();
+        spec.color_output.rail_width_mm = 0.2;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("rail line width"));
+        spec.color_output.rail_width_mm = 5.0;
+        assert!(spec.validate().is_ok());
+        spec.color_output.rail_width_mm = 5.1;
+        assert!(spec.validate().is_err());
+
+        spec.color_output.rail_width_mm = 0.7;
+        spec.color_output.aerial_width_mm = 0.2;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("aerialway line width"));
+        spec.color_output.aerial_width_mm = 0.7;
+
+        spec.color_output.rail_color = "steel".into();
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("rail color"));
+        spec.color_output.rail_color = "#4A5568".into();
+        spec.color_output.aerial_color = "violet".into();
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("aerialway color"));
     }
 
     #[test]

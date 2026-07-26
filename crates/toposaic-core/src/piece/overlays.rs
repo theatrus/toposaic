@@ -1,5 +1,5 @@
-//! Overlay shells: road and bridge-deck ribbons, imported trails, and the
-//! generic footprint-to-shell machinery they share.
+//! Overlay shells: road and bridge-deck ribbons, imported trails, railways,
+//! and the generic footprint-to-shell machinery they share.
 
 use std::collections::HashMap;
 
@@ -24,7 +24,7 @@ use super::{
     sanitize_footprint_group, simplify_closed_ring, terrain_z_at,
 };
 
-/// Builds the road shells of one piece.
+/// Builds the road, trail, and railway shells of one piece.
 ///
 /// Ordinary roads all share one terrain-following surface, so their clipped
 /// ribbons are unioned into a single footprint per piece and each connected
@@ -34,6 +34,10 @@ use super::{
 /// elevation profile. Every road footprint also keeps
 /// [`OVERLAY_SEPARATION_MM`] clear of the building union so road and
 /// building shells never share welded vertices.
+///
+/// Imported trails and separately-styled railways follow through
+/// [`append_overlay_geometry`], each yielding to the layers already placed,
+/// so adding a layer never disturbs the ones before it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_road_geometry(
     mesh: &mut Mesh,
@@ -85,10 +89,21 @@ pub(super) fn append_road_geometry(
         );
         bounds_overlap(piece_bounds, line_bounds) && line.points_mm.len() >= 2
     };
-    let roads = surface_field
+    // Roads and separately-styled railways and aerialways share the bridge
+    // pipeline: a viaduct is a road bridge in another color. Their
+    // terrain-following ribbons stay apart, because each must yield to the
+    // layers already placed the way trails do. Under the default styles
+    // neither a Rail nor an Aerial line exists and this walks the exact
+    // road-only path.
+    let road_and_rail = surface_field
         .vector_lines
         .iter()
-        .filter(|line| line.class == SurfaceClass::Road)
+        .filter(|line| {
+            matches!(
+                line.class,
+                SurfaceClass::Road | SurfaceClass::Rail | SurfaceClass::Aerial
+            )
+        })
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
     // Imported trails are Trail-class lines; they only exist when the spec
@@ -99,7 +114,7 @@ pub(super) fn append_road_geometry(
         .filter(|line| line.class == SurfaceClass::Trail)
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
-    if roads.is_empty() && trail_lines.is_empty() {
+    if road_and_rail.is_empty() && trail_lines.is_empty() {
         return Ok(());
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
@@ -129,9 +144,17 @@ pub(super) fn append_road_geometry(
         }
         clipped
     };
-    let (bridges, regular): (Vec<_>, Vec<_>) = roads
+    let (bridges, regular): (Vec<_>, Vec<_>) = road_and_rail
         .into_iter()
         .partition(|line| line.bridge_elevations_m.is_some());
+    // Terrain-following railways and aerialways are separate unions from the
+    // roads', so they can be cut back against the road union below.
+    let (rail_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Rail);
+    let (aerial_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Aerial);
     // Ordinary ribbons are clipped in parallel and unioned; the union is
     // shelled per connected component further below, once the bridge decks
     // it must keep clear of are known.
@@ -282,6 +305,14 @@ pub(super) fn append_road_geometry(
         let embed_mm = quantize_export_coordinate(
             OVERLAY_TERRAIN_EMBED_MM + ((ordinal % 64) as f32 + 1.0) * 0.000_05,
         );
+        // Groups merge purely on overlap and deck level, never on class, so
+        // that two same-level ribbons can never leave coincident faces. In
+        // the vanishingly rare case a rail viaduct and a road bridge merge,
+        // the group takes the first line's material — a color compromise,
+        // not a manifold one.
+        let material = group_lines
+            .first()
+            .map_or(SurfaceClass::Road, |line| line.class);
         let deck_area = sanitize_footprint_group(deck_area.clone(), true);
         let group_shells = deck_area
             .0
@@ -299,6 +330,7 @@ pub(super) fn append_road_geometry(
                     assembled_width,
                     assembled_height,
                     embed_mm,
+                    material,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -306,13 +338,59 @@ pub(super) fn append_road_geometry(
             mesh.append_isolated(shell);
         }
     }
+    // Trails yield to the roads and their decks; railways yield to those and
+    // to the trails. Each layer only ever cedes ground to the layers added
+    // before it, so adding railways leaves trail geometry untouched.
+    let mut claimed = vec![road_area];
     if !trail_lines.is_empty() {
-        append_trail_geometry(
+        let trail_area = append_overlay_geometry(
             mesh,
             spec,
+            SurfaceClass::Trail,
+            "triangulate imported trail ribbon",
             &trail_lines,
             &clip_ribbon,
-            &road_area,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(trail_area);
+    }
+    if !rail_regular.is_empty() {
+        let rail_area = append_overlay_geometry(
+            mesh,
+            spec,
+            SurfaceClass::Rail,
+            "triangulate railway ribbon",
+            &rail_regular,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(rail_area);
+    }
+    // Aerialways go last, so switching the lift layer on can never move a
+    // road, trail, or railway triangle that was already there.
+    if !aerial_regular.is_empty() {
+        append_overlay_geometry(
+            mesh,
+            spec,
+            SurfaceClass::Aerial,
+            "triangulate aerialway ribbon",
+            &aerial_regular,
+            &clip_ribbon,
+            &claimed,
             &decks,
             height_field,
             height_range,
@@ -325,19 +403,25 @@ pub(super) fn append_road_geometry(
     Ok(())
 }
 
-/// Builds the imported-trail shells of one piece: terrain-following ribbons
-/// raised by the road layer height, in the Trail material. Trail footprints
-/// are clipped and unioned exactly like plain roads and additionally keep
-/// [`OVERLAY_SEPARATION_MM`] clear of the road union and every bridge deck,
-/// so a trail crossing a road never leaves coincident top or bottom faces
-/// for a slicer weld to fuse into non-manifold edges.
+/// Builds one secondary overlay's shells for a piece: terrain-following
+/// ribbons raised by the road layer height, in that overlay's own material.
+/// Imported trails and separately-styled railways both come through here.
+///
+/// Footprints are clipped and unioned exactly like plain roads and
+/// additionally keep [`OVERLAY_SEPARATION_MM`] clear of every already
+/// `claimed` area and of every bridge deck, so an overlay crossing a road
+/// never leaves coincident top or bottom faces for a slicer weld to fuse
+/// into non-manifold edges. Returns the finished footprint so a later
+/// overlay can claim against it in turn.
 #[allow(clippy::too_many_arguments)]
-fn append_trail_geometry(
+fn append_overlay_geometry(
     mesh: &mut Mesh,
     spec: &GenerationSpec,
-    trail_lines: &[&VectorSurfaceLine],
+    material: SurfaceClass,
+    error_context: &'static str,
+    lines: &[&VectorSurfaceLine],
     clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
-    road_area: &MultiPolygon<f64>,
+    claimed: &[MultiPolygon<f64>],
     decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
     height_field: Option<&HeightField>,
     height_range: Option<(f32, f32)>,
@@ -345,12 +429,12 @@ fn append_trail_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
-) -> Result<()> {
-    let trail_clips = trail_lines
+) -> Result<MultiPolygon<f64>> {
+    let clips = lines
         .par_iter()
         .map(|line| clip_ribbon(line))
         .collect::<Vec<_>>();
-    let mut trail_area = unary_union(trail_clips.iter());
+    let mut overlay_area = unary_union(clips.iter());
     let grown = |area: &MultiPolygon<f64>| {
         let buffered = area
             .0
@@ -359,15 +443,17 @@ fn append_trail_geometry(
             .collect::<Vec<_>>();
         unary_union(buffered.iter())
     };
-    if !road_area.0.is_empty() {
-        trail_area = trail_area.difference(&grown(road_area));
+    for area in claimed {
+        if !area.0.is_empty() {
+            overlay_area = overlay_area.difference(&grown(area));
+        }
     }
-    // Decks are cut out of the trail only where they sit at trail (terrain)
-    // level — the same [`BRIDGE_DECK_JOIN_MM`] gate the road union uses. An
-    // elevated deck shares no faces with a terrain-following trail, so a
-    // trail under a flyover keeps running instead of getting a gap.
+    // Decks are cut out only where they sit at overlay (terrain) level — the
+    // same [`BRIDGE_DECK_JOIN_MM`] gate the road union uses. An elevated
+    // deck shares no faces with a terrain-following ribbon, so a trail or a
+    // railway under a flyover keeps running instead of getting a gap.
     for (group_lines, deck_area) in decks {
-        for overlap in trail_area.intersection(deck_area).0 {
+        for overlap in overlay_area.intersection(deck_area).0 {
             if overlap.unsigned_area() <= MINIMUM_OVERLAY_AREA_MM2 {
                 continue;
             }
@@ -377,28 +463,28 @@ fn append_trail_geometry(
             let assembled = [sample.x() as f32 + origin_x, sample.y() as f32 + origin_y];
             let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
             let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
-            let trail_level = terrain_z_at(spec, height_field, height_range, u, v);
+            let overlay_level = terrain_z_at(spec, height_field, height_range, u, v);
             let deck_level = nearest_deck_line(group_lines, assembled)
                 .map(|line| bridge_line_z(spec, line, height_field, height_range, u, v))
-                .unwrap_or(trail_level);
-            if (deck_level - trail_level).abs() <= BRIDGE_DECK_JOIN_MM {
-                trail_area = trail_area.difference(&overlap.buffer(OVERLAY_SEPARATION_MM));
+                .unwrap_or(overlay_level);
+            if (deck_level - overlay_level).abs() <= BRIDGE_DECK_JOIN_MM {
+                overlay_area = overlay_area.difference(&overlap.buffer(OVERLAY_SEPARATION_MM));
             }
         }
     }
-    // The differences above leave hair-thin slivers where a trail border
+    // The differences above leave hair-thin slivers where an overlay border
     // runs nearly tangent to a road border: boundary vertices one export
     // quantum apart that triangulate into zero-area faces. A Douglas-Peucker
     // pass at a tenth of the separation gap removes those vertices without
     // visibly moving the outline; sanitizing then handles exact duplicates.
-    let trail_area =
-        sanitize_footprint_group(trail_area.simplify(OVERLAY_SEPARATION_MM * 0.1), true);
+    let overlay_area =
+        sanitize_footprint_group(overlay_area.simplify(OVERLAY_SEPARATION_MM * 0.1), true);
     let surface_z = |point: [f32; 2]| {
         let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
         let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
         terrain_z_at(spec, height_field, height_range, u, v)
     };
-    let trail_shells = trail_area
+    let shells = overlay_area
         .0
         .par_iter()
         .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
@@ -408,15 +494,15 @@ fn append_trail_geometry(
                 |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
                 |point| surface_z(point) + spec.color_output.road_height_mm,
                 None,
-                SurfaceClass::Trail,
-                "triangulate imported trail ribbon",
+                material,
+                error_context,
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    for shell in trail_shells {
+    for shell in shells {
         mesh.append_isolated(shell);
     }
-    Ok(())
+    Ok(overlay_area)
 }
 
 /// Deck heights within this tolerance where two bridge ribbons overlap mean
@@ -500,6 +586,7 @@ fn build_road_polygon_shell(
         assembled_width,
         assembled_height,
         OVERLAY_TERRAIN_EMBED_MM,
+        SurfaceClass::Road,
     )
 }
 
@@ -515,6 +602,7 @@ fn build_road_polygon_shell_with_embed(
     assembled_width: f32,
     assembled_height: f32,
     embed_mm: f32,
+    material: SurfaceClass,
 ) -> Result<MeshBuilder> {
     let road_z = |point: [f32; 2]| {
         let assembled = [point[0] + origin_x, point[1] + origin_y];
@@ -561,7 +649,7 @@ fn build_road_polygon_shell_with_embed(
         bottom,
         top,
         boundary_step_mm,
-        SurfaceClass::Road,
+        material,
         "triangulate vector road ribbon",
     )
 }
@@ -796,10 +884,14 @@ mod tests {
             ..GenerationSpec::default()
         };
         let raised = build_piece(&spec, Some(&height_field), Some(&road_field), 0, 0).unwrap();
+        // Railways and aerialways paint as Road-class lines under their
+        // default styles, so "no road overlays" means turning all three off.
         let flat = build_piece(
             &GenerationSpec {
                 color_output: ColorOutputSpec {
                     roads_enabled: false,
+                    rail_enabled: false,
+                    aerial_enabled: false,
                     ..spec.color_output.clone()
                 },
                 ..spec.clone()
@@ -891,6 +983,196 @@ mod tests {
         let plain =
             build_piece(&no_trail_spec, Some(&height_field), Some(&road_only), 0, 0).unwrap();
         assert!(!plain.materials.contains(&SurfaceClass::Trail));
+    }
+
+    #[test]
+    fn separate_railways_ride_the_raised_road_treatment_beside_roads_and_trails() {
+        use crate::spec::RailStyle;
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "rail").unwrap();
+        // A road across the piece, a trail crossing it, and a railway
+        // crossing both.
+        field.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        field.paint_polyline(&[[0.5, 0.1], [0.5, 0.9]], 60.0, 0.7, SurfaceClass::Trail);
+        field.paint_polyline(&[[0.1, 0.2], [0.9, 0.8]], 60.0, 0.7, SurfaceClass::Rail);
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_height_mm: 0.2,
+                rail_enabled: true,
+                rail_style: RailStyle::Separate,
+                ..ColorOutputSpec::default()
+            },
+            trails: vec![crate::spec::TrailRoute {
+                name: "Crossing".into(),
+                points: vec![[46.8, -121.8], [46.9, -121.7]],
+            }],
+            ..GenerationSpec::default()
+        };
+        assert!(spec.uses_separate_rail());
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let rail_vertices = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Rail)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(mesh.materials.contains(&SurfaceClass::Trail));
+        assert!(rail_vertices.len() > 100);
+        let minimum_z = rail_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = rail_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        // Same raised layer as roads: embedded bottom, road-height top.
+        assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
+        assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
+        assert_watertight(&mesh);
+
+        // Under the default `with_roads` style no Rail line is ever painted,
+        // so a piece carries no Rail material at all.
+        let mut with_roads = spec.clone();
+        with_roads.color_output.rail_style = RailStyle::WithRoads;
+        let mut road_class = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "rail").unwrap();
+        road_class.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        road_class.paint_polyline(&[[0.1, 0.2], [0.9, 0.8]], 60.0, 0.7, SurfaceClass::Road);
+        let plain = build_piece(&with_roads, Some(&height_field), Some(&road_class), 0, 0).unwrap();
+        assert!(!plain.materials.contains(&SurfaceClass::Rail));
+        assert!(plain.materials.contains(&SurfaceClass::Road));
+        assert_watertight(&plain);
+    }
+
+    /// Railways switch on and off independently of roads, so a model with
+    /// the road layer off and railways on must still build overlay
+    /// geometry. Under the default `with_roads` style those railways are
+    /// Road-class lines, so nothing but the piece gate distinguishes this
+    /// from a road-less model — and the gate used to close on it.
+    #[test]
+    fn rail_only_models_still_build_their_overlay_geometry() {
+        use crate::spec::RailStyle;
+
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let spec = |roads_enabled, rail_enabled, rail_style| GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled,
+                rail_enabled,
+                rail_style,
+                // The aerialway layer follows the railway switch here, so
+                // "rail off" really means no rail-family overlay at all.
+                aerial_enabled: rail_enabled,
+                road_height_mm: 0.2,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        // The field the API produces for roads off, railways on, default
+        // style: one Road-class line that is really a railway.
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "rail-only").unwrap();
+        field.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+
+        let rail_only = spec(false, true, RailStyle::WithRoads);
+        assert!(rail_only.uses_rail());
+        assert!(!rail_only.uses_separate_rail());
+        let mesh = build_piece(&rail_only, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let raised = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize][2])
+            .collect::<Vec<_>>();
+        assert!(
+            !raised.is_empty(),
+            "a rail-only model must draw its railway"
+        );
+        let maximum = raised.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (maximum - (rail_only.base_mm + rail_only.color_output.road_height_mm)).abs() < 0.001
+        );
+        assert_watertight(&mesh);
+
+        // With both layers off the same field draws nothing, which is what
+        // makes the case above a real gate and not a no-op.
+        let neither = build_piece(
+            &spec(false, false, RailStyle::WithRoads),
+            Some(&height_field),
+            Some(&field),
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(!neither.materials.contains(&SurfaceClass::Road));
+        assert_watertight(&neither);
+    }
+
+    #[test]
+    fn railway_viaducts_shell_as_elevated_decks_in_the_rail_material() {
+        use crate::spec::RailStyle;
+
+        let height_field = HeightField::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 100.0, 0.0, 100.0, 0.0, 0.0, 0.0],
+            "viaduct",
+        )
+        .unwrap();
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "viaduct").unwrap();
+        field.paint_bridge_polyline_as(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            60.0,
+            1.0,
+            [100.0, 100.0],
+            SurfaceClass::Rail,
+        );
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                rail_enabled: true,
+                rail_style: RailStyle::Separate,
+                bridge_structure: BridgeStructure::Floating,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let rail_z = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Rail)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize][2])
+            .collect::<Vec<_>>();
+        assert!(!rail_z.is_empty(), "the viaduct must carry the rail color");
+        assert!(!mesh.materials.contains(&SurfaceClass::Road));
+        let minimum = rail_z.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = rail_z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        // A floating deck is exactly its thickness tall and hangs high above
+        // the valley floor, like a road bridge.
+        assert!((maximum - minimum - spec.color_output.bridge_thickness_mm).abs() < 0.001);
+        assert!(minimum > spec.base_mm + spec.relief_mm - 1.1);
+        assert_watertight(&mesh);
     }
 
     #[test]

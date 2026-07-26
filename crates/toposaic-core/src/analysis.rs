@@ -134,6 +134,8 @@ fn triangle_feature(mesh: &Mesh, triangle_index: usize) -> String {
         SurfaceClass::Building => format!("building-shell {orientation}"),
         SurfaceClass::Road => format!("road-shell {orientation}"),
         SurfaceClass::Trail => format!("trail-shell {orientation}"),
+        SurfaceClass::Rail => format!("rail-shell {orientation}"),
+        SurfaceClass::Aerial => format!("aerialway-shell {orientation}"),
         _ => {
             let zeroes = corners
                 .iter()
@@ -717,8 +719,8 @@ mod tests {
     }
 
     #[test]
-    fn trail_shell_triangles_attribute_to_their_own_feature() {
-        let mesh = Mesh {
+    fn overlay_shell_triangles_attribute_to_their_own_features() {
+        let mut mesh = Mesh {
             name: "piece".into(),
             vertices: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
             triangles: vec![[0, 1, 2]],
@@ -726,6 +728,11 @@ mod tests {
             quantization_collisions: Vec::new(),
         };
         assert_eq!(triangle_feature(&mesh, 0), "trail-shell top");
+        mesh.materials[0] = SurfaceClass::Rail;
+        assert_eq!(triangle_feature(&mesh, 0), "rail-shell top");
+        // A vertical face of the same shell reads as a wall, not terrain.
+        mesh.vertices[2] = [0.0, 0.0, 2.0];
+        assert_eq!(triangle_feature(&mesh, 0), "rail-shell wall");
     }
 
     #[test]

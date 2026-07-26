@@ -378,6 +378,186 @@ export function SurfacePanel({
               )}
             </>
           )}
+          <div className="road-options">
+            <label className="color-toggle">
+              <input
+                type="checkbox"
+                checked={spec.color_output.rail_enabled}
+                onChange={(event) =>
+                  updateColor("rail_enabled", event.target.checked)
+                }
+              />
+              <span>Render railways</span>
+            </label>
+            <small>
+              Track on the ground: trains, trams, metros, narrow gauge,
+              monorails, and funiculars. It switches on its own, apart
+              from roads. Tunnels are skipped.
+            </small>
+          </div>
+          {spec.color_output.rail_enabled && (
+            <>
+              <label className="road-detail-field">
+                Railway style
+                <select
+                  value={spec.color_output.rail_style}
+                  onChange={(event) =>
+                    updateColor(
+                      "rail_style",
+                      event.target
+                        .value as GenerationSpec["color_output"]["rail_style"],
+                    )
+                  }
+                >
+                  <option value="separate">Own color</option>
+                  <option value="with_roads">Draw with roads</option>
+                </select>
+                <small>
+                  Their own color costs one filament slot, and only where
+                  the map really has railways: the 3MF is packed from the
+                  mapped data, so a layer with nothing to draw costs
+                  nothing. Drawing with roads paints them in the route
+                  color at the route width and adds no slot at all.
+                </small>
+              </label>
+              {spec.color_output.rail_style === "separate" && (
+                <>
+                  <div className="color-swatches rail-color-swatch">
+                    <label>
+                      <input
+                        aria-label="Railway color"
+                        type="color"
+                        value={spec.color_output.rail_color}
+                        onChange={(event) =>
+                          updateColor("rail_color", event.target.value)
+                        }
+                      />
+                      <span>Railway color</span>
+                      <code>
+                        {spec.color_output.rail_color.toUpperCase()}
+                      </code>
+                    </label>
+                  </div>
+                  <RangeField
+                    label="Railway print width"
+                    value={spec.color_output.rail_width_mm}
+                    unit=" mm"
+                    min={0.4}
+                    max={4}
+                    step={0.1}
+                    onChange={(value) => updateColor("rail_width_mm", value)}
+                  />
+                </>
+              )}
+            </>
+          )}
+          <div className="road-options">
+            <label className="color-toggle">
+              <input
+                type="checkbox"
+                checked={spec.color_output.aerial_enabled}
+                onChange={(event) =>
+                  updateColor("aerial_enabled", event.target.checked)
+                }
+              />
+              <span>Render aerial lifts</span>
+            </label>
+            <small>
+              Lines that hang from cables: cable cars, gondolas, chair
+              lifts, drag lifts, and rope tows. Funiculars run on the
+              ground, so they count as railways. Lifts switch on their
+              own, apart from railways.
+            </small>
+          </div>
+          {spec.color_output.aerial_enabled && (
+            <>
+              <label className="road-detail-field">
+                Aerial lift style
+                <select
+                  value={spec.color_output.aerial_style}
+                  onChange={(event) =>
+                    updateColor(
+                      "aerial_style",
+                      event.target
+                        .value as GenerationSpec["color_output"]["aerial_style"],
+                    )
+                  }
+                >
+                  <option value="separate">Own color</option>
+                  <option value="with_rail">Draw with railways</option>
+                  <option value="with_roads">Draw with roads</option>
+                </select>
+                <small>
+                  {spec.color_output.aerial_style === "with_rail"
+                    ? spec.color_output.rail_enabled
+                      ? "Lifts are drawn however railways are drawn. Switch railways off and they fall back to the road color, rather than vanishing with a layer they do not belong to."
+                      : "Railways are off, so there is nothing for lifts to follow: they are drawn with roads until railways come back on."
+                    : "Their own color costs one filament slot, and only in areas that really have lifts, since the 3MF is packed from the mapped data. Folding them into the railways or the roads adds no slot at all."}
+                </small>
+              </label>
+              {spec.color_output.aerial_style === "separate" && (
+                <>
+                  <div className="color-swatches aerial-color-swatch">
+                    <label>
+                      <input
+                        aria-label="Aerial lift color"
+                        type="color"
+                        value={spec.color_output.aerial_color}
+                        onChange={(event) =>
+                          updateColor("aerial_color", event.target.value)
+                        }
+                      />
+                      <span>Aerial lift color</span>
+                      <code>
+                        {spec.color_output.aerial_color.toUpperCase()}
+                      </code>
+                    </label>
+                  </div>
+                  <RangeField
+                    label="Aerial lift print width"
+                    value={spec.color_output.aerial_width_mm}
+                    unit=" mm"
+                    min={0.4}
+                    max={4}
+                    step={0.1}
+                    onChange={(value) =>
+                      updateColor("aerial_width_mm", value)
+                    }
+                  />
+                </>
+              )}
+            </>
+          )}
+          {(spec.color_output.rail_enabled ||
+            spec.color_output.aerial_enabled) && (
+            <label className="road-detail-field">
+              Railway and lift history
+              <select
+                value={spec.color_output.rail_lifecycle}
+                onChange={(event) =>
+                  updateColor(
+                    "rail_lifecycle",
+                    event.target
+                      .value as GenerationSpec["color_output"]["rail_lifecycle"],
+                  )
+                }
+              >
+                <option value="operational">In service only</option>
+                <option value="disused">
+                  Add disused · track and cables still in place
+                </option>
+                <option value="abandoned">
+                  Add abandoned · rails lifted, formation visible
+                </option>
+              </select>
+              <small>
+                One setting for both layers above. Razed, dismantled, and
+                demolished lines never print, because nothing is left on
+                the ground; neither do proposed or planned ones, because
+                nothing is there yet.
+              </small>
+            </label>
+          )}
           <p className="color-note">
             WorldCover supplies permanent water. OpenStreetMap waterways
             add smooth lakes, rivers, streams, and canals when enabled.

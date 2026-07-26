@@ -14,8 +14,8 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, ResolvedRoadDetail, SlopeGates,
-    SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, RailLifecycle, ResolvedRoadDetail,
+    SlopeGates, SurfaceClass, SurfaceField,
 };
 use tracing::warn;
 
@@ -44,6 +44,58 @@ const STREET_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|p
 const ALL_ROUTE_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|pedestrian|road|track|cycleway|path|footway|bridleway|steps";
 const PATH_HIGHWAYS: &str = "path|footway|bridleway|track|cycleway|steps";
 const WATERWAYS: &str = "river|stream|canal";
+/// In-service `railway=*` values worth drawing. Every lifecycle value —
+/// `abandoned`, `disused`, `razed`, `dismantled`, `demolished`, `removed`,
+/// `proposed`, `construction` — is absent by construction, so the whitelist
+/// itself is the first lifecycle filter.
+const RAILWAYS: &str =
+    "rail|light_rail|subway|tram|narrow_gauge|funicular|monorail|miniature|preserved";
+/// In-service `aerialway=*` values: cable cars, gondolas, and every tow.
+/// Station and pylon values are left out; they are point furniture, not line
+/// features.
+const AERIALWAYS: &str =
+    "cable_car|gondola|chair_lift|mixed_lift|drag_lift|t-bar|j-bar|platter|rope_tow|magic_carpet";
+/// Bare lifecycle keys that can mark an otherwise in-service `railway=*` or
+/// `aerialway=*` way as out of use, in the order the Overpass negation list
+/// writes them. A way tagged `railway=rail` plus `disused=yes` is a rusting
+/// siding, not a railway; whether it prints is up to
+/// [`RailLifecycle`], which decides which of these keys the query negates
+/// and which it lets through.
+///
+/// `dismantled` is not in the list, and deliberately so: the namespaced form
+/// `dismantled:railway=*` never reaches the parser because no query asks for
+/// that key, and adding the bare form would change what the default setting
+/// draws. It belongs with `razed` and is a small known gap in the bare-key
+/// coverage, not a state this setting can reach.
+const RAIL_LIFECYCLE_KEYS: [&str; 7] = [
+    "disused",
+    "abandoned",
+    "razed",
+    "demolished",
+    "removed",
+    "proposed",
+    "construction",
+];
+/// Bare lifecycle keys that mean nothing is left on the ground, or nothing is
+/// there yet. No [`RailLifecycle`] setting accepts them; see that type for
+/// the argument.
+const GONE_LIFECYCLE_KEYS: [&str; 5] =
+    ["razed", "demolished", "removed", "proposed", "construction"];
+/// Key PREFIXES for the same states, as in `razed:railway=rail` or
+/// `construction:aerialway=gondola`. Such a way carries no plain
+/// `railway`/`aerialway` key at all, so no query asks for it; the check stays
+/// as a guard for ways carrying both encodings.
+const GONE_LIFECYCLE_PREFIXES: [&str; 6] = [
+    "razed:",
+    "demolished:",
+    "removed:",
+    "proposed:",
+    "construction:",
+    "historic:",
+];
+/// Narrowest line any overlay prints. Below roughly one nozzle width a line
+/// stops being reliably extruded, so every width scale bottoms out here.
+const MINIMUM_LINE_WIDTH_MM: f32 = 0.4;
 const OVERPASS_ATTEMPTS: usize = 2;
 const OVERPASS_RETRY_DELAY: Duration = Duration::from_millis(750);
 static OVERPASS_REQUEST_LOCK: Mutex<()> = Mutex::new(());
@@ -66,6 +118,11 @@ struct OverpassResponse {
 
 #[derive(Debug, Deserialize)]
 struct OverpassWay {
+    /// OpenStreetMap way id. Overpass returns each query's ways in ascending
+    /// id order, so this is what lets two separate fetches be merged back
+    /// into the order one combined query would have produced.
+    #[serde(default)]
+    id: u64,
     #[serde(default)]
     tags: HashMap<String, String>,
     #[serde(default)]
@@ -86,6 +143,87 @@ struct RouteCounts {
     detail: ResolvedRoadDetail,
     highway_filter: &'static str,
     fallback: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RailCounts {
+    lines: usize,
+    bridges: usize,
+    lifecycle_skipped: usize,
+    tunnel_skipped: usize,
+}
+
+/// One of the two rail-family layers. They share a painting pass, a
+/// lifecycle setting, and a tag grammar, and differ only in which key they
+/// read, which values they accept, and where they cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RailKind {
+    Railway,
+    Aerialway,
+}
+
+impl RailKind {
+    /// Both layers, in the order they fetch and paint.
+    const ALL: [Self; 2] = [Self::Railway, Self::Aerialway];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Railway => 0,
+            Self::Aerialway => 1,
+        }
+    }
+
+    /// The plain tag key, then the lifecycle-namespaced spellings a
+    /// non-default [`RailLifecycle`] can ask for.
+    fn tag_keys(self) -> [&'static str; 3] {
+        match self {
+            Self::Railway => ["railway", "disused:railway", "abandoned:railway"],
+            Self::Aerialway => ["aerialway", "disused:aerialway", "abandoned:aerialway"],
+        }
+    }
+
+    /// The accepted values of that key.
+    fn values(self) -> &'static str {
+        match self {
+            Self::Railway => RAILWAYS,
+            Self::Aerialway => AERIALWAYS,
+        }
+    }
+
+    /// Cache-prefix stem. The railway stem is at v2 because the v1 query
+    /// fetched aerialways in the same response; a v1 entry would answer a
+    /// railway-only request with lift lines mixed in.
+    fn cache_stem(self) -> &'static str {
+        match self {
+            Self::Railway => "rail-v2",
+            Self::Aerialway => "aerial-v1",
+        }
+    }
+
+    fn note_name(self) -> &'static str {
+        match self {
+            Self::Railway => "railways",
+            Self::Aerialway => "aerialways",
+        }
+    }
+
+    fn width_scale(self, value: &str) -> Option<f32> {
+        match self {
+            Self::Railway => railway_width_scale(value),
+            Self::Aerialway => aerialway_width_scale(value),
+        }
+    }
+}
+
+/// What OpenStreetMap says is left of a rail-family way, ordered by how much
+/// of it a visitor would still find on the ground. Comparing against the
+/// spec's [`RailLifecycle`] is then a single test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum WayLifecycle {
+    InService,
+    Disused,
+    Abandoned,
+    Gone,
 }
 
 #[derive(Debug, Default)]
@@ -338,6 +476,45 @@ pub fn fetch_surface_field(
             }
         }
     }
+    if spec.uses_rail_or_aerial() {
+        let (drawn, failures) = paint_rail_family(
+            spec,
+            height_field,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+        );
+        for kind in RailKind::ALL {
+            let Some(counts) = drawn[kind.index()] else {
+                continue;
+            };
+            let style = match kind {
+                RailKind::Railway => spec.rail_line_style(),
+                RailKind::Aerialway => spec.aerial_line_style(),
+            };
+            append_source(
+                &mut field.source,
+                format!(
+                    "{}: {} lines ({} tagged bridges) from OpenStreetMap via Overpass API; \
+                     drawn in the {} color; lifecycle={}; skipped {} out-of-service and \
+                     {} tunnelled ways; {}={}; \
+                     © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    kind.note_name(),
+                    counts.lines,
+                    counts.bridges,
+                    line_style_color_name(style),
+                    spec.color_output.rail_lifecycle.name(),
+                    counts.lifecycle_skipped,
+                    counts.tunnel_skipped,
+                    kind.tag_keys()[0],
+                    kind.values(),
+                ),
+            );
+        }
+        for failure in failures {
+            append_source(&mut field.source, failure);
+        }
+    }
     if !spec.trails.is_empty() {
         let painted = paint_imported_trails(spec, bounds, &mut field);
         append_source(
@@ -366,6 +543,16 @@ pub fn fetch_surface_field(
         }
     }
     Ok(field)
+}
+
+/// Which configured color a resolved line style actually paints in, for the
+/// data-source note.
+fn line_style_color_name(style: toposaic_core::LineStyle) -> &'static str {
+    match style.class {
+        SurfaceClass::Rail => "rail",
+        SurfaceClass::Aerial => "aerialway",
+        _ => "road",
+    }
 }
 
 fn append_source(source: &mut String, addition: impl AsRef<str>) {
@@ -580,8 +767,8 @@ fn paint_osm_ways(
         1.0
     };
     for feature in &features {
-        let line_width =
-            (spec.color_output.road_width_mm * feature.width_scale * density_scale).max(0.4);
+        let line_width = (spec.color_output.road_width_mm * feature.width_scale * density_scale)
+            .max(MINIMUM_LINE_WIDTH_MM);
         if let Some(elevations_m) = feature.bridge_elevations_m {
             field.paint_bridge_polyline(&feature.points, spec.width_mm, line_width, elevations_m);
         } else {
@@ -605,6 +792,316 @@ fn paint_osm_ways(
             .filter(|feature| feature.bridge_elevations_m.is_some())
             .count(),
     )
+}
+
+/// Fetches and draws the railway and aerialway layers.
+///
+/// Each layer has its OWN Overpass query and its own cache entry, so
+/// switching one on or off never re-downloads the other, and a ski map that
+/// wants lifts without trains never pays to download a city's rail network.
+/// The price is a second request when both layers are on — serialized behind
+/// the global request lock, with its own retry ladder. That is the trade
+/// taken deliberately: rail networks and lift networks differ in size by
+/// orders of magnitude, so a combined fetch would make the common
+/// one-layer-only case pay for the other layer every time, and any shared
+/// download would have to be re-fetched whenever either layer's settings
+/// moved. Roads already spend up to two requests through their path
+/// fallback, so a second one here is within the established budget.
+///
+/// Both layers then paint in ONE pass over the union of their ways, ordered
+/// by OpenStreetMap way id — the order a single combined query returned
+/// before the split. So when both layers are on and resolve to the same
+/// class and width, which is exactly what the defaults do, the drawn result
+/// is the pre-split result.
+///
+/// Rail networks are sparse next to street grids, so these lines skip the
+/// adaptive road-width thinning: a thinned single-track line reads as noise.
+fn paint_rail_family(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> ([Option<RailCounts>; 2], Vec<String>) {
+    let mut ways = Vec::new();
+    let mut drawn = [None, None];
+    let mut failures = Vec::new();
+    for kind in RailKind::ALL {
+        let enabled = match kind {
+            RailKind::Railway => spec.uses_rail(),
+            RailKind::Aerialway => spec.uses_aerial(),
+        };
+        if !enabled {
+            continue;
+        }
+        match fetch_rail_ways(spec, bounds, cache_dir, kind) {
+            Ok(fetched) => {
+                ways.extend(fetched.into_iter().map(|way| (kind, way)));
+                drawn[kind.index()] = Some(RailCounts::default());
+            }
+            Err(error) => {
+                let name = kind.note_name();
+                warn!(%error, layer = name, "OpenStreetMap rail layer unavailable; omitting it");
+                failures.push(format!(
+                    "OpenStreetMap {name} unavailable; {name} overlay omitted"
+                ));
+            }
+        }
+    }
+    // A stable sort over two already-ascending lists merges them back into
+    // one ascending list, which is the order a combined query returned.
+    ways.sort_by_key(|(_, way)| way.id);
+    let counts = paint_rail_ways(spec, height_field, bounds, field, ways);
+    for (index, layer) in drawn.iter_mut().enumerate() {
+        if let Some(layer) = layer {
+            *layer = counts[index];
+        }
+    }
+    (drawn, failures)
+}
+
+/// Fetches one layer's ways. The lifecycle setting is part of the cache key,
+/// not just the query: a download made with out-of-service lines filtered out
+/// must never answer a request that asked for them.
+fn fetch_rail_ways(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    kind: RailKind,
+) -> Result<Vec<OverpassWay>> {
+    let lifecycle = spec.color_output.rail_lifecycle;
+    let cache_prefix = rail_cache_prefix(kind, lifecycle);
+    let response = fetch_osm_response(
+        spec,
+        cache_dir,
+        &cache_prefix,
+        rail_query(bounds, kind, lifecycle),
+    )?;
+    Ok(response.elements)
+}
+
+fn rail_cache_prefix(kind: RailKind, lifecycle: RailLifecycle) -> String {
+    format!("{}-{}", kind.cache_stem(), lifecycle.name())
+}
+
+/// Draws one merged batch of fetched rail-family ways, counting per layer
+/// what each drew and skipped.
+///
+/// A way paints into whatever class and width its layer's style resolved to,
+/// so under the defaults — aerial following rail, rail following roads —
+/// both layers land in the Road class at the road width, which is what keeps
+/// any extra filament slot out of the archive.
+fn paint_rail_ways(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    bounds: GeoBounds,
+    field: &mut SurfaceField,
+    ways: Vec<(RailKind, OverpassWay)>,
+) -> [RailCounts; 2] {
+    let styles = [spec.rail_line_style(), spec.aerial_line_style()];
+    let lifecycle = spec.color_output.rail_lifecycle;
+    let mut counts = [RailCounts::default(), RailCounts::default()];
+    for (kind, way) in ways {
+        let counts = &mut counts[kind.index()];
+        if way.geometry.len() < 2 {
+            continue;
+        }
+        let state = way_lifecycle(&way.tags);
+        if !lifecycle_accepts(lifecycle, state) {
+            counts.lifecycle_skipped += 1;
+            continue;
+        }
+        if is_tunnel(&way.tags) {
+            counts.tunnel_skipped += 1;
+            continue;
+        }
+        let Some(scale) =
+            rail_family_value(&way.tags, kind).and_then(|value| kind.width_scale(value))
+        else {
+            continue;
+        };
+        let style = styles[kind.index()];
+        let points = normalized_osm_points(&way, spec, bounds);
+        let line_width =
+            (style.width_mm * scale * lifecycle_width_scale(state)).max(MINIMUM_LINE_WIDTH_MM);
+        if is_bridge(&way.tags) {
+            let first = points[0];
+            let last = points[points.len() - 1];
+            field.paint_bridge_polyline_as(
+                &points,
+                spec.width_mm,
+                line_width,
+                [
+                    height_field.elevation_m_at(first[0], first[1]),
+                    height_field.elevation_m_at(last[0], last[1]),
+                ],
+                style.class,
+            );
+            counts.bridges += 1;
+        } else {
+            field.paint_polyline(&points, spec.width_mm, line_width, style.class);
+        }
+        counts.lines += 1;
+    }
+    counts
+}
+
+/// The `railway`/`aerialway` value of a way, wherever its lifecycle
+/// namespace put it. An `abandoned:railway=rail` way carries no plain
+/// `railway` key, so the type has to be read from the namespaced spelling.
+fn rail_family_value(tags: &HashMap<String, String>, kind: RailKind) -> Option<&str> {
+    kind.tag_keys()
+        .into_iter()
+        .find_map(|key| tags.get(key))
+        .map(String::as_str)
+}
+
+/// Relative print widths per railway type, against the configured width.
+/// The ordering is the ground truth of the structures: a mainline is a
+/// double-track formation tens of metres wide and a tram shares a street.
+/// Values are deliberately compressed — even the narrowest must stay
+/// printable, so the range is 1.0 down to 0.35 rather than the true ratio.
+fn railway_width_scale(value: &str) -> Option<f32> {
+    match value {
+        // Mainline formations, the widest thing on the map after a motorway.
+        "rail" => Some(1.0),
+        // Preserved lines are mainline formations kept in service.
+        "preserved" => Some(0.8),
+        "light_rail" => Some(0.7),
+        // Mostly tunnelled, so this rarely applies; where a metro runs on
+        // the surface it is a light-rail-sized formation.
+        "subway" => Some(0.65),
+        "narrow_gauge" => Some(0.6),
+        "monorail" => Some(0.55),
+        "tram" => Some(0.5),
+        // A mountain funicular is single track on a narrow bench.
+        "funicular" => Some(0.5),
+        "miniature" => Some(0.35),
+        _ => None,
+    }
+}
+
+/// Relative print widths per aerialway type. Every one of these is a cable,
+/// so the whole family sits below the railway range.
+fn aerialway_width_scale(value: &str) -> Option<f32> {
+    match value {
+        // Cabin lifts: the largest aerial structures, but still cables.
+        "cable_car" => Some(0.5),
+        "gondola" => Some(0.45),
+        "mixed_lift" => Some(0.45),
+        "chair_lift" => Some(0.4),
+        // Surface tows are a cable and a track in the snow.
+        "drag_lift" | "t-bar" | "j-bar" | "platter" => Some(0.35),
+        "rope_tow" | "magic_carpet" => Some(0.3),
+        _ => None,
+    }
+}
+
+/// How much narrower an out-of-service line prints than a running one.
+///
+/// Printed width is a legibility signal, not a measurement. A line still in
+/// service is what a reader navigates by; an out-of-service one is landscape
+/// texture, and thinning it keeps the map's hierarchy readable while still
+/// showing the feature. Disused track keeps its rails and ballast and a
+/// disused lift its cable and pylons, so it loses little. An abandoned line
+/// has had its rails lifted: what is left is a scar in the ground, and it
+/// prints like one. Widths still bottom out at the printability floor, so
+/// the thinning can never produce a line too fine to come out of a nozzle.
+fn lifecycle_width_scale(state: WayLifecycle) -> f32 {
+    match state {
+        WayLifecycle::InService => 1.0,
+        WayLifecycle::Disused => 0.85,
+        WayLifecycle::Abandoned => 0.6,
+        // Never drawn; the filter rejects it first.
+        WayLifecycle::Gone => 0.0,
+    }
+}
+
+/// What state a way OpenStreetMap tags as a railway or aerialway is in.
+///
+/// Two encodings matter. A bare lifecycle key — `disused=yes`,
+/// `abandoned=yes`, `razed=yes` — sits alongside the in-service tag. A
+/// lifecycle-namespaced key — `disused:railway=rail` — replaces it. Both are
+/// read here, and the more-gone state wins when a way carries several, so a
+/// way tagged both `disused=yes` and `razed=yes` counts as gone. Explicit
+/// negatives (`disused=no`) are not lifecycle states.
+fn way_lifecycle(tags: &HashMap<String, String>) -> WayLifecycle {
+    let bare = |key: &str| {
+        tags.get(key)
+            .is_some_and(|value| value != "no" && value != "false" && !value.is_empty())
+    };
+    let namespaced = |prefix: &str| tags.keys().any(|key| key.starts_with(prefix));
+    if GONE_LIFECYCLE_KEYS.iter().copied().any(bare)
+        || GONE_LIFECYCLE_PREFIXES.iter().copied().any(namespaced)
+    {
+        return WayLifecycle::Gone;
+    }
+    if bare("abandoned") || namespaced("abandoned:") {
+        return WayLifecycle::Abandoned;
+    }
+    if bare("disused") || namespaced("disused:") {
+        return WayLifecycle::Disused;
+    }
+    WayLifecycle::InService
+}
+
+/// Whether a lifecycle setting draws a way in this state. The settings are
+/// cumulative, and nothing that has left the ground is ever drawn.
+fn lifecycle_accepts(filter: RailLifecycle, state: WayLifecycle) -> bool {
+    match state {
+        WayLifecycle::InService => true,
+        WayLifecycle::Disused => filter >= RailLifecycle::Disused,
+        WayLifecycle::Abandoned => filter >= RailLifecycle::Abandoned,
+        WayLifecycle::Gone => false,
+    }
+}
+
+/// The lifecycle namespaces a setting asks Overpass for, beyond the plain
+/// key. A `disused:railway=rail` way has no plain `railway` key, so it only
+/// ever arrives if the query names its key.
+fn accepted_namespaces(lifecycle: RailLifecycle) -> &'static [&'static str] {
+    match lifecycle {
+        RailLifecycle::Operational => &[],
+        RailLifecycle::Disused => &["disused"],
+        RailLifecycle::Abandoned => &["disused", "abandoned"],
+    }
+}
+
+fn rail_query(bounds: GeoBounds, kind: RailKind, lifecycle: RailLifecycle) -> String {
+    let namespaces = accepted_namespaces(lifecycle);
+    // Drop the bare lifecycle keys this setting rejects server-side too, so
+    // an out-of-service freight yard never reaches the parser. Filtering the
+    // one ordered constant keeps the negation order fixed, so the default
+    // setting still writes the exact negation list it always has.
+    let negations = RAIL_LIFECYCLE_KEYS
+        .iter()
+        .filter(|key| !namespaces.contains(key))
+        .map(|key| format!("[\"{key}\"!~\".\"]"))
+        .collect::<String>();
+    let values = kind.values();
+    let ways = bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|bounds| {
+            let box_filter = format!(
+                "({south:.7},{west:.7},{north:.7},{east:.7})",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
+            );
+            kind.tag_keys()
+                .into_iter()
+                .take(1 + namespaces.len())
+                .map(|tag| {
+                    format!(
+                        "way[\"{tag}\"~\"^({values})$\"]{negations}[\"area\"!=\"yes\"]{box_filter};"
+                    )
+                })
+                .collect::<String>()
+        })
+        .collect::<String>();
+    format!("[out:json][timeout:30];({ways});out tags geom;")
 }
 
 fn road_highway_filter(detail: ResolvedRoadDetail) -> &'static str {
@@ -1707,6 +2204,7 @@ mod tests {
         let mut surface = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "bridge").unwrap();
         let response = OverpassResponse {
             elements: vec![OverpassWay {
+                id: 1,
                 tags: HashMap::from([
                     ("highway".into(), "primary".into()),
                     ("bridge".into(), "yes".into()),
@@ -1728,6 +2226,514 @@ mod tests {
             paint_osm_ways(&spec, &height_field, bounds, &mut surface, response,),
             (1, 0, 1)
         );
+    }
+
+    fn rail_bounds_spec() -> GenerationSpec {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.enabled = true;
+        spec
+    }
+
+    /// One west-to-east way across the middle of the model.
+    fn crossing_way(bounds: GeoBounds, tags: &[(&str, &str)]) -> OverpassWay {
+        crossing_way_with_id(bounds, 0, tags)
+    }
+
+    fn crossing_way_with_id(bounds: GeoBounds, id: u64, tags: &[(&str, &str)]) -> OverpassWay {
+        let latitude = (bounds.south + bounds.north) * 0.5;
+        OverpassWay {
+            id,
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+            geometry: vec![
+                OverpassPoint {
+                    lat: latitude,
+                    lon: bounds.west,
+                },
+                OverpassPoint {
+                    lat: latitude,
+                    lon: bounds.east,
+                },
+            ],
+        }
+    }
+
+    /// Runs the real painting body against synthetic railway ways, no
+    /// network.
+    fn paint_ways(
+        spec: &GenerationSpec,
+        bounds: GeoBounds,
+        field: &mut SurfaceField,
+        ways: Vec<OverpassWay>,
+    ) -> RailCounts {
+        paint_layer_ways(spec, bounds, field, RailKind::Railway, ways)
+    }
+
+    fn paint_layer_ways(
+        spec: &GenerationSpec,
+        bounds: GeoBounds,
+        field: &mut SurfaceField,
+        kind: RailKind,
+        ways: Vec<OverpassWay>,
+    ) -> RailCounts {
+        let height_field = HeightField::new(2, 2, vec![100.0; 4], "rail").unwrap();
+        let ways = ways.into_iter().map(|way| (kind, way)).collect();
+        paint_rail_ways(spec, &height_field, bounds, field, ways)[kind.index()]
+    }
+
+    fn test_bounds() -> GeoBounds {
+        GeoBounds {
+            south: 46.8,
+            north: 46.9,
+            west: -121.9,
+            east: -121.7,
+        }
+    }
+
+    #[test]
+    fn each_rail_layer_queries_only_its_own_key() {
+        let railway = rail_query(test_bounds(), RailKind::Railway, RailLifecycle::Operational);
+        let aerial = rail_query(
+            test_bounds(),
+            RailKind::Aerialway,
+            RailLifecycle::Operational,
+        );
+        // Each layer asks for its own key and its own value whitelist, and
+        // for nothing of the other's — that separation is what lets one
+        // layer be switched without re-downloading the other.
+        assert!(railway.contains("[\"railway\"~\"^(rail|light_rail|subway|tram|narrow_gauge|funicular|monorail|miniature|preserved)$\"]"));
+        assert!(!railway.contains("aerialway"));
+        assert!(aerial.contains("[\"aerialway\"~\"^(cable_car|gondola|chair_lift|mixed_lift|drag_lift|t-bar|j-bar|platter|rope_tow|magic_carpet)$\"]"));
+        assert!(!aerial.contains("\"railway\""));
+        // Lifecycle values are absent from the whitelists, so a
+        // `railway=abandoned` way can never match in the first place.
+        for lifecycle in ["abandoned", "razed", "dismantled"] {
+            assert!(!railway.contains(&format!("|{lifecycle}|")));
+            assert!(!railway.contains(&format!("({lifecycle}|")));
+        }
+        for query in [&railway, &aerial] {
+            // Every bare lifecycle key is negated server-side by default.
+            for key in RAIL_LIFECYCLE_KEYS {
+                assert!(
+                    query.contains(&format!("[\"{key}\"!~\".\"]")),
+                    "missing {key} negation"
+                );
+            }
+            assert!(query.contains("[\"area\"!=\"yes\"]"));
+            assert!(query.contains("(46.8000000,-121.9000000,46.9000000,-121.7000000)"));
+            assert!(query.ends_with("out tags geom;"));
+        }
+        assert_ne!(railway, overpass_query(test_bounds(), MAJOR_HIGHWAYS));
+    }
+
+    /// The lifecycle setting has to reach the WIRE — it names extra
+    /// namespaced keys and stops negating the ones it now wants — and it has
+    /// to reach the CACHE KEY, or a filtered download would answer a request
+    /// that asked for abandoned lines.
+    #[test]
+    fn lifecycle_settings_change_both_the_query_and_the_cache_key() {
+        let spec = GenerationSpec::default();
+        let mut paths = Vec::new();
+        let mut queries = Vec::new();
+        for lifecycle in [
+            RailLifecycle::Operational,
+            RailLifecycle::Disused,
+            RailLifecycle::Abandoned,
+        ] {
+            for kind in RailKind::ALL {
+                let prefix = rail_cache_prefix(kind, lifecycle);
+                assert!(prefix.ends_with(lifecycle.name()), "{prefix}");
+                paths.push(osm_cache_path(&spec, Path::new("/cache"), &prefix));
+                queries.push(rail_query(test_bounds(), kind, lifecycle));
+            }
+        }
+        let unique = paths.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), paths.len(), "every combination caches apart");
+        let unique = queries.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), queries.len());
+
+        let operational = rail_query(test_bounds(), RailKind::Railway, RailLifecycle::Operational);
+        let disused = rail_query(test_bounds(), RailKind::Railway, RailLifecycle::Disused);
+        let abandoned = rail_query(test_bounds(), RailKind::Railway, RailLifecycle::Abandoned);
+        // The operational query asks for the plain key only, and negates
+        // every lifecycle key.
+        assert!(!operational.contains("disused:railway"));
+        assert!(!operational.contains("abandoned:railway"));
+        // Each step names one more namespaced key and stops negating it.
+        assert!(disused.contains("way[\"disused:railway\"~"));
+        assert!(!disused.contains("[\"disused\"!~\".\"]"));
+        assert!(disused.contains("[\"abandoned\"!~\".\"]"));
+        assert!(!disused.contains("abandoned:railway"));
+        assert!(abandoned.contains("way[\"disused:railway\"~"));
+        assert!(abandoned.contains("way[\"abandoned:railway\"~"));
+        assert!(!abandoned.contains("[\"abandoned\"!~\".\"]"));
+        // States with nothing left on the ground stay negated throughout.
+        for query in [&operational, &disused, &abandoned] {
+            for key in GONE_LIFECYCLE_KEYS {
+                assert!(query.contains(&format!("[\"{key}\"!~\".\"]")), "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn rail_cache_prefixes_are_independent_of_each_other_and_of_the_roads() {
+        let spec = GenerationSpec::default();
+        let lifecycle = RailLifecycle::Operational;
+        let railway = osm_cache_path(
+            &spec,
+            Path::new("/cache"),
+            &rail_cache_prefix(RailKind::Railway, lifecycle),
+        );
+        let aerial = osm_cache_path(
+            &spec,
+            Path::new("/cache"),
+            &rail_cache_prefix(RailKind::Aerialway, lifecycle),
+        );
+        assert_ne!(railway, aerial, "one layer must not evict the other");
+        for detail in [
+            ResolvedRoadDetail::Major,
+            ResolvedRoadDetail::Minor,
+            ResolvedRoadDetail::Streets,
+            ResolvedRoadDetail::All,
+        ] {
+            let roads = osm_cache_path(&spec, Path::new("/cache"), road_cache_prefix(detail));
+            assert_ne!(railway, roads);
+            assert_ne!(aerial, roads);
+        }
+        // The railway stem is v2 because v1 responses carried aerialways.
+        assert!(railway.to_string_lossy().contains("rail-v2-operational-"));
+        assert!(aerial.to_string_lossy().contains("aerial-v1-operational-"));
+    }
+
+    #[test]
+    fn rail_width_scales_rank_mainline_above_tram_above_lift() {
+        assert!(railway_width_scale("rail") > railway_width_scale("light_rail"));
+        assert!(railway_width_scale("light_rail") > railway_width_scale("tram"));
+        assert!(railway_width_scale("tram") > railway_width_scale("miniature"));
+        assert!(railway_width_scale("tram") >= aerialway_width_scale("cable_car"));
+        assert!(aerialway_width_scale("cable_car") > aerialway_width_scale("chair_lift"));
+        assert!(aerialway_width_scale("chair_lift") > aerialway_width_scale("rope_tow"));
+        // Anything outside a layer's whitelist draws nothing, and neither
+        // layer reads the other's values.
+        assert_eq!(railway_width_scale("platform"), None);
+        assert_eq!(aerialway_width_scale("station"), None);
+        assert_eq!(railway_width_scale("gondola"), None);
+        assert_eq!(aerialway_width_scale("rail"), None);
+
+        // Out-of-service lines print thinner than running ones, and a
+        // lifted formation thinner than track still in place.
+        assert_eq!(lifecycle_width_scale(WayLifecycle::InService), 1.0);
+        assert!(
+            lifecycle_width_scale(WayLifecycle::InService)
+                > lifecycle_width_scale(WayLifecycle::Disused)
+        );
+        assert!(
+            lifecycle_width_scale(WayLifecycle::Disused)
+                > lifecycle_width_scale(WayLifecycle::Abandoned)
+        );
+        assert!(lifecycle_width_scale(WayLifecycle::Abandoned) > 0.0);
+    }
+
+    #[test]
+    fn way_lifecycle_reads_bare_and_namespaced_tags() {
+        let tags = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect::<HashMap<_, _>>()
+        };
+        assert_eq!(
+            way_lifecycle(&tags(&[("railway", "rail")])),
+            WayLifecycle::InService
+        );
+        // The default setting still rejects every lifecycle key, bare or
+        // namespaced, exactly as the pre-split filter did.
+        for key in RAIL_LIFECYCLE_KEYS {
+            let state = way_lifecycle(&tags(&[("railway", "rail"), (key, "yes")]));
+            assert_ne!(state, WayLifecycle::InService, "{key}=yes");
+            assert!(
+                !lifecycle_accepts(RailLifecycle::Operational, state),
+                "{key}=yes should not draw by default"
+            );
+            // An explicit negative is not a lifecycle state.
+            assert_eq!(
+                way_lifecycle(&tags(&[("railway", "rail"), (key, "no")])),
+                WayLifecycle::InService,
+                "{key}=no should keep"
+            );
+        }
+        assert_eq!(
+            way_lifecycle(&tags(&[("disused:railway", "rail")])),
+            WayLifecycle::Disused
+        );
+        assert_eq!(
+            way_lifecycle(&tags(&[("abandoned:aerialway", "chair_lift")])),
+            WayLifecycle::Abandoned
+        );
+        assert_eq!(
+            way_lifecycle(&tags(&[("construction:aerialway", "gondola")])),
+            WayLifecycle::Gone
+        );
+        // The more-gone state wins when a way carries several.
+        assert_eq!(
+            way_lifecycle(&tags(&[("disused:railway", "rail"), ("razed", "yes")])),
+            WayLifecycle::Gone
+        );
+        assert_eq!(
+            way_lifecycle(&tags(&[("railway", "rail"), ("abandoned:railway", "rail")])),
+            WayLifecycle::Abandoned
+        );
+        // Ordinary namespaced tags that are not lifecycle states stay.
+        assert_eq!(
+            way_lifecycle(&tags(&[("railway", "rail"), ("railway:track_ref", "2")])),
+            WayLifecycle::InService
+        );
+
+        // Cumulative acceptance, and nothing gone is ever drawn.
+        for (filter, expected) in [
+            (RailLifecycle::Operational, [true, false, false, false]),
+            (RailLifecycle::Disused, [true, true, false, false]),
+            (RailLifecycle::Abandoned, [true, true, true, false]),
+        ] {
+            for (state, expected) in [
+                WayLifecycle::InService,
+                WayLifecycle::Disused,
+                WayLifecycle::Abandoned,
+                WayLifecycle::Gone,
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                assert_eq!(
+                    lifecycle_accepts(filter, state),
+                    expected,
+                    "{filter:?} vs {state:?}"
+                );
+            }
+        }
+    }
+
+    /// Turning the lifecycle setting up draws lines the default drops, and
+    /// draws them thinner.
+    #[test]
+    fn lifecycle_settings_admit_out_of_service_lines_at_reduced_width() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.rail_width_mm = 4.0;
+        let bounds = bounds_for(&spec);
+        let ways = || {
+            vec![
+                crossing_way(bounds, &[("railway", "rail")]),
+                crossing_way(bounds, &[("railway", "rail"), ("disused", "yes")]),
+                crossing_way(bounds, &[("abandoned:railway", "rail")]),
+                crossing_way(bounds, &[("razed:railway", "rail")]),
+            ]
+        };
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(&spec, bounds, &mut field, ways());
+        assert_eq!((counts.lines, counts.lifecycle_skipped), (1, 3));
+
+        spec.color_output.rail_lifecycle = RailLifecycle::Disused;
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(&spec, bounds, &mut field, ways());
+        assert_eq!((counts.lines, counts.lifecycle_skipped), (2, 2));
+
+        spec.color_output.rail_lifecycle = RailLifecycle::Abandoned;
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(&spec, bounds, &mut field, ways());
+        assert_eq!(
+            (counts.lines, counts.lifecycle_skipped),
+            (3, 1),
+            "razed track is never drawn"
+        );
+
+        // Each state prints, and prints narrower the less is left of it.
+        // Measured off the model rather than off the line record: a scar
+        // that is thinner only on paper would be no use.
+        let painted_half_width = |way: OverpassWay| {
+            let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+            assert_eq!(paint_ways(&spec, bounds, &mut field, vec![way]).lines, 1);
+            (0..500)
+                .map(|step| step as f32 * 0.0005)
+                .take_while(|offset| field.class_at(0.5, 0.5 + offset) == SurfaceClass::Rail)
+                .last()
+                .expect("the line must reach its own centre")
+        };
+        let in_service = painted_half_width(crossing_way(bounds, &[("railway", "rail")]));
+        let disused = painted_half_width(crossing_way(
+            bounds,
+            &[("railway", "rail"), ("disused", "yes")],
+        ));
+        let abandoned = painted_half_width(crossing_way(bounds, &[("abandoned:railway", "rail")]));
+        assert!(in_service > disused, "{in_service} vs {disused}");
+        assert!(disused > abandoned, "{disused} vs {abandoned}");
+        assert!(abandoned > 0.0);
+    }
+
+    /// Each layer paints in its own resolved style, and the aerial layer
+    /// follows the rail layer by default.
+    #[test]
+    fn the_two_layers_paint_in_their_own_resolved_styles() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.aerial_style = toposaic_core::AerialStyle::Separate;
+        spec.color_output.rail_width_mm = 2.0;
+        spec.color_output.aerial_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        assert_eq!(
+            paint_layer_ways(
+                &spec,
+                bounds,
+                &mut field,
+                RailKind::Aerialway,
+                vec![crossing_way(bounds, &[("aerialway", "cable_car")])],
+            )
+            .lines,
+            1
+        );
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Aerial);
+
+        // Set to `with_rail`, lifts land in the RAIL class instead, so the
+        // two layers share one filament.
+        spec.color_output.aerial_style = toposaic_core::AerialStyle::WithRail;
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        paint_layer_ways(
+            &spec,
+            bounds,
+            &mut field,
+            RailKind::Aerialway,
+            vec![crossing_way(bounds, &[("aerialway", "cable_car")])],
+        );
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rail);
+
+        // And with the rail layer switched off entirely they fall through
+        // to the road class rather than vanishing.
+        spec.color_output.rail_enabled = false;
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        paint_layer_ways(
+            &spec,
+            bounds,
+            &mut field,
+            RailKind::Aerialway,
+            vec![crossing_way(bounds, &[("aerialway", "cable_car")])],
+        );
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Road);
+    }
+
+    /// The two layers are merged into one painting pass by way id, so the
+    /// draw order is the order one combined query gave before the split.
+    #[test]
+    fn both_layers_paint_in_merged_way_id_order() {
+        // Merged styles, so both layers land in one class and the ORDER is
+        // the only thing that could differ from the pre-split output.
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::WithRoads;
+        spec.color_output.aerial_style = toposaic_core::AerialStyle::WithRoads;
+        let bounds = bounds_for(&spec);
+        let height_field = HeightField::new(2, 2, vec![100.0; 4], "rail").unwrap();
+        let mut ways = vec![
+            (
+                RailKind::Railway,
+                crossing_way_with_id(bounds, 10, &[("railway", "rail")]),
+            ),
+            (
+                RailKind::Railway,
+                crossing_way_with_id(bounds, 30, &[("railway", "tram")]),
+            ),
+            (
+                RailKind::Aerialway,
+                crossing_way_with_id(bounds, 20, &[("aerialway", "gondola")]),
+            ),
+        ];
+        ways.sort_by_key(|(_, way)| way.id);
+        assert_eq!(
+            ways.iter().map(|(_, way)| way.id).collect::<Vec<_>>(),
+            [10, 20, 30]
+        );
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_rail_ways(&spec, &height_field, bounds, &mut field, ways);
+        // One pass, but the counts stay per layer.
+        assert_eq!(counts[RailKind::Railway.index()].lines, 2);
+        assert_eq!(counts[RailKind::Aerialway.index()].lines, 1);
+        // Both layers land in the road class here, which is what makes the
+        // merged-style output the pre-split output.
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Road);
+    }
+
+    #[test]
+    fn separate_rail_paints_the_rail_class_and_with_roads_paints_the_road_class() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.rail_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+        let ways = vec![
+            crossing_way(bounds, &[("railway", "rail")]),
+            // Out of service, tunnelled, and off-whitelist ways draw nothing.
+            crossing_way(bounds, &[("railway", "rail"), ("disused", "yes")]),
+            crossing_way(bounds, &[("railway", "subway"), ("tunnel", "yes")]),
+            crossing_way(bounds, &[("railway", "platform")]),
+        ];
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(&spec, bounds, &mut field, ways);
+        assert_eq!(counts.lines, 1);
+        assert_eq!(counts.lifecycle_skipped, 1);
+        assert_eq!(counts.tunnel_skipped, 1);
+        assert_eq!(counts.bridges, 0);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rail);
+        assert_eq!(field.class_at(0.5, 0.1), SurfaceClass::Rock);
+
+        // The merged style paints the very same geometry as a road, so no
+        // Rail class — and therefore no extra filament slot — appears.
+        let mut with_roads = rail_bounds_spec();
+        with_roads.color_output.rail_style = toposaic_core::RailStyle::WithRoads;
+        with_roads.color_output.road_width_mm = 2.0;
+        assert!(!with_roads.uses_separate_rail());
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(
+            &with_roads,
+            bounds,
+            &mut field,
+            vec![crossing_way(bounds, &[("railway", "rail")])],
+        );
+        assert_eq!(counts.lines, 1);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Road);
+    }
+
+    #[test]
+    fn rail_viaducts_take_the_same_bridge_deck_treatment_as_roads() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.rail_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+        // `is_bridge` keys off the `bridge` tag alone, so a railway viaduct
+        // reaches the deck path exactly as a road bridge does.
+        assert!(is_bridge(&HashMap::from([
+            ("railway".to_owned(), "rail".to_owned()),
+            ("bridge".to_owned(), "viaduct".to_owned()),
+        ])));
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(
+            &spec,
+            bounds,
+            &mut field,
+            vec![crossing_way(
+                bounds,
+                &[("railway", "rail"), ("bridge", "viaduct")],
+            )],
+        );
+        assert_eq!((counts.lines, counts.bridges), (1, 1));
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rail);
     }
 
     #[test]

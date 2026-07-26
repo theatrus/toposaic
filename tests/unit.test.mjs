@@ -5,12 +5,14 @@ import {
   previewWorldX,
 } from "../app/terrain/preview-orientation.ts";
 import {
+  aerialLineClass,
   assembledMeshSamples,
   effectiveMeshSamples,
   formatBytes,
   groundMeshSpacing,
   initialSpec,
   mergeSpecDefaults,
+  railLineClass,
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
@@ -31,6 +33,122 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   delete oldColorOutput.threemf_style;
   const merged = mergeSpecDefaults({ color_output: oldColorOutput });
   assert.equal(merged.color_output.threemf_style, "project");
+});
+
+test("defaults railways on in their own color and recalls old setups", () => {
+  // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
+  assert.equal(initialSpec.color_output.rail_enabled, true);
+  assert.equal(initialSpec.color_output.rail_color, "#4A5568");
+  assert.equal(initialSpec.color_output.rail_width_mm, 0.7);
+  // Picked out in their own color, which is the point of drawing them. The
+  // slot is only spent where the mapped data holds railways.
+  assert.equal(initialSpec.color_output.rail_style, "separate");
+  // Setups saved before the railway layer existed recall with the same
+  // defaults the backend applies to them.
+  const oldColorOutput = { ...initialSpec.color_output };
+  delete oldColorOutput.rail_enabled;
+  delete oldColorOutput.rail_color;
+  delete oldColorOutput.rail_width_mm;
+  delete oldColorOutput.rail_style;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.rail_enabled, true);
+  assert.equal(merged.color_output.rail_style, "separate");
+  assert.equal(merged.color_output.rail_color, "#4A5568");
+  // A setup that folded railways into the roads keeps that choice.
+  const mergedRail = mergeSpecDefaults({
+    color_output: {
+      ...initialSpec.color_output,
+      rail_enabled: false,
+      rail_style: "with_roads",
+    },
+  });
+  assert.equal(mergedRail.color_output.rail_enabled, false);
+  assert.equal(mergedRail.color_output.rail_style, "with_roads");
+});
+
+test("defaults aerial lifts on in their own color, in service only", () => {
+  // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
+  assert.equal(initialSpec.color_output.aerial_enabled, true);
+  assert.equal(initialSpec.color_output.aerial_color, "#6C4CB6");
+  assert.equal(initialSpec.color_output.aerial_width_mm, 0.7);
+  // A chair lift is neither a road nor a railway, so it says so.
+  assert.equal(initialSpec.color_output.aerial_style, "separate");
+  assert.equal(initialSpec.color_output.rail_lifecycle, "operational");
+  // Setups saved before the split recall with lifts in their own color and
+  // running lines only.
+  const oldColorOutput = { ...initialSpec.color_output };
+  for (const field of [
+    "rail_lifecycle",
+    "aerial_enabled",
+    "aerial_color",
+    "aerial_width_mm",
+    "aerial_style",
+  ]) {
+    delete oldColorOutput[field];
+  }
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.aerial_style, "separate");
+  assert.equal(merged.color_output.aerial_enabled, true);
+  assert.equal(merged.color_output.rail_lifecycle, "operational");
+  // A setup that folded lifts into the railways and asked for abandoned
+  // formations keeps both choices.
+  const folded = mergeSpecDefaults({
+    color_output: {
+      ...initialSpec.color_output,
+      aerial_style: "with_rail",
+      rail_lifecycle: "abandoned",
+    },
+  });
+  assert.equal(folded.color_output.aerial_style, "with_rail");
+  assert.equal(folded.color_output.rail_lifecycle, "abandoned");
+});
+
+test("resolves which class each rail-family layer paints in", () => {
+  // Mirrors rail_line_style and aerial_line_style in
+  // crates/toposaic-core/src/spec.rs.
+  const resolve = (overrides) => {
+    const colorOutput = { ...initialSpec.color_output, ...overrides };
+    return [railLineClass(colorOutput), aerialLineClass(colorOutput)];
+  };
+
+  // Railway styling answers "how would railways look", so it ignores the
+  // railway toggle; only the lift chain consults it.
+  assert.deepEqual(resolve({ rail_style: "with_roads" })[0], "road");
+  assert.deepEqual(resolve({ rail_style: "separate" })[0], "rail");
+  assert.deepEqual(
+    resolve({ rail_enabled: false, rail_style: "separate" })[0],
+    "rail",
+  );
+
+  // Lifts following railways land wherever railways land.
+  assert.equal(
+    resolve({ aerial_style: "with_rail", rail_style: "with_roads" })[1],
+    "road",
+  );
+  assert.equal(
+    resolve({ aerial_style: "with_rail", rail_style: "separate" })[1],
+    "rail",
+  );
+  // With railways off there is no railway style to follow, so the chain
+  // falls through to roads rather than drawing nothing or borrowing a
+  // rail color the model never emits.
+  assert.equal(
+    resolve({
+      aerial_style: "with_rail",
+      rail_style: "separate",
+      rail_enabled: false,
+    })[1],
+    "road",
+  );
+  // The other two styles ignore railways entirely.
+  assert.equal(
+    resolve({ aerial_style: "separate", rail_style: "with_roads" })[1],
+    "aerialway",
+  );
+  assert.equal(
+    resolve({ aerial_style: "with_roads", rail_style: "separate" })[1],
+    "road",
+  );
 });
 
 test("defaults imported trails to none and recalls old setups cleanly", () => {

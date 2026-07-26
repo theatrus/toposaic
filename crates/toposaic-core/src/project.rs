@@ -113,9 +113,14 @@ pub fn generate_tray_artifacts(
     tray_spec.color_output.road_color = spec.tray.tray_color.clone();
     tray_spec.color_output.building_color = spec.tray.tray_color.clone();
     tray_spec.color_output.trail_color = spec.tray.tray_color.clone();
-    // Trays never draw trails; dropping them keeps the tray 3MF at its
-    // six-slot layout even when the terrain model carries trails.
+    tray_spec.color_output.rail_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.aerial_color = spec.tray.tray_color.clone();
+    // Trays never draw trails, railways, or lifts; dropping all three keeps
+    // the tray 3MF at its six-slot layout however the terrain model is
+    // configured.
     tray_spec.trails = Vec::new();
+    tray_spec.color_output.rail_enabled = false;
+    tray_spec.color_output.aerial_enabled = false;
 
     let tray_meshes = build_tray_segments(spec, height_field)?;
     let mut artifacts = Vec::with_capacity(tray_meshes.len() * 2);
@@ -132,7 +137,9 @@ pub fn generate_tray_artifacts(
         artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
 
         let tray_3mf_path = output_dir.join(format!("terrain-tray{suffix}.3mf"));
-        let mut tray_writer = ThreeMfWriter::new(&tray_spec, &tray_3mf_path)?;
+        // Trays carry no surface data, so their palette falls back to the
+        // settings alone — the base six, exactly as before.
+        let mut tray_writer = ThreeMfWriter::new(&tray_spec, None, &tray_3mf_path)?;
         tray_writer.write_mesh(tray_mesh)?;
         tray_writer.finish()?;
         artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
@@ -199,7 +206,10 @@ fn generate_project_inner(
         let completed_flag = &build_completed;
         let writer_path = &project_path;
         let writer = scope.spawn(move || -> Result<()> {
-            let mut project_writer = ThreeMfWriter::new(spec, writer_path)?;
+            // The surface field is finished before any mesh is built, so
+            // the palette can be sized from the data the meshes will sample
+            // without buffering a single mesh.
+            let mut project_writer = ThreeMfWriter::new(spec, surface_field, writer_path)?;
             for mesh in mesh_receiver {
                 project_writer.write_mesh(&mesh)?;
             }

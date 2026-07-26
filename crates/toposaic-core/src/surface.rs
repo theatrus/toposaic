@@ -557,12 +557,32 @@ impl SurfaceField {
         line_width_mm: f32,
         elevations_m: [f32; 2],
     ) {
+        self.paint_bridge_polyline_as(
+            points,
+            print_width_mm,
+            line_width_mm,
+            elevations_m,
+            SurfaceClass::Road,
+        );
+    }
+
+    /// A tagged bridge in an explicit class, for overlays that carry their
+    /// own material — a railway viaduct is structurally a road bridge with
+    /// a different color.
+    pub fn paint_bridge_polyline_as(
+        &mut self,
+        points: &[[f32; 2]],
+        print_width_mm: f32,
+        line_width_mm: f32,
+        elevations_m: [f32; 2],
+        class: SurfaceClass,
+    ) {
         if elevations_m.iter().all(|value| value.is_finite()) {
             self.paint_polyline_with_bridge(
                 points,
                 print_width_mm,
                 line_width_mm,
-                SurfaceClass::Road,
+                class,
                 Some(elevations_m),
             );
         }
@@ -891,6 +911,36 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        // Aerialways sit above everything they cross — a cable car really
+        // does fly over the railway and the road. Under any style but
+        // `separate` no Aerial line exists and this check never matches.
+        let has_aerial = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Aerial
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_aerial {
+            return SurfaceSample {
+                class: SurfaceClass::Aerial,
+                building_height_m,
+            };
+        }
+        // Railways sit above roads: at a level crossing the rail line is the
+        // feature worth reading. Under the default `with_roads` style no
+        // Rail line exists and this check never matches.
+        let has_rail = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Rail
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_rail {
+            return SurfaceSample {
+                class: SurfaceClass::Rail,
+                building_height_m,
+            };
+        }
         let has_road = include_roads
             && line_entries.iter().any(|entry| {
                 let line = &self.vector_lines[entry.line_index];
@@ -923,7 +973,13 @@ impl SurfaceField {
             .rev()
             .map(|entry| (&self.vector_lines[entry.line_index], entry))
             .filter(|(line, _)| {
-                line.class != SurfaceClass::Road && line.class != SurfaceClass::Trail
+                !matches!(
+                    line.class,
+                    SurfaceClass::Road
+                        | SurfaceClass::Trail
+                        | SurfaceClass::Rail
+                        | SurfaceClass::Aerial
+                )
             })
             .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
             .map(|(line, _)| line.class)
@@ -952,6 +1008,40 @@ impl SurfaceField {
             .filter(|area| point_in_polygon([u, v], &area.points))
             .map(|area| area.building_height_m)
             .fold(0.0, f32::max)
+    }
+
+    /// Every surface class this field holds, exactly and without sampling:
+    /// the raster values it carries, the classes of its vector areas and
+    /// vector lines, and Building where it holds a footprint.
+    ///
+    /// This is the SUPERSET a mesh built from the field can paint. Terrain
+    /// tops read `terrain_at`, which returns a base-class value; vector
+    /// areas and lines answer through `sample`, which can only return a
+    /// class one of them carries; building shells only exist where a
+    /// footprint does. So no sampling of this field can produce a class the
+    /// set omits — which is what lets a 3MF size its filament palette from
+    /// here without risking a triangle that has no slot.
+    ///
+    /// It may be LOOSE in the other direction: a class the field holds in a
+    /// spot no piece happens to sample still counts. That costs at worst a
+    /// slot, where the reverse error would cost the export.
+    pub fn contained_classes(&self) -> [bool; SurfaceClass::ALL.len()] {
+        let mut present = [false; SurfaceClass::ALL.len()];
+        for class in self.classes.iter().chain(&self.base_classes) {
+            present[class.material_index() as usize] = true;
+        }
+        for area in &self.vector_areas {
+            if let Some(class) = area.class {
+                present[class.material_index() as usize] = true;
+            }
+            if area.building_height_m > 0.0 {
+                present[SurfaceClass::Building.material_index() as usize] = true;
+            }
+        }
+        for line in &self.vector_lines {
+            present[line.class.material_index() as usize] = true;
+        }
+        present
     }
 
     pub(crate) fn coverage(&self) -> [f32; SurfaceClass::ALL.len()] {

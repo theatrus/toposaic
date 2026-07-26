@@ -66,6 +66,29 @@ export const initialSpec: GenerationSpec = {
     trail_color: "#D6336C",
     trail_width_mm: 0.7,
     roads_enabled: true,
+    // Railways switch on apart from roads, and are on by default: a map
+    // that drops the rail network is simply wrong. The default style draws
+    // them in the road color, so no project gains a filament slot. Mirrors
+    // ColorOutputSpec in crates/toposaic-core/src/spec.rs — change both
+    // together.
+    rail_enabled: true,
+    // Slate blue-grey: steel against the gold roads and raspberry trails.
+    rail_color: "#4A5568",
+    rail_width_mm: 0.7,
+    // Picked out in their own color, which is the point of drawing them.
+    // The 3MF packs its palette from the mapped data, so the slot costs
+    // nothing in an area with no railways.
+    rail_style: "separate",
+    // Running lines only, which is what every model drew before the
+    // setting existed. One setting governs railways and aerial lifts.
+    rail_lifecycle: "operational",
+    aerial_enabled: true,
+    // Signal violet, apart from the steel railways and gold roads.
+    aerial_color: "#6C4CB6",
+    aerial_width_mm: 0.7,
+    // Lifts get their own color too: a chair lift is neither a road nor a
+    // railway, and the map is worth more when it says so.
+    aerial_style: "separate",
     road_detail: "automatic",
     adaptive_road_widths: true,
     osm_water_enabled: true,
@@ -131,6 +154,31 @@ export function automaticRoadDetail(groundSpanKm: number) {
   if (groundSpanKm <= 8) return "local streets";
   if (groundSpanKm <= 20) return "minor roads";
   return "major roads";
+}
+
+// Which class a drawn layer's lines land in. The surface classes the
+// preview reports are raw material indices, and several layers can share
+// one, so the legend has to resolve the same chain the backend does.
+export type LineClass = "road" | "rail" | "aerialway";
+
+// Mirrors GenerationSpec::rail_line_style in
+// crates/toposaic-core/src/spec.rs. It answers "how would railways look",
+// so it ignores rail_enabled, exactly as the Rust does.
+export function railLineClass(
+  colorOutput: GenerationSpec["color_output"],
+): LineClass {
+  return colorOutput.rail_style === "separate" ? "rail" : "road";
+}
+
+// Mirrors GenerationSpec::aerial_line_style. The chain is total: with
+// railways switched off, "follow railways" falls through to roads rather
+// than drawing nothing or borrowing a rail color the model never emits.
+export function aerialLineClass(
+  colorOutput: GenerationSpec["color_output"],
+): LineClass {
+  if (colorOutput.aerial_style === "separate") return "aerialway";
+  if (colorOutput.aerial_style === "with_roads") return "road";
+  return colorOutput.rail_enabled ? railLineClass(colorOutput) : "road";
 }
 
 function meshPieceCount(spec: GenerationSpec) {
