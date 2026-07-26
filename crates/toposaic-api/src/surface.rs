@@ -44,6 +44,43 @@ const STREET_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|p
 const ALL_ROUTE_HIGHWAYS: &str = "motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|pedestrian|road|track|cycleway|path|footway|bridleway|steps";
 const PATH_HIGHWAYS: &str = "path|footway|bridleway|track|cycleway|steps";
 const WATERWAYS: &str = "river|stream|canal";
+/// In-service `railway=*` values worth drawing. Every lifecycle value —
+/// `abandoned`, `disused`, `razed`, `dismantled`, `demolished`, `removed`,
+/// `proposed`, `construction` — is absent by construction, so the whitelist
+/// itself is the first lifecycle filter.
+const RAILWAYS: &str =
+    "rail|light_rail|subway|tram|narrow_gauge|funicular|monorail|miniature|preserved";
+/// In-service `aerialway=*` values: cable cars, gondolas, and every tow.
+/// Station and pylon values are left out; they are point furniture, not line
+/// features.
+const AERIALWAYS: &str =
+    "cable_car|gondola|chair_lift|mixed_lift|drag_lift|t-bar|j-bar|platter|rope_tow|magic_carpet";
+/// Bare lifecycle keys that mark an otherwise in-service `railway=*` way as
+/// out of use. A way tagged `railway=rail` plus `disused=yes` is a rusting
+/// siding, not a railway, so it must not print.
+const RAIL_LIFECYCLE_KEYS: [&str; 7] = [
+    "disused",
+    "abandoned",
+    "razed",
+    "demolished",
+    "removed",
+    "proposed",
+    "construction",
+];
+/// Key PREFIXES OpenStreetMap uses for lifecycle-namespaced tags, as in
+/// `disused:railway=rail` or `construction:aerialway=gondola`. Such a way
+/// carries no plain `railway`/`aerialway` key at all, so the Overpass query
+/// already skips it; the check stays as a guard for ways carrying both.
+const RAIL_LIFECYCLE_PREFIXES: [&str; 8] = [
+    "disused:",
+    "abandoned:",
+    "razed:",
+    "demolished:",
+    "removed:",
+    "proposed:",
+    "construction:",
+    "historic:",
+];
 const OVERPASS_ATTEMPTS: usize = 2;
 const OVERPASS_RETRY_DELAY: Duration = Duration::from_millis(750);
 static OVERPASS_REQUEST_LOCK: Mutex<()> = Mutex::new(());
@@ -86,6 +123,14 @@ struct RouteCounts {
     detail: ResolvedRoadDetail,
     highway_filter: &'static str,
     fallback: bool,
+}
+
+#[derive(Debug, Default)]
+struct RailCounts {
+    lines: usize,
+    bridges: usize,
+    lifecycle_skipped: usize,
+    tunnel_skipped: usize,
 }
 
 #[derive(Debug, Default)]
@@ -334,6 +379,41 @@ pub fn fetch_surface_field(
                 append_source(
                     &mut field.source,
                     "OpenStreetMap roads unavailable; route overlay omitted",
+                );
+            }
+        }
+    }
+    if spec.uses_rail() {
+        match paint_rail(
+            spec,
+            height_field,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+        ) {
+            Ok(counts) => append_source(
+                &mut field.source,
+                format!(
+                    "railways: {} lines ({} tagged bridges) from OpenStreetMap via Overpass API; \
+                     style={}; skipped {} out-of-service and {} tunnelled ways; \
+                     railway={RAILWAYS}; aerialway={AERIALWAYS}; \
+                     © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.lines,
+                    counts.bridges,
+                    if spec.uses_separate_rail() {
+                        "separate"
+                    } else {
+                        "with roads"
+                    },
+                    counts.lifecycle_skipped,
+                    counts.tunnel_skipped,
+                ),
+            ),
+            Err(error) => {
+                warn!(%error, "OpenStreetMap railways unavailable; omitting rail overlay");
+                append_source(
+                    &mut field.source,
+                    "OpenStreetMap railways unavailable; rail overlay omitted",
                 );
             }
         }
@@ -605,6 +685,181 @@ fn paint_osm_ways(
             .filter(|feature| feature.bridge_elevations_m.is_some())
             .count(),
     )
+}
+
+/// Fetches and draws railways, funiculars, and cable cars. The Overpass
+/// request and its cache entry are wholly separate from the road ones, so
+/// turning railways on or off never invalidates a cached road download.
+///
+/// Under the default `with_roads` style the lines paint in the Road class
+/// at the road width, which is what keeps the eighth filament slot out of
+/// the archive; under `separate` they paint in the Rail class at the rail
+/// width. Rail networks are sparse next to street grids, so they skip the
+/// adaptive road-width thinning: a thinned single-track line reads as noise.
+fn paint_rail(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> Result<RailCounts> {
+    let response = fetch_osm_response(spec, cache_dir, "rail-v1", rail_query(bounds))?;
+    Ok(paint_rail_ways(
+        spec,
+        height_field,
+        bounds,
+        field,
+        response.elements,
+    ))
+}
+
+/// Draws one batch of fetched rail ways, counting what it skipped.
+fn paint_rail_ways(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    bounds: GeoBounds,
+    field: &mut SurfaceField,
+    ways: Vec<OverpassWay>,
+) -> RailCounts {
+    let separate = spec.uses_separate_rail();
+    let class = if separate {
+        SurfaceClass::Rail
+    } else {
+        SurfaceClass::Road
+    };
+    let base_width_mm = if separate {
+        spec.color_output.rail_width_mm
+    } else {
+        spec.color_output.road_width_mm
+    };
+    let mut counts = RailCounts::default();
+    for way in ways {
+        if way.geometry.len() < 2 {
+            continue;
+        }
+        if is_out_of_service(&way.tags) {
+            counts.lifecycle_skipped += 1;
+            continue;
+        }
+        if is_tunnel(&way.tags) {
+            counts.tunnel_skipped += 1;
+            continue;
+        }
+        let Some(scale) = rail_width_scale(&way.tags) else {
+            continue;
+        };
+        let points = normalized_osm_points(&way, spec, bounds);
+        let line_width = (base_width_mm * scale).max(0.4);
+        if is_bridge(&way.tags) {
+            let first = points[0];
+            let last = points[points.len() - 1];
+            field.paint_bridge_polyline_as(
+                &points,
+                spec.width_mm,
+                line_width,
+                [
+                    height_field.elevation_m_at(first[0], first[1]),
+                    height_field.elevation_m_at(last[0], last[1]),
+                ],
+                class,
+            );
+            counts.bridges += 1;
+        } else {
+            field.paint_polyline(&points, spec.width_mm, line_width, class);
+        }
+        counts.lines += 1;
+    }
+    counts
+}
+
+/// Relative print widths per rail type, against the configured rail width.
+/// The ordering is the ground truth of the structures: a mainline is a
+/// double-track formation tens of metres wide, a tram shares a street, and
+/// an aerial lift is a cable. Values are deliberately compressed — even the
+/// narrowest must stay printable, so the range is 1.0 down to 0.3 rather
+/// than the true ratio.
+fn rail_width_scale(tags: &HashMap<String, String>) -> Option<f32> {
+    if let Some(railway) = tags.get("railway") {
+        return match railway.as_str() {
+            // Mainline formations, the widest thing on the map after a
+            // motorway.
+            "rail" => Some(1.0),
+            // Preserved lines are mainline formations kept in service.
+            "preserved" => Some(0.8),
+            "light_rail" => Some(0.7),
+            // Mostly tunnelled, so this rarely applies; where a metro runs
+            // on the surface it is a light-rail-sized formation.
+            "subway" => Some(0.65),
+            "narrow_gauge" => Some(0.6),
+            "monorail" => Some(0.55),
+            "tram" => Some(0.5),
+            // A mountain funicular is single track on a narrow bench.
+            "funicular" => Some(0.5),
+            "miniature" => Some(0.35),
+            _ => None,
+        };
+    }
+    match tags.get("aerialway")?.as_str() {
+        // Cabin lifts: the largest aerial structures, but still cables.
+        "cable_car" => Some(0.5),
+        "gondola" => Some(0.45),
+        "mixed_lift" => Some(0.45),
+        "chair_lift" => Some(0.4),
+        // Surface tows are a cable and a track in the snow.
+        "drag_lift" | "t-bar" | "j-bar" | "platter" => Some(0.35),
+        "rope_tow" | "magic_carpet" => Some(0.3),
+        _ => None,
+    }
+}
+
+/// Whether a way OpenStreetMap still tags `railway=rail` (or an aerialway
+/// value) is actually out of service.
+///
+/// Two encodings matter. A bare lifecycle key — `disused=yes`,
+/// `abandoned=yes`, `razed=yes`, `proposed=yes`, `construction=yes` — sits
+/// alongside the in-service tag. A lifecycle-namespaced key —
+/// `disused:railway=rail`, `construction:aerialway=gondola` — replaces it;
+/// such a way has no plain `railway` key, so the query never returns it,
+/// but a way carrying both encodings would slip through without this.
+/// Explicit negatives (`disused=no`) do not count as out of service.
+fn is_out_of_service(tags: &HashMap<String, String>) -> bool {
+    tags.iter().any(|(key, value)| {
+        let bare = RAIL_LIFECYCLE_KEYS.contains(&key.as_str())
+            && value != "no"
+            && value != "false"
+            && !value.is_empty();
+        let namespaced = RAIL_LIFECYCLE_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix));
+        bare || namespaced
+    })
+}
+
+fn rail_query(bounds: GeoBounds) -> String {
+    // Drop the bare lifecycle keys server-side too, so an out-of-service
+    // freight yard never reaches the parser.
+    let negations = RAIL_LIFECYCLE_KEYS
+        .iter()
+        .map(|key| format!("[\"{key}\"!~\".\"]"))
+        .collect::<String>();
+    let ways = bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|bounds| {
+            let box_filter = format!(
+                "({south:.7},{west:.7},{north:.7},{east:.7})",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
+            );
+            format!(
+                "way[\"railway\"~\"^({RAILWAYS})$\"]{negations}[\"area\"!=\"yes\"]{box_filter};\
+                 way[\"aerialway\"~\"^({AERIALWAYS})$\"]{negations}[\"area\"!=\"yes\"]{box_filter};"
+            )
+        })
+        .collect::<String>();
+    format!("[out:json][timeout:30];({ways});out tags geom;")
 }
 
 fn road_highway_filter(detail: ResolvedRoadDetail) -> &'static str {
@@ -1720,6 +1975,230 @@ mod tests {
             paint_osm_ways(&spec, &height_field, bounds, &mut surface, response,),
             (1, 0, 1)
         );
+    }
+
+    fn rail_bounds_spec() -> GenerationSpec {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.enabled = true;
+        spec
+    }
+
+    /// One west-to-east way across the middle of the model.
+    fn crossing_way(bounds: GeoBounds, tags: &[(&str, &str)]) -> OverpassWay {
+        let latitude = (bounds.south + bounds.north) * 0.5;
+        OverpassWay {
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+            geometry: vec![
+                OverpassPoint {
+                    lat: latitude,
+                    lon: bounds.west,
+                },
+                OverpassPoint {
+                    lat: latitude,
+                    lon: bounds.east,
+                },
+            ],
+        }
+    }
+
+    /// Runs the real painting body against synthetic ways, no network.
+    fn paint_ways(
+        spec: &GenerationSpec,
+        bounds: GeoBounds,
+        field: &mut SurfaceField,
+        ways: Vec<OverpassWay>,
+    ) -> RailCounts {
+        let height_field = HeightField::new(2, 2, vec![100.0; 4], "rail").unwrap();
+        paint_rail_ways(spec, &height_field, bounds, field, ways)
+    }
+
+    #[test]
+    fn rail_query_covers_both_top_level_keys_and_excludes_lifecycle_tags() {
+        let query = rail_query(GeoBounds {
+            south: 46.8,
+            north: 46.9,
+            west: -121.9,
+            east: -121.7,
+        });
+        // Both top-level keys, each with its own value whitelist.
+        assert!(query.contains("[\"railway\"~\"^(rail|light_rail|subway|tram|narrow_gauge|funicular|monorail|miniature|preserved)$\"]"));
+        assert!(query.contains("[\"aerialway\"~\"^(cable_car|gondola|chair_lift|mixed_lift|drag_lift|t-bar|j-bar|platter|rope_tow|magic_carpet)$\"]"));
+        // Lifecycle values are absent from the whitelists, so an
+        // `railway=abandoned` way can never match in the first place.
+        for lifecycle in ["abandoned", "razed", "dismantled"] {
+            assert!(!query.contains(&format!("|{lifecycle}|")));
+            assert!(!query.contains(&format!("({lifecycle}|")));
+        }
+        // Bare lifecycle keys are negated server-side.
+        for key in RAIL_LIFECYCLE_KEYS {
+            assert!(
+                query.contains(&format!("[\"{key}\"!~\".\"]")),
+                "missing {key} negation"
+            );
+        }
+        assert!(query.contains("[\"area\"!=\"yes\"]"));
+        assert!(query.contains("(46.8000000,-121.9000000,46.9000000,-121.7000000)"));
+        assert!(query.ends_with("out tags geom;"));
+        assert_ne!(
+            rail_query(GeoBounds {
+                south: 46.8,
+                north: 46.9,
+                west: -121.9,
+                east: -121.7,
+            }),
+            overpass_query(
+                GeoBounds {
+                    south: 46.8,
+                    north: 46.9,
+                    west: -121.9,
+                    east: -121.7,
+                },
+                MAJOR_HIGHWAYS
+            )
+        );
+    }
+
+    #[test]
+    fn rail_cache_prefix_is_independent_of_the_road_prefixes() {
+        let spec = GenerationSpec::default();
+        let rail = osm_cache_path(&spec, Path::new("/cache"), "rail-v1");
+        for detail in [
+            ResolvedRoadDetail::Major,
+            ResolvedRoadDetail::Minor,
+            ResolvedRoadDetail::Streets,
+            ResolvedRoadDetail::All,
+        ] {
+            assert_ne!(
+                rail,
+                osm_cache_path(&spec, Path::new("/cache"), road_cache_prefix(detail))
+            );
+        }
+        assert!(rail.to_string_lossy().contains("rail-v1-"));
+    }
+
+    #[test]
+    fn rail_width_scales_rank_mainline_above_tram_above_lift() {
+        let rail = |value: &str| HashMap::from([("railway".to_owned(), value.to_owned())]);
+        let lift = |value: &str| HashMap::from([("aerialway".to_owned(), value.to_owned())]);
+        assert!(rail_width_scale(&rail("rail")) > rail_width_scale(&rail("light_rail")));
+        assert!(rail_width_scale(&rail("light_rail")) > rail_width_scale(&rail("tram")));
+        assert!(rail_width_scale(&rail("tram")) > rail_width_scale(&rail("miniature")));
+        assert!(rail_width_scale(&rail("tram")) >= rail_width_scale(&lift("cable_car")));
+        assert!(rail_width_scale(&lift("cable_car")) > rail_width_scale(&lift("chair_lift")));
+        assert!(rail_width_scale(&lift("chair_lift")) > rail_width_scale(&lift("rope_tow")));
+        // Anything outside both whitelists draws nothing.
+        assert_eq!(rail_width_scale(&rail("platform")), None);
+        assert_eq!(rail_width_scale(&lift("station")), None);
+        assert_eq!(rail_width_scale(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn out_of_service_railways_are_excluded_by_bare_and_namespaced_tags() {
+        let tags = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect::<HashMap<_, _>>()
+        };
+        assert!(!is_out_of_service(&tags(&[("railway", "rail")])));
+        for key in RAIL_LIFECYCLE_KEYS {
+            assert!(
+                is_out_of_service(&tags(&[("railway", "rail"), (key, "yes")])),
+                "{key}=yes should exclude"
+            );
+            // An explicit negative is not a lifecycle state.
+            assert!(
+                !is_out_of_service(&tags(&[("railway", "rail"), (key, "no")])),
+                "{key}=no should keep"
+            );
+        }
+        assert!(is_out_of_service(&tags(&[("disused:railway", "rail")])));
+        assert!(is_out_of_service(&tags(&[(
+            "construction:aerialway",
+            "gondola"
+        )])));
+        assert!(is_out_of_service(&tags(&[
+            ("railway", "rail"),
+            ("abandoned:railway", "rail")
+        ])));
+        // Ordinary namespaced tags that are not lifecycle states stay.
+        assert!(!is_out_of_service(&tags(&[
+            ("railway", "rail"),
+            ("railway:track_ref", "2")
+        ])));
+    }
+
+    #[test]
+    fn separate_rail_paints_the_rail_class_and_with_roads_paints_the_road_class() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.rail_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+        let ways = vec![
+            crossing_way(bounds, &[("railway", "rail")]),
+            // Out of service, tunnelled, and off-whitelist ways draw nothing.
+            crossing_way(bounds, &[("railway", "rail"), ("disused", "yes")]),
+            crossing_way(bounds, &[("railway", "subway"), ("tunnel", "yes")]),
+            crossing_way(bounds, &[("railway", "platform")]),
+        ];
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(&spec, bounds, &mut field, ways);
+        assert_eq!(counts.lines, 1);
+        assert_eq!(counts.lifecycle_skipped, 1);
+        assert_eq!(counts.tunnel_skipped, 1);
+        assert_eq!(counts.bridges, 0);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rail);
+        assert_eq!(field.class_at(0.5, 0.1), SurfaceClass::Rock);
+
+        // The default style paints the very same geometry as a road, so no
+        // Rail class — and therefore no eighth filament slot — appears.
+        let mut with_roads = rail_bounds_spec();
+        with_roads.color_output.road_width_mm = 2.0;
+        assert!(!with_roads.uses_separate_rail());
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(
+            &with_roads,
+            bounds,
+            &mut field,
+            vec![crossing_way(bounds, &[("railway", "rail")])],
+        );
+        assert_eq!(counts.lines, 1);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Road);
+    }
+
+    #[test]
+    fn rail_viaducts_take_the_same_bridge_deck_treatment_as_roads() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.rail_style = toposaic_core::RailStyle::Separate;
+        spec.color_output.rail_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+        // `is_bridge` keys off the `bridge` tag alone, so a railway viaduct
+        // reaches the deck path exactly as a road bridge does.
+        assert!(is_bridge(&HashMap::from([
+            ("railway".to_owned(), "rail".to_owned()),
+            ("bridge".to_owned(), "viaduct".to_owned()),
+        ])));
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
+        let counts = paint_ways(
+            &spec,
+            bounds,
+            &mut field,
+            vec![crossing_way(
+                bounds,
+                &[("railway", "rail"), ("bridge", "viaduct")],
+            )],
+        );
+        assert_eq!((counts.lines, counts.bridges), (1, 1));
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rail);
     }
 
     #[test]

@@ -557,12 +557,32 @@ impl SurfaceField {
         line_width_mm: f32,
         elevations_m: [f32; 2],
     ) {
+        self.paint_bridge_polyline_as(
+            points,
+            print_width_mm,
+            line_width_mm,
+            elevations_m,
+            SurfaceClass::Road,
+        );
+    }
+
+    /// A tagged bridge in an explicit class, for overlays that carry their
+    /// own material — a railway viaduct is structurally a road bridge with
+    /// a different color.
+    pub fn paint_bridge_polyline_as(
+        &mut self,
+        points: &[[f32; 2]],
+        print_width_mm: f32,
+        line_width_mm: f32,
+        elevations_m: [f32; 2],
+        class: SurfaceClass,
+    ) {
         if elevations_m.iter().all(|value| value.is_finite()) {
             self.paint_polyline_with_bridge(
                 points,
                 print_width_mm,
                 line_width_mm,
-                SurfaceClass::Road,
+                class,
                 Some(elevations_m),
             );
         }
@@ -891,6 +911,21 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        // Railways sit above roads: at a level crossing the rail line is the
+        // feature worth reading. Under the default `with_roads` style no
+        // Rail line exists and this check never matches.
+        let has_rail = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Rail
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_rail {
+            return SurfaceSample {
+                class: SurfaceClass::Rail,
+                building_height_m,
+            };
+        }
         let has_road = include_roads
             && line_entries.iter().any(|entry| {
                 let line = &self.vector_lines[entry.line_index];
@@ -923,7 +958,10 @@ impl SurfaceField {
             .rev()
             .map(|entry| (&self.vector_lines[entry.line_index], entry))
             .filter(|(line, _)| {
-                line.class != SurfaceClass::Road && line.class != SurfaceClass::Trail
+                !matches!(
+                    line.class,
+                    SurfaceClass::Road | SurfaceClass::Trail | SurfaceClass::Rail
+                )
             })
             .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
             .map(|(line, _)| line.class)

@@ -33,6 +33,37 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("defaults railways on in the road color and recalls old setups", () => {
+  // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
+  assert.equal(initialSpec.color_output.rail_enabled, true);
+  assert.equal(initialSpec.color_output.rail_color, "#4A5568");
+  assert.equal(initialSpec.color_output.rail_width_mm, 0.7);
+  // The default style costs no filament slot, so switching the layer on by
+  // default leaves every existing project's slot count alone.
+  assert.equal(initialSpec.color_output.rail_style, "with_roads");
+  // Setups saved before the railway layer existed recall with the same
+  // defaults the backend applies to them.
+  const oldColorOutput = { ...initialSpec.color_output };
+  delete oldColorOutput.rail_enabled;
+  delete oldColorOutput.rail_color;
+  delete oldColorOutput.rail_width_mm;
+  delete oldColorOutput.rail_style;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.rail_enabled, true);
+  assert.equal(merged.color_output.rail_style, "with_roads");
+  assert.equal(merged.color_output.rail_color, "#4A5568");
+  // A setup that picked the separate style keeps it.
+  const separateRail = mergeSpecDefaults({
+    color_output: {
+      ...initialSpec.color_output,
+      rail_enabled: false,
+      rail_style: "separate",
+    },
+  });
+  assert.equal(separateRail.color_output.rail_enabled, false);
+  assert.equal(separateRail.color_output.rail_style, "separate");
+});
+
 test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.deepEqual(initialSpec.trails, []);
   assert.equal(initialSpec.color_output.trail_color, "#D6336C");

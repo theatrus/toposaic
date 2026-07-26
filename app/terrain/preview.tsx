@@ -301,9 +301,15 @@ export function ReliefPreview({
     road_color,
     building_color,
     trail_color,
+    rail_color,
   } = spec.color_output;
   const buildingsEnabled = spec.buildings.enabled;
   const trailsPresent = spec.trails.length > 0;
+  // Railways take a material slot, and so a legend entry, only in their
+  // own color; drawn with roads they share the route slot.
+  const railSeparate =
+    spec.color_output.rail_enabled &&
+    spec.color_output.rail_style === "separate";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -388,6 +394,7 @@ export function ReliefPreview({
       road: preview?.surface_palette?.road ?? road_color,
       building: preview?.surface_palette?.building ?? building_color,
       trail: preview?.surface_palette?.trail ?? trail_color,
+      rail: preview?.surface_palette?.rail ?? rail_color,
     };
     const classColor = (surfaceClass?: number) =>
       surfaceClass === 1
@@ -402,6 +409,10 @@ export function ReliefPreview({
                 ? palette.building
                 : surfaceClass === 6
                   ? palette.trail
+                  // SurfaceClass::Rail carries material index 7; the class
+                  // only ever arrives under the separate rail style.
+                  : surfaceClass === 7
+                  ? palette.rail
                   : colorOutputEnabled
                     ? palette.rock
                     : NEUTRAL_TERRAIN_COLOR;
@@ -725,6 +736,7 @@ export function ReliefPreview({
     road_color,
     building_color,
     trail_color,
+    rail_color,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -799,6 +811,7 @@ export function ReliefPreview({
               ["Route", "road", spec.color_output.road_color],
               ["Building", "building", spec.color_output.building_color],
               ["Trail", "trail", spec.color_output.trail_color],
+              ["Rail", "rail", spec.color_output.rail_color],
             ] as const
           )
             .filter(
@@ -814,7 +827,10 @@ export function ReliefPreview({
                 }
                 return (
                   (key !== "road" || spec.color_output.roads_enabled) &&
-                  (key !== "building" || spec.buildings.enabled)
+                  (key !== "building" || spec.buildings.enabled) &&
+                  // Railways drawn with roads carry the road color and no
+                  // slot of their own, so they earn no legend entry.
+                  (key !== "rail" || railSeparate)
                 );
               },
             )

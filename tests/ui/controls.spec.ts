@@ -294,6 +294,109 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByLabel("Find a place")).toBeVisible();
 });
 
+test("switches railways on apart from roads and submits them", async ({
+  page,
+}) => {
+  let jobSpec: Record<string, unknown> = {};
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: "rail-job",
+          status: "running",
+          progress: 10,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Surface" }).click();
+  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  const railways = surfaceColors.getByRole("checkbox", {
+    name: "Render railways",
+  });
+  const railStyle = surfaceColors.getByLabel("Railway style");
+  const railColor = surfaceColors.getByLabel("Railway color");
+  const railWidth = surfaceColors.getByRole("slider", {
+    name: "Railway print width",
+  });
+  const railLegend = page
+    .getByLabel("Surface color legend")
+    .getByText("Rail", { exact: true });
+
+  // The layer starts on in the road color: drawn with roads it costs no
+  // filament slot, so it needs no color swatch, no width of its own, and
+  // no legend entry.
+  await expect(railways).toBeChecked();
+  await expect(railStyle).toHaveValue("with_roads");
+  await expect(railColor).toBeHidden();
+  await expect(railWidth).toBeHidden();
+  await expect(railLegend).toBeHidden();
+  await expect(
+    surfaceColors.getByText(/railways, trams, funiculars, and cable cars/),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByText(/no extra filament slot/),
+  ).toBeVisible();
+
+  // Switching the layer off takes the style picker with it.
+  await railways.uncheck();
+  await expect(railStyle).toBeHidden();
+  await railways.check();
+  await expect(railStyle).toHaveValue("with_roads");
+
+  // Their own color reveals the swatch and the width, and earns a legend
+  // entry for the eighth material.
+  await railStyle.selectOption("separate");
+  await expect(railColor).toHaveValue("#4a5568");
+  await expect(railWidth).toHaveValue("0.7");
+  await expect(railLegend).toBeVisible();
+  await railColor.fill("#2b3440");
+  await railWidth.fill("1.2");
+  await expect(railWidth).toHaveValue("1.2");
+
+  // Railways switch independently of roads: turning roads off leaves the
+  // railway controls in place.
+  const roads = surfaceColors.getByRole("checkbox", { name: "Render roads" });
+  await roads.uncheck();
+  await expect(surfaceColors.getByLabel("Route detail")).toBeHidden();
+  await expect(railways).toBeChecked();
+  await expect(railStyle).toBeVisible();
+  await expect(railWidth).toHaveValue("1.2");
+  await roads.check();
+
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await expect
+    .poll(() => (jobSpec.color_output as Record<string, unknown>)?.rail_enabled)
+    .toBe(true);
+  const colorOutput = jobSpec.color_output as Record<string, unknown>;
+  expect(colorOutput.rail_style).toBe("separate");
+  expect(colorOutput.rail_color).toBe("#2b3440");
+  expect(colorOutput.rail_width_mm).toBe(1.2);
+
+  // The chosen settings survive a trip away from the tab.
+  await page.getByRole("tab", { name: "Surface" }).click();
+  await expect(railways).toBeChecked();
+  await expect(railStyle).toHaveValue("separate");
+  await expect(railColor).toHaveValue("#2b3440");
+  await expect(railWidth).toHaveValue("1.2");
+});
+
 test("uses the selected elevation source for live previews", async ({
   page,
 }) => {

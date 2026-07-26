@@ -12,8 +12,8 @@ use std::env;
 
 use toposaic_core::analysis::{analyze_project, summarize};
 use toposaic_core::{
-    BridgeStructure, BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, SurfaceClass,
-    SurfaceField, TrailRoute, TraySpec,
+    BridgeStructure, BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, RailStyle,
+    SurfaceClass, SurfaceField, TrailRoute, TraySpec,
 };
 
 /// Small deterministic generator so synthetic roads and buildings are stable
@@ -66,6 +66,37 @@ fn paint_synthetic_trails(spec: &GenerationSpec, field: &mut SurfaceField) {
             SurfaceClass::Trail,
         );
     }
+}
+
+/// Railway lines that cut across the synthetic road grid, the buildings, and
+/// the trails at shallow angles, plus one viaduct: the worst weld case a
+/// separately-styled rail layer can pose.
+fn paint_synthetic_rail(spec: &GenerationSpec, field: &mut SurfaceField) {
+    for line in 0..4_u32 {
+        let along = 0.15 + line as f32 * 0.22;
+        let points = (0..28)
+            .map(|index| {
+                let progress = index as f32 / 27.0;
+                let drift = 0.3 * (progress * std::f32::consts::TAU * 0.5).sin();
+                [progress, (along + drift).clamp(0.0, 1.0)]
+            })
+            .collect::<Vec<_>>();
+        field.paint_polyline(
+            &points,
+            spec.width_mm,
+            spec.color_output.rail_width_mm,
+            SurfaceClass::Rail,
+        );
+    }
+    // A viaduct high over the terrain, so trails and roads must keep running
+    // beneath it while its deck stays a shell of its own.
+    field.paint_bridge_polyline_as(
+        &[[0.02, 0.34], [0.98, 0.66]],
+        spec.width_mm,
+        spec.color_output.rail_width_mm * 1.5,
+        [1_700.0, 1_700.0],
+        SurfaceClass::Rail,
+    );
 }
 
 fn synthetic_surface_field(spec: &GenerationSpec, size: usize, with_bridge: bool) -> SurfaceField {
@@ -156,6 +187,9 @@ fn scenario(
         if !spec.trails.is_empty() {
             paint_synthetic_trails(spec, &mut field);
         }
+        if spec.uses_separate_rail() {
+            paint_synthetic_rail(spec, &mut field);
+        }
         field
     });
     let reports = analyze_project(spec, Some(&height_field), surface_field.as_ref())?;
@@ -237,6 +271,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     scenario(
         "color 3x3 puzzle with imported trails",
         &trails,
+        true,
+        false,
+        json,
+    )?;
+
+    // The hardest overlay case: roads, buildings, imported trails, and a
+    // separately-styled rail layer with a viaduct, all crossing each other.
+    let rail = GenerationSpec {
+        color_output: ColorOutputSpec {
+            rail_enabled: true,
+            rail_style: RailStyle::Separate,
+            ..trails.color_output.clone()
+        },
+        ..trails.clone()
+    };
+    scenario(
+        "color 3x3 puzzle with trails and separate railways",
+        &rail,
         true,
         false,
         json,

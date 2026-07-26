@@ -66,6 +66,16 @@ export const initialSpec: GenerationSpec = {
     trail_color: "#D6336C",
     trail_width_mm: 0.7,
     roads_enabled: true,
+    // Railways switch on apart from roads, and are on by default: a map
+    // that drops the rail network is simply wrong. The default style draws
+    // them in the road color, so no project gains a filament slot. Mirrors
+    // ColorOutputSpec in crates/toposaic-core/src/spec.rs — change both
+    // together.
+    rail_enabled: true,
+    // Slate blue-grey: steel against the gold roads and raspberry trails.
+    rail_color: "#4A5568",
+    rail_width_mm: 0.7,
+    rail_style: "with_roads",
     road_detail: "automatic",
     adaptive_road_widths: true,
     osm_water_enabled: true,

@@ -64,6 +64,13 @@ export type GenerationSpec = {
     trail_color: string;
     trail_width_mm: number;
     roads_enabled: boolean;
+    // Railways, trams, funiculars, and cable cars. The layer switches on
+    // its own, apart from roads; "with_roads" paints it in the road color
+    // so the print needs no eighth filament slot.
+    rail_enabled: boolean;
+    rail_color: string;
+    rail_width_mm: number;
+    rail_style: "separate" | "with_roads";
     road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
     osm_water_enabled: boolean;
@@ -147,6 +154,7 @@ export type PreviewData = {
     road: string;
     building: string;
     trail?: string;
+    rail?: string;
   };
   surface_coverage?: {
     rock: number;
@@ -156,6 +164,7 @@ export type PreviewData = {
     road: number;
     building: number;
     trail?: number;
+    rail?: number;
   };
   surface_source?: string;
   minimum_elevation_m?: number;

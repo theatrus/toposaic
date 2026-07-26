@@ -199,6 +199,21 @@ impl GenerationSpec {
         !self.trails.is_empty()
     }
 
+    /// Whether railways, funiculars, and cable cars are drawn at all. Like
+    /// roads they ride on color output, because they come from the same
+    /// OpenStreetMap fetch the color pipeline runs.
+    pub fn uses_rail(&self) -> bool {
+        self.color_output.enabled && self.color_output.rail_enabled
+    }
+
+    /// Whether railways get their own class, color, and filament slot.
+    /// Every eighth-slot behavior hangs off this, so the default
+    /// `with_roads` style draws railways without adding a slot and keeps
+    /// the emitted color group exactly as it was.
+    pub fn uses_separate_rail(&self) -> bool {
+        self.uses_rail() && self.color_output.rail_style == RailStyle::Separate
+    }
+
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
     }
@@ -286,9 +301,14 @@ impl GenerationSpec {
     }
 
     /// The color of every emitted material slot, ordered by
-    /// `SurfaceClass::material_index`. The trail slot exists only when the
-    /// spec carries trails, so slot count and colors stay exactly as before
-    /// for every spec without them.
+    /// `SurfaceClass::material_index`. The trail and rail slots exist only
+    /// when the spec actually draws them, so slot count and colors stay
+    /// exactly as before for every spec without either.
+    ///
+    /// Slots are positional, so a separately-styled rail layer (index 7)
+    /// forces the trail slot (index 6) to exist as well. That placeholder
+    /// slot is never referenced by a triangle; it is the price of keeping
+    /// `material_index` a plain array index.
     pub(crate) fn material_colors(&self) -> Vec<&str> {
         let mut colors = vec![
             self.color_output.rock_color.as_str(),
@@ -298,8 +318,11 @@ impl GenerationSpec {
             self.color_output.road_color.as_str(),
             self.color_output.building_color.as_str(),
         ];
-        if self.uses_trails() {
+        if self.uses_trails() || self.uses_separate_rail() {
             colors.push(self.color_output.trail_color.as_str());
+        }
+        if self.uses_separate_rail() {
+            colors.push(self.color_output.rail_color.as_str());
         }
         colors
     }
@@ -498,6 +521,25 @@ pub enum RoadDetail {
     All,
 }
 
+/// How drawn railways, funiculars, and cable cars are colored.
+///
+/// `WithRoads` stays the default because it fixes the missing-railway gap
+/// without changing any project's filament count: railways paint in the
+/// road class, in the road color, at the road width. `Separate` gives them
+/// their own class, color, and filament slot — the eighth — which costs a
+/// slot and, because material slots are positional, also forces the trail
+/// slot to exist as a placeholder. Users who want railways picked out in
+/// their own color choose that deliberately.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailStyle {
+    /// Railways get their own class, color, and filament slot.
+    Separate,
+    /// Railways paint as roads, in the road color and at the road width.
+    #[default]
+    WithRoads,
+}
+
 /// A road detail level with `Automatic` already resolved against the map
 /// span, so consumers never have to handle the automatic case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +654,20 @@ pub struct ColorOutputSpec {
     pub trail_color: String,
     /// Print width of imported trail lines, like `road_width_mm` for roads.
     pub trail_width_mm: f32,
+    /// Draw railways, funiculars, and cable cars from OpenStreetMap. On by
+    /// default: a map that drops the rail network is simply wrong, and the
+    /// default `rail_style` draws it without costing a filament slot.
+    pub rail_enabled: bool,
+    /// Color of railways when `rail_style` is `separate`. Ignored — and
+    /// never emitted into any artifact — under the default `with_roads`
+    /// style.
+    pub rail_color: String,
+    /// Print width of railway lines when `rail_style` is `separate`; under
+    /// `with_roads` the road width applies instead.
+    pub rail_width_mm: f32,
+    /// Whether railways get their own color and filament slot or paint as
+    /// roads.
+    pub rail_style: RailStyle,
     pub roads_enabled: bool,
     pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
@@ -762,6 +818,12 @@ impl Default for ColorOutputSpec {
             // color and stays clearly apart from the gold route color.
             trail_color: "#D6336C".into(),
             trail_width_mm: 0.7,
+            rail_enabled: true,
+            // Slate blue-grey: reads as steel against the gold roads and
+            // the raspberry trails without competing with the water blue.
+            rail_color: "#4A5568".into(),
+            rail_width_mm: 0.7,
+            rail_style: RailStyle::default(),
             roads_enabled: true,
             road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
@@ -788,6 +850,7 @@ impl ColorOutputSpec {
             ("road", &self.road_color),
             ("building", &self.building_color),
             ("trail", &self.trail_color),
+            ("rail", &self.rail_color),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -798,6 +861,9 @@ impl ColorOutputSpec {
         }
         if !(0.4..=5.0).contains(&self.trail_width_mm) {
             bail!("trail line width must be between 0.4 and 5 mm");
+        }
+        if !(0.4..=5.0).contains(&self.rail_width_mm) {
+            bail!("rail line width must be between 0.4 and 5 mm");
         }
         if !(0.0..=100.0).contains(&self.waterway_coverage_percent) {
             bail!("waterway coverage cutoff must be between 0 and 100 percent");
@@ -836,11 +902,15 @@ pub enum SurfaceClass {
     /// output when a spec carries trails, so its seventh material slot is
     /// invisible to every existing project.
     Trail,
+    /// Railways, funiculars, and cable cars drawn in their own color. The
+    /// class only ever appears when `rail_style` is `separate`, so its
+    /// eighth material slot is invisible under the default style.
+    Rail,
 }
 
 impl SurfaceClass {
     /// Every class, ordered by `material_index`.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -848,6 +918,7 @@ impl SurfaceClass {
         Self::Road,
         Self::Building,
         Self::Trail,
+        Self::Rail,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -859,6 +930,7 @@ impl SurfaceClass {
             Self::Road => 4,
             Self::Building => 5,
             Self::Trail => 6,
+            Self::Rail => 7,
         }
     }
 }
@@ -975,7 +1047,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"with_roads","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1039,6 +1111,10 @@ mod tests {
                 "building_color": "#997755",
                 "trail_color": "#CC2266",
                 "trail_width_mm": 1.5,
+                "rail_enabled": false,
+                "rail_color": "#334455",
+                "rail_width_mm": 1.25,
+                "rail_style": "separate",
                 "roads_enabled": false,
                 "road_detail": "streets",
                 "adaptive_road_widths": false,
@@ -1146,6 +1222,74 @@ mod tests {
         assert!(!spec.uses_color_materials());
         spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])];
         assert!(spec.uses_color_materials());
+    }
+
+    #[test]
+    fn rail_defaults_draw_railways_without_adding_a_filament_slot() {
+        // A pre-rail document gains the defaults: railways drawn, but in
+        // the road class, so the emitted slot count is unchanged.
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "enabled": true }
+        }))
+        .unwrap();
+        assert!(spec.color_output.rail_enabled);
+        assert_eq!(spec.color_output.rail_style, RailStyle::WithRoads);
+        assert_eq!(spec.color_output.rail_color, "#4A5568");
+        assert_eq!(spec.color_output.rail_width_mm, 0.7);
+        assert!(spec.uses_rail());
+        assert!(!spec.uses_separate_rail());
+        assert_eq!(spec.material_colors().len(), 6);
+
+        // Railways ride on color output, like roads.
+        let mut off = GenerationSpec::default();
+        assert!(!off.color_output.enabled);
+        assert!(!off.uses_rail());
+        off.color_output.enabled = true;
+        assert!(off.uses_rail());
+
+        // The separate style is what costs slots: the eighth for rail and,
+        // because slots are positional, a seventh placeholder for trails.
+        off.color_output.rail_style = RailStyle::Separate;
+        assert!(off.uses_separate_rail());
+        let colors = off.material_colors();
+        assert_eq!(colors.len(), 8);
+        assert_eq!(colors[6], "#D6336C");
+        assert_eq!(colors[7], "#4A5568");
+
+        // Disabling rail drops both extra slots again.
+        off.color_output.rail_enabled = false;
+        assert_eq!(off.material_colors().len(), 6);
+    }
+
+    #[test]
+    fn rail_styles_parse_as_snake_case_and_rail_settings_validate() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "color_output": { "rail_style": "separate" }
+        }))
+        .unwrap();
+        assert_eq!(spec.color_output.rail_style, RailStyle::Separate);
+        assert_eq!(
+            serde_json::to_value(RailStyle::WithRoads).unwrap(),
+            serde_json::json!("with_roads")
+        );
+        assert_eq!(
+            serde_json::to_value(RailStyle::Separate).unwrap(),
+            serde_json::json!("separate")
+        );
+
+        let mut spec = GenerationSpec::default();
+        spec.color_output.rail_width_mm = 0.2;
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("rail line width"));
+        spec.color_output.rail_width_mm = 5.0;
+        assert!(spec.validate().is_ok());
+        spec.color_output.rail_width_mm = 5.1;
+        assert!(spec.validate().is_err());
+
+        spec.color_output.rail_width_mm = 0.7;
+        spec.color_output.rail_color = "steel".into();
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("rail color"));
     }
 
     #[test]

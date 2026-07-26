@@ -113,9 +113,11 @@ pub fn generate_tray_artifacts(
     tray_spec.color_output.road_color = spec.tray.tray_color.clone();
     tray_spec.color_output.building_color = spec.tray.tray_color.clone();
     tray_spec.color_output.trail_color = spec.tray.tray_color.clone();
-    // Trays never draw trails; dropping them keeps the tray 3MF at its
-    // six-slot layout even when the terrain model carries trails.
+    tray_spec.color_output.rail_color = spec.tray.tray_color.clone();
+    // Trays never draw trails or railways; dropping both keeps the tray 3MF
+    // at its six-slot layout however the terrain model is configured.
     tray_spec.trails = Vec::new();
+    tray_spec.color_output.rail_enabled = false;
 
     let tray_meshes = build_tray_segments(spec, height_field)?;
     let mut artifacts = Vec::with_capacity(tray_meshes.len() * 2);

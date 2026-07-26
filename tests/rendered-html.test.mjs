@@ -67,6 +67,22 @@ test("server-renders TopoSaic", async () => {
   // which they are not by default.
   assert.doesNotMatch(html, /Building color/);
   assert.match(html, /Render roads/);
+  // Railways default on with the style picker showing, since the layer
+  // switches apart from roads.
+  assert.match(html, /Render railways/);
+  assert.match(html, /railways, trams, funiculars, and cable cars/);
+  assert.match(html, /Tunnels are skipped/);
+  assert.match(html, /Railway style/);
+  assert.match(html, /Draw with roads/);
+  assert.match(html, /Own color/);
+  // The default style paints railways with the roads, costing no filament
+  // slot, so the server renders it selected.
+  assert.match(html, /<option value="with_roads" selected="">/);
+  // The rail color and width belong to the separate style alone.
+  assert.doesNotMatch(html, /Railway color/);
+  assert.doesNotMatch(html, /Railway print width/);
+  // The default railway color appears only in that gated swatch.
+  assert.doesNotMatch(html, /#4A5568/i);
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);

@@ -195,6 +195,31 @@ the model. Set it to 0% for major waterways only or 100% for every mapped
 stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
+Railways come from the same Overpass fetch, on their own query and cache, so
+turning them on or off never re-downloads roads. Heavy rail, light rail,
+metros, trams, narrow gauge, funiculars, monorails, miniature and preserved
+lines, and every aerial lift from cable cars and gondolas to chair lifts and
+rope tows all count. Track that no longer carries trains does not: ways tagged
+disused, abandoned, razed, demolished, removed, proposed, or under
+construction are dropped, whether the tag sits on the way itself or replaces
+the railway key. Line width scales with the type, from a full-width mainline
+formation down to a chair-lift cable. Tunnels vanish, as they should, and that
+takes most metros with them; railway bridges and viaducts get the same
+interpolated deck as road bridges. Railways draw on by default and, also by
+default, print in the road color, which adds them to every existing color
+model without adding a filament. Giving them a color of their own (a steel
+blue-grey to start) costs the eighth filament slot and, since the slots run in
+a fixed order, reserves the seventh for trails whether or not the model has
+any.
+
+The Surface tab switches railways on and off on their own, apart from roads:
+streets can print without rails, and rails without streets. The style picker
+below the toggle chooses between "Draw with roads", which paints them in the
+route color at the route width, and "Own color", which reveals a color swatch
+and a width slider of their own and adds a Rail entry to the 3D legend. Both
+controls sit next to the road controls, and the swatch and width appear only
+under "Own color", since the road values apply otherwise.
+
 Hikers can import their own routes from GPX or KML files on the Surface tab.
 Each track, route, LineString, or gx:Track becomes one trail, named from the
 file, drawn on the model as a raised vector line like a road, and printed in
@@ -202,8 +227,9 @@ its own seventh color (a high-vis magenta to start). Trail width has its own
 slider, trails show on the map preview and in the 3D legend, and they live in
 the model spec, so saved setups and exported setup files carry them. Files are
 parsed in the browser; tracks longer than 20,000 points are thinned on import,
-and a model holds up to 20 trails. Models without trails keep exactly the
-six-color output they have today.
+and a model holds up to 20 trails. Models without trails and without a
+separately colored rail layer keep exactly the six-color output they have
+today.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.

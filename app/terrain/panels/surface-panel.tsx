@@ -378,6 +378,76 @@ export function SurfacePanel({
               )}
             </>
           )}
+          <div className="road-options">
+            <label className="color-toggle">
+              <input
+                type="checkbox"
+                checked={spec.color_output.rail_enabled}
+                onChange={(event) =>
+                  updateColor("rail_enabled", event.target.checked)
+                }
+              />
+              <span>Render railways</span>
+            </label>
+            <small>
+              Covers railways, trams, funiculars, and cable cars. It
+              switches on its own, apart from roads. Tunnels are skipped.
+            </small>
+          </div>
+          {spec.color_output.rail_enabled && (
+            <>
+              <label className="road-detail-field">
+                Railway style
+                <select
+                  value={spec.color_output.rail_style}
+                  onChange={(event) =>
+                    updateColor(
+                      "rail_style",
+                      event.target
+                        .value as GenerationSpec["color_output"]["rail_style"],
+                    )
+                  }
+                >
+                  <option value="separate">Own color</option>
+                  <option value="with_roads">Draw with roads</option>
+                </select>
+                <small>
+                  Drawing with roads paints railways in the route color at
+                  the route width, so the print needs no extra filament
+                  slot. Their own color adds an eighth material.
+                </small>
+              </label>
+              {spec.color_output.rail_style === "separate" && (
+                <>
+                  <div className="color-swatches rail-color-swatch">
+                    <label>
+                      <input
+                        aria-label="Railway color"
+                        type="color"
+                        value={spec.color_output.rail_color}
+                        onChange={(event) =>
+                          updateColor("rail_color", event.target.value)
+                        }
+                      />
+                      <span>Railway color</span>
+                      <code>
+                        {spec.color_output.rail_color.toUpperCase()}
+                      </code>
+                    </label>
+                  </div>
+                  <RangeField
+                    label="Railway print width"
+                    value={spec.color_output.rail_width_mm}
+                    unit=" mm"
+                    min={0.4}
+                    max={4}
+                    step={0.1}
+                    onChange={(value) => updateColor("rail_width_mm", value)}
+                  />
+                </>
+              )}
+            </>
+          )}
           <p className="color-note">
             WorldCover supplies permanent water. OpenStreetMap waterways
             add smooth lakes, rivers, streams, and canals when enabled.

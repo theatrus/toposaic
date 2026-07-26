@@ -74,16 +74,17 @@ const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
 /// a few tens of megabytes even for meshes with millions of triangles.
 const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
-// OrcaSlicer and Bambu Studio face-paint values for extruders 1–7, from
+// OrcaSlicer and Bambu Studio face-paint values for extruders 1–8, from
 // PrusaSlicer's TriangleSelector serialization. An unsplit painted triangle
 // stores its extruder number n as a nibble stream: n = 1 or 2 fits one
 // nibble, hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates
 // at 0xC and an extension nibble carries n - 3, written before the marker —
-// "0C", "1C", "2C", "3C", and "4C" for extruder 7. Keep the standard 3MF
-// color properties too, for consumers that support them. The seventh code
-// is only ever emitted for the Trail material, which only specs with
-// imported trails produce.
-const ORCA_PAINT_CODES: [&str; 7] = ["4", "8", "0C", "1C", "2C", "3C", "4C"];
+// "0C", "1C", "2C", "3C", "4C" for extruder 7, and "5C" for extruder 8.
+// Keep the standard 3MF color properties too, for consumers that support
+// them. The seventh code is only ever emitted for the Trail material and
+// the eighth only for the Rail material, so specs with neither never see
+// them.
+const ORCA_PAINT_CODES: [&str; 8] = ["4", "8", "0C", "1C", "2C", "3C", "4C", "5C"];
 const _: () = assert!(
     ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
     "every surface class needs a face-paint code"
@@ -139,8 +140,9 @@ impl<'a> ThreeMfWriter<'a> {
             )?;
         }
         if spec.uses_color_materials() {
-            // The trail color joins the group only when the spec carries
-            // trails, so archives without trails keep their exact bytes.
+            // The trail and rail colors join the group only when the spec
+            // actually draws them, so archives with neither keep their
+            // exact bytes.
             let mut colors = String::new();
             for color in spec.material_colors() {
                 colors.push_str(&format!("      <m:color color=\"{color}FF\"/>\n"));
@@ -353,8 +355,9 @@ mod tests {
     }
 
     /// The six surface classes that existed when the project-style golden
-    /// fixture was generated. `SurfaceClass::ALL` has since gained `Trail`,
-    /// which no trail-less spec ever emits, so the fixture meshes stay
+    /// fixture was generated. `SurfaceClass::ALL` has since gained `Trail`
+    /// and `Rail`, neither of which a spec without trails and without a
+    /// separately-styled rail layer ever emits, so the fixture meshes stay
     /// pinned to the original six.
     const PRE_TRAIL_CLASSES: [SurfaceClass; 6] = [
         SurfaceClass::Rock,
@@ -573,6 +576,14 @@ mod tests {
             };
             assert_eq!(derived, expected, "extruder {extruder}");
         }
+        // Spot checks on the two ends of the extension-nibble range: the
+        // first code that needs it and the eighth (Rail) slot.
+        assert_eq!(ORCA_PAINT_CODES[2], "0C");
+        assert_eq!(ORCA_PAINT_CODES[7], "5C");
+        assert_eq!(
+            ORCA_PAINT_CODES[SurfaceClass::Rail.material_index() as usize],
+            "5C"
+        );
     }
 
     fn trail_spec(style: ThreeMfStyle) -> GenerationSpec {
@@ -713,6 +724,167 @@ mod tests {
                 "{style:?}"
             );
         }
+    }
+
+    fn rail_spec(style: ThreeMfStyle, rail_style: crate::spec::RailStyle) -> GenerationSpec {
+        let mut spec = fixture_spec(style);
+        spec.color_output.rail_enabled = true;
+        spec.color_output.rail_style = rail_style;
+        spec
+    }
+
+    /// The fixture meshes plus one Rail-material triangle, as a piece with a
+    /// separately-styled rail layer would carry.
+    fn rail_meshes() -> Vec<Mesh> {
+        let mut meshes = fixture_meshes();
+        let mesh = &mut meshes[0];
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push([120.0, 0.0, 1.0]);
+        mesh.vertices.push([122.5, 0.75, 1.5]);
+        mesh.vertices.push([121.25, 3.125, 2.0]);
+        mesh.triangles.push([base, base + 1, base + 2]);
+        mesh.materials.push(SurfaceClass::Rail);
+        meshes
+    }
+
+    fn write_rail_fixture(style: ThreeMfStyle, rail_style: crate::spec::RailStyle) -> Vec<u8> {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let unique = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "toposaic-3mf-rail-{style:?}-{rail_style:?}-{}-{unique}.3mf",
+            std::process::id()
+        ));
+        let spec = rail_spec(style, rail_style);
+        let mut writer = ThreeMfWriter::new(&spec, &path).unwrap();
+        let meshes = if spec.uses_separate_rail() {
+            rail_meshes()
+        } else {
+            fixture_meshes()
+        };
+        for mesh in meshes {
+            writer.write_mesh(&mesh).unwrap();
+        }
+        writer.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        bytes
+    }
+
+    /// The byte guard for the eighth slot, in the style of
+    /// `specs_without_trails_never_emit_the_seventh_slot`: a rail layer
+    /// under the default `with_roads` style — and a disabled one — must
+    /// produce exactly the archive a build without rail produced.
+    #[test]
+    fn specs_without_separate_rail_never_emit_the_eighth_slot() {
+        use crate::spec::RailStyle;
+
+        for style in [
+            ThreeMfStyle::Project,
+            ThreeMfStyle::Painted,
+            ThreeMfStyle::Geometry,
+        ] {
+            // The default style already has rail enabled; the archive must
+            // match the pre-rail six-slot archive byte for byte.
+            assert_eq!(
+                write_rail_fixture(style, RailStyle::WithRoads),
+                write_fixture(style),
+                "{style:?} with_roads rail must not change the archive"
+            );
+            let mut disabled = fixture_spec(style);
+            disabled.color_output.rail_enabled = false;
+            assert!(!disabled.uses_separate_rail());
+            assert_eq!(disabled.material_colors().len(), 6);
+
+            let model = model_xml(&write_rail_fixture(style, RailStyle::WithRoads));
+            assert_eq!(
+                model.matches("<m:color ").count(),
+                6,
+                "{style:?} should keep six colors"
+            );
+            assert!(!model.contains("paint_color=\"5C\""), "{style:?}");
+            assert!(!model.contains("#4A5568"), "{style:?}");
+            if style == ThreeMfStyle::Project {
+                let bytes = write_rail_fixture(style, RailStyle::WithRoads);
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+                let mut settings = String::new();
+                archive
+                    .by_name("Metadata/project_settings.config")
+                    .unwrap()
+                    .read_to_string(&mut settings)
+                    .unwrap();
+                let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+                assert_eq!(settings["filament_colour"].as_array().unwrap().len(), 6);
+                assert_eq!(
+                    settings["flush_volumes_matrix"].as_array().unwrap().len(),
+                    36
+                );
+                assert_eq!(
+                    settings["flush_volumes_vector"].as_array().unwrap().len(),
+                    12
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn separate_rail_projects_emit_the_eighth_color_and_paint_code() {
+        use crate::spec::RailStyle;
+
+        for style in [ThreeMfStyle::Project, ThreeMfStyle::Painted] {
+            let model = model_xml(&write_rail_fixture(style, RailStyle::Separate));
+            // Eight slots: the trail slot exists as a positional
+            // placeholder even though no triangle references it.
+            assert_eq!(model.matches("<m:color ").count(), 8, "{style:?}");
+            assert!(model.contains("color=\"#D6336CFF\""), "{style:?}");
+            assert!(model.contains("color=\"#4A5568FF\""), "{style:?}");
+            assert!(
+                model.contains("pid=\"1000\" p1=\"7\" p2=\"7\" p3=\"7\" paint_color=\"5C\"/>"),
+                "{style:?} should face-paint the rail triangle for extruder 8"
+            );
+            assert!(
+                !model.contains("p1=\"6\""),
+                "{style:?} must not reference the placeholder trail slot"
+            );
+        }
+
+        let model = model_xml(&write_rail_fixture(
+            ThreeMfStyle::Geometry,
+            RailStyle::Separate,
+        ));
+        assert!(!model.contains("paint_color"));
+        assert_eq!(model.matches("<m:color ").count(), 8);
+        assert!(model.contains("pid=\"1000\" p1=\"7\" p2=\"7\" p3=\"7\"/>"));
+    }
+
+    #[test]
+    fn separate_rail_projects_grow_eight_slot_project_settings() {
+        use crate::spec::RailStyle;
+
+        let bytes = write_rail_fixture(ThreeMfStyle::Project, RailStyle::Separate);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        let mut settings = String::new();
+        archive
+            .by_name("Metadata/project_settings.config")
+            .unwrap()
+            .read_to_string(&mut settings)
+            .unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        let colors = settings["filament_colour"].as_array().unwrap();
+        assert_eq!(colors.len(), 8);
+        assert_eq!(colors[6], "#D6336C");
+        assert_eq!(colors[7], "#4A5568");
+        for key in ["filament_settings_id", "filament_type", "filament_vendor"] {
+            assert_eq!(settings[key].as_array().unwrap().len(), 8, "{key}");
+        }
+        let matrix = settings["flush_volumes_matrix"].as_array().unwrap();
+        assert_eq!(matrix.len(), 64);
+        assert_eq!(matrix[0], "0");
+        assert_eq!(matrix[63], "0");
+        assert_eq!(matrix[1], "280");
+        assert_eq!(
+            settings["flush_volumes_vector"].as_array().unwrap().len(),
+            16
+        );
     }
 
     #[test]
