@@ -1334,10 +1334,14 @@ mod tests {
             let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
             assert_watertight(&mesh);
             assert!(
-                mesh.vertices
-                    .iter()
-                    .any(|vertex| { (vertex[2] - spec.wall_mount.depth_mm).abs() < 0.000_01 })
+                mesh.vertices.iter().any(|vertex| {
+                    (vertex[2] - spec.wall_mount.pocket_depth_mm).abs() < 0.000_01
+                })
             );
+            assert!(mesh.vertices.iter().any(|vertex| {
+                (vertex[2] - spec.wall_mount.pocket_depth_mm - spec.wall_mount.depth_mm).abs()
+                    < 0.000_01
+            }));
         }
     }
 
@@ -1362,6 +1366,13 @@ mod tests {
         assert!(mesh.vertices.iter().any(|vertex| {
             (vertex[2] - spec.puzzle_retention.socket_depth_mm()).abs() < 0.000_01
         }));
+
+        let mut changed_wall_pocket = spec.clone();
+        changed_wall_pocket.wall_mount.pocket_depth_mm = 3.0;
+        changed_wall_pocket.wall_mount.wall_offset_mm = 8.0;
+        let unchanged_retention = build_piece(&changed_wall_pocket, None, None, 0, 0).unwrap();
+        assert_eq!(mesh.vertices, unchanged_retention.vertices);
+        assert_eq!(mesh.triangles, unchanged_retention.triangles);
     }
 
     #[test]

@@ -14,8 +14,8 @@ const CIRCLE_SAMPLES: usize = 32;
 const ANGLED_PIN_DEGREES: f32 = 25.0;
 const FRENCH_CLEAT_DEGREES: f32 = 35.0;
 const FRENCH_CLEAT_SLIDE_MM: f32 = 2.0;
-const FRENCH_CLEAT_PLATE_MARGIN_MM: f32 = 1.5;
-const FRENCH_CLEAT_SCREW_GAP_MM: f32 = 1.2;
+const WALL_PLATE_MARGIN_MM: f32 = 1.2;
+const WALL_PLATE_SCREW_GAP_MM: f32 = 0.4;
 const ALIGNMENT_FRAME_BAND_MM: f32 = 1.6;
 const ALIGNMENT_FRAME_THICKNESS_MM: f32 = 1.2;
 const ALIGNMENT_RAIL_HALF_WIDTH_MM: f32 = 0.8;
@@ -51,12 +51,25 @@ pub(crate) fn mount_bottom_polygons(
     mount: &WallMountSpec,
     mount_frame: [f32; 4],
 ) -> Result<MeshBuilder> {
+    let [center_x, center_y] = wall_mount_center(mount_frame);
+    let mount_center = Point::new(f64::from(center_x), f64::from(center_y));
     let (mount_region_index, mount_region) = base_polygons
         .iter()
         .enumerate()
+        .filter(|(_, polygon)| polygon.contains(&mount_center))
         .max_by(|left, right| left.1.unsigned_area().total_cmp(&right.1.unsigned_area()))
-        .ok_or_else(|| anyhow::anyhow!("wall-mount feature needs a non-empty back face"))?;
+        .ok_or_else(|| anyhow::anyhow!("wall-mount feature needs a back face below its center"))?;
     let cavities = cavities_for_outline(mount_region, mount, mount_frame)?;
+    if mount.style != WallMountStyle::None {
+        return bottom_with_wall_plate_pocket(
+            base_polygons,
+            mount_region_index,
+            mount_region,
+            &cavities,
+            mount,
+            mount_frame,
+        );
+    }
     bottom_with_cavities(base_polygons, mount_region_index, &cavities, mount.depth_mm)
 }
 
@@ -121,25 +134,137 @@ fn bottom_with_cavities(
             SurfaceClass::Rock,
             true,
         )?;
-        for index in 0..cavity.opening.len() {
-            let next = (index + 1) % cavity.opening.len();
-            let opening_a = cavity.opening[index];
-            let opening_b = cavity.opening[next];
-            let ceiling_a = cavity.ceiling[index];
-            let ceiling_b = cavity.ceiling[next];
-            // The opening ring runs counter-clockwise. Reverse it here so
-            // the wall normals face into the empty socket, away from the
-            // solid material.
-            mesh.quad(
-                [opening_b[0], opening_b[1], 0.0],
-                [opening_a[0], opening_a[1], 0.0],
-                [ceiling_a[0], ceiling_a[1], depth_mm],
-                [ceiling_b[0], ceiling_b[1], depth_mm],
-                SurfaceClass::Rock,
-            );
-        }
+        add_cavity_wall(&mut mesh, &cavity.opening, 0.0, &cavity.ceiling, depth_mm);
     }
     Ok(mesh)
+}
+
+fn bottom_with_wall_plate_pocket(
+    base_polygons: &[Polygon<f64>],
+    mount_region_index: usize,
+    mount_region: &Polygon<f64>,
+    receivers: &[MountCavity],
+    mount: &WallMountSpec,
+    mount_frame: [f32; 4],
+) -> Result<MeshBuilder> {
+    let pocket = wall_plate_pocket(mount, mount_frame);
+    if pocket
+        .iter()
+        .chain(
+            receivers
+                .iter()
+                .flat_map(|receiver| receiver.opening.iter().chain(&receiver.ceiling)),
+        )
+        .any(|point| !mount_region.contains(&Point::new(point[0].into(), point[1].into())))
+    {
+        bail!(
+            "wall-mount plate does not fit this part; reduce the mount, pocket, or screw size, or use fewer pieces"
+        );
+    }
+
+    let bottom = base_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, base)| {
+            if index != mount_region_index {
+                return base.clone();
+            }
+            let mut holes = base.interiors().to_vec();
+            holes.push(ring(&pocket));
+            Polygon::new(base.exterior().clone(), holes)
+        })
+        .collect::<Vec<_>>();
+    let pocket_floor = Polygon::new(
+        ring(&pocket),
+        receivers
+            .iter()
+            .map(|receiver| ring(&receiver.opening))
+            .collect(),
+    );
+    let pocket_depth = mount.pocket_depth_mm;
+    let receiver_ceiling = pocket_depth + mount.depth_mm;
+
+    let mut mesh = MeshBuilder::default();
+    add_horizontal_polygons(&mut mesh, &bottom, 0.0, SurfaceClass::Rock, true)?;
+    add_horizontal_polygons(
+        &mut mesh,
+        &[pocket_floor],
+        pocket_depth,
+        SurfaceClass::Rock,
+        true,
+    )?;
+    add_cavity_wall(&mut mesh, &pocket, 0.0, &pocket, pocket_depth);
+    for receiver in receivers {
+        add_horizontal_polygons(
+            &mut mesh,
+            &[polygon(&receiver.ceiling)],
+            receiver_ceiling,
+            SurfaceClass::Rock,
+            true,
+        )?;
+        add_cavity_wall(
+            &mut mesh,
+            &receiver.opening,
+            pocket_depth,
+            &receiver.ceiling,
+            receiver_ceiling,
+        );
+    }
+    Ok(mesh)
+}
+
+fn add_cavity_wall(
+    mesh: &mut MeshBuilder,
+    opening: &[[f32; 2]],
+    opening_z: f32,
+    ceiling: &[[f32; 2]],
+    ceiling_z: f32,
+) {
+    for index in 0..opening.len() {
+        let next = (index + 1) % opening.len();
+        let opening_a = opening[index];
+        let opening_b = opening[next];
+        let ceiling_a = ceiling[index];
+        let ceiling_b = ceiling[next];
+        mesh.quad(
+            [opening_b[0], opening_b[1], opening_z],
+            [opening_a[0], opening_a[1], opening_z],
+            [ceiling_a[0], ceiling_a[1], ceiling_z],
+            [ceiling_b[0], ceiling_b[1], ceiling_z],
+            SurfaceClass::Rock,
+        );
+    }
+}
+
+fn wall_plate_pocket(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Vec<[f32; 2]> {
+    let (_, features) = wall_hardware_features(mount);
+    let feature_bounds = feature_bounds(&features);
+    let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds);
+    let plate_bounds = bounds(&plate);
+    let slide = wall_mount_slide(mount);
+    let [center_x, center_y] = wall_mount_center(mount_frame);
+    let half_width = (plate_bounds[2] - plate_bounds[0]) * 0.5 + mount.fit_clearance_mm;
+    let half_height =
+        (plate_bounds[3] - plate_bounds[1]) * 0.5 + slide * 0.5 + mount.fit_clearance_mm;
+    rectangle(center_x, center_y - slide * 0.5, half_width, half_height)
+}
+
+fn wall_mount_center(mount_frame: [f32; 4]) -> [f32; 2] {
+    let [minimum_x, minimum_y, maximum_x, maximum_y] = mount_frame;
+    [(minimum_x + maximum_x) * 0.5, (minimum_y + maximum_y) * 0.5]
+}
+
+fn wall_mount_slide(mount: &WallMountSpec) -> f32 {
+    let shift = match mount.style {
+        WallMountStyle::AngledPin => mount.depth_mm * ANGLED_PIN_DEGREES.to_radians().tan(),
+        WallMountStyle::FrenchCleat => mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan(),
+        WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
+    };
+    match mount.style {
+        WallMountStyle::AngledPin => shift + mount.fit_clearance_mm,
+        WallMountStyle::FrenchCleat => FRENCH_CLEAT_SLIDE_MM.max(shift + mount.fit_clearance_mm),
+        WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
+    }
 }
 
 fn cavities_for_outline(
@@ -147,16 +272,9 @@ fn cavities_for_outline(
     mount: &WallMountSpec,
     mount_frame: [f32; 4],
 ) -> Result<Vec<MountCavity>> {
-    let [minimum_x, minimum_y, maximum_x, maximum_y] = mount_frame;
+    let [minimum_x, _, maximum_x, _] = mount_frame;
     let width = maximum_x - minimum_x;
-    let height = maximum_y - minimum_y;
-    let center_y = minimum_y
-        + height
-            * if mount.style == WallMountStyle::FrenchCleat {
-                0.5
-            } else {
-                0.62
-            };
+    let [center_x, center_y] = wall_mount_center(mount_frame);
     let shift = match mount.style {
         WallMountStyle::AngledPin => mount.depth_mm * ANGLED_PIN_DEGREES.to_radians().tan(),
         WallMountStyle::FrenchCleat => mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan(),
@@ -190,13 +308,13 @@ fn cavities_for_outline(
             let box_half_height = half_height + slide * 0.5;
             vec![MountCavity {
                 opening: rectangle(
-                    minimum_x + width * 0.5,
+                    center_x,
                     center_y - slide * 0.5,
                     half_width,
                     box_half_height,
                 ),
                 ceiling: rectangle(
-                    minimum_x + width * 0.5,
+                    center_x,
                     center_y + shift - slide * 0.5,
                     half_width,
                     box_half_height,
@@ -295,45 +413,26 @@ fn hardware_plate_and_screw_centers(
     feature_bounds: [f32; 4],
 ) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
     let screw_radius = mount.screw_hole_diameter_mm * 0.5;
-    if mount.style == WallMountStyle::FrenchCleat {
-        let center_x = (feature_bounds[0] + feature_bounds[2]) * 0.5;
-        let lower_screw_y = feature_bounds[1] - screw_radius - FRENCH_CLEAT_SCREW_GAP_MM;
-        let upper_screw_y = feature_bounds[3] + screw_radius + FRENCH_CLEAT_SCREW_GAP_MM;
-        let minimum_x = feature_bounds[0] - FRENCH_CLEAT_PLATE_MARGIN_MM;
-        let maximum_x = feature_bounds[2] + FRENCH_CLEAT_PLATE_MARGIN_MM;
-        let minimum_y = lower_screw_y - screw_radius - FRENCH_CLEAT_PLATE_MARGIN_MM;
-        let maximum_y = upper_screw_y + screw_radius + FRENCH_CLEAT_PLATE_MARGIN_MM;
-        return (
-            rectangle(
-                (minimum_x + maximum_x) * 0.5,
-                (minimum_y + maximum_y) * 0.5,
-                (maximum_x - minimum_x) * 0.5,
-                (maximum_y - minimum_y) * 0.5,
-            ),
-            vec![[center_x, lower_screw_y], [center_x, upper_screw_y]],
-        );
-    }
-
-    let plate = rectangle(
-        (feature_bounds[0] + feature_bounds[2]) * 0.5,
-        (feature_bounds[1] + feature_bounds[3]) * 0.5,
-        (feature_bounds[2] - feature_bounds[0]) * 0.5 + 12.0,
-        (feature_bounds[3] - feature_bounds[1]) * 0.5 + 8.0,
-    );
-    let plate_bounds = bounds(&plate);
+    let center_x = (feature_bounds[0] + feature_bounds[2]) * 0.5;
+    let lower_screw_y = feature_bounds[1] - screw_radius - WALL_PLATE_SCREW_GAP_MM;
+    let upper_screw_y = feature_bounds[3] + screw_radius + WALL_PLATE_SCREW_GAP_MM;
+    let minimum_x = feature_bounds[0] - WALL_PLATE_MARGIN_MM;
+    let maximum_x = feature_bounds[2] + WALL_PLATE_MARGIN_MM;
+    let minimum_y = lower_screw_y - screw_radius - WALL_PLATE_MARGIN_MM;
+    let maximum_y = upper_screw_y + screw_radius + WALL_PLATE_MARGIN_MM;
     (
-        plate,
-        vec![
-            [
-                plate_bounds[0] + 5.5,
-                (plate_bounds[1] + plate_bounds[3]) * 0.5,
-            ],
-            [
-                plate_bounds[2] - 5.5,
-                (plate_bounds[1] + plate_bounds[3]) * 0.5,
-            ],
-        ],
+        rectangle(
+            (minimum_x + maximum_x) * 0.5,
+            (minimum_y + maximum_y) * 0.5,
+            (maximum_x - minimum_x) * 0.5,
+            (maximum_y - minimum_y) * 0.5,
+        ),
+        vec![[center_x, lower_screw_y], [center_x, upper_screw_y]],
     )
+}
+
+fn hardware_plate_thickness(mount: &WallMountSpec) -> f32 {
+    mount.pocket_depth_mm + mount.wall_offset_mm
 }
 
 /// Builds the wall-side half of the selected mount. The flat plate is both a
@@ -347,6 +446,7 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
 
     let feature_bounds = feature_bounds(&features);
     let (plate, screw_centers) = hardware_plate_and_screw_centers(mount, feature_bounds);
+    let plate_thickness = hardware_plate_thickness(mount);
     let screw_radius = mount.screw_hole_diameter_mm * 0.5;
     let screw_holes = screw_centers
         .iter()
@@ -369,19 +469,19 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
     add_horizontal_polygons(
         &mut mesh,
         &[top],
-        mount.spacer_depth_mm,
+        plate_thickness,
         SurfaceClass::Rock,
         false,
     )?;
-    add_ring_wall(&mut mesh, &plate, 0.0, mount.spacer_depth_mm, false);
+    add_ring_wall(&mut mesh, &plate, 0.0, plate_thickness, false);
     for hole in &screw_holes {
-        add_ring_wall(&mut mesh, hole, 0.0, mount.spacer_depth_mm, true);
+        add_ring_wall(&mut mesh, hole, 0.0, plate_thickness, true);
     }
     for feature in &features {
         add_horizontal_polygons(
             &mut mesh,
             &[polygon(&feature.ceiling)],
-            mount.spacer_depth_mm + engagement,
+            plate_thickness + engagement,
             SurfaceClass::Rock,
             false,
         )?;
@@ -392,10 +492,10 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
             let upper_a = feature.ceiling[index];
             let upper_b = feature.ceiling[next];
             mesh.quad(
-                [lower_a[0], lower_a[1], mount.spacer_depth_mm],
-                [lower_b[0], lower_b[1], mount.spacer_depth_mm],
-                [upper_b[0], upper_b[1], mount.spacer_depth_mm + engagement],
-                [upper_a[0], upper_a[1], mount.spacer_depth_mm + engagement],
+                [lower_a[0], lower_a[1], plate_thickness],
+                [lower_b[0], lower_b[1], plate_thickness],
+                [upper_b[0], upper_b[1], plate_thickness + engagement],
+                [upper_a[0], upper_a[1], plate_thickness + engagement],
                 SurfaceClass::Rock,
             );
         }
@@ -590,11 +690,12 @@ mod tests {
             };
             let hardware = build_wall_hardware(&mount).unwrap();
             assert_watertight(&hardware);
+            let plate_thickness = hardware_plate_thickness(&mount);
             assert!(
                 hardware
                     .vertices
                     .iter()
-                    .any(|vertex| vertex[2] > mount.spacer_depth_mm)
+                    .any(|vertex| vertex[2] > plate_thickness)
             );
         }
     }
@@ -650,11 +751,12 @@ mod tests {
     }
 
     #[test]
-    fn wall_standoff_and_receiver_depth_control_separate_dimensions() {
+    fn french_cleat_cuts_a_plate_pocket_and_keeps_offset_independent() {
         let mut mount = WallMountSpec {
             style: WallMountStyle::FrenchCleat,
             depth_mm: 0.8,
-            spacer_depth_mm: 2.0,
+            pocket_depth_mm: 1.2,
+            wall_offset_mm: 0.5,
             ..WallMountSpec::default()
         };
         let close_hardware = build_wall_hardware(&mount).unwrap();
@@ -664,7 +766,7 @@ mod tests {
             .map(|point| point[2])
             .fold(f32::NEG_INFINITY, f32::max);
 
-        mount.spacer_depth_mm = 7.0;
+        mount.wall_offset_mm = 5.5;
         let offset_hardware = build_wall_hardware(&mount).unwrap();
         let offset_height = offset_hardware
             .vertices
@@ -674,17 +776,32 @@ mod tests {
         assert!((offset_height - close_height - 5.0).abs() < 0.000_01);
 
         let outline = rectangle(20.0, 20.0, 20.0, 20.0);
+        let pocket = wall_plate_pocket(&mount, [0.0, 0.0, 40.0, 40.0]);
         let shallow_receiver = mount_bottom(&outline, &mount, [0.0, 0.0, 40.0, 40.0])
             .unwrap()
             .finish("shallow receiver");
+        for corner in pocket {
+            assert!(shallow_receiver.vertices.iter().any(|point| {
+                (point[0] - corner[0]).abs() < 0.000_01
+                    && (point[1] - corner[1]).abs() < 0.000_01
+                    && point[2].abs() < 0.000_01
+            }));
+        }
         assert!(
             shallow_receiver
                 .vertices
                 .iter()
-                .any(|point| (point[2] - 0.8).abs() < 0.000_01)
+                .any(|point| (point[2] - mount.pocket_depth_mm).abs() < 0.000_01)
+        );
+        let receiver_ceiling = mount.pocket_depth_mm + mount.depth_mm;
+        assert!(
+            shallow_receiver
+                .vertices
+                .iter()
+                .any(|point| (point[2] - receiver_ceiling).abs() < 0.000_01)
         );
 
-        mount.depth_mm = 1.6;
+        mount.pocket_depth_mm = 1.8;
         let deep_receiver = mount_bottom(&outline, &mount, [0.0, 0.0, 40.0, 40.0])
             .unwrap()
             .finish("deep receiver");
@@ -692,7 +809,7 @@ mod tests {
             deep_receiver
                 .vertices
                 .iter()
-                .any(|point| (point[2] - 1.6).abs() < 0.000_01)
+                .any(|point| (point[2] - 2.6).abs() < 0.000_01)
         );
     }
 }

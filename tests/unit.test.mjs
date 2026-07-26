@@ -19,6 +19,7 @@ import {
   maximumCleatWidth,
   maximumMountDepth,
   maximumRetentionHeight,
+  maximumWallPocketDepth,
   wallMountTargetWidth,
   wallHardwareQuantity,
 } from "../app/terrain/mounting.ts";
@@ -193,13 +194,14 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     style: "none",
     target: "terrain",
     depth_mm: 0.8,
+    pocket_depth_mm: 0.4,
+    wall_offset_mm: 0.8,
     pin_diameter_mm: 4,
     pin_count: 1,
     pin_spacing_mm: 32,
     cleat_width_mm: 12,
     export_hardware: true,
     fit_clearance_mm: 0.2,
-    spacer_depth_mm: 2.4,
     screw_hole_diameter_mm: 3.5,
   });
 });
@@ -221,7 +223,8 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   puzzleGrid.wall_mount.target = "terrain";
   puzzleGrid.solid_model = true;
   assert.equal(wallHardwareQuantity(puzzleGrid), 1);
-  assert.equal(maximumMountDepth(puzzleGrid), 2);
+  assert.ok(Math.abs(maximumMountDepth(puzzleGrid) - 1.6) < 1e-9);
+  assert.ok(Math.abs(maximumWallPocketDepth(puzzleGrid) - 1.2) < 1e-9);
   assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
 
   puzzleGrid.width_mm = 320;

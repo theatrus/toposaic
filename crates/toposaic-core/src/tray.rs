@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use geo::{BooleanOps, Contains, LineString, Point, Polygon};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
@@ -357,7 +357,15 @@ pub(crate) fn build_tray_segments(
             Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
         for row in 0..spec.tray.segment_rows {
             for column in 0..spec.tray.segment_columns {
-                segments.push(build_tray_segment(spec, &contour_paths, row, column)?);
+                segments.push(
+                    build_tray_segment(spec, &contour_paths, row, column).with_context(|| {
+                        format!(
+                            "build display-base segment row {} column {}",
+                            row + 1,
+                            column + 1
+                        )
+                    })?,
+                );
             }
         }
         segments
@@ -1544,6 +1552,7 @@ mod tests {
                 tray: TraySpec {
                     enabled: true,
                     contours_enabled: false,
+                    floor_mm: 2.8,
                     segment_columns: 2,
                     segment_rows: 2,
                     ..TraySpec::default()
@@ -1563,16 +1572,18 @@ mod tests {
             let whole_trays = build_tray_segments(&whole_spec, None).unwrap();
             assert_eq!(whole_trays.len(), 1);
             assert_watertight(&whole_trays[0]);
-            let segments = build_tray_segments(&spec, None).unwrap();
+            let segments = build_tray_segments(&spec, None)
+                .unwrap_or_else(|error| panic!("{style:?} split tray failed: {error:#}"));
             assert_eq!(segments.len(), 4);
             for segment in &segments {
                 assert_watertight(segment);
-                assert!(
-                    segment
-                        .vertices
-                        .iter()
-                        .any(|vertex| { (vertex[2] - spec.wall_mount.depth_mm).abs() < 0.000_01 })
-                );
+                assert!(segment.vertices.iter().any(|vertex| {
+                    (vertex[2] - spec.wall_mount.pocket_depth_mm).abs() < 0.000_01
+                }));
+                assert!(segment.vertices.iter().any(|vertex| {
+                    (vertex[2] - spec.wall_mount.pocket_depth_mm - spec.wall_mount.depth_mm).abs()
+                        < 0.000_01
+                }));
             }
         }
     }

@@ -66,13 +66,14 @@ export type GenerationSpec = {
     style: "none" | "straight_pin" | "angled_pin" | "french_cleat";
     target: "terrain" | "tray";
     depth_mm: number;
+    pocket_depth_mm: number;
+    wall_offset_mm: number;
     pin_diameter_mm: number;
     pin_count: number;
     pin_spacing_mm: number;
     cleat_width_mm: number;
     export_hardware: boolean;
     fit_clearance_mm: number;
-    spacer_depth_mm: number;
     screw_hole_diameter_mm: number;
   };
   color_output: {

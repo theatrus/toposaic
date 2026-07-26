@@ -285,10 +285,14 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(trayContours).toBeChecked();
   await trayContours.uncheck();
   await expect(page.getByText("Contour line count")).toBeHidden();
+  await page.getByRole("slider", { name: "Floor thickness" }).press("Home");
   const wallMountStyle = page.getByLabel("Wall mount style");
   await wallMountStyle.selectOption("angled_pin");
   await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
-  await expect(page.getByText("Mount cut depth")).toBeVisible();
+  await expect(page.getByText("Pin engagement depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Wall-plate pocket depth" }),
+  ).toBeVisible();
   await expect(
     page.getByRole("slider", { name: "Pin diameter", exact: true }),
   ).toBeVisible();
@@ -296,12 +300,17 @@ test("switches between the reflowed control panels", async ({ page }) => {
     page.getByRole("checkbox", { name: "Export matching wall hardware" }),
   ).toBeChecked();
   await expect(
-    page.getByRole("slider", { name: "Wall stand-off" }),
+    page.getByRole("slider", { name: "Wall offset" }),
   ).toBeVisible();
   await wallMountStyle.selectOption("french_cleat");
-  await expect(page.getByText("Receiver pocket depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Cleat engagement depth" }),
+  ).toBeVisible();
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
+  await expect(
+    page.getByText("generator will not add thickness for you", { exact: false }),
+  ).toBeVisible();
   await expect(page.getByText("flat alignment spacer", { exact: false })).toBeVisible();
   await mountingControls.getByRole("checkbox").first().uncheck();
   await expect(retention).not.toBeChecked();

@@ -4,6 +4,7 @@ import type { GenerationSpec } from "../contracts";
 import {
   maximumCleatWidth,
   maximumMountDepth,
+  maximumWallPocketDepth,
   wallHardwareQuantity,
 } from "../mounting";
 import type { UpdateWallMount } from "./mounting-types";
@@ -18,19 +19,14 @@ export function WallMountControls({
 }) {
   const mountEnabled = spec.wall_mount.style !== "none";
   const maximumDepth = maximumMountDepth(spec);
+  const maximumPocketDepth = maximumWallPocketDepth(spec);
   const maximumWidth = maximumCleatWidth(spec);
   const hardwareQuantity = wallHardwareQuantity(spec);
-
-  useEffect(() => {
-    if (mountEnabled && spec.wall_mount.depth_mm > maximumDepth) {
-      updateWallMount("depth_mm", maximumDepth);
-    }
-  }, [
-    maximumDepth,
-    mountEnabled,
-    spec.wall_mount.depth_mm,
-    updateWallMount,
-  ]);
+  const backThickness =
+    spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
+  const totalCutDepth =
+    spec.wall_mount.depth_mm + spec.wall_mount.pocket_depth_mm;
+  const depthViolation = mountEnabled && totalCutDepth > backThickness - 0.4;
 
   useEffect(() => {
     if (
@@ -101,8 +97,8 @@ export function WallMountControls({
           <RangeField
             label={
               spec.wall_mount.style === "french_cleat"
-                ? "Receiver pocket depth"
-                : "Mount cut depth"
+                ? "Cleat engagement depth"
+                : "Pin engagement depth"
             }
             value={spec.wall_mount.depth_mm}
             unit=" mm"
@@ -111,6 +107,27 @@ export function WallMountControls({
             step={0.2}
             onChange={(value) => updateWallMount("depth_mm", value)}
           />
+          <RangeField
+            label="Wall-plate pocket depth"
+            value={spec.wall_mount.pocket_depth_mm}
+            unit=" mm"
+            min={0.4}
+            max={maximumPocketDepth}
+            step={0.2}
+            onChange={(value) =>
+              updateWallMount("pocket_depth_mm", value)
+            }
+          />
+          {depthViolation && (
+            <p className="color-note" role="alert">
+              The {spec.wall_mount.pocket_depth_mm.toFixed(1)} mm plate pocket
+              plus {spec.wall_mount.depth_mm.toFixed(1)} mm engagement cut needs{" "}
+              {totalCutDepth.toFixed(1)} mm of the {backThickness.toFixed(1)} mm
+              minimum Z height. Raise the minimum piece height or display-base
+              floor, or reduce either depth. The generator will not add
+              thickness for you.
+            </p>
+          )}
           <RangeField
             label={spec.wall_mount.style === "french_cleat" ? "Cleat slot height" : "Pin diameter"}
             value={spec.wall_mount.pin_diameter_mm}
@@ -169,7 +186,7 @@ export function WallMountControls({
             />
             <span>
               <strong>Wall-side hardware</strong>
-              <small>Export a matching peg or cleat on a screw-on spacer.</small>
+              <small>Export a matching peg or cleat on a screw-on plate.</small>
             </span>
           </label>
           {spec.wall_mount.export_hardware && (
@@ -184,13 +201,15 @@ export function WallMountControls({
                 onChange={(value) => updateWallMount("fit_clearance_mm", value)}
               />
               <RangeField
-                label="Wall stand-off"
-                value={spec.wall_mount.spacer_depth_mm}
+                label="Wall offset"
+                value={spec.wall_mount.wall_offset_mm}
                 unit=" mm"
-                min={1.2}
+                min={0}
                 max={10}
                 step={0.2}
-                onChange={(value) => updateWallMount("spacer_depth_mm", value)}
+                onChange={(value) =>
+                  updateWallMount("wall_offset_mm", value)
+                }
               />
               <RangeField
                 label="Screw-hole diameter"
@@ -206,11 +225,13 @@ export function WallMountControls({
             </>
           )}
           <p className="color-note">
-            Each chosen output gets its own mount. The French cleat uses a
-            flush back pocket with a lower entry box, then slides toward the
-            map north edge to lock. Pocket depth sets its grip; wall stand-off
-            leaves room for an uneven wall. The cut keeps at least 0.4 mm below
-            the terrain or display-base face.
+            Each wall mount nests its screw plate in the rectangular back
+            pocket. Pocket depth sets how much plate is hidden; wall offset is
+            the finished gap for an uneven wall. The exported plate thickness
+            is their sum. Pin or cleat engagement depth is separate, and every
+            cut keeps at least 0.4 mm below the terrain or display-base face.
+            French cleats and angled pins slide toward the map north edge to
+            lock.
             {spec.wall_mount.export_hardware &&
               ` Print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} of the wall-side hardware.${spec.wall_mount.style === "french_cleat" ? ` The job also includes a flat alignment spacer; print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} and place their outer edges together to set the cleat grid.` : ""}`}
           </p>

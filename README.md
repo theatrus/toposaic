@@ -111,18 +111,22 @@ diameter, height, and fit clearance are adjustable. Split trays move pins away
 from their joins and give each solid-model section its own mating socket.
 
 Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
-French-cleat receiver into the flat back. The cut can go into each puzzle piece
-or solid terrain model, or into each display-base section. It stays separate
-from puzzle retention, so one base can both hold the puzzle and hang on a wall.
-The French-cleat receiver has a flush lower entry box: set it over the wall
+French-cleat receiver into the flat back. Every wall mount also cuts a visible
+rectangular pocket for its wall plate. Terrain targets put that pocket in each
+puzzle piece or solid model; display-base targets put it only in each base
+section. Puzzle-retention pins stay separate and never add wall pockets to the
+terrain. The French-cleat receiver has a lower entry box: set it over the wall
 cleat, then slide it toward map north to lock. Cleats can span up to 400 mm when
 the chosen piece, solid, or base section leaves a 2 mm side wall.
 
 Each job can also export matching wall hardware as STL and 3MF: a peg or male
 cleat on an integral screw plate. Controls set pin count and spacing, cleat width
-and height, receiver-pocket depth, fit clearance, wall stand-off, and screw-hole
-diameter. The stand-off leaves room for an uneven wall while TopoSaic keeps a
-printable skin below the front face. French-cleat jobs also include a thin
+and height, plate-pocket depth, engagement depth, fit clearance, wall offset,
+and screw-hole diameter. Pocket depth sets how much of the plate nests in the
+model; wall offset sets the finished gap for an uneven wall. The exported plate
+thickness is their sum. TopoSaic flags a pocket that would leave less than 0.4
+mm of the chosen minimum Z height instead of raising that height. French-cleat
+jobs also include a thin
 alignment spacer with matching screw pilots. Print one per mounted output and
 place the frames edge-to-edge to align per-piece puzzles, split bases, or a full
 super-tile panel before removing the frames and installing the cleats.
