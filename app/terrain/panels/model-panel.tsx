@@ -353,6 +353,20 @@ export function ModelPanel({
         </label>
       )}
 
+      <label className="adjacent-interlock-toggle fine-dem-toggle">
+        <input
+          type="checkbox"
+          checked={spec.despike_terrain}
+          onChange={(event) => update("despike_terrain", event.target.checked)}
+        />
+        Repair stray elevation readings
+        <small>
+          Published tiles carry the odd bad pixel, often along a coastline or
+          lake shore. Left in, one reading thousands of metres out flattens the
+          whole model. Turn off to build the elevation data exactly as supplied.
+        </small>
+      </label>
+
       <RangeField
         label="Ground span"
         value={spec.ground_span_km}

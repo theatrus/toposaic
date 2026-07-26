@@ -30,6 +30,9 @@ export type GenerationSpec = {
   mesh_samples_across: number | null;
   overlay_samples_across: number | null;
   fine_dem_detail: boolean;
+  // Replace isolated wild elevation readings with their neighbourhood
+  // median. On by default; see the model panel for why.
+  despike_terrain: boolean;
   solid_model: boolean;
   straight_piece_sides: boolean;
   puzzle_tabs: boolean;

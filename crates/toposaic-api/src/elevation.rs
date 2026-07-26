@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::{ImageFormat, RgbImage};
 use reqwest::{StatusCode, blocking::Client};
-use toposaic_core::{ElevationSource, GenerationSpec, HeightField};
+use toposaic_core::{DespikeReport, ElevationSource, GenerationSpec, HeightField};
 use tracing::warn;
 
 use crate::{
@@ -145,7 +145,45 @@ fn fetch_height_field_at_size(
     }
 
     let source = provider.source_description(requested_zoom, &sampler.used_zooms);
-    HeightField::new(sample_width, sample_height, values_m, source)
+    let mut field = HeightField::new(sample_width, sample_height, values_m, source)?;
+    if spec.despike_terrain {
+        let spacing_m = sample_spacing_m(spec, sample_width, sample_height);
+        let report = field.despike(spacing_m);
+        if !report.is_empty() {
+            field.source.push_str(&describe_despike(&report));
+        }
+    }
+    Ok(field)
+}
+
+/// The distance on the ground between neighbouring samples, taken on the
+/// coarser axis.
+///
+/// Erring coarse raises the bar for calling a reading bad, which is the safe
+/// direction: the pass should let a doubtful reading through rather than
+/// reshape real ground.
+fn sample_spacing_m(spec: &GenerationSpec, sample_width: usize, sample_height: usize) -> f32 {
+    let span_m = (spec.ground_span_km * 1_000.0) as f32;
+    let across = (sample_width.max(2) - 1) as f32;
+    let down = (sample_height.max(2) - 1) as f32;
+    (span_m / across).max(span_m / down)
+}
+
+fn describe_despike(report: &DespikeReport) -> String {
+    format!(
+        "; despiked {} isolated elevation {} over {} {}, the worst standing {:.0} m clear of its \
+         neighbours against a {:.0} m bar",
+        report.replaced,
+        if report.replaced == 1 {
+            "reading"
+        } else {
+            "readings"
+        },
+        report.passes,
+        if report.passes == 1 { "pass" } else { "passes" },
+        report.widest_distance_m,
+        report.threshold_m,
+    )
 }
 
 fn elevation_client() -> Result<Client> {

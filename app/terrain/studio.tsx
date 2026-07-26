@@ -649,6 +649,7 @@ export function TerrainStudio() {
         mesh_samples_across: spec.mesh_samples_across,
         overlay_samples_across: spec.overlay_samples_across,
         fine_dem_detail: spec.fine_dem_detail,
+        despike_terrain: spec.despike_terrain,
         elevation_datum_m: spec.elevation_datum_m,
         elevation_m_per_mm: spec.elevation_m_per_mm,
         color_output: {
@@ -682,6 +683,7 @@ export function TerrainStudio() {
     spec.center_lon,
     spec.elevation_datum_m,
     spec.elevation_m_per_mm,
+    spec.despike_terrain,
     spec.elevation_source,
     spec.fine_dem_detail,
     spec.ground_span_km,

@@ -28,6 +28,7 @@ export const initialSpec: GenerationSpec = {
   mesh_samples_across: DEFAULT_SAMPLES_ACROSS,
   overlay_samples_across: DEFAULT_SAMPLES_ACROSS,
   fine_dem_detail: false,
+  despike_terrain: true,
   solid_model: false,
   straight_piece_sides: false,
   puzzle_tabs: true,
