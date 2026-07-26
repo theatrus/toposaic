@@ -288,7 +288,7 @@ pub(crate) fn build_piece_with_height_range(
     // run one containment query per sample. The strip index answers each
     // query from roughly one grid row's worth of edges instead of the whole
     // outline while returning exactly what point_in_polygon would.
-    let outline_index = PolygonStripIndex::new(&outline, grid_rows.max(1));
+    let outline_index = PolygonStripIndex::new(&outline, grid_rows.max(1))?;
     for grid_y in 0..grid_rows {
         let y = minimum_y + (grid_y as f32 + 0.5) * terrain_spacing;
         for grid_x in 0..grid_columns {

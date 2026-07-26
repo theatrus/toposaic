@@ -267,7 +267,12 @@ fn generate_project_inner(
             build_completed.store(true, Ordering::Release);
         }
         drop(mesh_sender);
-        let write_result = writer.join().expect("3MF writer thread panicked");
+        // Re-raise the writer thread's panic with its original message and
+        // location; `expect` here would report only `Any { .. }`.
+        let write_result = match writer.join() {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
         build_result?;
         write_result
     })?;

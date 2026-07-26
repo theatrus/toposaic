@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 
@@ -321,6 +321,12 @@ pub(crate) fn point_line_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2
 }
 
 pub(crate) fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+    // Fewer than three points bound no area, so nothing is inside. Without
+    // this the `len() - 1` below underflows: debug panics, release wraps to
+    // usize::MAX and skips the loop, so the two profiles would disagree.
+    if polygon.len() < 3 {
+        return false;
+    }
     let mut inside = false;
     let mut previous = polygon.len() - 1;
     for current in 0..polygon.len() {
@@ -353,8 +359,15 @@ pub(crate) struct PolygonStripIndex<'a> {
 }
 
 impl<'a> PolygonStripIndex<'a> {
-    pub(crate) fn new(polygon: &'a [[f32; 2]], strip_count: usize) -> Self {
-        debug_assert!(polygon.len() >= 3);
+    /// Fails on an outline that bounds no area. A debug assertion would not
+    /// do: the `clamp(1, polygon.len())` below panics in release too when the
+    /// outline is empty, because `clamp` requires `min <= max`.
+    pub(crate) fn new(polygon: &'a [[f32; 2]], strip_count: usize) -> Result<Self> {
+        ensure!(
+            polygon.len() >= 3,
+            "strip index needs a closed outline, got {} points",
+            polygon.len()
+        );
         let (minimum_y, maximum_y) = polygon.iter().fold(
             (f32::INFINITY, f32::NEG_INFINITY),
             |(minimum, maximum), point| (minimum.min(point[1]), maximum.max(point[1])),
@@ -373,13 +386,13 @@ impl<'a> PolygonStripIndex<'a> {
             }
             previous = current;
         }
-        Self {
+        Ok(Self {
             polygon,
             minimum_y,
             maximum_y,
             strips_per_unit,
             strips,
-        }
+        })
     }
 
     /// Returns exactly `point_in_polygon(point, polygon)`.
@@ -459,6 +472,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outlines_bounding_no_area_answer_instead_of_panicking() {
+        // `point_in_polygon` used to compute `len() - 1` first: debug
+        // panicked on underflow while release wrapped to usize::MAX and
+        // returned false, so the two profiles disagreed. Both now answer.
+        for degenerate in [&[][..], &[[0.0, 0.0]][..], &[[0.0, 0.0], [1.0, 1.0]][..]] {
+            assert!(!point_in_polygon([0.5, 0.5], degenerate));
+        }
+    }
+
+    #[test]
+    fn the_strip_index_rejects_an_outline_that_bounds_no_area() {
+        // A debug assertion would not cover this: the strip count clamp
+        // panics in release too, because `clamp` requires `min <= max`.
+        for degenerate in [&[][..], &[[0.0, 0.0], [1.0, 1.0]][..]] {
+            let Err(error) = PolygonStripIndex::new(degenerate, 8) else {
+                panic!("a degenerate outline must not build a strip index");
+            };
+            assert!(
+                error.to_string().contains("closed outline"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn strip_index_matches_the_full_point_in_polygon_walk() {
         // A wavy closed outline with several local extrema per strip.
         let outline = (0..400)
@@ -469,7 +507,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for strip_count in [1, 7, 64] {
-            let index = PolygonStripIndex::new(&outline, strip_count);
+            let index = PolygonStripIndex::new(&outline, strip_count).unwrap();
             for y_step in -32..=32 {
                 for x_step in -32..=32 {
                     let point = [x_step as f32 * 0.45, y_step as f32 * 0.45];
