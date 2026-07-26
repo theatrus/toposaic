@@ -131,6 +131,8 @@ fn fetch_height_field_at_size(
         missing_tiles: &mut missing_tiles,
         provider,
         used_zooms: BTreeSet::new(),
+        repair_tiles: spec.despike_terrain,
+        repairs: TileRepairTally::default(),
     };
 
     for row in 0..sample_height {
@@ -145,7 +147,15 @@ fn fetch_height_field_at_size(
     }
 
     let source = provider.source_description(requested_zoom, &sampler.used_zooms);
+    let repairs = sampler.repairs;
     let mut field = HeightField::new(sample_width, sample_height, values_m, source)?;
+    if !repairs.is_empty() {
+        field.source.push_str(&describe_tile_repairs(&repairs));
+    }
+    // A second pass over the finished grid, as a backstop. Tiles are repaired at
+    // their own resolution, which is where a stray reading is one pixel wide and
+    // can be recognised, so this should find nothing. It still earns its place
+    // against damage too broad to judge pixel by pixel.
     if spec.despike_terrain {
         let spacing_m = sample_spacing_m(spec, sample_width, sample_height);
         let report = field.despike(spacing_m);
@@ -167,6 +177,22 @@ fn sample_spacing_m(spec: &GenerationSpec, sample_width: usize, sample_height: u
     let across = (sample_width.max(2) - 1) as f32;
     let down = (sample_height.max(2) - 1) as f32;
     (span_m / across).max(span_m / down)
+}
+
+fn describe_tile_repairs(tally: &TileRepairTally) -> String {
+    format!(
+        "; repaired {} stray tile {} across {} {} at source resolution, the worst standing {:.0} m \
+         clear of its neighbours",
+        tally.readings,
+        if tally.readings == 1 {
+            "reading"
+        } else {
+            "readings"
+        },
+        tally.tiles,
+        if tally.tiles == 1 { "tile" } else { "tiles" },
+        tally.widest_distance_m,
+    )
 }
 
 fn describe_despike(report: &DespikeReport) -> String {
@@ -275,13 +301,92 @@ fn choose_zoom(spec: &GenerationSpec, samples: usize, provider: ElevationProvide
     ) as u8
 }
 
+/// One elevation tile, decoded to metres once and repaired at its own
+/// resolution.
+///
+/// Repairing here rather than on the finished model is what reaches a close
+/// view. A stray reading is one pixel wide in the tile whatever the model asks
+/// for, but a model spacing its samples below the width of a pixel spreads that
+/// one reading over several samples, where it reads as a block too wide to
+/// judge. Doing it once per tile also drops the per-sample decode: a model reads
+/// every pixel many times over.
+struct ElevationTile {
+    size: u32,
+    values_m: Vec<f32>,
+}
+
+impl ElevationTile {
+    fn prepare(image: &RgbImage, repair_spacing_m: Option<f32>) -> Result<(Self, DespikeReport)> {
+        let values_m = image
+            .pixels()
+            .map(|pixel| decode_terrarium_pixel(pixel.0))
+            .collect();
+        let mut grid = HeightField::new(
+            image.width() as usize,
+            image.height() as usize,
+            values_m,
+            "tile",
+        )
+        .context("read an elevation tile as a grid of metres")?;
+        let report = match repair_spacing_m {
+            Some(spacing_m) => grid.despike(spacing_m),
+            None => DespikeReport::default(),
+        };
+        Ok((
+            Self {
+                size: image.width(),
+                values_m: grid.values_m,
+            },
+            report,
+        ))
+    }
+
+    fn elevation_m(&self, x: u32, y: u32) -> f32 {
+        self.values_m[(y * self.size + x) as usize]
+    }
+}
+
+/// What repairing tiles changed, gathered over every tile a model reads.
+#[derive(Debug, Clone, Copy, Default)]
+struct TileRepairTally {
+    tiles: usize,
+    readings: usize,
+    widest_distance_m: f32,
+}
+
+impl TileRepairTally {
+    fn add(&mut self, report: &DespikeReport) {
+        if report.is_empty() {
+            return;
+        }
+        self.tiles += 1;
+        self.readings += report.replaced;
+        self.widest_distance_m = self.widest_distance_m.max(report.widest_distance_m);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.readings == 0
+    }
+}
+
+/// The latitude through the middle of a tile row, for sizing one of its pixels
+/// on the ground.
+fn tile_row_latitude(tile_size: u32, zoom: u8, tile_y: u32) -> f64 {
+    let total_pixels = f64::from(tile_size) * f64::from(1_u32 << zoom);
+    let centre = (f64::from(tile_y) + 0.5) * f64::from(tile_size);
+    let scaled = 1.0 - 2.0 * (centre / total_pixels);
+    (std::f64::consts::PI * scaled).sinh().atan().to_degrees()
+}
+
 struct ElevationSampler<'a> {
     client: &'a Client,
     cache_dir: &'a Path,
-    tiles: &'a mut HashMap<(u8, u32, u32), RgbImage>,
+    tiles: &'a mut HashMap<(u8, u32, u32), ElevationTile>,
     missing_tiles: &'a mut HashSet<(u8, u32, u32)>,
     provider: ElevationProvider,
     used_zooms: BTreeSet<u8>,
+    repair_tiles: bool,
+    repairs: TileRepairTally,
 }
 
 impl ElevationSampler<'_> {
@@ -352,6 +457,16 @@ impl ElevationSampler<'_> {
             if self.missing_tiles.contains(&key) {
                 continue;
             }
+            // Sized on this tile's own row, since a pixel covers less ground the
+            // further from the equator it sits.
+            let repair_spacing_m = self.repair_tiles.then(|| {
+                source_resolution_m(
+                    tile_row_latitude(self.provider.tile_size, zoom, location.tile_y),
+                    zoom,
+                    self.provider,
+                ) as f32
+            });
+            let mut fresh_repairs = None;
             if let std::collections::hash_map::Entry::Vacant(entry) = self.tiles.entry(key) {
                 match load_tile(
                     self.client,
@@ -361,8 +476,10 @@ impl ElevationSampler<'_> {
                     location.tile_x,
                     location.tile_y,
                 )? {
-                    Some(tile) => {
+                    Some(image) => {
+                        let (tile, report) = ElevationTile::prepare(&image, repair_spacing_m)?;
                         entry.insert(tile);
+                        fresh_repairs = Some(report);
                     }
                     None => {
                         self.missing_tiles.insert(key);
@@ -370,13 +487,16 @@ impl ElevationSampler<'_> {
                     }
                 }
             }
-            let pixel = self
+            if let Some(report) = fresh_repairs {
+                self.repairs.add(&report);
+            }
+            let elevation_m = self
                 .tiles
                 .get(&key)
                 .context("elevation tile cache lost a tile")?
-                .get_pixel(location.pixel_x, location.pixel_y);
+                .elevation_m(location.pixel_x, location.pixel_y);
             self.used_zooms.insert(zoom);
-            return Ok((decode_terrarium_pixel(pixel.0), zoom));
+            return Ok((elevation_m, zoom));
         }
         bail!(
             "{} has no elevation tile for this point at or below z{ceiling_zoom}",
@@ -588,6 +708,77 @@ mod tests {
                 .source_description(16, &used_zooms)
                 .contains("https://mapterhorn.com/attribution")
         );
+    }
+
+    /// Encodes metres back into a Terrarium pixel, so a synthetic tile can be
+    /// built the way a real one arrives.
+    fn terrarium_pixel(elevation_m: f32) -> [u8; 3] {
+        let raw = ((elevation_m + 32_768.0) * 256.0).round().max(0.0) as u32;
+        [
+            ((raw >> 16) & 0xFF) as u8,
+            ((raw >> 8) & 0xFF) as u8,
+            (raw & 0xFF) as u8,
+        ]
+    }
+
+    fn tile_with_reading_at(size: u32, x: u32, y: u32, elevation_m: f32) -> RgbImage {
+        RgbImage::from_fn(size, size, |column, row| {
+            let value = if (column, row) == (x, y) {
+                elevation_m
+            } else {
+                500.0 + column as f32 * 0.5 + row as f32 * 0.25
+            };
+            image::Rgb(terrarium_pixel(value))
+        })
+    }
+
+    #[test]
+    fn tiles_are_repaired_at_their_own_resolution() {
+        let image = tile_with_reading_at(32, 10, 12, -6827.9);
+
+        let (tile, report) = ElevationTile::prepare(&image, Some(7.8)).unwrap();
+
+        assert_eq!(report.replaced, 1);
+        // The repaired reading sits with its neighbours, not thousands below.
+        assert!(
+            (tile.elevation_m(10, 12) - 508.0).abs() < 2.0,
+            "repaired to {}",
+            tile.elevation_m(10, 12)
+        );
+        // Everything else is left as supplied.
+        assert!((tile.elevation_m(9, 12) - 507.5).abs() < 0.1);
+    }
+
+    /// The point of repairing tiles rather than the finished model: the fault is
+    /// one pixel wide here whatever the model later asks for.
+    #[test]
+    fn tiles_are_left_alone_when_the_repair_is_off() {
+        let image = tile_with_reading_at(32, 10, 12, -6827.9);
+
+        let (tile, report) = ElevationTile::prepare(&image, None).unwrap();
+
+        assert!(report.is_empty());
+        assert!(tile.elevation_m(10, 12) < -6000.0);
+    }
+
+    #[test]
+    fn a_tile_pixel_shrinks_with_latitude() {
+        let provider = ElevationProvider::for_source(ElevationSource::Mapzen);
+        // Hakone sits in this z14 tile row; a pixel there covers about 7.8 m.
+        let latitude = tile_row_latitude(provider.tile_size, 14, 6477);
+        assert!(
+            (latitude - 35.24).abs() < 0.2,
+            "tile row centre came out at {latitude}"
+        );
+        let metres = source_resolution_m(latitude, 14, provider);
+        assert!((metres - 7.8).abs() < 0.2, "pixel came out {metres} m");
+        // Nearer the pole the same pixel covers less ground.
+        let polar = source_resolution_m(
+            tile_row_latitude(provider.tile_size, 14, 2000),
+            14,
+            provider,
+        );
+        assert!(polar < metres, "{polar} m should be under {metres} m");
     }
 
     #[test]

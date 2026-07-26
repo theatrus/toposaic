@@ -214,15 +214,15 @@ fn fold_back(coordinate: i64, length: usize) -> usize {
 /// stray reading, and filling it with the median of its own bad neighbours would
 /// not recover the ground anyway.
 ///
-/// In practice that limit is met by sampling the model finer than the tiles: a
-/// close view spaces its samples below the width of a source pixel, so one bad
-/// pixel covers several samples at once and reads as a block. A 4 km view over a
-/// damaged shoreline recovers only part of the way for this reason. Raising the
-/// allowance is not the answer — measured, it grinds such a cluster down by
+/// A model would meet that limit constantly if this ran only on the finished
+/// grid: a close view spaces its samples below the width of a source pixel, so
+/// one bad pixel covers several samples and reads as a block. Raising the
+/// allowance does not answer it — measured, that grinds such a cluster down by
 /// repeated smearing, rewriting tens of thousands of samples and still falling
-/// short of the real ground. Reaching that case properly means repairing tile
-/// pixels before they are interpolated, where a stray reading is one pixel wide
-/// whatever the model asks for.
+/// short of real ground. The answer is where the pass is called from rather than
+/// how it judges: the caller repairs each source tile at its own resolution,
+/// where a stray reading is one pixel wide whatever the model later asks for,
+/// and runs this over the finished grid only as a backstop.
 const SPIKE_NEIGHBOUR_ALLOWANCE: usize = 2;
 
 /// A cap so a pathological field cannot spin. Real ones settle in a few

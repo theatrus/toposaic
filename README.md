@@ -449,14 +449,16 @@ model, so a single bad sample squeezes every real hill into a fraction of the
 height asked for and punches a needle hole through the base. **Repair stray
 elevation readings**, under the model controls and on by default, replaces such a
 reading with the middle of its neighbours. The bar scales with the distance
-between samples, so it only touches readings standing off at better than 80
-degrees, and manifests record how many it replaced. Turn it off to build the
+between readings, so it only touches those standing off at better than 80
+degrees, and manifests record how many were replaced. Turn it off to build the
 elevation data exactly as supplied.
 
-One case it only partly answers: a close view over a damaged shoreline spaces its
-samples below the width of a source pixel, so one bad pixel covers several
-samples and the pass cannot judge the middle of the group. Switching elevation
-source is the better move there — the same ground is often clean in the other one.
+The repair runs on each source tile at the tile's own resolution, where a stray
+reading is one pixel wide whatever the model asks for. That matters for close
+views, which space their samples below the width of a source pixel: repairing the
+finished model instead would see one bad pixel smeared over several samples, as a
+block too wide to tell from real ground. A second pass over the finished model
+follows as a backstop for damage too broad to judge pixel by pixel.
 
 Color manifests also record the ESA WorldCover tile and attribution:
 

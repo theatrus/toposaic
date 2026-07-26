@@ -9,7 +9,7 @@
 //! Usage: dem_spike_report [case-name ...]
 //! With no arguments every case runs.
 
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
 use toposaic_api::diagnostics::{fetch_height_field_with_progress, map_cache_root};
 use toposaic_core::{GenerationSpec, HeightField};
@@ -113,7 +113,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn report(name: &str, spec: &GenerationSpec, cache: &Path) -> anyhow::Result<()> {
+    let raw_started = Instant::now();
     let field = fetch_height_field_with_progress(spec, cache, |_| Ok(()))?;
+    let raw_elapsed = raw_started.elapsed();
     let (width, height) = (field.width, field.height);
     let (minimum, maximum) = field.elevation_bounds();
     println!("== {name} ==");
@@ -129,6 +131,7 @@ fn report(name: &str, spec: &GenerationSpec, cache: &Path) -> anyhow::Result<()>
     // What the pass recovers, measured by running the real thing: the same
     // spec with the repair turned back on, fetched through the job runner's own
     // code path rather than a copy of it here.
+    let repaired_started = Instant::now();
     let repaired = fetch_height_field_with_progress(
         &GenerationSpec {
             despike_terrain: true,
@@ -137,6 +140,13 @@ fn report(name: &str, spec: &GenerationSpec, cache: &Path) -> anyhow::Result<()>
         cache,
         |_| Ok(()),
     )?;
+    let repaired_elapsed = repaired_started.elapsed();
+    println!(
+        "  fetch {:.2}s as supplied, {:.2}s repairing",
+        raw_elapsed.as_secs_f64(),
+        repaired_elapsed.as_secs_f64()
+    );
+    println!("  manifest records: {}", repaired.source);
     let (repaired_minimum, repaired_maximum) = repaired.elevation_bounds();
     println!("  repaired elevation {repaired_minimum:.1} m .. {repaired_maximum:.1} m");
     // Relief is stretched over the field's whole range, so the real ground only
