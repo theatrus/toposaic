@@ -50,7 +50,7 @@ pub(crate) async fn list_setups(
 pub(crate) async fn save_setup(
     State(state): State<AppState>,
     Json(request): Json<SaveSetupRequest>,
-) -> Result<Json<SavedSetup>, (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<SavedSetup>), (StatusCode, Json<ApiError>)> {
     let name = validated_setup_name(&request.name)?;
     request
         .spec
@@ -68,9 +68,13 @@ pub(crate) async fn save_setup(
         updated_at: now,
         spec: request.spec,
     };
-    upsert_saved_setup(&state, &setup)
-        .map(Json)
-        .map_err(internal_error)
+    let (stored, created) = upsert_saved_setup(&state, &setup).map_err(internal_error)?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(stored)))
 }
 
 pub(crate) async fn rename_setup(
@@ -136,19 +140,29 @@ mod tests {
     use super::*;
     use crate::test_state;
 
-    async fn save(
+    async fn save_with_status(
         state: &AppState,
         name: &str,
         spec: GenerationSpec,
-    ) -> Result<SavedSetup, StatusCode> {
+    ) -> Result<(StatusCode, SavedSetup), StatusCode> {
         let request = SaveSetupRequest {
             name: name.into(),
             spec,
         };
         save_setup(State(state.clone()), Json(request))
             .await
-            .map(|json| json.0)
+            .map(|(status, json)| (status, json.0))
             .map_err(|(status, _)| status)
+    }
+
+    async fn save(
+        state: &AppState,
+        name: &str,
+        spec: GenerationSpec,
+    ) -> Result<SavedSetup, StatusCode> {
+        save_with_status(state, name, spec)
+            .await
+            .map(|(_, setup)| setup)
     }
 
     async fn list(state: &AppState) -> Vec<SavedSetup> {
@@ -172,14 +186,17 @@ mod tests {
     #[tokio::test]
     async fn setups_round_trip_through_save_list_and_delete() {
         let state = test_state();
-        let first = save(&state, "  Mount Rainier  ", GenerationSpec::default())
-            .await
-            .unwrap();
+        let (status, first) =
+            save_with_status(&state, "  Mount Rainier  ", GenerationSpec::default())
+                .await
+                .unwrap();
+        assert_eq!(status, StatusCode::CREATED);
         assert_eq!(first.name, "Mount Rainier");
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = save(&state, "Mount Baker", GenerationSpec::default())
+        let (status, second) = save_with_status(&state, "Mount Baker", GenerationSpec::default())
             .await
             .unwrap();
+        assert_eq!(status, StatusCode::CREATED);
 
         let listed = list(&state).await;
         assert_eq!(listed.len(), 2);
@@ -200,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn saving_an_existing_name_replaces_the_spec_in_place() {
         let state = test_state();
-        let first = save(&state, "Alps", GenerationSpec::default())
+        let (first_status, first) = save_with_status(&state, "Alps", GenerationSpec::default())
             .await
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -209,8 +226,11 @@ mod tests {
             ground_span_km: 30.0,
             ..GenerationSpec::default()
         };
-        let second = save(&state, "Alps", spec).await.unwrap();
+        let (second_status, second) = save_with_status(&state, "Alps", spec).await.unwrap();
 
+        // A create answers 201; overwriting the same name answers 200.
+        assert_eq!(first_status, StatusCode::CREATED);
+        assert_eq!(second_status, StatusCode::OK);
         assert_eq!(second.id, first.id);
         assert_eq!(second.created_at, first.created_at);
         assert!(second.updated_at > first.updated_at);
