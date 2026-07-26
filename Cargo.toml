@@ -13,19 +13,19 @@ axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "6"
 geo = "0.33"
-geotiff-reader = { version = "0.7", default-features = false, features = ["cog"] }
+geotiff-reader = { version = "0.8", default-features = false, features = ["cog"] }
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rayon = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 spade = "2.15"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = "0.25"
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
