@@ -13,7 +13,7 @@ use crate::spec::{
 const CIRCLE_SAMPLES: usize = 32;
 const ANGLED_PIN_DEGREES: f32 = 25.0;
 const FRENCH_CLEAT_DEGREES: f32 = 35.0;
-const FRENCH_CLEAT_SLIDE_MM: f32 = 2.0;
+const FRENCH_CLEAT_MIN_SLIDE_MM: f32 = 2.0;
 const WALL_PLATE_MARGIN_MM: f32 = 1.2;
 const WALL_PLATE_SCREW_GAP_MM: f32 = 0.4;
 const ALIGNMENT_FRAME_BAND_MM: f32 = 1.6;
@@ -51,7 +51,7 @@ pub(crate) fn mount_bottom_polygons(
     mount: &WallMountSpec,
     mount_frame: [f32; 4],
 ) -> Result<MeshBuilder> {
-    let [center_x, center_y] = wall_mount_center(mount_frame);
+    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
     let mount_center = Point::new(f64::from(center_x), f64::from(center_y));
     let (mount_region_index, mount_region) = base_polygons
         .iter()
@@ -148,14 +148,11 @@ fn bottom_with_wall_plate_pocket(
     mount_frame: [f32; 4],
 ) -> Result<MeshBuilder> {
     let pocket = wall_plate_pocket(mount, mount_frame);
-    if pocket
-        .iter()
-        .chain(
-            receivers
-                .iter()
-                .flat_map(|receiver| receiver.opening.iter().chain(&receiver.ceiling)),
-        )
-        .any(|point| !mount_region.contains(&Point::new(point[0].into(), point[1].into())))
+    if !mount_region.contains(&polygon(&pocket))
+        || receivers.iter().any(|receiver| {
+            !mount_region.contains(&polygon(&receiver.opening))
+                || !mount_region.contains(&polygon(&receiver.ceiling))
+        })
     {
         bail!(
             "wall-mount plate does not fit this part; reduce the mount, pocket, or screw size, or use fewer pieces"
@@ -242,16 +239,40 @@ fn wall_plate_pocket(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Vec<[f32; 
     let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds);
     let plate_bounds = bounds(&plate);
     let slide = wall_mount_slide(mount);
-    let [center_x, center_y] = wall_mount_center(mount_frame);
-    let half_width = (plate_bounds[2] - plate_bounds[0]) * 0.5 + mount.fit_clearance_mm;
-    let half_height =
-        (plate_bounds[3] - plate_bounds[1]) * 0.5 + slide * 0.5 + mount.fit_clearance_mm;
-    rectangle(center_x, center_y - slide * 0.5, half_width, half_height)
+    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
+    // Sweep the plate's true footprint from its lower entry position to its
+    // locked position. Angled features make the plate slightly asymmetric
+    // around the receiver, so centering a size-only box on the receiver can
+    // clip one edge even when its width and height look large enough.
+    let minimum_x = center_x + plate_bounds[0] - mount.fit_clearance_mm;
+    let maximum_x = center_x + plate_bounds[2] + mount.fit_clearance_mm;
+    let minimum_y = center_y + plate_bounds[1] - slide - mount.fit_clearance_mm;
+    let maximum_y = center_y + plate_bounds[3] + mount.fit_clearance_mm;
+    rectangle(
+        (minimum_x + maximum_x) * 0.5,
+        (minimum_y + maximum_y) * 0.5,
+        (maximum_x - minimum_x) * 0.5,
+        (maximum_y - minimum_y) * 0.5,
+    )
 }
 
-fn wall_mount_center(mount_frame: [f32; 4]) -> [f32; 2] {
+fn wall_mount_center(mount: &WallMountSpec, mount_frame: [f32; 4]) -> [f32; 2] {
     let [minimum_x, minimum_y, maximum_x, maximum_y] = mount_frame;
-    [(minimum_x + maximum_x) * 0.5, (minimum_y + maximum_y) * 0.5]
+    let frame_center = [(minimum_x + maximum_x) * 0.5, (minimum_y + maximum_y) * 0.5];
+    if mount.style == WallMountStyle::None {
+        return frame_center;
+    }
+    let (_, features) = wall_hardware_features(mount);
+    let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds(&features));
+    let plate_bounds = bounds(&plate);
+    let plate_center = [
+        (plate_bounds[0] + plate_bounds[2]) * 0.5,
+        (plate_bounds[1] + plate_bounds[3]) * 0.5,
+    ];
+    [
+        frame_center[0] - plate_center[0],
+        frame_center[1] - plate_center[1] + wall_mount_slide(mount) * 0.5,
+    ]
 }
 
 fn wall_mount_slide(mount: &WallMountSpec) -> f32 {
@@ -262,7 +283,9 @@ fn wall_mount_slide(mount: &WallMountSpec) -> f32 {
     };
     match mount.style {
         WallMountStyle::AngledPin => shift + mount.fit_clearance_mm,
-        WallMountStyle::FrenchCleat => FRENCH_CLEAT_SLIDE_MM.max(shift + mount.fit_clearance_mm),
+        WallMountStyle::FrenchCleat => FRENCH_CLEAT_MIN_SLIDE_MM
+            .max(mount.pin_diameter_mm * 0.75)
+            .max(shift + mount.fit_clearance_mm),
         WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
     }
 }
@@ -274,7 +297,7 @@ fn cavities_for_outline(
 ) -> Result<Vec<MountCavity>> {
     let [minimum_x, _, maximum_x, _] = mount_frame;
     let width = maximum_x - minimum_x;
-    let [center_x, center_y] = wall_mount_center(mount_frame);
+    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
     let shift = match mount.style {
         WallMountStyle::AngledPin => mount.depth_mm * ANGLED_PIN_DEGREES.to_radians().tan(),
         WallMountStyle::FrenchCleat => mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan(),
@@ -304,7 +327,7 @@ fn cavities_for_outline(
         WallMountStyle::FrenchCleat => {
             let half_width = mount.cleat_width_mm * 0.5;
             let half_height = mount.pin_diameter_mm * 0.5;
-            let slide = FRENCH_CLEAT_SLIDE_MM.max(shift + mount.fit_clearance_mm);
+            let slide = wall_mount_slide(mount);
             let box_half_height = half_height + slide * 0.5;
             vec![MountCavity {
                 opening: rectangle(
@@ -324,9 +347,9 @@ fn cavities_for_outline(
     };
 
     for cavity in &cavities {
-        if cavity.opening.iter().chain(&cavity.ceiling).any(|point| {
-            !outline_polygon.contains(&Point::new(f64::from(point[0]), f64::from(point[1])))
-        }) {
+        if !outline_polygon.contains(&polygon(&cavity.opening))
+            || !outline_polygon.contains(&polygon(&cavity.ceiling))
+        {
             bail!(
                 "wall-mount feature does not fit this part; reduce the pin size or use fewer pieces"
             );
@@ -532,7 +555,7 @@ pub(crate) fn build_wall_alignment_spacer(spec: &GenerationSpec) -> Result<Mesh>
     let feature_bounds = feature_bounds(&features);
     let (plate, screw_offsets) = hardware_plate_and_screw_centers(&spec.wall_mount, feature_bounds);
     let plate_bounds = bounds(&plate);
-    let mount_center = [width * 0.5, height * 0.5];
+    let mount_center = wall_mount_center(&spec.wall_mount, [0.0, 0.0, width, height]);
     if plate_bounds[0] + mount_center[0] < 0.0
         || plate_bounds[1] + mount_center[1] < 0.0
         || plate_bounds[2] + mount_center[0] > width
@@ -580,6 +603,9 @@ pub(crate) fn build_wall_alignment_spacer(spec: &GenerationSpec) -> Result<Mesh>
         )));
         shape = shape.difference(&polygon(&circle(center, screw_radius)));
     }
+    // The support collars can reach the frame edge on very small pieces.
+    // Keep the jig's outer dimensions exact so adjacent frames still align.
+    shape = shape.intersection(&outer);
 
     let mut mesh = MeshBuilder::default();
     add_horizontal_polygons(&mut mesh, &shape.0, 0.0, SurfaceClass::Rock, true)?;
@@ -715,7 +741,7 @@ mod tests {
         let ceiling = bounds(&cavity.ceiling);
         let shift = mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan();
 
-        assert!((opening[3] - opening[1]) >= mount.pin_diameter_mm + FRENCH_CLEAT_SLIDE_MM);
+        assert!((opening[3] - opening[1]) >= mount.pin_diameter_mm + FRENCH_CLEAT_MIN_SLIDE_MM);
         assert!(((ceiling[1] - opening[1]) - shift).abs() < 0.000_01);
         assert_eq!(opening[0], 20.0 - mount.cleat_width_mm * 0.5);
         assert_eq!(opening[2], 20.0 + mount.cleat_width_mm * 0.5);
@@ -810,6 +836,36 @@ mod tests {
                 .vertices
                 .iter()
                 .any(|point| (point[2] - 2.6).abs() < 0.000_01)
+        );
+    }
+
+    #[test]
+    fn french_cleat_pocket_sweeps_the_whole_plate_through_its_entry_travel() {
+        let mount = WallMountSpec {
+            style: WallMountStyle::FrenchCleat,
+            depth_mm: 1.2,
+            pin_diameter_mm: 6.0,
+            fit_clearance_mm: 0.3,
+            ..WallMountSpec::default()
+        };
+        let frame = [0.0, 0.0, 60.0, 50.0];
+        let [center_x, center_y] = wall_mount_center(&mount, frame);
+        let (_, features) = wall_hardware_features(&mount);
+        let (plate, _) = hardware_plate_and_screw_centers(&mount, feature_bounds(&features));
+        let plate_bounds = bounds(&plate);
+        let pocket_bounds = bounds(&wall_plate_pocket(&mount, frame));
+        let slide = wall_mount_slide(&mount);
+
+        assert!((pocket_bounds[0] - (center_x + plate_bounds[0] - 0.3)).abs() < 0.000_01);
+        assert!((pocket_bounds[2] - (center_x + plate_bounds[2] + 0.3)).abs() < 0.000_01);
+        assert!((pocket_bounds[1] - (center_y + plate_bounds[1] - slide - 0.3)).abs() < 0.000_01);
+        assert!((pocket_bounds[3] - (center_y + plate_bounds[3] + 0.3)).abs() < 0.000_01);
+        assert!(slide >= mount.pin_diameter_mm * 0.75);
+        assert!(
+            ((pocket_bounds[3] - pocket_bounds[1])
+                - (plate_bounds[3] - plate_bounds[1] + slide + 0.6))
+                .abs()
+                < 0.000_01
         );
     }
 }

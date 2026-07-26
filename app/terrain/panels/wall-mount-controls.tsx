@@ -230,8 +230,9 @@ export function WallMountControls({
             the finished gap for an uneven wall. The exported plate thickness
             is their sum. Pin or cleat engagement depth is separate, and every
             cut keeps at least 0.4 mm below the terrain or display-base face.
-            French cleats and angled pins slide toward the map north edge to
-            lock.
+            The pocket covers the full wall plate at entry and at lock; French
+            cleat travel grows with slot height. French cleats and angled pins
+            slide toward the map north edge to lock.
             {spec.wall_mount.export_hardware &&
               ` Print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} of the wall-side hardware.${spec.wall_mount.style === "french_cleat" ? ` The job also includes a flat alignment spacer; print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} and place their outer edges together to set the cleat grid.` : ""}`}
           </p>
