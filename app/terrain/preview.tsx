@@ -310,6 +310,9 @@ export function ReliefPreview({
   const railSeparate =
     spec.color_output.rail_enabled &&
     spec.color_output.rail_style === "separate";
+  const railWithRoads =
+    spec.color_output.rail_enabled &&
+    spec.color_output.rail_style === "with_roads";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -826,7 +829,12 @@ export function ReliefPreview({
                   );
                 }
                 return (
-                  (key !== "road" || spec.color_output.roads_enabled) &&
+                  // Railways drawn with roads paint in the road class and
+                  // count toward its coverage, so the route entry belongs
+                  // in the legend even when roads themselves are off.
+                  (key !== "road" ||
+                    spec.color_output.roads_enabled ||
+                    railWithRoads) &&
                   (key !== "building" || spec.buildings.enabled) &&
                   // Railways drawn with roads carry the road color and no
                   // slot of their own, so they earn no legend entry.

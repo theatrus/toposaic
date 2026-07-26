@@ -373,12 +373,28 @@ test("switches railways on apart from roads and submits them", async ({
   // Railways switch independently of roads: turning roads off leaves the
   // railway controls in place.
   const roads = surfaceColors.getByRole("checkbox", { name: "Render roads" });
+  const routeLegend = page
+    .getByLabel("Surface color legend")
+    .getByText("Route", { exact: true });
   await roads.uncheck();
   await expect(surfaceColors.getByLabel("Route detail")).toBeHidden();
   await expect(railways).toBeChecked();
   await expect(railStyle).toBeVisible();
   await expect(railWidth).toHaveValue("1.2");
+  await expect(railLegend).toBeVisible();
+  await expect(routeLegend).toBeHidden();
+
+  // Rails drawn with roads print in the route color, so a rail-only model
+  // keeps the route entry that names that color.
+  await railStyle.selectOption("with_roads");
+  await expect(routeLegend).toBeVisible();
+  await expect(railLegend).toBeHidden();
+  await railways.uncheck();
+  await expect(routeLegend).toBeHidden();
+  await railways.check();
+  await railStyle.selectOption("separate");
   await roads.check();
+  await expect(routeLegend).toBeVisible();
 
   await page.getByRole("button", { name: /^Generate/ }).click();
   await expect

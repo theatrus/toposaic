@@ -1023,6 +1023,72 @@ mod tests {
         assert_watertight(&plain);
     }
 
+    /// Railways switch on and off independently of roads, so a model with
+    /// the road layer off and railways on must still build overlay
+    /// geometry. Under the default `with_roads` style those railways are
+    /// Road-class lines, so nothing but the piece gate distinguishes this
+    /// from a road-less model — and the gate used to close on it.
+    #[test]
+    fn rail_only_models_still_build_their_overlay_geometry() {
+        use crate::spec::RailStyle;
+
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let spec = |roads_enabled, rail_enabled, rail_style| GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled,
+                rail_enabled,
+                rail_style,
+                road_height_mm: 0.2,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        // The field the API produces for roads off, railways on, default
+        // style: one Road-class line that is really a railway.
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "rail-only").unwrap();
+        field.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+
+        let rail_only = spec(false, true, RailStyle::WithRoads);
+        assert!(rail_only.uses_rail());
+        assert!(!rail_only.uses_separate_rail());
+        let mesh = build_piece(&rail_only, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let raised = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Road)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize][2])
+            .collect::<Vec<_>>();
+        assert!(
+            !raised.is_empty(),
+            "a rail-only model must draw its railway"
+        );
+        let maximum = raised.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (maximum - (rail_only.base_mm + rail_only.color_output.road_height_mm)).abs() < 0.001
+        );
+        assert_watertight(&mesh);
+
+        // With both layers off the same field draws nothing, which is what
+        // makes the case above a real gate and not a no-op.
+        let neither = build_piece(
+            &spec(false, false, RailStyle::WithRoads),
+            Some(&height_field),
+            Some(&field),
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(!neither.materials.contains(&SurfaceClass::Road));
+        assert_watertight(&neither);
+    }
+
     #[test]
     fn railway_viaducts_shell_as_elevated_decks_in_the_rail_material() {
         use crate::spec::RailStyle;
