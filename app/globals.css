@@ -1136,6 +1136,7 @@ fieldset.control-section {
 }
 
 fieldset.control-section > .color-heading,
+fieldset.control-section > .wall-mount-heading,
 fieldset.control-section > .color-note,
 fieldset.control-section > .control-hint {
   grid-column: 1 / -1;
@@ -1714,6 +1715,23 @@ fieldset.control-section .road-options {
 .tray-controls > .place-label-field {
   grid-column: 1 / -1;
   margin: 0;
+}
+
+.wall-mount-heading {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding-top: 14px;
+}
+
+.wall-mount-heading p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 4px 0 0;
 }
 
 .color-heading {

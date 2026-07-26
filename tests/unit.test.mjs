@@ -169,6 +169,20 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.equal(withTrail.trails[0].name, "Loop");
 });
 
+test("recalls old setups with tray contours on and wall mounts off", () => {
+  const oldSpec = structuredClone(initialSpec);
+  delete oldSpec.tray.contours_enabled;
+  delete oldSpec.wall_mount;
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.tray.contours_enabled, true);
+  assert.deepEqual(merged.wall_mount, {
+    style: "none",
+    target: "terrain",
+    depth_mm: 0.8,
+    pin_diameter_mm: 4,
+  });
+});
+
 test("coalesces explicit null sample counts to the client defaults", () => {
   // The wire type is Option<u32>: the service and setup files can send
   // explicit nulls, which a plain spread would keep.

@@ -4,6 +4,7 @@ mod export;
 mod heightfield;
 mod jigsaw;
 mod mesh;
+mod mount;
 mod piece;
 mod preview;
 mod project;
@@ -23,6 +24,6 @@ pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     ElevationSource, GenerationSpec, LineStyle, RailLifecycle, RailStyle, ResolvedRoadDetail,
     RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
-    TrailRoute, TraySpec,
+    TrailRoute, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

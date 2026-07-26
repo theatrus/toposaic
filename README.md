@@ -100,9 +100,15 @@ An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,
 and longitude in smooth vector letterforms. Controls set the tray clearance,
-rim, floor, line count, and three print colors. The bundled Atkinson
+rim, floor, line count, and three print colors; contour lines can also be
+left out for a simpler tray. The bundled Atkinson
 Hyperlegible font keeps the label shape the same on every OS and remains under
 its included SIL Open Font License.
+
+Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
+French-cleat receiver into the flat back. The cut can go into each puzzle piece
+or solid terrain model, or into each tray section. Cut depth and pin or slot
+size are adjustable, and TopoSaic keeps a printable skin below the front face.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with a straight outer edge and no puzzle seams. It keeps the full source

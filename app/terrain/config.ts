@@ -40,6 +40,7 @@ export const initialSpec: GenerationSpec = {
   tray: {
     enabled: true,
     individual_tiles: false,
+    contours_enabled: true,
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",
@@ -50,6 +51,12 @@ export const initialSpec: GenerationSpec = {
     contour_count: 18,
     segment_columns: 1,
     segment_rows: 1,
+  },
+  wall_mount: {
+    style: "none",
+    target: "terrain",
+    depth_mm: 0.8,
+    pin_diameter_mm: 4,
   },
   color_output: {
     enabled: true,
@@ -125,6 +132,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     tray: { ...initialSpec.tray, ...saved.tray },
+    wall_mount: { ...initialSpec.wall_mount, ...saved.wall_mount },
     color_output: { ...initialSpec.color_output, ...saved.color_output },
     trails: saved.trails ?? [],
   };

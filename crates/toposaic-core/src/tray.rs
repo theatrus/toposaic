@@ -9,6 +9,7 @@ use crate::jigsaw::{edge_sign, puzzle_edge_point, shared_edge_pattern};
 use crate::mesh::{
     Mesh, MeshBuilder, distance_squared, triangulate_constraints, unit_vector, weld_export_mesh,
 };
+use crate::mount::{mount_bottom, mount_bottom_polygons};
 use crate::piece::geo_polygon;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::text::{EmbossedLabel, embossing_font};
@@ -117,17 +118,21 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     let z_coordinates = [0.0, rim_z];
 
     let height_range = height_range_for_spec(spec, height_field);
-    let contour_paths = trace_tray_contours(
-        spec,
-        height_field,
-        height_range,
-        &inner_x,
-        &inner_y,
-        inner_x0,
-        inner_y0,
-        inner_width,
-        inner_height,
-    );
+    let contour_paths = if tray.contours_enabled {
+        trace_tray_contours(
+            spec,
+            height_field,
+            height_range,
+            &inner_x,
+            &inner_y,
+            inner_x0,
+            inner_y0,
+            inner_width,
+            inner_height,
+        )
+    } else {
+        Vec::new()
+    };
     let mut mesh = MeshBuilder::default();
 
     for y in inner_y.windows(2) {
@@ -255,29 +260,51 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         }
     }
 
-    let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
-    let mut boundary = Vec::new();
-    boundary.extend(x_coordinates.iter().map(|x| [*x, 0.0, 0.0]));
-    boundary.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y, 0.0]));
-    boundary.extend(
-        x_coordinates
-            .iter()
-            .rev()
-            .skip(1)
-            .map(|x| [*x, outer_height, 0.0]),
-    );
-    boundary.extend(
-        y_coordinates
-            .iter()
-            .rev()
-            .skip(1)
-            .take(y_coordinates.len().saturating_sub(2))
-            .map(|y| [0.0, *y, 0.0]),
-    );
-    for index in 0..boundary.len() {
-        let current = boundary[index];
-        let next = boundary[(index + 1) % boundary.len()];
-        mesh.triangle(center, next, current, SurfaceClass::Rock);
+    if spec.wall_mount.cuts_tray() {
+        let mut bottom_outline = Vec::new();
+        bottom_outline.extend(x_coordinates.iter().map(|x| [*x, 0.0]));
+        bottom_outline.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y]));
+        bottom_outline.extend(
+            x_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .map(|x| [*x, outer_height]),
+        );
+        bottom_outline.extend(
+            y_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .take(y_coordinates.len().saturating_sub(2))
+                .map(|y| [0.0, *y]),
+        );
+        mesh.append_isolated(mount_bottom(&bottom_outline, &spec.wall_mount)?);
+    } else {
+        let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
+        let mut boundary = Vec::new();
+        boundary.extend(x_coordinates.iter().map(|x| [*x, 0.0, 0.0]));
+        boundary.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y, 0.0]));
+        boundary.extend(
+            x_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .map(|x| [*x, outer_height, 0.0]),
+        );
+        boundary.extend(
+            y_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .take(y_coordinates.len().saturating_sub(2))
+                .map(|y| [0.0, *y, 0.0]),
+        );
+        for index in 0..boundary.len() {
+            let current = boundary[index];
+            let next = boundary[(index + 1) % boundary.len()];
+            mesh.triangle(center, next, current, SurfaceClass::Rock);
+        }
     }
     for path in &contour_paths {
         add_contour_ribbon(
@@ -299,7 +326,11 @@ pub(crate) fn build_tray_segments(
     let mut segments = if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
         vec![build_tray(spec, height_field)?]
     } else {
-        let contour_paths = tray_contour_paths(spec, height_field);
+        let contour_paths = if spec.tray.contours_enabled {
+            tray_contour_paths(spec, height_field)
+        } else {
+            Vec::new()
+        };
         let mut segments =
             Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
         for row in 0..spec.tray.segment_rows {
@@ -378,8 +409,17 @@ fn build_tray_segment(
         false,
     )?;
     add_horizontal_polygons(&mut mesh, &rim_polygons, rim_z, SurfaceClass::Rock, false)?;
-    add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
-    add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;
+    if spec.wall_mount.cuts_tray() {
+        let bottom_polygons = floor_polygons
+            .iter()
+            .chain(&rim_polygons)
+            .cloned()
+            .collect::<Vec<_>>();
+        mesh.append_isolated(mount_bottom_polygons(&bottom_polygons, &spec.wall_mount)?);
+    } else {
+        add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
+        add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;
+    }
 
     let inner_frame = [inner_x0, inner_y0, inner_x1, inner_y1];
     add_segment_walls(
@@ -1272,7 +1312,7 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
-    use crate::spec::TraySpec;
+    use crate::spec::{TraySpec, WallMountSpec, WallMountStyle, WallMountTarget};
 
     #[test]
     fn tray_is_watertight_and_keeps_contours_and_label_colors() {
@@ -1314,6 +1354,78 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex[1] < spec.tray.rim_width_mm)
         );
+    }
+
+    #[test]
+    fn tray_can_omit_contour_geometry() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            tray: TraySpec {
+                enabled: true,
+                contours_enabled: false,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(
+            3,
+            3,
+            vec![0.0, 1.0, 2.0, 1.0, 3.0, 5.0, 2.0, 5.0, 8.0],
+            "test",
+        )
+        .unwrap();
+        let mesh = build_tray(&spec, Some(&height)).unwrap();
+        assert_watertight(&mesh);
+        assert!(!mesh.materials.contains(&SurfaceClass::Forest));
+    }
+
+    #[test]
+    fn every_wall_mount_style_cuts_watertight_tray_sections() {
+        for style in [
+            WallMountStyle::StraightPin,
+            WallMountStyle::AngledPin,
+            WallMountStyle::FrenchCleat,
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 60.0,
+                rows: 2,
+                columns: 2,
+                adjacent_interlocks: true,
+                tray: TraySpec {
+                    enabled: true,
+                    contours_enabled: false,
+                    segment_columns: 2,
+                    segment_rows: 2,
+                    ..TraySpec::default()
+                },
+                wall_mount: WallMountSpec {
+                    style,
+                    target: WallMountTarget::Tray,
+                    depth_mm: 0.8,
+                    pin_diameter_mm: 4.0,
+                },
+                ..GenerationSpec::default()
+            };
+            let mut whole_spec = spec.clone();
+            whole_spec.tray.segment_columns = 1;
+            whole_spec.tray.segment_rows = 1;
+            let whole_trays = build_tray_segments(&whole_spec, None).unwrap();
+            assert_eq!(whole_trays.len(), 1);
+            assert_watertight(&whole_trays[0]);
+            let segments = build_tray_segments(&spec, None).unwrap();
+            assert_eq!(segments.len(), 4);
+            for segment in &segments {
+                assert_watertight(segment);
+                assert!(
+                    segment
+                        .vertices
+                        .iter()
+                        .any(|vertex| { (vertex[2] - spec.wall_mount.depth_mm).abs() < 0.000_01 })
+                );
+            }
+        }
     }
 
     #[test]

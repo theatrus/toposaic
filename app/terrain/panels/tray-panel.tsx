@@ -1,11 +1,13 @@
 import type { GenerationSpec } from "../contracts";
 import { RangeField } from "./range-field";
+import { WallMountControls } from "./wall-mount-controls";
 
 export function TrayPanel({
   hidden,
   spec,
   update,
   updateTray,
+  updateWallMount,
 }: {
   hidden: boolean;
   spec: GenerationSpec;
@@ -16,6 +18,10 @@ export function TrayPanel({
   updateTray: <Key extends keyof GenerationSpec["tray"]>(
     key: Key,
     value: GenerationSpec["tray"][Key],
+  ) => void;
+  updateWallMount: <Key extends keyof GenerationSpec["wall_mount"]>(
+    key: Key,
+    value: GenerationSpec["wall_mount"][Key],
   ) => void;
 }) {
   return (
@@ -74,6 +80,20 @@ export function TrayPanel({
               </label>
             ))}
           </div>
+          <label className="tray-chunk-toggle">
+            <input
+              aria-label="Draw contour lines on tray"
+              type="checkbox"
+              checked={spec.tray.contours_enabled}
+              onChange={(event) =>
+                updateTray("contours_enabled", event.target.checked)
+              }
+            />
+            <span>
+              <strong>Contour lines</strong>
+              <small>Draw terrain contours on the tray floor.</small>
+            </span>
+          </label>
           <RangeField
             label="Tray clearance"
             value={spec.tray.clearance_mm}
@@ -110,15 +130,17 @@ export function TrayPanel({
             step={0.2}
             onChange={(value) => updateTray("rim_height_mm", value)}
           />
-          <RangeField
-            label="Contour lines"
-            value={spec.tray.contour_count}
-            unit=""
-            min={5}
-            max={60}
-            step={1}
-            onChange={(value) => updateTray("contour_count", value)}
-          />
+          {spec.tray.contours_enabled && (
+            <RangeField
+              label="Contour line count"
+              value={spec.tray.contour_count}
+              unit=""
+              min={5}
+              max={60}
+              step={1}
+              onChange={(value) => updateTray("contour_count", value)}
+            />
+          )}
           {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
             <label className="tray-chunk-toggle">
               <input
@@ -138,13 +160,14 @@ export function TrayPanel({
             </label>
           )}
           <p className="color-note">
-            The color 3MF prints contour lines on the flat tray floor and
-            the place name, latitude, and longitude as raised shapes on
-            the top front lip. Mosaic trays follow the terrain grid and
-            its shared-edge setting. The job also includes a plain STL.
+            The color 3MF prints the chosen tray details and the place name,
+            latitude, and longitude as raised shapes on the top front lip.
+            Mosaic trays follow the terrain grid and its shared-edge setting.
+            The job also includes a plain STL.
           </p>
         </>
       )}
+      <WallMountControls spec={spec} updateWallMount={updateWallMount} />
     </fieldset>
   );
 }

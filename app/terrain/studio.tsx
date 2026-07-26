@@ -427,6 +427,19 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updateWallMount = useCallback(
+    <Key extends keyof GenerationSpec["wall_mount"]>(
+      key: Key,
+      value: GenerationSpec["wall_mount"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        wall_mount: { ...current.wall_mount, [key]: value },
+      }));
+    },
+    [],
+  );
   const updateBuildings = useCallback(
     <Key extends keyof GenerationSpec["buildings"]>(
       key: Key,
@@ -1781,6 +1794,7 @@ export function TerrainStudio() {
             spec={spec}
             update={update}
             updateTray={updateTray}
+            updateWallMount={updateWallMount}
           />
 
           <OutputPanel

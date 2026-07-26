@@ -272,6 +272,20 @@ test("switches between the reflowed control panels", async ({ page }) => {
   });
   await expect(trayControls).toBeVisible();
   await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
+  const trayContours = page.getByRole("checkbox", {
+    name: "Draw contour lines on tray",
+  });
+  await expect(trayContours).toBeChecked();
+  await trayContours.uncheck();
+  await expect(page.getByText("Contour line count")).toBeHidden();
+  const wallMountStyle = page.getByLabel("Wall mount style");
+  await wallMountStyle.selectOption("angled_pin");
+  await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
+  await page.getByLabel("Wall mount target").selectOption("tray");
+  await expect(page.getByText("Mount cut depth")).toBeVisible();
+  await expect(page.getByText("Pin diameter")).toBeVisible();
+  await wallMountStyle.selectOption("french_cleat");
+  await expect(page.getByText("Cleat slot height")).toBeVisible();
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();

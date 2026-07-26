@@ -58,6 +58,7 @@ pub struct GenerationSpec {
     pub puzzle_tabs: bool,
     pub place_name: String,
     pub tray: TraySpec,
+    pub wall_mount: WallMountSpec,
     pub buildings: BuildingSpec,
     pub color_output: ColorOutputSpec,
     /// Imported hiker trails (GPX/KML routes) drawn on the model in the
@@ -98,6 +99,7 @@ impl Default for GenerationSpec {
             puzzle_tabs: true,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
+            wall_mount: WallMountSpec::default(),
             buildings: BuildingSpec::default(),
             color_output: ColorOutputSpec::default(),
             trails: Vec::new(),
@@ -189,6 +191,7 @@ impl GenerationSpec {
             bail!("place label cannot contain control characters");
         }
         self.tray.validate()?;
+        self.wall_mount.validate(self.base_mm, self.tray.floor_mm)?;
         self.buildings.validate()?;
         self.color_output.validate()?;
         if self.trails.len() > MAX_TRAILS {
@@ -613,6 +616,7 @@ impl BuildingSpec {
 pub struct TraySpec {
     pub enabled: bool,
     pub individual_tiles: bool,
+    pub contours_enabled: bool,
     pub tray_color: String,
     pub contour_color: String,
     pub label_color: String,
@@ -630,6 +634,7 @@ impl Default for TraySpec {
         Self {
             enabled: false,
             individual_tiles: false,
+            contours_enabled: true,
             tray_color: "#252822".into(),
             contour_color: "#E7E4D8".into(),
             label_color: "#F4F3EC".into(),
@@ -641,6 +646,79 @@ impl Default for TraySpec {
             segment_columns: 1,
             segment_rows: 1,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallMountStyle {
+    #[default]
+    None,
+    StraightPin,
+    AngledPin,
+    FrenchCleat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallMountTarget {
+    #[default]
+    Terrain,
+    Tray,
+}
+
+/// Blind mounting cuts in the flat back of the terrain or tray.
+///
+/// Keeping the feature in one top-level spec makes the two mounting targets
+/// exclusive. A saved setup cannot ask for two overlapping sets of cuts by
+/// accident, and old setups deserialize to `None` through `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WallMountSpec {
+    pub style: WallMountStyle,
+    pub target: WallMountTarget,
+    pub depth_mm: f32,
+    pub pin_diameter_mm: f32,
+}
+
+impl Default for WallMountSpec {
+    fn default() -> Self {
+        Self {
+            style: WallMountStyle::None,
+            target: WallMountTarget::Terrain,
+            depth_mm: 0.8,
+            pin_diameter_mm: 4.0,
+        }
+    }
+}
+
+impl WallMountSpec {
+    pub(crate) fn cuts_terrain(&self) -> bool {
+        self.style != WallMountStyle::None && self.target == WallMountTarget::Terrain
+    }
+
+    pub(crate) fn cuts_tray(&self) -> bool {
+        self.style != WallMountStyle::None && self.target == WallMountTarget::Tray
+    }
+
+    fn validate(&self, base_mm: f32, tray_floor_mm: f32) -> Result<()> {
+        if self.style == WallMountStyle::None {
+            return Ok(());
+        }
+        if !(0.4..=3.0).contains(&self.depth_mm) {
+            bail!("wall-mount cut depth must be between 0.4 and 3 mm");
+        }
+        if !(2.0..=10.0).contains(&self.pin_diameter_mm) {
+            bail!("wall-mount pin diameter must be between 2 and 10 mm");
+        }
+        let available = match self.target {
+            WallMountTarget::Terrain => base_mm,
+            WallMountTarget::Tray => tray_floor_mm,
+        };
+        if self.depth_mm > available - 0.4 {
+            bail!("wall-mount cut must leave at least 0.4 mm of material");
+        }
+        Ok(())
     }
 }
 
@@ -1360,7 +1438,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"wall_mount":{"style":"none","target":"terrain","depth_mm":0.8,"pin_diameter_mm":4.0},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1402,6 +1480,7 @@ mod tests {
             "tray": {
                 "enabled": true,
                 "individual_tiles": true,
+                "contours_enabled": false,
                 "tray_color": "#111111",
                 "contour_color": "#222222",
                 "label_color": "#333333",
@@ -1412,6 +1491,12 @@ mod tests {
                 "contour_count": 24,
                 "segment_columns": 2,
                 "segment_rows": 3
+            },
+            "wall_mount": {
+                "style": "angled_pin",
+                "target": "tray",
+                "depth_mm": 1.25,
+                "pin_diameter_mm": 5.0
             },
             "buildings": { "enabled": true, "z_scale": 2.0 },
             "color_output": {
@@ -1532,6 +1617,40 @@ mod tests {
         spec.color_output.trail_color = "magenta".into();
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("trail color"));
+    }
+
+    #[test]
+    fn wall_mounts_default_off_and_preserve_a_printable_skin() {
+        let old: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "tray": { "enabled": true }
+        }))
+        .unwrap();
+        assert!(old.tray.contours_enabled);
+        assert_eq!(old.wall_mount.style, WallMountStyle::None);
+
+        let mut spec = GenerationSpec::default();
+        spec.wall_mount.style = WallMountStyle::AngledPin;
+        spec.wall_mount.target = WallMountTarget::Terrain;
+        spec.wall_mount.depth_mm = spec.base_mm - 0.4;
+        assert!(spec.validate().is_ok());
+        spec.wall_mount.depth_mm += 0.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("leave at least 0.4 mm")
+        );
+
+        spec.wall_mount.target = WallMountTarget::Tray;
+        spec.wall_mount.depth_mm = spec.tray.floor_mm - 0.4;
+        assert!(spec.validate().is_ok());
+        spec.wall_mount.depth_mm += 0.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("leave at least 0.4 mm")
+        );
     }
 
     #[test]

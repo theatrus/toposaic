@@ -12,6 +12,7 @@ use crate::mesh::{
     Mesh, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
     quantize_export_coordinate, unit_vector, weld_export_mesh,
 };
+use crate::mount::mount_bottom;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
 use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_contour_segments};
@@ -376,15 +377,18 @@ pub(crate) fn build_piece_with_height_range(
 
     let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
     let mut materials = Vec::with_capacity(triangles.capacity());
+    let mounted_back = spec.wall_mount.cuts_terrain();
     for (top, material) in top_triangles.into_iter().zip(top_materials) {
         triangles.push(top);
         materials.push(material);
-        triangles.push([
-            top[0] + top_count as u32,
-            top[2] + top_count as u32,
-            top[1] + top_count as u32,
-        ]);
-        materials.push(SurfaceClass::Rock);
+        if !mounted_back {
+            triangles.push([
+                top[0] + top_count as u32,
+                top[2] + top_count as u32,
+                top[1] + top_count as u32,
+            ]);
+            materials.push(SurfaceClass::Rock);
+        }
     }
     // HashMap iteration order is randomized per process; sort the boundary
     // edges so the emitted mesh (and every artifact hashed from it) is
@@ -413,6 +417,9 @@ pub(crate) fn build_piece_with_height_range(
         materials,
         quantization_collisions: Vec::new(),
     };
+    if mounted_back {
+        mesh.append_isolated(mount_bottom(&outline, &spec.wall_mount)?);
+    }
     let mut building_union = None;
     if spec.buildings.enabled
         && let Some(field) = surface_field
@@ -1110,6 +1117,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::mesh::assert_watertight;
+    use crate::spec::{WallMountSpec, WallMountStyle, WallMountTarget};
 
     #[test]
     fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
@@ -1284,6 +1292,35 @@ mod tests {
     fn generated_piece_is_watertight() {
         let mesh = build_piece(&GenerationSpec::default(), None, None, 0, 0).unwrap();
         assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn every_wall_mount_style_cuts_a_watertight_piece_back() {
+        for style in [
+            WallMountStyle::StraightPin,
+            WallMountStyle::AngledPin,
+            WallMountStyle::FrenchCleat,
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 80.0,
+                rows: 2,
+                columns: 2,
+                wall_mount: WallMountSpec {
+                    style,
+                    target: WallMountTarget::Terrain,
+                    depth_mm: 0.8,
+                    pin_diameter_mm: 4.0,
+                },
+                ..GenerationSpec::default()
+            };
+            let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+            assert_watertight(&mesh);
+            assert!(
+                mesh.vertices
+                    .iter()
+                    .any(|vertex| { (vertex[2] - spec.wall_mount.depth_mm).abs() < 0.000_01 })
+            );
+        }
     }
 
     #[test]
