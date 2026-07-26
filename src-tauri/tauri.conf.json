@@ -29,8 +29,8 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4MTAwMjdCRDI5NDM2RDAKUldUUU5wVFNld0lRbU1yNUlmSTU2M3c3Q0NQbjBjNi92V3lqdjZ6ckNBa0lvQkp6eHhiRHgvQ1MK",
       "endpoints": [
-        "https://toposaic.com/releases/updater.json",
-        "https://github.com/theatrus/toposaic/releases/latest/download/updater.json"
+        "https://github.com/theatrus/toposaic/releases/latest/download/updater.json",
+        "https://toposaic.com/releases/updater.json"
       ],
       "windows": {
         "installMode": "passive"

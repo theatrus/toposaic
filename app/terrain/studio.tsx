@@ -25,6 +25,7 @@ import {
   downloadAndInstallSignedUpdate,
 } from "../updates/desktop";
 import { IS_TAURI, terrainApi } from "./api";
+import { ExternalLink } from "./external-link";
 import {
   MAX_ASSEMBLED_SAMPLES,
   MAX_SUPER_TILE_SIDE,
@@ -1541,22 +1542,18 @@ export function TerrainStudio() {
                   >
                     {updateBusy ? "Working…" : "Install"}
                   </button>
-                  <a
+                  <ExternalLink
                     href={availableUpdate.url || RELEASES_URL}
-                    target="_blank"
-                    rel="noreferrer"
                   >
                     Notes
-                  </a>
+                  </ExternalLink>
                 </>
               ) : (
-                <a
+                <ExternalLink
                   href={availableUpdate.url || RELEASES_URL}
-                  target="_blank"
-                  rel="noreferrer"
                 >
                   Download
-                </a>
+                </ExternalLink>
               )}
               {!updateBusy && (
                 <button
