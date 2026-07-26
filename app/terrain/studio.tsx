@@ -1549,11 +1549,13 @@ export function TerrainStudio() {
                   </ExternalLink>
                 </>
               ) : (
-                <ExternalLink
+                <a
                   href={availableUpdate.url || RELEASES_URL}
+                  target="_blank"
+                  rel="noreferrer"
                 >
                   Download
-                </ExternalLink>
+                </a>
               )}
               {!updateBusy && (
                 <button
