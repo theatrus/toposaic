@@ -64,13 +64,23 @@ export type GenerationSpec = {
     trail_color: string;
     trail_width_mm: number;
     roads_enabled: boolean;
-    // Railways, trams, funiculars, and cable cars. The layer switches on
-    // its own, apart from roads; "with_roads" paints it in the road color
-    // so the print needs no eighth filament slot.
+    // Ground track: trains, trams, metros, monorails, funiculars. The
+    // layer switches on its own, apart from roads; "with_roads" paints it
+    // in the road color, so the print needs no slot of its own.
     rail_enabled: boolean;
     rail_color: string;
     rail_width_mm: number;
     rail_style: "separate" | "with_roads";
+    // Which lifecycle states either rail-family layer draws, cumulative.
+    // One setting governs railways and aerialways together.
+    rail_lifecycle: "operational" | "disused" | "abandoned";
+    // Lines that hang from cables: cable cars, gondolas, chair lifts, drag
+    // lifts, rope tows. "with_rail" follows the railway layer, but only
+    // while railways are enabled; otherwise it falls through to roads.
+    aerial_enabled: boolean;
+    aerial_color: string;
+    aerial_width_mm: number;
+    aerial_style: "separate" | "with_rail" | "with_roads";
     road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
     osm_water_enabled: boolean;
@@ -155,6 +165,7 @@ export type PreviewData = {
     building: string;
     trail?: string;
     rail?: string;
+    aerialway?: string;
   };
   surface_coverage?: {
     rock: number;
@@ -165,6 +176,7 @@ export type PreviewData = {
     building: number;
     trail?: number;
     rail?: number;
+    aerialway?: number;
   };
   surface_source?: string;
   minimum_elevation_m?: number;

@@ -67,22 +67,49 @@ test("server-renders TopoSaic", async () => {
   // which they are not by default.
   assert.doesNotMatch(html, /Building color/);
   assert.match(html, /Render roads/);
-  // Railways default on with the style picker showing, since the layer
-  // switches apart from roads.
+  // Railways and aerial lifts default on with their style pickers
+  // showing, since each layer switches apart from roads and from the
+  // other.
   assert.match(html, /Render railways/);
-  assert.match(html, /railways, trams, funiculars, and cable cars/);
+  assert.match(html, /trains, trams, metros, narrow gauge/);
   assert.match(html, /Tunnels are skipped/);
   assert.match(html, /Railway style/);
+  assert.match(html, /Render aerial lifts/);
+  assert.match(html, /Aerial lift style/);
+  assert.match(html, /cable cars, gondolas, chair/);
+  // Funiculars run on the ground, so the copy sends people to railways.
+  assert.match(html, /Funiculars run on the\s+ground/);
   assert.match(html, /Draw with roads/);
+  assert.match(html, /Draw with railways/);
   assert.match(html, /Own color/);
-  // The default style paints railways with the roads, costing no filament
-  // slot, so the server renders it selected.
-  assert.match(html, /<option value="with_roads" selected="">/);
-  // The rail color and width belong to the separate style alone.
-  assert.doesNotMatch(html, /Railway color/);
-  assert.doesNotMatch(html, /Railway print width/);
-  // The default railway color appears only in that gated swatch.
-  assert.doesNotMatch(html, /#4A5568/i);
+  // Both layers default to their own color — picking them out is the point
+  // of drawing them — so the server renders both selects on "separate" and
+  // neither folded into another layer.
+  assert.equal(
+    (html.match(/<option value="separate" selected="">/g) ?? []).length,
+    2,
+  );
+  assert.doesNotMatch(html, /<option value="with_roads" selected="">/);
+  assert.doesNotMatch(html, /<option value="with_rail" selected="">/);
+  // So both swatches and both width sliders render by default, with the
+  // default colors in them.
+  assert.match(html, /Railway color/);
+  assert.match(html, /Railway print width/);
+  assert.match(html, /Aerial lift color/);
+  assert.match(html, /Aerial lift print width/);
+  assert.match(html, /#4A5568/i);
+  assert.match(html, /#6C4CB6/i);
+  // A layer in its own color only spends a filament where the mapped data
+  // actually holds those features.
+  assert.match(html, /a layer with nothing to draw costs\s+nothing/);
+  assert.match(html, /only in areas that really have lifts/);
+  // One lifecycle setting serves both layers, and renders with them.
+  assert.match(html, /Railway and lift history/);
+  assert.match(html, /In service only/);
+  assert.match(html, /track and cables still in place/);
+  assert.match(html, /rails lifted, formation visible/);
+  assert.match(html, /<option value="operational" selected="">/);
+  assert.match(html, /One setting for both layers above/);
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);

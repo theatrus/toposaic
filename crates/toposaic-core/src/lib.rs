@@ -20,8 +20,9 @@ pub use project::{
     generate_tray_artifacts,
 };
 pub use spec::{
-    BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec, ElevationSource,
-    GenerationSpec, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
-    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TraySpec,
+    AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
+    ElevationSource, GenerationSpec, LineStyle, RailLifecycle, RailStyle, ResolvedRoadDetail,
+    RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
+    TrailRoute, TraySpec,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

@@ -131,9 +131,12 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     Ok(())
 }
 
-/// The road cache prefixes moved to roads-v2-*; files with the old
-/// roads-/trails- prefixes can never be read again, so drop them once at
-/// startup instead of letting them sit in the cache forever.
+/// The road cache prefixes moved to roads-v2-*, and the rail ones to
+/// rail-v2-* when railways and aerialways split into separate fetches — a
+/// rail-v1 response carried both key families, so it can never answer a
+/// railway-only request. Files with any of the retired prefixes can never be
+/// read again, so drop them once at startup instead of letting them sit in
+/// the cache forever.
 fn sweep_legacy_osm_cache(map_cache_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(map_cache_dir.join("osm")) else {
         return;
@@ -142,7 +145,8 @@ fn sweep_legacy_osm_cache(map_cache_dir: &Path) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         let legacy = (name.starts_with("roads-") && !name.starts_with("roads-v2-"))
-            || name.starts_with("trails-");
+            || name.starts_with("trails-")
+            || name.starts_with("rail-v1-");
         if legacy && let Err(error) = std::fs::remove_file(entry.path()) {
             warn!(
                 %error,

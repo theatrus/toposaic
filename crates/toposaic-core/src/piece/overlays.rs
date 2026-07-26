@@ -89,15 +89,21 @@ pub(super) fn append_road_geometry(
         );
         bounds_overlap(piece_bounds, line_bounds) && line.points_mm.len() >= 2
     };
-    // Roads and separately-styled railways share the bridge pipeline: a
-    // viaduct is a road bridge in another color. Their terrain-following
-    // ribbons stay apart, because rail must yield to roads the way trails
-    // do. Under the default `with_roads` rail style no Rail line exists and
-    // this walks the exact road-only path.
+    // Roads and separately-styled railways and aerialways share the bridge
+    // pipeline: a viaduct is a road bridge in another color. Their
+    // terrain-following ribbons stay apart, because each must yield to the
+    // layers already placed the way trails do. Under the default styles
+    // neither a Rail nor an Aerial line exists and this walks the exact
+    // road-only path.
     let road_and_rail = surface_field
         .vector_lines
         .iter()
-        .filter(|line| matches!(line.class, SurfaceClass::Road | SurfaceClass::Rail))
+        .filter(|line| {
+            matches!(
+                line.class,
+                SurfaceClass::Road | SurfaceClass::Rail | SurfaceClass::Aerial
+            )
+        })
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
     // Imported trails are Trail-class lines; they only exist when the spec
@@ -141,11 +147,14 @@ pub(super) fn append_road_geometry(
     let (bridges, regular): (Vec<_>, Vec<_>) = road_and_rail
         .into_iter()
         .partition(|line| line.bridge_elevations_m.is_some());
-    // Terrain-following railways are a separate union from the roads', so
-    // they can be cut back against the road union below.
+    // Terrain-following railways and aerialways are separate unions from the
+    // roads', so they can be cut back against the road union below.
     let (rail_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::Rail);
+    let (aerial_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Aerial);
     // Ordinary ribbons are clipped in parallel and unioned; the union is
     // shelled per connected component further below, once the bridge decks
     // it must keep clear of are known.
@@ -353,12 +362,33 @@ pub(super) fn append_road_geometry(
         claimed.push(trail_area);
     }
     if !rail_regular.is_empty() {
-        append_overlay_geometry(
+        let rail_area = append_overlay_geometry(
             mesh,
             spec,
             SurfaceClass::Rail,
             "triangulate railway ribbon",
             &rail_regular,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(rail_area);
+    }
+    // Aerialways go last, so switching the lift layer on can never move a
+    // road, trail, or railway triangle that was already there.
+    if !aerial_regular.is_empty() {
+        append_overlay_geometry(
+            mesh,
+            spec,
+            SurfaceClass::Aerial,
+            "triangulate aerialway ribbon",
+            &aerial_regular,
             &clip_ribbon,
             &claimed,
             &decks,
@@ -854,13 +884,14 @@ mod tests {
             ..GenerationSpec::default()
         };
         let raised = build_piece(&spec, Some(&height_field), Some(&road_field), 0, 0).unwrap();
-        // Railways paint as Road-class lines under the default style, so
-        // "no road overlays" means turning both off.
+        // Railways and aerialways paint as Road-class lines under their
+        // default styles, so "no road overlays" means turning all three off.
         let flat = build_piece(
             &GenerationSpec {
                 color_output: ColorOutputSpec {
                     roads_enabled: false,
                     rail_enabled: false,
+                    aerial_enabled: false,
                     ..spec.color_output.clone()
                 },
                 ..spec.clone()
@@ -1043,6 +1074,9 @@ mod tests {
                 roads_enabled,
                 rail_enabled,
                 rail_style,
+                // The aerialway layer follows the railway switch here, so
+                // "rail off" really means no rail-family overlay at all.
+                aerial_enabled: rail_enabled,
                 road_height_mm: 0.2,
                 ..ColorOutputSpec::default()
             },

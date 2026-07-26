@@ -12,8 +12,8 @@ use std::env;
 
 use toposaic_core::analysis::{analyze_project, summarize};
 use toposaic_core::{
-    BridgeStructure, BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField, RailStyle,
-    SurfaceClass, SurfaceField, TrailRoute, TraySpec,
+    AerialStyle, BridgeStructure, BuildingSpec, ColorOutputSpec, GenerationSpec, HeightField,
+    RailStyle, SurfaceClass, SurfaceField, TrailRoute, TraySpec,
 };
 
 /// Small deterministic generator so synthetic roads and buildings are stable
@@ -97,6 +97,26 @@ fn paint_synthetic_rail(spec: &GenerationSpec, field: &mut SurfaceField) {
         [1_700.0, 1_700.0],
         SurfaceClass::Rail,
     );
+}
+
+/// Aerialway lines drawn across everything else at yet another angle: the
+/// lift layer is the last one placed, so it has the most to yield to.
+fn paint_synthetic_aerial(spec: &GenerationSpec, field: &mut SurfaceField) {
+    for line in 0..3_u32 {
+        let along = 0.2 + line as f32 * 0.3;
+        let points = (0..24)
+            .map(|index| {
+                let progress = index as f32 / 23.0;
+                [(along + progress * 0.55).clamp(0.0, 1.0), progress]
+            })
+            .collect::<Vec<_>>();
+        field.paint_polyline(
+            &points,
+            spec.width_mm,
+            spec.color_output.aerial_width_mm,
+            SurfaceClass::Aerial,
+        );
+    }
 }
 
 fn synthetic_surface_field(spec: &GenerationSpec, size: usize, with_bridge: bool) -> SurfaceField {
@@ -190,6 +210,9 @@ fn scenario(
         if spec.uses_separate_rail() {
             paint_synthetic_rail(spec, &mut field);
         }
+        if spec.uses_separate_aerial() {
+            paint_synthetic_aerial(spec, &mut field);
+        }
         field
     });
     let reports = analyze_project(spec, Some(&height_field), surface_field.as_ref())?;
@@ -208,6 +231,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plain = GenerationSpec::default();
     scenario("plain 3x3 puzzle", &plain, false, false, json)?;
 
+    // The rail-family layers default to their own color, so the scenarios
+    // that are not about them fold both into the roads. Each scenario then
+    // paints exactly the layers its name claims, and the rail and aerialway
+    // scenarios below opt in one at a time.
     let color = GenerationSpec {
         buildings: BuildingSpec {
             enabled: true,
@@ -216,6 +243,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         color_output: ColorOutputSpec {
             enabled: true,
             roads_enabled: true,
+            rail_style: RailStyle::WithRoads,
+            aerial_style: AerialStyle::WithRoads,
             ..ColorOutputSpec::default()
         },
         ..GenerationSpec::default()
@@ -276,8 +305,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         json,
     )?;
 
-    // The hardest overlay case: roads, buildings, imported trails, and a
-    // separately-styled rail layer with a viaduct, all crossing each other.
+    // Roads, buildings, imported trails, and a separately-styled rail layer
+    // with a viaduct, all crossing each other.
     let rail = GenerationSpec {
         color_output: ColorOutputSpec {
             rail_enabled: true,
@@ -289,6 +318,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     scenario(
         "color 3x3 puzzle with trails and separate railways",
         &rail,
+        true,
+        false,
+        json,
+    )?;
+
+    // The full overlay stack: roads, buildings, trails, a separately-styled
+    // rail layer with a viaduct, AND a separately-styled aerialway layer, so
+    // every yield in the chain has something to yield to.
+    let rail_and_aerial = GenerationSpec {
+        color_output: ColorOutputSpec {
+            aerial_enabled: true,
+            aerial_style: AerialStyle::Separate,
+            ..rail.color_output.clone()
+        },
+        ..rail.clone()
+    };
+    scenario(
+        "color 3x3 puzzle with trails, separate railways, and separate aerialways",
+        &rail_and_aerial,
         true,
         false,
         json,

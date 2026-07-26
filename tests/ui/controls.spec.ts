@@ -339,33 +339,41 @@ test("switches railways on apart from roads and submits them", async ({
     .getByLabel("Surface color legend")
     .getByText("Rail", { exact: true });
 
-  // The layer starts on in the road color: drawn with roads it costs no
-  // filament slot, so it needs no color swatch, no width of its own, and
-  // no legend entry.
+  // The layer starts on in its own color — picking railways out is the
+  // point of drawing them — so its swatch, width, and legend entry are all
+  // there from the start.
   await expect(railways).toBeChecked();
-  await expect(railStyle).toHaveValue("with_roads");
-  await expect(railColor).toBeHidden();
-  await expect(railWidth).toBeHidden();
-  await expect(railLegend).toBeHidden();
-  await expect(
-    surfaceColors.getByText(/railways, trams, funiculars, and cable cars/),
-  ).toBeVisible();
-  await expect(
-    surfaceColors.getByText(/no extra filament slot/),
-  ).toBeVisible();
-
-  // Switching the layer off takes the style picker with it.
-  await railways.uncheck();
-  await expect(railStyle).toBeHidden();
-  await railways.check();
-  await expect(railStyle).toHaveValue("with_roads");
-
-  // Their own color reveals the swatch and the width, and earns a legend
-  // entry for the eighth material.
-  await railStyle.selectOption("separate");
+  await expect(railStyle).toHaveValue("separate");
   await expect(railColor).toHaveValue("#4a5568");
   await expect(railWidth).toHaveValue("0.7");
   await expect(railLegend).toBeVisible();
+  await expect(
+    surfaceColors.getByText(/trains, trams, metros, narrow gauge/),
+  ).toBeVisible();
+  // The slot is only spent where the mapped data holds railways.
+  await expect(
+    surfaceColors.getByText(/a layer with nothing to draw costs nothing/),
+  ).toBeVisible();
+
+  // Switching the layer off takes its style, color, width, and legend
+  // entry with it.
+  await railways.uncheck();
+  await expect(railStyle).toBeHidden();
+  await expect(railColor).toBeHidden();
+  await expect(railWidth).toBeHidden();
+  await expect(railLegend).toBeHidden();
+  await railways.check();
+  await expect(railStyle).toHaveValue("separate");
+
+  // Folded into the roads they take the route color, so they need no
+  // swatch, no width of their own, and no legend entry.
+  await railStyle.selectOption("with_roads");
+  await expect(railColor).toBeHidden();
+  await expect(railWidth).toBeHidden();
+  await expect(railLegend).toBeHidden();
+
+  await railStyle.selectOption("separate");
+  await expect(railColor).toHaveValue("#4a5568");
   await railColor.fill("#2b3440");
   await railWidth.fill("1.2");
   await expect(railWidth).toHaveValue("1.2");
@@ -384,11 +392,13 @@ test("switches railways on apart from roads and submits them", async ({
   await expect(railLegend).toBeVisible();
   await expect(routeLegend).toBeHidden();
 
-  // Rails drawn with roads print in the route color, so a rail-only model
-  // keeps the route entry that names that color.
+  // Rails folded into the roads print in the route color, so a rail-only
+  // model keeps the route entry that names that color.
   await railStyle.selectOption("with_roads");
   await expect(routeLegend).toBeVisible();
   await expect(railLegend).toBeHidden();
+  // Switching the railways off then leaves nothing in the road class —
+  // lifts have their own color and do not stand in for it.
   await railways.uncheck();
   await expect(routeLegend).toBeHidden();
   await railways.check();
@@ -411,6 +421,151 @@ test("switches railways on apart from roads and submits them", async ({
   await expect(railStyle).toHaveValue("separate");
   await expect(railColor).toHaveValue("#2b3440");
   await expect(railWidth).toHaveValue("1.2");
+});
+
+test("draws aerial lifts apart from railways and names every color", async ({
+  page,
+}) => {
+  let jobSpec: Record<string, unknown> = {};
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: "aerial-job",
+          status: "running",
+          progress: 10,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Surface" }).click();
+  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  const railways = surfaceColors.getByRole("checkbox", {
+    name: "Render railways",
+  });
+  const railStyle = surfaceColors.getByLabel("Railway style");
+  const lifts = surfaceColors.getByRole("checkbox", {
+    name: "Render aerial lifts",
+  });
+  const liftStyle = surfaceColors.getByLabel("Aerial lift style");
+  const liftColor = surfaceColors.getByLabel("Aerial lift color");
+  const liftWidth = surfaceColors.getByRole("slider", {
+    name: "Aerial lift print width",
+  });
+  const history = surfaceColors.getByLabel("Railway and lift history");
+  const legend = page.getByLabel("Surface color legend");
+  const routeLegend = legend.getByText("Route", { exact: true });
+  const railLegend = legend.getByText("Rail", { exact: true });
+  const liftLegend = legend.getByText("Aerial", { exact: true });
+
+  // Lifts default on in their own color, alongside railways in theirs, so
+  // all three line entries name themselves from the start.
+  await expect(lifts).toBeChecked();
+  await expect(liftStyle).toHaveValue("separate");
+  await expect(liftColor).toHaveValue("#6c4cb6");
+  await expect(liftWidth).toHaveValue("0.7");
+  await expect(routeLegend).toBeVisible();
+  await expect(railLegend).toBeVisible();
+  await expect(liftLegend).toBeVisible();
+  await expect(
+    surfaceColors.getByText(/Funiculars run on the ground/),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByText(/only in areas that really have lifts/),
+  ).toBeVisible();
+
+  // Folded into the railways, lifts follow them wherever they go: into the
+  // rail color first, then into the route color with them.
+  await liftStyle.selectOption("with_rail");
+  await expect(liftColor).toBeHidden();
+  await expect(liftWidth).toBeHidden();
+  await expect(liftLegend).toBeHidden();
+  await expect(railLegend).toBeVisible();
+  // Lifts painting in the rail color are named by the Rail entry, so with
+  // roads off nothing is left for the route entry to name.
+  const roads = surfaceColors.getByRole("checkbox", { name: "Render roads" });
+  await roads.uncheck();
+  await expect(routeLegend).toBeHidden();
+  await railStyle.selectOption("with_roads");
+  await expect(railLegend).toBeHidden();
+  await expect(routeLegend).toBeVisible();
+  await railStyle.selectOption("separate");
+  await roads.check();
+
+  // Their own color splits them back out of the rail family.
+  await liftStyle.selectOption("separate");
+  await expect(liftColor).toHaveValue("#6c4cb6");
+  await expect(liftWidth).toHaveValue("0.7");
+  await expect(liftLegend).toBeVisible();
+  await expect(railLegend).toBeVisible();
+  await liftColor.fill("#7d3fa0");
+  await liftWidth.fill("0.9");
+
+  // Lifts switch independently of railways: the railway toggle leaves the
+  // lift controls and the lift legend entry alone.
+  await railways.uncheck();
+  await expect(railStyle).toBeHidden();
+  await expect(railLegend).toBeHidden();
+  await expect(lifts).toBeChecked();
+  await expect(liftStyle).toHaveValue("separate");
+  await expect(liftLegend).toBeVisible();
+
+  // Following railways with railways switched off falls through to roads
+  // rather than leaving an enabled layer drawing nothing.
+  await liftStyle.selectOption("with_rail");
+  await expect(liftLegend).toBeHidden();
+  await expect(railLegend).toBeHidden();
+  await expect(routeLegend).toBeVisible();
+  await expect(
+    surfaceColors.getByText(/nothing for lifts to follow/),
+  ).toBeVisible();
+  await railways.check();
+  await liftStyle.selectOption("separate");
+
+  // One history setting serves both layers, and stays while either is on.
+  await expect(history).toHaveValue("operational");
+  await history.selectOption("abandoned");
+  await expect(history).toHaveValue("abandoned");
+  await railways.uncheck();
+  await expect(history).toBeVisible();
+  await lifts.uncheck();
+  await expect(history).toBeHidden();
+  await lifts.check();
+  await expect(history).toHaveValue("abandoned");
+  await railways.check();
+
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await expect
+    .poll(
+      () => (jobSpec.color_output as Record<string, unknown>)?.aerial_style,
+    )
+    .toBe("separate");
+  const colorOutput = jobSpec.color_output as Record<string, unknown>;
+  expect(colorOutput.aerial_enabled).toBe(true);
+  expect(colorOutput.aerial_color).toBe("#7d3fa0");
+  expect(colorOutput.aerial_width_mm).toBe(0.9);
+  expect(colorOutput.rail_lifecycle).toBe("abandoned");
+
+  await page.getByRole("tab", { name: "Surface" }).click();
+  await expect(liftStyle).toHaveValue("separate");
+  await expect(liftColor).toHaveValue("#7d3fa0");
+  await expect(history).toHaveValue("abandoned");
 });
 
 test("uses the selected elevation source for live previews", async ({

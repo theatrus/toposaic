@@ -49,14 +49,17 @@ pub(crate) fn build_preview(
             ) / spec.relief_mm.max(f32::EPSILON);
             let road = surface_sample
                 .filter(|sample| {
-                    // Railways paint as Road-class samples under the default
-                    // style, so they must raise the preview even when the
-                    // road layer itself is off.
+                    // Railways and aerialways paint as Road-class samples
+                    // under their default styles, so they must raise the
+                    // preview even when the road layer itself is off.
                     (spec.color_output.enabled
-                        && (spec.color_output.roads_enabled || spec.color_output.rail_enabled)
+                        && (spec.color_output.roads_enabled
+                            || spec.color_output.rail_enabled
+                            || spec.color_output.aerial_enabled)
                         && sample.class == SurfaceClass::Road)
                         || (spec.uses_trails() && sample.class == SurfaceClass::Trail)
-                        || (spec.uses_rail() && sample.class == SurfaceClass::Rail)
+                        || (spec.uses_rail_or_aerial() && sample.class == SurfaceClass::Rail)
+                        || (spec.uses_aerial() && sample.class == SurfaceClass::Aerial)
                 })
                 .map(|_| spec.color_output.road_height_mm)
                 .unwrap_or(0.0)
@@ -119,13 +122,24 @@ pub(crate) fn build_preview(
             preview["surface_coverage"]["trail"] =
                 serde_json::json!(coverage[SurfaceClass::Trail.material_index() as usize]);
         }
-        // Railways only get their own preview entries under the `separate`
-        // style; under `with_roads` they paint as roads and are already
-        // counted there, so preview.json keeps its existing shape.
+        // Railways and aerialways only get their own preview entries under
+        // the `separate` style; otherwise they paint in a class already
+        // counted here, so preview.json keeps its existing shape.
+        //
+        // These indices are the RAW `material_index`, not the archive's
+        // dense filament slot. The preview names a feature class; the 3MF
+        // slot names a spool. Keeping them apart means the preview does not
+        // shift under the frontend when a color layer is switched on.
         if spec.uses_separate_rail() {
             preview["surface_palette"]["rail"] = serde_json::json!(spec.color_output.rail_color);
             preview["surface_coverage"]["rail"] =
                 serde_json::json!(coverage[SurfaceClass::Rail.material_index() as usize]);
+        }
+        if spec.uses_separate_aerial() {
+            preview["surface_palette"]["aerialway"] =
+                serde_json::json!(spec.color_output.aerial_color);
+            preview["surface_coverage"]["aerialway"] =
+                serde_json::json!(coverage[SurfaceClass::Aerial.material_index() as usize]);
         }
         preview["surface_source"] = serde_json::json!(field.source);
     }

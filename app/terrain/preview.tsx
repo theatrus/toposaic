@@ -31,13 +31,32 @@ import {
   previewInitialCameraPosition,
   previewWorldX,
 } from "./preview-orientation";
-import { assembledMeshSamples, effectiveMeshSamples } from "./config";
+import {
+  aerialLineClass,
+  assembledMeshSamples,
+  effectiveMeshSamples,
+  railLineClass,
+} from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
 
 // The terrain color the mesh renders when color output is off but trails
 // or buildings still force color materials. The legend must show the same
 // value, not the palette rock color.
 const NEUTRAL_TERRAIN_COLOR = "#74846B";
+
+// Palette keys in SurfaceClass::ALL order, so the index a preview reports
+// is the index into this list. See crates/toposaic-core/src/spec.rs.
+const CLASS_KEYS = [
+  "rock",
+  "forest",
+  "snow",
+  "water",
+  "road",
+  "building",
+  "trail",
+  "rail",
+  "aerialway",
+] as const;
 
 function cubicBezier(
   start: [number, number],
@@ -302,17 +321,29 @@ export function ReliefPreview({
     building_color,
     trail_color,
     rail_color,
+    aerial_color,
   } = spec.color_output;
   const buildingsEnabled = spec.buildings.enabled;
   const trailsPresent = spec.trails.length > 0;
-  // Railways take a material slot, and so a legend entry, only in their
-  // own color; drawn with roads they share the route slot.
-  const railSeparate =
-    spec.color_output.rail_enabled &&
-    spec.color_output.rail_style === "separate";
-  const railWithRoads =
-    spec.color_output.rail_enabled &&
-    spec.color_output.rail_style === "with_roads";
+  // Which class each rail-family layer's lines actually land in, resolved
+  // the way the backend resolves it. A layer only earns its own legend
+  // entry when it lands in its own class; otherwise its geometry appears
+  // under the entry for the class it borrowed, and that entry has to show
+  // even when the borrowed layer is itself switched off.
+  const railClass = railLineClass(spec.color_output);
+  const aerialClass = aerialLineClass(spec.color_output);
+  const railDrawn = spec.color_output.rail_enabled;
+  const aerialDrawn = spec.color_output.aerial_enabled;
+  // Lifts following a separately-colored railway layer paint in the rail
+  // class, so the Rail entry names their color too.
+  const railClassDrawn =
+    (railDrawn && railClass === "rail") ||
+    (aerialDrawn && aerialClass === "rail");
+  const aerialClassDrawn = aerialDrawn && aerialClass === "aerialway";
+  const roadClassDrawn =
+    spec.color_output.roads_enabled ||
+    (railDrawn && railClass === "road") ||
+    (aerialDrawn && aerialClass === "road");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -398,27 +429,22 @@ export function ReliefPreview({
       building: preview?.surface_palette?.building ?? building_color,
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
+      aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
     };
-    const classColor = (surfaceClass?: number) =>
-      surfaceClass === 1
-        ? palette.forest
-        : surfaceClass === 2
-          ? palette.snow
-          : surfaceClass === 3
-            ? palette.water
-            : surfaceClass === 4
-              ? palette.road
-              : surfaceClass === 5
-                ? palette.building
-                : surfaceClass === 6
-                  ? palette.trail
-                  // SurfaceClass::Rail carries material index 7; the class
-                  // only ever arrives under the separate rail style.
-                  : surfaceClass === 7
-                  ? palette.rail
-                  : colorOutputEnabled
-                    ? palette.rock
-                    : NEUTRAL_TERRAIN_COLOR;
+    const classColor = (surfaceClass?: number) => {
+      // Preview classes are raw SurfaceClass material indices, in the
+      // order SurfaceClass::ALL declares in
+      // crates/toposaic-core/src/spec.rs. They stay raw — the 3MF packs
+      // its filament slots, the preview does not — so this lookup must
+      // keep that order exactly. Rail (7) and Aerial (8) only ever arrive
+      // when their layer is drawn in its own color.
+      const key = surfaceClass === undefined ? undefined : CLASS_KEYS[surfaceClass];
+      // With color output off the mesh shows neutral terrain, not rock.
+      if (key === undefined || (key === "rock" && !colorOutputEnabled)) {
+        return colorOutputEnabled ? palette.rock : NEUTRAL_TERRAIN_COLOR;
+      }
+      return palette[key];
+    };
     const positions: number[] = [];
     const colors: number[] = [];
     const normals: number[] = [];
@@ -740,6 +766,7 @@ export function ReliefPreview({
     building_color,
     trail_color,
     rail_color,
+    aerial_color,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -815,6 +842,7 @@ export function ReliefPreview({
               ["Building", "building", spec.color_output.building_color],
               ["Trail", "trail", spec.color_output.trail_color],
               ["Rail", "rail", spec.color_output.rail_color],
+              ["Aerial", "aerialway", spec.color_output.aerial_color],
             ] as const
           )
             .filter(
@@ -828,17 +856,15 @@ export function ReliefPreview({
                     (key === "building" && spec.buildings.enabled)
                   );
                 }
+                // Every color the model shows carries exactly one name, so
+                // each line entry asks whether its class is drawn at all —
+                // by its own layer or by one borrowing it — rather than
+                // whether its own toggle happens to be on.
                 return (
-                  // Railways drawn with roads paint in the road class and
-                  // count toward its coverage, so the route entry belongs
-                  // in the legend even when roads themselves are off.
-                  (key !== "road" ||
-                    spec.color_output.roads_enabled ||
-                    railWithRoads) &&
+                  (key !== "road" || roadClassDrawn) &&
                   (key !== "building" || spec.buildings.enabled) &&
-                  // Railways drawn with roads carry the road color and no
-                  // slot of their own, so they earn no legend entry.
-                  (key !== "rail" || railSeparate)
+                  (key !== "rail" || railClassDrawn) &&
+                  (key !== "aerialway" || aerialClassDrawn)
                 );
               },
             )

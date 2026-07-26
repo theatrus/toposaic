@@ -432,7 +432,7 @@ pub(crate) fn build_piece_with_height_range(
     }
     if ((spec.color_output.enabled && spec.color_output.roads_enabled)
         || spec.uses_trails()
-        || spec.uses_rail())
+        || spec.uses_rail_or_aerial())
         && let Some(field) = surface_field
     {
         append_road_geometry(
