@@ -129,6 +129,10 @@ option uses 512 px WebP Terrarium tiles with regional elevation data up to zoom
 areas up to 2 km wide, the optional finest-detail mode probes the available
 Mapterhorn level and targets 0.25 m samples. It never exceeds 2,048 samples
 across the model and does not add mesh points beyond the tile detail it finds.
+Between tile readings the surface follows a Catmull-Rom curve on the lattice of
+the tiles that answered, clamped to the readings around it. Close views ask for
+more samples than the source holds, and a straight-line blend would print those
+readings as flat pixel-sized facets hinged along the tile grid.
 The service caches elevation, ESA WorldCover, and OpenStreetMap input under the
 operating system's user cache directory. OpenStreetMap entries keep the raw
 response, so width, density, color, and visibility changes reuse the same
