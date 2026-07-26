@@ -4,11 +4,11 @@
 
 The name TopoSaic is a portmanteau of *topographic mosaic*.
 
-TopoSaic is a local-first topographic puzzle generator. A Rust service
+TopoSaic is a local-first topographic puzzle generator. Its Rust engine
 samples worldwide elevation data, builds watertight pieces with round jigsaw
-tabs and sockets, and stores job state in SQLite. The web app lets you choose a
-place and tune the printable model, including the mesh detail and surface
-colors.
+tabs and sockets, and stores job state in SQLite. The desktop app lets you
+choose a place and tune the printable model beside a live 3D preview: mesh
+detail, surface colors, mapped lines, buildings, trays, and export style.
 
 ## Download
 
@@ -29,7 +29,7 @@ builds.
 
 ## Screenshots
 
-![TopoSaic light workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
+![TopoSaic v0.4 workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
 
 *Choose a place beside a live, rotatable preview. The lower workspace starts
 larger and can be resized with the horizontal divider. A second divider between
@@ -51,15 +51,21 @@ manual: pick an age and clear older entries, or clear everything after a
 confirm click. Nothing expires on its own, and the next generation
 re-downloads what it needs.
 
-![TopoSaic model controls showing boxed map coordinates and a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
+![TopoSaic v0.4 model controls and map showing a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
 *Set the map center beside the full super-tile controls. Move by one tile or
 export a straight 4×3 mosaic under one shared height frame.*
 
-![TopoSaic light workspace showing terrain colors, mapped water and road controls, and bridge structure choices](docs/images/toposaic-surface-controls.png)
+![TopoSaic v0.4 surface controls showing roads, floating and supported bridges, railways, and aerial lifts](docs/images/toposaic-layer-controls.png)
 
-*Tune print colors, mapped water, road width and height, dense-network thinning,
-and floating or supported bridges in place.*
+*Tune road detail and height, dense-network thinning, floating or supported
+bridges, railways, aerial lifts, and their print colors as separate layers.*
+
+![TopoSaic v0.4 output tab showing project, painted, and geometry-only 3MF modes](docs/images/toposaic-output-controls.png)
+
+*Choose a full slicer project, painted colors without imported presets, or a
+plain geometry-only 3MF. Each generated job puts its print files and source
+manifest in this tab.*
 
 ![A generated Mount Rainier color 3MF opened in Bambu Studio](docs/images/toposaic-3mf-bambu-studio.jpg)
 
