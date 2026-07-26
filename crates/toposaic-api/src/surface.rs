@@ -180,22 +180,21 @@ pub fn fetch_surface_field(
     let mut field = SurfaceField::new(width, height, classes, source)?;
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
-        if spec.color_output.forest_slope_gate || spec.color_output.snow_slope_gate {
+        let gates = &spec.color_output.slope_gates;
+        if gates.forest_slope_gate || gates.snow_slope_gate {
             // One call gates both classes so the slope per sample is
             // computed once, whichever gates are on.
             let demoted = field.demote_steep_classes(
                 height_field,
                 ground_span_m,
                 SlopeGates {
-                    forest_limit_degrees: spec
-                        .color_output
+                    forest_limit_degrees: gates
                         .forest_slope_gate
-                        .then_some(spec.color_output.forest_slope_limit_degrees),
-                    steep_forest_target: spec.color_output.steep_forest_target,
-                    snow_limit_degrees: spec
-                        .color_output
+                        .then_some(gates.forest_slope_limit_degrees),
+                    steep_forest_target: gates.steep_forest_target,
+                    snow_limit_degrees: gates
                         .snow_slope_gate
-                        .then_some(spec.color_output.snow_slope_limit_degrees),
+                        .then_some(gates.snow_slope_limit_degrees),
                 },
             );
             if demoted.total() > 0 {
@@ -203,19 +202,19 @@ pub fn fetch_surface_field(
                 if demoted.forest_to_rock > 0 {
                     parts.push(format!(
                         "{} forest samples steeper than {:.0} degrees reclassified as rock",
-                        demoted.forest_to_rock, spec.color_output.forest_slope_limit_degrees
+                        demoted.forest_to_rock, gates.forest_slope_limit_degrees
                     ));
                 }
                 if demoted.forest_to_snow > 0 {
                     parts.push(format!(
                         "{} forest samples steeper than {:.0} degrees reclassified as snow above the snowline",
-                        demoted.forest_to_snow, spec.color_output.forest_slope_limit_degrees
+                        demoted.forest_to_snow, gates.forest_slope_limit_degrees
                     ));
                 }
                 if demoted.snow_to_rock > 0 {
                     parts.push(format!(
                         "{} snow samples steeper than {:.0} degrees reclassified as rock",
-                        demoted.snow_to_rock, spec.color_output.snow_slope_limit_degrees
+                        demoted.snow_to_rock, gates.snow_slope_limit_degrees
                     ));
                 }
                 append_source(
@@ -225,7 +224,7 @@ pub fn fetch_surface_field(
             }
         }
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
-        if spec.color_output.class_borders == ClassBorders::Smooth {
+        if spec.color_output.borders.class_borders == ClassBorders::Smooth {
             // The native window is only worth reading where smoothing will
             // actually redraw borders; at wide spans smoothing no-ops and
             // the read is skipped entirely.
@@ -240,8 +239,8 @@ pub fn fetch_surface_field(
                     Ok(native) => {
                         field.smooth_class_borders_with_native(
                             &native,
-                            spec.color_output.border_smoothing_range_cells,
-                            spec.color_output.border_smoothing_nugget,
+                            spec.color_output.borders.border_smoothing_range_cells,
+                            spec.color_output.borders.border_smoothing_nugget,
                         );
                         true
                     }
@@ -257,8 +256,8 @@ pub fn fetch_surface_field(
                 field.smooth_class_borders(
                     WORLD_COVER_RESOLUTION_M,
                     ground_span_m,
-                    spec.color_output.border_smoothing_range_cells,
-                    spec.color_output.border_smoothing_nugget,
+                    spec.color_output.borders.border_smoothing_range_cells,
+                    spec.color_output.borders.border_smoothing_nugget,
                 );
             }
             append_source(
@@ -270,8 +269,8 @@ pub fn fetch_surface_field(
                     } else {
                         "recovered"
                     },
-                    spec.color_output.border_smoothing_range_cells,
-                    spec.color_output.border_smoothing_nugget
+                    spec.color_output.borders.border_smoothing_range_cells,
+                    spec.color_output.borders.border_smoothing_nugget
                 ),
             );
         }

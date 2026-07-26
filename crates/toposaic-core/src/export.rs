@@ -427,7 +427,26 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/project-style-golden.3mf"
         ));
-        assert_eq!(write_fixture(ThreeMfStyle::Project), golden.as_slice());
+        let current = write_fixture(ThreeMfStyle::Project);
+        if current != golden.as_slice() {
+            // Distinguish "the format changed" from "only the compressed
+            // bytes changed" (a zip or zlib-rs bump reframes deflate blocks
+            // without touching content). The second case is safe to accept.
+            assert_eq!(
+                model_xml(&current),
+                model_xml(golden),
+                "the 3MF MODEL CONTENT changed; if that change is intentional, \
+                 regenerate the fixture with: cargo test -p toposaic-core \
+                 regenerate_project_style_golden -- --ignored"
+            );
+            panic!(
+                "the 3MF content is unchanged but the archive bytes differ — \
+                 a compression dependency changed its output. Verify the \
+                 decompressed entries match, then regenerate the fixture \
+                 with: cargo test -p toposaic-core \
+                 regenerate_project_style_golden -- --ignored"
+            );
+        }
         // The default style is `Project`, so an untouched spec gets the
         // same bytes too.
         assert_eq!(
@@ -436,6 +455,22 @@ mod tests {
                 .threemf_style,
             ThreeMfStyle::Project
         );
+    }
+
+    /// Rewrites the golden fixture from the CURRENT writer. Running this
+    /// accepts today's output as the new baseline, which is only legitimate
+    /// after an intentional, reviewed format change (or a verified
+    /// compression-only dependency change). Never run it to silence a
+    /// failure you don't understand — that destroys the invariant the
+    /// golden test protects.
+    #[test]
+    #[ignore = "rewrites testdata/project-style-golden.3mf from the current writer"]
+    fn regenerate_project_style_golden() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/project-style-golden.3mf"
+        );
+        std::fs::write(path, write_fixture(ThreeMfStyle::Project)).unwrap();
     }
 
     #[test]

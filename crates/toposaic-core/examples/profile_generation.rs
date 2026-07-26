@@ -223,16 +223,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         recovered.smooth_class_borders(
             10.0,
             ground_span_m,
-            spec.color_output.border_smoothing_range_cells,
-            spec.color_output.border_smoothing_nugget,
+            spec.color_output.borders.border_smoothing_range_cells,
+            spec.color_output.borders.border_smoothing_nugget,
         );
         let recovered_elapsed = recovered_started.elapsed();
         let native = synthetic_native_grid(field_width, ground_span_m);
         let native_started = Instant::now();
         field.smooth_class_borders_with_native(
             &native,
-            spec.color_output.border_smoothing_range_cells,
-            spec.color_output.border_smoothing_nugget,
+            spec.color_output.borders.border_smoothing_range_cells,
+            spec.color_output.borders.border_smoothing_nugget,
         );
         let native_elapsed = native_started.elapsed();
         println!(
