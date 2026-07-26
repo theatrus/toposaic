@@ -795,8 +795,18 @@ mod tests {
         let mut spec = GenerationSpec::default();
         spec.tray.enabled = true;
         spec.tray.contour_count = 0;
-        assert!(analyze_project(&spec, None, None).is_err());
-        assert!(analyze_piece(&spec, None, None, 0, 0).is_err());
+        // Assert on the message, not merely on `is_err`: any other
+        // validation rule firing first would satisfy `is_err` and let the
+        // underflow back in unnoticed.
+        for error in [
+            analyze_project(&spec, None, None).unwrap_err(),
+            analyze_piece(&spec, None, None, 0, 0).unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("contour count"),
+                "expected the contour-count rule to reject this spec, got: {error}"
+            );
+        }
     }
 
     #[test]

@@ -1241,7 +1241,11 @@ fn fetch_native_class_grid(
             let global_row = read.global_row + row as i64;
             let flipped_row = (plan.row_start + plan.height as i64 - 1 - global_row) as usize;
             for column in 0..read.columns {
-                let value = window[[row, column]];
+                // The reader can hand back a shorter window than requested
+                // at a clipped image edge, so trust its shape, not ours.
+                let Some(&value) = window.get([row, column]) else {
+                    continue;
+                };
                 // Nodata keeps the default rock, like the sample path.
                 if value == 0 {
                     continue;
@@ -1421,7 +1425,11 @@ fn sample_tile(
     for (point, (column, row)) in points.iter().zip(pixels) {
         let column = (column.round() as isize).clamp(col_min as isize, col_max as isize) as usize;
         let row = (row.round() as isize).clamp(row_min as isize, row_max as isize) as usize;
-        let value = window[[row - row_min, column - col_min]];
+        // A clipped edge can return fewer rows or columns than requested;
+        // a missing pixel means the same as nodata below.
+        let Some(&value) = window.get([row - row_min, column - col_min]) else {
+            continue;
+        };
         // Nodata (open ocean or a coverage gap) keeps the default Rock class
         // instead of failing the whole generation.
         if value == 0 {
