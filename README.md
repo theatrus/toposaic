@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.4.0](https://github.com/theatrus/toposaic/releases/tag/v0.4.0).
+[TopoSaic v0.4.1](https://github.com/theatrus/toposaic/releases/tag/v0.4.1).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.4.0/TopoSaic-0.4.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -72,6 +72,13 @@ manifest in this tab.*
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. Bambu Studio and
 OrcaSlicer load the palette colors as filament assignments.*
+
+## Version 0.4.1 highlights
+
+- Repair isolated bad elevation samples before interpolation so one stray DEM
+  value cannot create a terrain spike or break the surrounding mesh.
+- Open update notes in the system browser from the desktop app while keeping
+  the normal release download link unchanged.
 
 ## Version 0.4 highlights
 
