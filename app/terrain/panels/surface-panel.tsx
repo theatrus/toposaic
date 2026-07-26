@@ -86,13 +86,14 @@ export function SurfacePanel({
                 )
               }
             >
-              <option value="blocky">Blocky (native 10 m data)</option>
-              <option value="smooth">Smoothed borders</option>
+              <option value="smooth">Smoothed where 10 m cells show</option>
+              <option value="blocky">Blocky · raw 10 m cells</option>
             </select>
             <small>
               Smoothing bends forest, rock, and water borders into curves
-              using the surrounding data. It only shows at close zooms
-              where single 10 m cells are visible.
+              using the surrounding data. It engages on its own at close
+              views, where single 10 m cells are visible; wider views keep
+              the source data untouched either way.
             </small>
           </label>
           {spec.color_output.class_borders === "smooth" && (

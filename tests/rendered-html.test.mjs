@@ -71,8 +71,11 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
   assert.match(html, /Terrain class borders/);
-  assert.match(html, /Blocky \(native 10 m data\)/);
-  assert.match(html, /Smoothed borders/);
+  assert.match(html, /Smoothed where 10 m cells show/);
+  assert.match(html, /Blocky · raw 10 m cells/);
+  // Smoothing is the default, and it gates itself by scale.
+  assert.match(html, /<option value="smooth" selected="">/);
+  assert.match(html, /It engages on its own at close\s+views/);
   assert.match(html, /3MF style/);
   assert.match(html, /Color project · filament colors and purge settings/);
   assert.match(html, /Painted colors · no embedded presets/);
@@ -81,10 +84,9 @@ test("server-renders TopoSaic", async () => {
   // project output existing users already get.
   assert.match(html, /<option value="project" selected="">/);
   assert.match(html, /OrcaSlicer and Bambu Studio import the file as a project/);
-  // The border smoothing sliders only render once "Smoothed borders" is
-  // selected; the server renders the blocky default without them.
-  assert.doesNotMatch(html, /Border bend range/);
-  assert.doesNotMatch(html, /Border noise damping/);
+  // The border smoothing sliders render with the smoothed default.
+  assert.match(html, /Border bend range/);
+  assert.match(html, /Border noise damping/);
   assert.match(html, /Keep forest off steep rock/);
   assert.match(html, /demotes forest to rock above the slope limit/);
   assert.match(html, /Forest slope limit/);
