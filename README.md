@@ -125,11 +125,14 @@ side wall.
 Each job can also export matching wall hardware as STL and 3MF: a peg or male
 cleat on an integral screw plate. Controls set pin count and spacing, cleat width
 and height, engagement depth, wall plate thickness, fit clearance, wall offset,
-and screw-hole diameter. Engagement depth sets how far the pin or cleat enters
-the model. Wall offset sets the finished gap for an uneven wall; TopoSaic derives
-the hidden pocket from the full plate thickness minus that offset. It flags a
-cut that would leave less than 0.4 mm of the chosen minimum Z height instead of
-raising that height. French-cleat
+and screw-hole diameter. A separate depth control prints a 90-degree screw
+countersink; zero keeps a plain through-hole. Screw-head pocket clearance cuts
+local relief behind each head through the full entry-to-lock sweep without
+changing wall offset or deepening the whole plate pocket. Engagement depth sets
+how far the pin or cleat enters the model. Wall offset sets the finished gap for
+an uneven wall; TopoSaic derives the hidden pocket from the full plate thickness
+minus that offset. It flags a cut that would leave less than 0.4 mm of the
+chosen minimum Z height instead of raising that height. French-cleat
 jobs also include a thin
 alignment spacer with matching screw pilots. Print one per mounted output and
 place the frames edge-to-edge to align terrain tiles, split bases, or a full

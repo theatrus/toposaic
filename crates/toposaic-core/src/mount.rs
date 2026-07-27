@@ -1,5 +1,7 @@
 use anyhow::{Result, bail};
-use geo::{Area, BooleanOps, Contains, ConvexHull, LineString, MultiPoint, Point, Polygon};
+use geo::{
+    Area, BooleanOps, Contains, ConvexHull, LineString, MultiPoint, MultiPolygon, Point, Polygon,
+};
 
 use crate::mesh::{Mesh, MeshBuilder, weld_export_mesh};
 use crate::planar_mesh::{
@@ -55,6 +57,7 @@ pub(crate) fn validate_wall_mount_frame(
         height * 0.5,
     ));
     let pocket = polygon(&wall_plate_pocket(mount, frame));
+    let screw_head_reliefs = screw_head_sweep_polygons(mount, frame);
     let fit_error = || {
         anyhow::anyhow!(
             "wall mount does not fit the full terrain tile or display base; reduce its width, height, travel, or screw-hole size"
@@ -66,6 +69,9 @@ pub(crate) fn validate_wall_mount_frame(
             !frame_polygon.contains(&polygon(&receiver.opening))
                 || !frame_polygon.contains(&polygon(&receiver.ceiling))
         })
+        || screw_head_reliefs
+            .iter()
+            .any(|relief| !frame_polygon.contains(relief))
     {
         return Err(fit_error());
     }
@@ -86,22 +92,23 @@ pub(crate) fn mount_bottom_across_outline(
     let base = polygon(outline);
     let pocket = polygon(&wall_plate_pocket(mount, mount_frame));
     let receiver_sweeps = receiver_sweep_polygons(mount, mount_frame)?;
+    let screw_head_reliefs = screw_head_sweep_polygons(mount, mount_frame);
+    let cavity_union = receiver_sweeps.iter().chain(&screw_head_reliefs).fold(
+        MultiPolygon(Vec::new()),
+        |union, cavity| {
+            if union.0.is_empty() {
+                MultiPolygon(vec![cavity.clone()])
+            } else {
+                union.union(cavity)
+            }
+        },
+    );
 
-    let mut bottom = base.difference(&pocket);
-    let mut pocket_floor = base.intersection(&pocket);
-    let mut receiver_ceiling = Vec::new();
-    for receiver in &receiver_sweeps {
-        pocket_floor = pocket_floor.difference(receiver);
-        bottom = bottom.difference(receiver);
-        receiver_ceiling.extend(base.intersection(receiver).0);
-    }
-    let mut upper_layer = vec![base];
-    for receiver in &receiver_sweeps {
-        upper_layer = upper_layer
-            .into_iter()
-            .flat_map(|part| part.difference(receiver).0)
-            .collect();
-    }
+    let bottom = stabilize_mount_polygons(base.difference(&pocket), &base);
+    let pocket_floor =
+        stabilize_mount_polygons(base.intersection(&pocket).difference(&cavity_union), &base);
+    let upper_layer = stabilize_mount_polygons(base.difference(&cavity_union), &base);
+    let cavity_ceiling = stabilize_mount_polygons(base.intersection(&cavity_union), &base);
 
     let pocket_depth = mount.pocket_depth_mm();
     let ceiling = mount.embedded_depth_mm();
@@ -116,13 +123,13 @@ pub(crate) fn mount_bottom_across_outline(
     )?;
     add_horizontal_polygons(
         &mut mesh,
-        &receiver_ceiling,
+        &cavity_ceiling.0,
         ceiling,
         SurfaceClass::Rock,
         true,
     )?;
     add_polygon_walls(&mut mesh, &bottom.0, 0.0, pocket_depth);
-    add_polygon_walls(&mut mesh, &upper_layer, pocket_depth, ceiling);
+    add_polygon_walls(&mut mesh, &upper_layer.0, pocket_depth, ceiling);
     Ok(mesh)
 }
 
@@ -144,6 +151,19 @@ pub(crate) fn split_outline_at_mount(
                     .0
                     .iter()
                     .take(receiver.exterior().0.len().saturating_sub(1))
+                    .map(|point| [point.x as f32, point.y as f32])
+                    .collect()
+            }),
+    );
+    cut_rings.extend(
+        screw_head_sweep_polygons(mount, mount_frame)
+            .into_iter()
+            .map(|relief| {
+                relief
+                    .exterior()
+                    .0
+                    .iter()
+                    .take(relief.exterior().0.len().saturating_sub(1))
                     .map(|point| [point.x as f32, point.y as f32])
                     .collect()
             }),
@@ -303,11 +323,15 @@ fn bottom_with_wall_plate_pocket(
     mount_frame: [f32; 4],
 ) -> Result<MeshBuilder> {
     let pocket = wall_plate_pocket(mount, mount_frame);
+    let screw_head_reliefs = screw_head_sweep_polygons(mount, mount_frame);
     if !mount_region.contains(&polygon(&pocket))
         || receivers.iter().any(|receiver| {
             !mount_region.contains(&polygon(&receiver.opening))
                 || !mount_region.contains(&polygon(&receiver.ceiling))
         })
+        || screw_head_reliefs
+            .iter()
+            .any(|relief| !mount_region.contains(relief))
     {
         bail!(
             "wall-mount plate does not fit this part; reduce the mount, pocket, or screw size, or use fewer pieces"
@@ -331,10 +355,16 @@ fn bottom_with_wall_plate_pocket(
         receivers
             .iter()
             .map(|receiver| ring(&receiver.opening))
+            .chain(
+                screw_head_reliefs
+                    .iter()
+                    .map(|relief| relief.exterior().clone()),
+            )
             .collect(),
     );
     let pocket_depth = mount.pocket_depth_mm();
-    let receiver_ceiling = pocket_depth + mount.engagement_depth_mm();
+    let receiver_ceiling = mount.embedded_depth_mm();
+    let screw_head_ceiling = receiver_ceiling;
 
     let mut mesh = MeshBuilder::default();
     add_horizontal_polygons(&mut mesh, &bottom, 0.0, SurfaceClass::Rock, true)?;
@@ -360,6 +390,22 @@ fn bottom_with_wall_plate_pocket(
             pocket_depth,
             &receiver.ceiling,
             receiver_ceiling,
+        );
+    }
+    for relief in &screw_head_reliefs {
+        add_horizontal_polygons(
+            &mut mesh,
+            std::slice::from_ref(relief),
+            screw_head_ceiling,
+            SurfaceClass::Rock,
+            true,
+        )?;
+        add_line_string_wall(
+            &mut mesh,
+            relief.exterior(),
+            pocket_depth,
+            screw_head_ceiling,
+            true,
         );
     }
     Ok(mesh)
@@ -549,6 +595,84 @@ fn receiver_sweep_polygons(
         .collect())
 }
 
+/// Sweeps the screw-head footprint through the same entry-to-lock travel as
+/// the wall plate. This cuts only the local head relief, so wall offset and
+/// the rest of the plate pocket keep their exact requested dimensions.
+fn screw_head_sweep_polygons(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Vec<Polygon<f64>> {
+    if mount.screw_head_clearance_mm <= 0.000_01 {
+        return Vec::new();
+    }
+    let (_, features) = wall_hardware_features(mount);
+    let (_, screw_centers) = hardware_plate_and_screw_centers(mount, feature_bounds(&features));
+    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
+    let slide = wall_mount_slide(mount);
+    let radius = screw_head_radius(mount) + mount.fit_clearance_mm;
+    screw_centers
+        .into_iter()
+        .map(|screw_center| {
+            let locked = [center_x + screw_center[0], center_y + screw_center[1]];
+            let entry = [locked[0], locked[1] - slide];
+            let points = circle(locked, radius)
+                .into_iter()
+                .chain(circle(entry, radius))
+                .map(|point| Point::new(f64::from(point[0]), f64::from(point[1])))
+                .collect::<Vec<_>>();
+            MultiPoint::new(points).convex_hull()
+        })
+        .collect()
+}
+
+fn stabilize_mount_polygons(polygons: MultiPolygon<f64>, base: &Polygon<f64>) -> MultiPolygon<f64> {
+    let base_points = base
+        .exterior()
+        .0
+        .iter()
+        .take(base.exterior().0.len().saturating_sub(1))
+        .map(|point| [point.x as f32, point.y as f32])
+        .collect::<Vec<_>>();
+    MultiPolygon(
+        polygons
+            .0
+            .into_iter()
+            .map(|polygon| {
+                let exterior = stabilize_mount_ring(polygon.exterior(), &base_points);
+                let interiors = polygon
+                    .interiors()
+                    .iter()
+                    .map(|interior| stabilize_mount_ring(interior, &base_points))
+                    .collect();
+                Polygon::new(exterior, interiors)
+            })
+            .collect(),
+    )
+}
+
+fn stabilize_mount_ring(line: &LineString<f64>, base_points: &[[f32; 2]]) -> LineString<f64> {
+    let mut points = line
+        .0
+        .iter()
+        .take(line.0.len().saturating_sub(1))
+        .map(|point| {
+            let point = [point.x as f32, point.y as f32];
+            base_points
+                .iter()
+                .copied()
+                .find(|base_point| {
+                    (base_point[0] - point[0]).abs() <= 0.000_06
+                        && (base_point[1] - point[1]).abs() <= 0.000_06
+                })
+                .unwrap_or_else(|| {
+                    [
+                        (point[0] * 10_000.0).round() / 10_000.0,
+                        (point[1] * 10_000.0).round() / 10_000.0,
+                    ]
+                })
+        })
+        .collect::<Vec<_>>();
+    points.dedup_by(|left, right| left == right);
+    ring(&points)
+}
+
 pub(crate) fn circle_points(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
     (0..CIRCLE_SAMPLES)
         .map(|index| {
@@ -626,10 +750,13 @@ fn hardware_plate_and_screw_centers(
     mount: &WallMountSpec,
     feature_bounds: [f32; 4],
 ) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
-    let screw_radius = mount.screw_hole_diameter_mm * 0.5;
+    let screw_radius = screw_head_radius(mount);
     let center_x = (feature_bounds[0] + feature_bounds[2]) * 0.5;
-    let lower_screw_y = feature_bounds[1] - screw_radius - WALL_PLATE_SCREW_GAP_MM;
-    let upper_screw_y = feature_bounds[3] + screw_radius + WALL_PLATE_SCREW_GAP_MM;
+    let slide = wall_mount_slide(mount);
+    // Keep both heads clear throughout engagement, not just when the peg or
+    // cleat reaches its locked position.
+    let lower_screw_y = feature_bounds[1] - slide - screw_radius - WALL_PLATE_SCREW_GAP_MM;
+    let upper_screw_y = feature_bounds[3] + slide + screw_radius + WALL_PLATE_SCREW_GAP_MM;
     let minimum_x = feature_bounds[0] - WALL_PLATE_MARGIN_MM;
     let maximum_x = feature_bounds[2] + WALL_PLATE_MARGIN_MM;
     let minimum_y = lower_screw_y - screw_radius - WALL_PLATE_MARGIN_MM;
@@ -643,6 +770,13 @@ fn hardware_plate_and_screw_centers(
         ),
         vec![[center_x, lower_screw_y], [center_x, upper_screw_y]],
     )
+}
+
+/// A 90-degree countersink grows its radius by one millimetre for each
+/// millimetre of depth. Keeping that relation fixed needs only one control and
+/// matches common metric flat-head screws.
+fn screw_head_radius(mount: &WallMountSpec) -> f32 {
+    mount.screw_hole_diameter_mm * 0.5 + mount.screw_countersink_depth_mm
 }
 
 fn hardware_plate_thickness(mount: &WallMountSpec) -> f32 {
@@ -662,9 +796,14 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
     let (plate, screw_centers) = hardware_plate_and_screw_centers(mount, feature_bounds);
     let plate_thickness = hardware_plate_thickness(mount);
     let screw_radius = mount.screw_hole_diameter_mm * 0.5;
+    let screw_head_radius = screw_head_radius(mount);
     let screw_holes = screw_centers
         .iter()
         .map(|center| circle(*center, screw_radius))
+        .collect::<Vec<_>>();
+    let screw_head_holes = screw_centers
+        .iter()
+        .map(|center| circle(*center, screw_head_radius))
         .collect::<Vec<_>>();
     let bottom = Polygon::new(
         ring(&plate),
@@ -672,7 +811,7 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
     );
     let top = Polygon::new(
         ring(&plate),
-        screw_holes
+        screw_head_holes
             .iter()
             .map(|hole| ring(hole))
             .chain(features.iter().map(|feature| ring(&feature.opening)))
@@ -688,8 +827,18 @@ pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
         false,
     )?;
     add_ring_wall(&mut mesh, &plate, 0.0, plate_thickness, false);
-    for hole in &screw_holes {
-        add_ring_wall(&mut mesh, hole, 0.0, plate_thickness, true);
+    let countersink_floor = plate_thickness - mount.screw_countersink_depth_mm;
+    for (hole, head_hole) in screw_holes.iter().zip(&screw_head_holes) {
+        add_ring_wall(&mut mesh, hole, 0.0, countersink_floor, true);
+        if mount.screw_countersink_depth_mm > 0.000_01 {
+            add_cavity_wall(
+                &mut mesh,
+                hole,
+                countersink_floor,
+                head_hole,
+                plate_thickness,
+            );
+        }
     }
     for feature in &features {
         add_horizontal_polygons(
@@ -929,6 +1078,52 @@ mod tests {
                     .any(|vertex| vertex[2] > plate_thickness)
             );
         }
+    }
+
+    #[test]
+    fn countersink_depth_shapes_a_watertight_plate_and_its_pocket() {
+        let mut mount = WallMountSpec {
+            style: WallMountStyle::StraightPin,
+            thickness_mm: 2.0,
+            screw_countersink_depth_mm: 0.8,
+            ..WallMountSpec::default()
+        };
+        let (_, features) = wall_hardware_features(&mount);
+        let deep_plate = hardware_plate_and_screw_centers(&mount, feature_bounds(&features)).0;
+        let deep_bounds = bounds(&deep_plate);
+        let hardware = build_wall_hardware(&mount).unwrap();
+        assert_watertight(&hardware);
+        assert!(hardware.vertices.iter().any(|point| {
+            (point[2] - (mount.thickness_mm - mount.screw_countersink_depth_mm)).abs() < 0.000_01
+        }));
+        assert!(
+            (screw_head_radius(&mount)
+                - (mount.screw_hole_diameter_mm * 0.5 + mount.screw_countersink_depth_mm))
+                .abs()
+                < 0.000_01
+        );
+
+        mount.screw_countersink_depth_mm = 0.0;
+        let plain_plate = hardware_plate_and_screw_centers(&mount, feature_bounds(&features)).0;
+        let plain_bounds = bounds(&plain_plate);
+        assert!(deep_bounds[3] - deep_bounds[1] > plain_bounds[3] - plain_bounds[1]);
+        assert_watertight(&build_wall_hardware(&mount).unwrap());
+    }
+
+    #[test]
+    fn screw_head_clearance_cuts_local_relief_to_the_deeper_requested_ceiling() {
+        let mount = WallMountSpec {
+            style: WallMountStyle::FrenchCleat,
+            screw_head_clearance_mm: 1.4,
+            ..WallMountSpec::default()
+        };
+        let outline = rectangle(40.0, 40.0, 40.0, 40.0);
+        let receiver = mount_bottom(&outline, &mount, [0.0, 0.0, 80.0, 80.0])
+            .unwrap()
+            .finish("receiver with screw-head relief");
+        assert!(receiver.vertices.iter().any(|point| {
+            (point[2] - (mount.pocket_depth_mm() + mount.screw_head_clearance_mm)).abs() < 0.000_01
+        }));
     }
 
     #[test]

@@ -75,6 +75,8 @@ export type GenerationSpec = {
     export_hardware: boolean;
     fit_clearance_mm: number;
     screw_hole_diameter_mm: number;
+    screw_countersink_depth_mm: number;
+    screw_head_clearance_mm: number;
   };
   color_output: {
     enabled: boolean;

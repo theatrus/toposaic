@@ -296,12 +296,27 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByRole("slider", { name: "Pin diameter", exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("checkbox", { name: "Export matching wall hardware" }),
-  ).toBeChecked();
+  const exportWallHardware = page.getByRole("checkbox", {
+    name: "Export matching wall hardware",
+  });
+  await expect(exportWallHardware).toBeChecked();
   await expect(
     page.getByRole("slider", { name: "Wall offset" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Screw countersink depth" }),
+  ).toHaveValue("0.8");
+  await expect(
+    page.getByRole("slider", { name: "Screw-head pocket clearance" }),
+  ).toHaveValue("0.4");
+  await expect(
+    page.getByRole("slider", { name: "Pocket and hardware fit clearance" }),
+  ).toBeVisible();
+  await exportWallHardware.uncheck();
+  await expect(
+    page.getByRole("slider", { name: "Screw-head pocket clearance" }),
+  ).toBeVisible();
+  await exportWallHardware.check();
   await wallMountStyle.selectOption("french_cleat");
   await expect(page.getByText("Cleat engagement depth")).toBeVisible();
   await expect(page.getByText("Cleat slot height")).toBeVisible();

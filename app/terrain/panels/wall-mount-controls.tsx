@@ -24,10 +24,17 @@ export function WallMountControls({
   const hardwareQuantity = wallHardwareQuantity(spec);
   const backThickness =
     spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
+  const maximumCountersinkDepth = Math.max(
+    0,
+    Math.min(3, Number((spec.wall_mount.thickness_mm - 0.4).toFixed(2))),
+  );
   const embeddedDepth =
     spec.wall_mount.thickness_mm -
     spec.wall_mount.wall_offset_mm +
-    spec.wall_mount.depth_mm;
+    Math.max(
+      spec.wall_mount.depth_mm,
+      spec.wall_mount.screw_head_clearance_mm,
+    );
   const depthViolation = mountEnabled && embeddedDepth > backThickness - 0.4;
 
   useEffect(() => {
@@ -41,6 +48,20 @@ export function WallMountControls({
     maximumWidth,
     spec.wall_mount.cleat_width_mm,
     spec.wall_mount.style,
+    updateWallMount,
+  ]);
+
+  useEffect(() => {
+    if (
+      mountEnabled &&
+      spec.wall_mount.screw_countersink_depth_mm > maximumCountersinkDepth
+    ) {
+      updateWallMount("screw_countersink_depth_mm", maximumCountersinkDepth);
+    }
+  }, [
+    maximumCountersinkDepth,
+    mountEnabled,
+    spec.wall_mount.screw_countersink_depth_mm,
     updateWallMount,
   ]);
 
@@ -123,8 +144,8 @@ export function WallMountControls({
               This mount needs {embeddedDepth.toFixed(1)} mm of the{" "}
               {backThickness.toFixed(1)} mm minimum Z height. Raise the minimum
               piece height or display-base floor, reduce the engagement depth
-              or plate thickness, or raise the wall offset. The generator will
-              not add thickness for you.
+              or screw-head clearance, reduce the plate thickness, or raise the
+              wall offset. The generator will not add thickness for you.
             </p>
           )}
           <RangeField
@@ -197,30 +218,48 @@ export function WallMountControls({
               <small>Export a matching peg or cleat on a screw-on plate.</small>
             </span>
           </label>
-          {spec.wall_mount.export_hardware && (
-            <>
-              <RangeField
-                label="Hardware fit clearance"
-                value={spec.wall_mount.fit_clearance_mm}
-                unit=" mm"
-                min={0.1}
-                max={0.8}
-                step={0.05}
-                onChange={(value) => updateWallMount("fit_clearance_mm", value)}
-              />
-              <RangeField
-                label="Screw-hole diameter"
-                value={spec.wall_mount.screw_hole_diameter_mm}
-                unit=" mm"
-                min={2}
-                max={6}
-                step={0.5}
-                onChange={(value) =>
-                  updateWallMount("screw_hole_diameter_mm", value)
-                }
-              />
-            </>
-          )}
+          <RangeField
+            label="Pocket and hardware fit clearance"
+            value={spec.wall_mount.fit_clearance_mm}
+            unit=" mm"
+            min={0.1}
+            max={0.8}
+            step={0.05}
+            onChange={(value) => updateWallMount("fit_clearance_mm", value)}
+          />
+          <RangeField
+            label="Screw-hole diameter"
+            value={spec.wall_mount.screw_hole_diameter_mm}
+            unit=" mm"
+            min={2}
+            max={6}
+            step={0.5}
+            onChange={(value) =>
+              updateWallMount("screw_hole_diameter_mm", value)
+            }
+          />
+          <RangeField
+            label="Screw countersink depth"
+            value={spec.wall_mount.screw_countersink_depth_mm}
+            unit=" mm"
+            min={0}
+            max={maximumCountersinkDepth}
+            step={0.2}
+            onChange={(value) =>
+              updateWallMount("screw_countersink_depth_mm", value)
+            }
+          />
+          <RangeField
+            label="Screw-head pocket clearance"
+            value={spec.wall_mount.screw_head_clearance_mm}
+            unit=" mm"
+            min={0}
+            max={3}
+            step={0.2}
+            onChange={(value) =>
+              updateWallMount("screw_head_clearance_mm", value)
+            }
+          />
           <p className="color-note">
             Engagement depth sets how far the pin or cleat enters the model for
             rigidity. Wall plate thickness is the full plate from its wall face
@@ -230,9 +269,12 @@ export function WallMountControls({
             display-base face. Terrain mounts use one full-tile layout; jigsaw
             pieces receive the sections that cross them, while tray-retention
             pins remain per piece. The pocket covers the full wall plate at
-            entry and at lock; French
-            cleat travel grows with slot height. French cleats and angled pins
-            slide toward the map north edge to lock.
+            entry and at lock. A 90° countersink keeps flat screw heads in the
+            printed plate; set its depth to zero for plain holes. Screw-head
+            pocket clearance adds local depth behind each swept head without
+            changing wall offset. French cleat travel grows with slot height.
+            French cleats and angled pins slide toward the map north edge to
+            lock.
             {spec.wall_mount.export_hardware &&
               ` Print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} of the wall-side hardware.${spec.wall_mount.style === "french_cleat" ? ` The job also includes a flat alignment spacer; print ${hardwareQuantity} ${hardwareQuantity === 1 ? "copy" : "copies"} and place their outer edges together to set the cleat grid.` : ""}`}
           </p>

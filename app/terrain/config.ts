@@ -71,6 +71,8 @@ export const initialSpec: GenerationSpec = {
     export_hardware: true,
     fit_clearance_mm: 0.2,
     screw_hole_diameter_mm: 3.5,
+    screw_countersink_depth_mm: 0.8,
+    screw_head_clearance_mm: 0.4,
   },
   color_output: {
     enabled: true,
