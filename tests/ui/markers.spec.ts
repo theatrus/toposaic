@@ -68,6 +68,7 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await controls.getByRole("button", { name: "Raised plaque" }).click();
   await map.click({ position: { x: 380, y: 80 } });
   await controls.getByLabel("Marker 6 name").fill("Mirror Lake");
+  await controls.getByLabel("Marker 6 text height").fill("8");
   await controls.getByLabel("Marker 6 rotation").fill("-20");
   await controls.getByLabel("Marker 6 relief").fill("1");
   await controls.getByLabel("Marker 6 plaque padding").fill("2.5");
@@ -90,6 +91,29 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await expect(page.locator(".map-marker.plaque_label")).toHaveText(
     "Mirror Lake",
   );
+  await expect(
+    page.locator(".map-marker.surface_label .map-feature-label-text"),
+  ).toHaveAttribute("data-label-height-mm", "5.5");
+  await expect(
+    page.locator(".map-marker.plaque_label .map-feature-label-text"),
+  ).toHaveAttribute("data-label-height-mm", "8");
+  const surfaceLabel = page.locator(
+    ".map-marker.surface_label .map-feature-label-text",
+  );
+  const fontSizeBeforeZoom = await surfaceLabel.evaluate((element) =>
+    Number.parseFloat(getComputedStyle(element).fontSize),
+  );
+  await page
+    .getByRole("button", { name: "Resize selected area with map zoom" })
+    .click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect
+    .poll(() =>
+      surfaceLabel.evaluate((element) =>
+        Number.parseFloat(getComputedStyle(element).fontSize),
+      ),
+    )
+    .toBeGreaterThan(fontSizeBeforeZoom);
   await expect(
     controls.getByRole("button", { name: /^Move marker/ }),
   ).toHaveCount(6);
@@ -192,6 +216,7 @@ test("places map markers and submits their print modes", async ({ page }) => {
   });
   expect(markers[5]).toMatchObject({
     name: "Mirror Lake",
+    label_height_mm: 8,
     rotation_degrees: -20,
     label_style: {
       relief_mm: 1,

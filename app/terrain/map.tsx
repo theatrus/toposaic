@@ -493,6 +493,9 @@ export function TerrainMap({
         {markerPositions.length > 0 && (
           <div aria-hidden="true" className="map-markers">
             {markerPositions.map((marker) => (
+              // Convert print dimensions to the current map scale. Keep only a
+              // small legibility floor so text-size changes and map-only zoom
+              // remain visible in the preview.
               <span
                 className={`map-marker ${marker.kind}`}
                 key={`${marker.latitude}:${marker.longitude}:${marker.index}`}
@@ -512,9 +515,10 @@ export function TerrainMap({
                 {isMapLabel(marker.kind) && (
                   <span
                     className="map-feature-label-text"
+                    data-label-height-mm={marker.label_height_mm}
                     style={{
                       fontSize: Math.max(
-                        8,
+                        3,
                         (marker.label_height_mm / spec.width_mm) *
                           selectionSize,
                       ),

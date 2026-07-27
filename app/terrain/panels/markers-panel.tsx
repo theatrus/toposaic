@@ -434,24 +434,18 @@ export function MarkersPanel({
                           }
                           value={resolvedLabelStyle(marker).label_font}
                         />
-                        <label>
-                          <span>Text height</span>
-                          <input
-                            aria-label={`Marker ${index + 1} text height`}
-                            max={12}
-                            min={1.5}
-                            onChange={(event) => {
-                              const value = event.target.valueAsNumber;
-                              if (Number.isFinite(value)) {
-                                updateMarker(index, { label_height_mm: value });
-                              }
-                            }}
-                            step={0.1}
-                            type="number"
-                            value={marker.label_height_mm}
-                          />
-                          <small>mm</small>
-                        </label>
+                        <RangeField
+                          ariaLabel={`Marker ${index + 1} text height`}
+                          label="Text height"
+                          max={12}
+                          min={1.5}
+                          onChange={(label_height_mm) =>
+                            updateMarker(index, { label_height_mm })
+                          }
+                          step={0.1}
+                          unit="mm"
+                          value={marker.label_height_mm}
+                        />
                         <label>
                           <span>Rotation</span>
                           <input
