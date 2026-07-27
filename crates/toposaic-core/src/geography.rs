@@ -114,8 +114,7 @@ impl GeoTransform {
     /// the model's right edge and V toward its top edge.
     pub fn coordinate_at_uv(self, u: f64, v: f64) -> (f64, f64) {
         if self.is_north_up() {
-            let bounds =
-                GeoBounds::around(self.center_latitude, self.center_longitude, self.span_km);
+            let bounds = self.north_up_bounds();
             return (
                 bounds.south + (bounds.north - bounds.south) * v,
                 normalize_longitude(bounds.west + (bounds.east - bounds.west) * u),
@@ -132,8 +131,7 @@ impl GeoTransform {
     pub fn coordinate_at_local_offset(self, local_east_km: f64, local_north_km: f64) -> (f64, f64) {
         let east_km = local_east_km * self.rotation_cosine + local_north_km * self.rotation_sine;
         let north_km = -local_east_km * self.rotation_sine + local_north_km * self.rotation_cosine;
-        let latitude = (self.center_latitude + north_km / KILOMETRES_PER_LATITUDE_DEGREE)
-            .clamp(-MAX_MODEL_LATITUDE, MAX_MODEL_LATITUDE);
+        let latitude = self.center_latitude + north_km / KILOMETRES_PER_LATITUDE_DEGREE;
         let longitude = normalize_longitude(self.center_longitude + east_km / self.longitude_scale);
         (latitude, longitude)
     }
@@ -142,8 +140,7 @@ impl GeoTransform {
     /// 0..=1 remain outside so downstream rasterizers can clip them.
     pub fn normalized_point(self, latitude: f64, longitude: f64) -> [f32; 2] {
         if self.is_north_up() {
-            let bounds =
-                GeoBounds::around(self.center_latitude, self.center_longitude, self.span_km);
+            let bounds = self.north_up_bounds();
             let longitude = unwrap_longitude(longitude, self.center_longitude);
             return [
                 ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
@@ -169,7 +166,7 @@ impl GeoTransform {
     /// fetched vectors are transformed and clipped in model space afterward.
     pub fn bounds(self) -> GeoBounds {
         if self.is_north_up() {
-            return GeoBounds::around(self.center_latitude, self.center_longitude, self.span_km);
+            return self.north_up_bounds();
         }
         let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
         corners.into_iter().fold(
@@ -190,6 +187,17 @@ impl GeoTransform {
                 }
             },
         )
+    }
+
+    fn north_up_bounds(self) -> GeoBounds {
+        let half_latitude = self.span_km / 2.0 / KILOMETRES_PER_LATITUDE_DEGREE;
+        let half_longitude = self.span_km / 2.0 / self.longitude_scale;
+        GeoBounds {
+            south: (self.center_latitude - half_latitude).max(-MAX_MODEL_LATITUDE),
+            north: (self.center_latitude + half_latitude).min(MAX_MODEL_LATITUDE),
+            west: self.center_longitude - half_longitude,
+            east: self.center_longitude + half_longitude,
+        }
     }
 }
 

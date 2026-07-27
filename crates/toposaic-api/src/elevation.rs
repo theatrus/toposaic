@@ -156,7 +156,7 @@ fn fetch_height_field_at_size(
     // against damage too broad to judge pixel by pixel.
     if spec.despike_terrain {
         let spacing_m = sample_spacing_m(spec, sample_width, sample_height);
-        let report = field.despike(spacing_m);
+        let report = field.despike_interior(spacing_m);
         if !report.is_empty() {
             field.source.push_str(&describe_despike(&report));
         }

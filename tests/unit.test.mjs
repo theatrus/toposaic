@@ -31,6 +31,8 @@ import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
 import {
   adjacentCenter,
+  mapFrameForSpec,
+  matchingTileCenter,
   normalizedMapPoint,
 } from "../app/terrain/geo.ts";
 
@@ -67,6 +69,35 @@ test("maps arbitrary terrain rotations into the fixed model frame", () => {
   assert.ok(Math.abs(top.u - 0.5) < 1e-12);
   assert.ok(Math.abs(top.v - 1) < 1e-12);
   assert.equal(mergeSpecDefaults({}).terrain_rotation_degrees, 0);
+});
+
+test("manual adjacent moves stay on their first tile's map frame", () => {
+  const origin = {
+    center_lat: 46.8523,
+    center_lon: -121.7603,
+    ground_span_km: 18,
+    terrain_rotation_degrees: 37.5,
+    puzzle_tile_column: 0,
+    puzzle_tile_row: 0,
+    map_frame: null,
+  };
+  const frame = mapFrameForSpec(origin);
+  const east = matchingTileCenter(origin, 1, 0);
+  const fromEast = matchingTileCenter(
+    {
+      ...origin,
+      center_lat: east.latitude,
+      center_lon: east.longitude,
+      puzzle_tile_column: 1,
+      map_frame: frame,
+    },
+    1,
+    1,
+  );
+  const direct = matchingTileCenter({ ...origin, map_frame: frame }, 1, 1);
+
+  assert.ok(Math.abs(fromEast.latitude - direct.latitude) < 1e-12);
+  assert.ok(Math.abs(fromEast.longitude - direct.longitude) < 1e-12);
 });
 
 test("compares stable and prerelease app versions", () => {

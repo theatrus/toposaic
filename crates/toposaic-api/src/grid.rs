@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use toposaic_core::{
-    Artifact, GenerationSpec, GeoTransform, HeightField, SuperTileAnchor, WallMountStyle,
+    Artifact, GenerationSpec, GeoTransform, HeightField, MapFrame, SuperTileAnchor, WallMountStyle,
     WallMountTarget, generate_wall_mount_artifacts,
 };
 
@@ -77,13 +77,15 @@ pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> 
         SuperTileAnchor::TopLeft => 0,
         SuperTileAnchor::Center => (spec.adjacent_columns as i32 - 1) / 2,
     };
-    let projection_latitude = spec.map_projection_latitude.unwrap_or(spec.center_lat);
+    let frame = spec
+        .map_frame
+        .unwrap_or_else(|| MapFrame::at_spec_origin(spec));
     let transform = GeoTransform::with_reference_latitude(
         spec.center_lat,
         spec.center_lon,
         spec.ground_span_km,
         spec.terrain_rotation_degrees,
-        projection_latitude,
+        frame.origin_lat,
     );
     (0..spec.adjacent_rows)
         .flat_map(|row| {
@@ -97,7 +99,7 @@ pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> 
                 );
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
-                tile.map_projection_latitude = Some(projection_latitude);
+                tile.map_frame = Some(frame);
                 tile.puzzle_tile_column = spec.puzzle_tile_column + column_offset;
                 tile.puzzle_tile_row = spec.puzzle_tile_row + row_offset;
                 tile
@@ -279,48 +281,50 @@ mod tests {
 
     #[test]
     fn arbitrary_rotation_keeps_super_tile_centers_on_the_model_grid() {
-        let spec = GenerationSpec {
-            center_lat: 46.0,
-            center_lon: -122.0,
-            ground_span_km: 10.0,
-            terrain_rotation_degrees: 37.5,
-            adjacent_columns: 2,
-            adjacent_rows: 2,
-            ..GenerationSpec::default()
-        };
-        let transform = GeoTransform::new(
-            spec.center_lat,
-            spec.center_lon,
-            spec.ground_span_km,
-            spec.terrain_rotation_degrees,
-        );
-        let tiles = adjacent_tile_specs(&spec);
-        let normalized = tiles
-            .iter()
-            .map(|tile| transform.normalized_point(tile.center_lat, tile.center_lon))
-            .collect::<Vec<_>>();
-
-        for (point, expected) in
-            normalized
+        for rotation in [0.0, 37.5, -90.0] {
+            let spec = GenerationSpec {
+                center_lat: 46.0,
+                center_lon: -122.0,
+                ground_span_km: 10.0,
+                terrain_rotation_degrees: rotation,
+                adjacent_columns: 2,
+                adjacent_rows: 2,
+                ..GenerationSpec::default()
+            };
+            let transform = GeoTransform::new(
+                spec.center_lat,
+                spec.center_lon,
+                spec.ground_span_km,
+                spec.terrain_rotation_degrees,
+            );
+            let tiles = adjacent_tile_specs(&spec);
+            let normalized = tiles
                 .iter()
-                .zip([[0.5, 0.5], [1.5, 0.5], [0.5, -0.5], [1.5, -0.5]])
-        {
-            assert!((point[0] - expected[0]).abs() < 0.000_01);
-            assert!((point[1] - expected[1]).abs() < 0.000_01);
-        }
+                .map(|tile| transform.normalized_point(tile.center_lat, tile.center_lon))
+                .collect::<Vec<_>>();
 
-        let north_west = tiles[0].geo_transform();
-        let north_east = tiles[1].geo_transform();
-        let south_west = tiles[2].geo_transform();
-        for along_edge in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            assert_coordinates_match(
-                north_west.coordinate_at_uv(1.0, along_edge),
-                north_east.coordinate_at_uv(0.0, along_edge),
-            );
-            assert_coordinates_match(
-                north_west.coordinate_at_uv(along_edge, 0.0),
-                south_west.coordinate_at_uv(along_edge, 1.0),
-            );
+            for (point, expected) in
+                normalized
+                    .iter()
+                    .zip([[0.5, 0.5], [1.5, 0.5], [0.5, -0.5], [1.5, -0.5]])
+            {
+                assert!((point[0] - expected[0]).abs() < 0.000_01);
+                assert!((point[1] - expected[1]).abs() < 0.000_01);
+            }
+
+            let north_west = tiles[0].geo_transform();
+            let north_east = tiles[1].geo_transform();
+            let south_west = tiles[2].geo_transform();
+            for along_edge in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                assert_coordinates_match(
+                    north_west.coordinate_at_uv(1.0, along_edge),
+                    north_east.coordinate_at_uv(0.0, along_edge),
+                );
+                assert_coordinates_match(
+                    north_west.coordinate_at_uv(along_edge, 0.0),
+                    south_west.coordinate_at_uv(along_edge, 1.0),
+                );
+            }
         }
     }
 

@@ -28,7 +28,7 @@ pub use project::{
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     DotMarkerStyle, ElevationSource, FlagMarkerStyle, GenerationSpec, LabelFont, LineScaleSpec,
-    LineStyle, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
+    LineStyle, MapFrame, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
     RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
     SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
     TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,

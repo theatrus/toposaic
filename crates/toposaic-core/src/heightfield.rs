@@ -98,6 +98,18 @@ impl HeightField {
     /// too many bad neighbours cannot be judged until some of them are healed,
     /// so clearing the end of a run brings the next sample within reach.
     pub fn despike(&mut self, sample_spacing_m: f32) -> DespikeReport {
+        self.despike_impl(sample_spacing_m, false)
+    }
+
+    /// Runs the finished-field backstop without changing its outer sample
+    /// ring. Adjacent model tiles sample that ring in common, so keeping it
+    /// untouched preserves their final height seam. Source-tile repair still
+    /// checks source borders before resampling.
+    pub fn despike_interior(&mut self, sample_spacing_m: f32) -> DespikeReport {
+        self.despike_impl(sample_spacing_m, true)
+    }
+
+    fn despike_impl(&mut self, sample_spacing_m: f32, preserve_outer_ring: bool) -> DespikeReport {
         let threshold_m = SPIKE_SLOPE_FACTOR * sample_spacing_m.max(f32::MIN_POSITIVE);
         let mut report = DespikeReport {
             threshold_m,
@@ -107,7 +119,17 @@ impl HeightField {
             let replacements: Vec<(usize, f32, f32)> = (0..self.values_m.len())
                 .into_par_iter()
                 .filter_map(|index| {
-                    let ring = self.neighbour_ring(index % self.width, index / self.width);
+                    let column = index % self.width;
+                    let row = index / self.width;
+                    if preserve_outer_ring
+                        && (column == 0
+                            || column + 1 == self.width
+                            || row == 0
+                            || row + 1 == self.height)
+                    {
+                        return None;
+                    }
+                    let ring = self.neighbour_ring(column, row);
                     let value = self.values_m[index];
                     is_spike(value, ring, threshold_m)
                         .map(|distance| (index, ring_median(ring), distance))
@@ -358,6 +380,19 @@ mod tests {
             })
             .collect();
         HeightField::new(width, height, values, "test").unwrap()
+    }
+
+    #[test]
+    fn interior_despiking_never_changes_a_shared_outer_ring() {
+        let mut field = rolling_ground(5, 5);
+        field.values_m[0] = 50_000.0;
+        field.values_m[2 * 5 + 2] = 50_000.0;
+
+        let report = field.despike_interior(20.0);
+
+        assert!(report.replaced > 0);
+        assert_eq!(field.values_m[0], 50_000.0);
+        assert!(field.values_m[2 * 5 + 2] < 1_000.0);
     }
 
     #[test]

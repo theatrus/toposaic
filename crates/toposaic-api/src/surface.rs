@@ -322,6 +322,7 @@ pub fn fetch_surface_field(
     }
 
     let mut field = SurfaceField::new(width, height, classes, source)?;
+    let source_edges = field.raster_edge_classes();
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gates = &spec.color_output.slope_gates;
@@ -440,6 +441,7 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        field.restore_raster_edge_classes(&source_edges)?;
         if spec.color_output.osm_water_enabled {
             match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
                 Ok(counts) => append_source(
@@ -607,7 +609,7 @@ fn paint_water(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<WaterCounts> {
-    let water = fetch_osm_response(spec, cache_dir, "water", water_query(bounds))?;
+    let water = fetch_osm_response(cache_dir, "water", water_query(bounds))?;
     let transform = transform_for(spec);
     let mut counts = WaterCounts::default();
     let mut lines = Vec::new();
@@ -715,7 +717,7 @@ fn paint_roads_or_trails(
     let detail = spec.color_output.road_detail.resolve(spec.ground_span_km);
     let highway_filter = road_highway_filter(detail);
     let cache_prefix = road_cache_prefix(detail);
-    let routes = fetch_osm_ways(spec, bounds, cache_dir, cache_prefix, highway_filter)?;
+    let routes = fetch_osm_ways(bounds, cache_dir, cache_prefix, highway_filter)?;
     let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, routes);
     if road_count + trail_count > 0 || detail == ResolvedRoadDetail::All {
         return Ok(RouteCounts {
@@ -727,13 +729,7 @@ fn paint_roads_or_trails(
             fallback: false,
         });
     }
-    let trails = fetch_osm_ways(
-        spec,
-        bounds,
-        cache_dir,
-        "roads-v2-path-fallback",
-        PATH_HIGHWAYS,
-    )?;
+    let trails = fetch_osm_ways(bounds, cache_dir, "roads-v2-path-fallback", PATH_HIGHWAYS)?;
     let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, trails);
     Ok(RouteCounts {
         roads: road_count,
@@ -893,7 +889,6 @@ fn fetch_rail_ways(
     let lifecycle = spec.color_output.rail_lifecycle;
     let cache_prefix = rail_cache_prefix(kind, lifecycle);
     let response = fetch_osm_response(
-        spec,
         cache_dir,
         &cache_prefix,
         rail_query(bounds, kind, lifecycle),
@@ -1439,7 +1434,7 @@ fn paint_buildings(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<usize> {
-    let response = fetch_osm_response(spec, cache_dir, "buildings", building_query(bounds))?;
+    let response = fetch_osm_response(cache_dir, "buildings", building_query(bounds))?;
     let transform = transform_for(spec);
     let building_markers = spec
         .markers
@@ -1527,14 +1522,12 @@ fn first_number(value: &str) -> Option<f32> {
 }
 
 fn fetch_osm_ways(
-    spec: &GenerationSpec,
     bounds: GeoBounds,
     cache_dir: &Path,
     cache_prefix: &str,
     highway_filter: &str,
 ) -> Result<OverpassResponse> {
     fetch_osm_response(
-        spec,
         cache_dir,
         cache_prefix,
         overpass_query(bounds, highway_filter),
@@ -1542,14 +1535,13 @@ fn fetch_osm_ways(
 }
 
 fn fetch_osm_response(
-    spec: &GenerationSpec,
     cache_dir: &Path,
     cache_prefix: &str,
     query: String,
 ) -> Result<OverpassResponse> {
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
-    let cache_path = osm_cache_path(spec, cache_dir, cache_prefix);
+    let cache_path = osm_cache_path(cache_dir, cache_prefix, &query);
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
         return Ok(response);
     }
@@ -1666,17 +1658,17 @@ fn overpass_urls(configured_url: Option<&str>, preferred_endpoint: usize) -> Vec
     urls
 }
 
-fn osm_cache_path(spec: &GenerationSpec, cache_dir: &Path, cache_prefix: &str) -> PathBuf {
-    if spec.terrain_rotation_degrees.abs() < f64::EPSILON {
-        return cache_dir.join(format!(
-            "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
-            spec.center_lat, spec.center_lon, spec.ground_span_km,
-        ));
+fn osm_cache_path(cache_dir: &Path, cache_prefix: &str, query: &str) -> PathBuf {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in b"toposaic-overpass-v3"
+        .iter()
+        .chain(cache_prefix.as_bytes())
+        .chain(query.as_bytes())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    cache_dir.join(format!(
-        "{cache_prefix}-{:.5}-{:.5}-{:.3}-r{:.3}.json",
-        spec.center_lat, spec.center_lon, spec.ground_span_km, spec.terrain_rotation_degrees,
-    ))
+    cache_dir.join(format!("{cache_prefix}-{hash:016x}.json"))
 }
 
 fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
@@ -2669,7 +2661,6 @@ mod tests {
     /// that asked for abandoned lines.
     #[test]
     fn lifecycle_settings_change_both_the_query_and_the_cache_key() {
-        let spec = GenerationSpec::default();
         let mut paths = Vec::new();
         let mut queries = Vec::new();
         for lifecycle in [
@@ -2680,8 +2671,9 @@ mod tests {
             for kind in RailKind::ALL {
                 let prefix = rail_cache_prefix(kind, lifecycle);
                 assert!(prefix.ends_with(lifecycle.name()), "{prefix}");
-                paths.push(osm_cache_path(&spec, Path::new("/cache"), &prefix));
-                queries.push(rail_query(test_bounds(), kind, lifecycle));
+                let query = rail_query(test_bounds(), kind, lifecycle);
+                paths.push(osm_cache_path(Path::new("/cache"), &prefix, &query));
+                queries.push(query);
             }
         }
         let unique = paths.iter().collect::<std::collections::HashSet<_>>();
@@ -2714,17 +2706,18 @@ mod tests {
 
     #[test]
     fn rail_cache_prefixes_are_independent_of_each_other_and_of_the_roads() {
-        let spec = GenerationSpec::default();
         let lifecycle = RailLifecycle::Operational;
+        let railway_query = rail_query(test_bounds(), RailKind::Railway, lifecycle);
         let railway = osm_cache_path(
-            &spec,
             Path::new("/cache"),
             &rail_cache_prefix(RailKind::Railway, lifecycle),
+            &railway_query,
         );
+        let aerial_query = rail_query(test_bounds(), RailKind::Aerialway, lifecycle);
         let aerial = osm_cache_path(
-            &spec,
             Path::new("/cache"),
             &rail_cache_prefix(RailKind::Aerialway, lifecycle),
+            &aerial_query,
         );
         assert_ne!(railway, aerial, "one layer must not evict the other");
         for detail in [
@@ -2733,7 +2726,8 @@ mod tests {
             ResolvedRoadDetail::Streets,
             ResolvedRoadDetail::All,
         ] {
-            let roads = osm_cache_path(&spec, Path::new("/cache"), road_cache_prefix(detail));
+            let query = overpass_query(test_bounds(), road_highway_filter(detail));
+            let roads = osm_cache_path(Path::new("/cache"), road_cache_prefix(detail), &query);
             assert_ne!(railway, roads);
             assert_ne!(aerial, roads);
         }
@@ -3320,9 +3314,11 @@ mod tests {
         second.color_output.osm_water_enabled = false;
         second.color_output.waterway_coverage_percent = 3.0;
         let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
+        let first_query = overpass_query(bounds_for(&first), STREET_HIGHWAYS);
+        let second_query = overpass_query(bounds_for(&second), STREET_HIGHWAYS);
         assert_eq!(
-            osm_cache_path(&first, Path::new("/cache"), prefix),
-            osm_cache_path(&second, Path::new("/cache"), prefix)
+            osm_cache_path(Path::new("/cache"), prefix, &first_query),
+            osm_cache_path(Path::new("/cache"), prefix, &second_query)
         );
     }
 
@@ -3332,15 +3328,23 @@ mod tests {
         let mut rotated = north_up.clone();
         rotated.terrain_rotation_degrees = 37.5;
         let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
+        let north_up_query = overpass_query(bounds_for(&north_up), STREET_HIGHWAYS);
+        let rotated_query = overpass_query(bounds_for(&rotated), STREET_HIGHWAYS);
 
         assert_ne!(
-            osm_cache_path(&north_up, Path::new("/cache"), prefix),
-            osm_cache_path(&rotated, Path::new("/cache"), prefix)
+            osm_cache_path(Path::new("/cache"), prefix, &north_up_query),
+            osm_cache_path(Path::new("/cache"), prefix, &rotated_query)
         );
-        assert!(
-            osm_cache_path(&rotated, Path::new("/cache"), prefix)
-                .to_string_lossy()
-                .contains("r37.500")
+    }
+
+    #[test]
+    fn osm_cache_keys_include_the_exact_query_bounds() {
+        let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
+        let first = overpass_query(GeoBounds::around(46.0, -122.0, 10.0), STREET_HIGHWAYS);
+        let second = overpass_query(GeoBounds::around(46.000_01, -122.0, 10.0), STREET_HIGHWAYS);
+        assert_ne!(
+            osm_cache_path(Path::new("/cache"), prefix, &first),
+            osm_cache_path(Path::new("/cache"), prefix, &second)
         );
     }
 
