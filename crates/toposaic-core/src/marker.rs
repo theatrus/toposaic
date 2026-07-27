@@ -67,7 +67,7 @@ fn add_flag_label(
     surface_z: f32,
 ) -> Result<()> {
     let text = label.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fonts = embossing_fonts(settings.flag_label_font)?;
+    let fonts = embossing_fonts(settings.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
     let available_width = (settings.flag_width_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
     let available_height = (settings.flag_height_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
@@ -83,7 +83,7 @@ fn add_flag_label(
             - metrics.minimum_y * scale;
     EmbossedLabel {
         text,
-        font: settings.flag_label_font,
+        font: settings.label_font,
         origin_x,
         baseline_y,
         scale,
@@ -137,7 +137,7 @@ mod tests {
             crate::spec::LabelFont::B612Mono,
         ] {
             let settings = MarkerSpec {
-                flag_label_font: font,
+                label_font: font,
                 flag_width_mm: 36.0,
                 ..MarkerSpec::default()
             };

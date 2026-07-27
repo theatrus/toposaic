@@ -141,7 +141,9 @@ pub(super) fn append_road_geometry(
                 MarkerKind::FlagHole | MarkerKind::FlagLabel => {
                     spec.marker_settings.hole_diameter_mm * 0.5
                 }
-                MarkerKind::Building => return None,
+                MarkerKind::Building | MarkerKind::SurfaceLabel | MarkerKind::PlaqueLabel => {
+                    return None;
+                }
             }) + OVERLAY_SEPARATION_MM;
             let point = spec.normalized_map_point(marker.latitude, marker.longitude);
             let center = Point::new(
@@ -704,7 +706,7 @@ fn build_road_polygon_shell_with_embed(
     )
 }
 
-fn build_polygon_shell(
+pub(super) fn build_polygon_shell(
     polygon: &Polygon<f64>,
     bottom: impl Fn([f32; 2]) -> f32,
     top: impl Fn([f32; 2]) -> f32,
@@ -996,6 +998,8 @@ mod tests {
                 latitude: GenerationSpec::default().center_lat,
                 longitude: GenerationSpec::default().center_lon,
                 kind: MarkerKind::FlagHole,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
             }],
             ..GenerationSpec::default()
         };

@@ -96,7 +96,9 @@ OrcaSlicer load the palette colors as filament assignments.*
 
 - Place editable building highlights, color dots, blank flags, and named flags
   by latitude and longitude. Named flags emboss their editable text in a chosen
-  bundled font; controls set the banner width, height, and text size.
+  bundled font; controls set the banner width, height, and text size. Manual
+  surface labels follow the terrain, while raised plaques give text a flat
+  backing; each label has its own print size and map rotation.
 - Save a stable puzzle seed and signed tile coordinates with each setup so
   later super-tile runs can make matching edges. Outer edge notches are
   optional and off by default.

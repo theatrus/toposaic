@@ -135,9 +135,10 @@ pub(crate) struct EmbossedLabel {
 }
 
 impl EmbossedLabel {
-    pub(crate) fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
+    pub(crate) fn contours(&self) -> Result<Vec<Vec<[f32; 2]>>> {
         let fonts = embossing_fonts(self.font)?;
         let mut pen_x = 0.0;
+        let mut all_contours = Vec::new();
         for character in self.text.chars() {
             let (face, glyph_id) = fonts
                 .glyph(character)
@@ -165,16 +166,21 @@ impl EmbossedLabel {
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
-                add_extruded_contours(
-                    mesh,
-                    &contours,
-                    rim_z - 0.02,
-                    rim_z + 0.56,
-                    SurfaceClass::Snow,
-                )?;
+                all_contours.extend(contours);
             }
             pen_x += advance * units;
         }
+        Ok(all_contours)
+    }
+
+    pub(crate) fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
+        add_extruded_contours(
+            mesh,
+            &self.contours()?,
+            rim_z - 0.02,
+            rim_z + 0.56,
+            SurfaceClass::Snow,
+        )?;
         Ok(())
     }
 }

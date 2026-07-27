@@ -219,6 +219,8 @@ pub fn generate_marker_artifacts(
             latitude: flag_spec.center_lat,
             longitude: flag_spec.center_lon,
             kind: MarkerKind::Dot,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
         });
     }
     let mut artifacts = Vec::new();
@@ -311,7 +313,7 @@ fn generate_project_inner(
     if spec.uses_trails() && surface_field.is_none() {
         bail!("imported trails require surface data to draw on");
     }
-    if spec.uses_colored_markers() && surface_field.is_none() {
+    if spec.uses_surface_markers() && surface_field.is_none() {
         bail!("colored map markers require surface data to draw on");
     }
     fs::create_dir_all(output_dir)
@@ -641,12 +643,16 @@ mod tests {
                     latitude: 46.8523,
                     longitude: -121.7603,
                     kind: crate::spec::MarkerKind::FlagHole,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 0.0,
                 },
                 crate::spec::MapMarker {
                     name: "Mount Fuji 富士山".into(),
                     latitude: 46.8523,
                     longitude: -121.7503,
                     kind: crate::spec::MarkerKind::FlagLabel,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 0.0,
                 },
             ],
             ..GenerationSpec::default()
@@ -666,6 +672,37 @@ mod tests {
                     .any(|artifact| artifact.name == name)
             );
         }
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn manual_map_labels_generate_from_elevation_without_surface_downloads() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-map-label-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let defaults = GenerationSpec::default();
+        let spec = GenerationSpec {
+            solid_model: true,
+            samples_per_piece: 24,
+            markers: vec![crate::spec::MapMarker {
+                name: "Mirror Lake".into(),
+                latitude: defaults.center_lat,
+                longitude: defaults.center_lon,
+                kind: crate::spec::MarkerKind::PlaqueLabel,
+                label_height_mm: 4.0,
+                rotation_degrees: 25.0,
+            }],
+            ..defaults
+        };
+        let height = HeightField::new(5, 5, vec![100.0; 25], "test").unwrap();
+        let manifest = generate_project_with_height_field(&spec, &height, &output_dir).unwrap();
+        assert!(manifest.surface_source.is_none());
+        assert!(output_dir.join("terrain-solid.stl").is_file());
+        assert!(output_dir.join("terrain-solid.3mf").is_file());
         std::fs::remove_dir_all(output_dir).unwrap();
     }
 

@@ -847,6 +847,8 @@ mod tests {
                 latitude: defaults.center_lat,
                 longitude: defaults.center_lon,
                 kind: MarkerKind::FlagHole,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
             }],
             ..defaults
         };

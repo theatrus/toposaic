@@ -31,7 +31,7 @@ import {
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
   initialSpec,
-  isFlagMarker,
+  markerNeedsSurfaceData,
   limitPlaceName,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
@@ -545,7 +545,11 @@ export function TerrainStudio() {
               ? "Point"
               : markerPlacementKind === "flag_label"
                 ? "Flag label"
-                : "Flag";
+                : markerPlacementKind === "surface_label"
+                  ? "Surface label"
+                  : markerPlacementKind === "plaque_label"
+                    ? "Plaque label"
+                    : "Flag";
         return {
           ...current,
           buildings:
@@ -566,6 +570,8 @@ export function TerrainStudio() {
               latitude,
               longitude,
               name: `${label} ${number}`,
+              label_height_mm: 4,
+              rotation_degrees: 0,
             },
           ].slice(0, 50),
         };
@@ -1365,7 +1371,7 @@ export function TerrainStudio() {
       (job.spec.color_output.enabled ||
         job.spec.buildings.enabled ||
         job.spec.trails.length > 0 ||
-        job.spec.markers.some((marker) => !isFlagMarker(marker.kind)))
+        job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind)))
     ) {
       // The backend runs the surface phase for trail-only jobs too.
       if (
@@ -1401,7 +1407,7 @@ export function TerrainStudio() {
       job.spec.color_output.enabled ||
       job.spec.buildings.enabled ||
       job.spec.trails.length > 0 ||
-      job.spec.markers.some((marker) => !isFlagMarker(marker.kind));
+      job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind));
     const stages = [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
       ...(hasSurface
