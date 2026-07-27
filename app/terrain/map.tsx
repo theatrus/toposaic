@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 
-import type { GenerationSpec, MarkerKind } from "./contracts";
+import type { GenerationSpec } from "./contracts";
 import { isMapLabel, MAX_GROUND_SPAN_KM, MIN_GROUND_SPAN_KM } from "./config";
 import { superTileCenter } from "./geo";
 
@@ -53,14 +53,14 @@ function unprojectFromWorld(x: number, y: number, zoom: number) {
 
 export function TerrainMap({
   spec,
-  markerPlacementKind,
-  onAddMarker,
+  markerPlacementMode,
+  onPlaceMarker,
   onCenterChange,
   onGroundSpanChange,
 }: {
   spec: GenerationSpec;
-  markerPlacementKind: MarkerKind | null;
-  onAddMarker: (longitude: number, latitude: number) => void;
+  markerPlacementMode: "place" | "move" | null;
+  onPlaceMarker: (longitude: number, latitude: number) => void;
   onCenterChange: (longitude: number, latitude: number) => void;
   onGroundSpanChange: (groundSpanKm: number) => void;
 }) {
@@ -298,7 +298,7 @@ export function TerrainMap({
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (markerPlacementKind) return;
+    if (markerPlacementMode) return;
     const next = moveToWorld(
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
@@ -310,7 +310,7 @@ export function TerrainMap({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    if (markerPlacementKind) {
+    if (markerPlacementMode) {
       if (
         Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <=
         6
@@ -320,7 +320,7 @@ export function TerrainMap({
           viewWorldCenter.x + event.clientX - bounds.left - size.width / 2,
           viewWorldCenter.y + event.clientY - bounds.top - size.height / 2,
         );
-        onAddMarker(point.longitude, point.latitude);
+        onPlaceMarker(point.longitude, point.latitude);
       }
       return;
     }
@@ -405,7 +405,7 @@ export function TerrainMap({
     <div className="map-shell">
       <div
         ref={containerRef}
-        className={`map-canvas${markerPlacementKind ? " placing-marker" : ""}`}
+        className={`map-canvas${markerPlacementMode ? " placing-marker" : ""}`}
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
         aria-label="Terrain map. Drag to choose a place, use the mouse wheel to zoom, or focus the map and pan with the arrow keys."
         onKeyDown={keyDown}
@@ -589,8 +589,10 @@ export function TerrainMap({
       <div className="map-instruction">
         {tilesLoaded ? (
           <>
-            {markerPlacementKind
-              ? "Click the map to place the marker"
+            {markerPlacementMode
+              ? markerPlacementMode === "move"
+                ? "Click the map to move the marker"
+                : "Click the map to place the marker"
               : superTileActive
               ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
               : "Drag the map to choose a place"}

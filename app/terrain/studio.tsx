@@ -174,6 +174,15 @@ export function TerrainStudio() {
     useState<GenerationControlTab>("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
     useState<MarkerKind | null>(null);
+  const [movingMarkerIndex, setMovingMarkerIndex] = useState<number | null>(
+    null,
+  );
+  const showSection = useCallback((section: GenerationControlTab) => {
+    setActiveSection(section);
+    if (section === "markers") return;
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex(null);
+  }, []);
   const [job, setJob] = useState<Job | null>(null);
   const [generatedPreview, setGeneratedPreview] =
     useState<PreviewData | null>(null);
@@ -537,8 +546,21 @@ export function TerrainStudio() {
     },
     [],
   );
-  const addMarker = useCallback(
+  const placeMarker = useCallback(
     (longitude: number, latitude: number) => {
+      if (movingMarkerIndex !== null) {
+        setGeneratedPreview(null);
+        setSpec((current) => ({
+          ...current,
+          markers: current.markers.map((marker, index) =>
+            index === movingMarkerIndex
+              ? { ...marker, longitude, latitude }
+              : marker,
+          ),
+        }));
+        setMovingMarkerIndex(null);
+        return;
+      }
       if (!markerPlacementKind) return;
       setGeneratedPreview(null);
       setSpec((current) => {
@@ -594,8 +616,19 @@ export function TerrainStudio() {
       });
       setMarkerPlacementKind(null);
     },
-    [markerPlacementKind],
+    [markerPlacementKind, movingMarkerIndex],
   );
+  const chooseMarkerPlacementKind = useCallback(
+    (kind: MarkerKind | null) => {
+      setMovingMarkerIndex(null);
+      setMarkerPlacementKind(kind);
+    },
+    [],
+  );
+  const moveMarker = useCallback((index: number) => {
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex((current) => (current === index ? null : index));
+  }, []);
   const updateMarker = useCallback(
     (index: number, patch: Partial<GenerationSpec["markers"][number]>) => {
       setGeneratedPreview(null);
@@ -614,6 +647,10 @@ export function TerrainStudio() {
   );
   const removeMarker = useCallback((index: number) => {
     setGeneratedPreview(null);
+    setMovingMarkerIndex((current) => {
+      if (current === null || current < index) return current;
+      return current === index ? null : current - 1;
+    });
     setSpec((current) => ({
       ...current,
       markers: current.markers.filter((_, position) => position !== index),
@@ -1115,6 +1152,8 @@ export function TerrainStudio() {
     // Merge over the client defaults so setups saved before a field existed
     // still get a value, then drop stale generated output like a place change.
     setSpec(mergeSpecDefaults(setup.spec));
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex(null);
     setGeneratedPreview(null);
     setAdjacentMessage(null);
     setSetupStatus(`Recalled “${setup.name}”.`);
@@ -1277,9 +1316,9 @@ export function TerrainStudio() {
     setGeneratedPreview(null);
     try {
       setJob(await terrainApi.createJob(spec));
-      setActiveSection("output");
+      showSection("output");
     } catch (error) {
-      setActiveSection("output");
+      showSection("output");
       setMessage(
         error instanceof TypeError
           ? "Start the local Rust generator, then try again."
@@ -1293,7 +1332,7 @@ export function TerrainStudio() {
   };
 
   const cancelGeneration = async () => {
-    setActiveSection("output");
+    showSection("output");
     setMessage(null);
     if (!job || !["queued", "running"].includes(job.status)) return;
 
@@ -1819,8 +1858,14 @@ export function TerrainStudio() {
         >
           <TerrainMap
             spec={spec}
-            markerPlacementKind={markerPlacementKind}
-            onAddMarker={addMarker}
+            markerPlacementMode={
+              movingMarkerIndex !== null
+                ? "move"
+                : markerPlacementKind
+                  ? "place"
+                  : null
+            }
+            onPlaceMarker={placeMarker}
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
@@ -1922,7 +1967,7 @@ export function TerrainStudio() {
                 role="tab"
                 aria-selected={activeSection === key}
                 className={activeSection === key ? "active" : ""}
-                onClick={() => setActiveSection(key)}
+                onClick={() => showSection(key)}
               >
                 {label}
                 {key === "output" && job && (
@@ -1946,7 +1991,7 @@ export function TerrainStudio() {
                     <button
                       type="button"
                       onClick={() =>
-                        setActiveSection(
+                        showSection(
                           generationFailure.control_tab ?? "output",
                         )
                       }
@@ -1956,7 +2001,7 @@ export function TerrainStudio() {
                   )}
                 <button
                   type="button"
-                  onClick={() => setActiveSection("output")}
+                  onClick={() => showSection("output")}
                 >
                   Technical details
                 </button>
@@ -2003,9 +2048,11 @@ export function TerrainStudio() {
 
           <MarkersPanel
             hidden={activeSection !== "markers"}
+            movingMarkerIndex={movingMarkerIndex}
+            moveMarker={moveMarker}
             placementKind={markerPlacementKind}
             removeMarker={removeMarker}
-            setPlacementKind={setMarkerPlacementKind}
+            setPlacementKind={chooseMarkerPlacementKind}
             spec={spec}
             updateMarker={updateMarker}
             updateMarkerSettings={updateMarkerSettings}

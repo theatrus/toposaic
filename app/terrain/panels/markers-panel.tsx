@@ -72,6 +72,8 @@ function MarkerCoordinateInput({
 
 export function MarkersPanel({
   hidden,
+  movingMarkerIndex,
+  moveMarker,
   placementKind,
   removeMarker,
   setPlacementKind,
@@ -80,6 +82,8 @@ export function MarkersPanel({
   updateMarkerSettings,
 }: {
   hidden: boolean;
+  movingMarkerIndex: number | null;
+  moveMarker: (index: number) => void;
   placementKind: MarkerKind | null;
   removeMarker: (index: number) => void;
   setPlacementKind: (kind: MarkerKind | null) => void;
@@ -133,7 +137,9 @@ export function MarkersPanel({
         ))}
       </div>
       <p className="color-note" role="status">
-        {placementKind
+        {movingMarkerIndex !== null
+          ? `Click the map to move ${spec.markers[movingMarkerIndex]?.name ?? "the marker"}.`
+          : placementKind
           ? `Click the map to place a ${kindLabel[placementKind].toLowerCase()}.`
           : "Building markers color a footprint. Dots print flush. Flags can stay blank or use an editable name. Surface labels follow the terrain; plaques make a flat raised base."}
       </p>
@@ -324,13 +330,28 @@ export function MarkersPanel({
                   value={marker.longitude}
                 />
               </div>
-              <button
-                aria-label={`Remove marker ${marker.name}`}
-                onClick={() => removeMarker(index)}
-                type="button"
-              >
-                Remove
-              </button>
+              <div className="marker-actions">
+                <button
+                  aria-label={
+                    movingMarkerIndex === index
+                      ? `Cancel moving marker ${marker.name}`
+                      : `Move marker ${marker.name}`
+                  }
+                  aria-pressed={movingMarkerIndex === index}
+                  className={movingMarkerIndex === index ? "active" : ""}
+                  onClick={() => moveMarker(index)}
+                  type="button"
+                >
+                  {movingMarkerIndex === index ? "Cancel" : "Move"}
+                </button>
+                <button
+                  aria-label={`Remove marker ${marker.name}`}
+                  onClick={() => removeMarker(index)}
+                  type="button"
+                >
+                  Remove
+                </button>
+              </div>
             </li>
           ))}
         </ul>

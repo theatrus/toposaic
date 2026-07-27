@@ -76,6 +76,35 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await expect(page.locator(".map-marker.plaque_label")).toHaveText(
     "Mirror Lake",
   );
+  await expect(
+    controls.getByRole("button", { name: /^Move marker/ }),
+  ).toHaveCount(6);
+  const moveHome = controls.getByRole("button", {
+    name: "Move marker Home",
+    exact: true,
+  });
+  await moveHome.click();
+  await expect(
+    controls.getByRole("button", { name: "Cancel moving marker Home" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".map-instruction")).toContainText(
+    "Click the map to move the marker",
+  );
+  await map.click({ position: { x: 440, y: 40 } });
+  await expect(controls.getByLabel("Marker 1 latitude")).not.toHaveValue(
+    "46.900001",
+  );
+  await expect(moveHome).toHaveAttribute("aria-pressed", "false");
+
+  const moveFlag = controls.getByRole("button", {
+    name: "Move marker 富士山 Mount Fuji",
+    exact: true,
+  });
+  await moveFlag.click();
+  await controls
+    .getByRole("button", { name: "Cancel moving marker 富士山 Mount Fuji" })
+    .click();
+  await expect(moveFlag).toHaveAttribute("aria-pressed", "false");
   await expect(controls.getByLabel("Label font")).toHaveValue(
     "atkinson_hyperlegible",
   );
@@ -118,7 +147,7 @@ test("places map markers and submits their print modes", async ({ page }) => {
     "plaque_label",
   ]);
   expect(markers[0].name).toBe("Home");
-  expect(markers[0].latitude).toBe(46.900001);
+  expect(markers[0].latitude).not.toBe(46.900001);
   expect(markers.every((marker) => Number.isFinite(marker.latitude))).toBe(true);
   expect(markers.every((marker) => Number.isFinite(marker.longitude))).toBe(true);
   expect(markers[3].name).toBe("富士山 Mount Fuji");

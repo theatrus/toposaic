@@ -2535,6 +2535,16 @@ fieldset.control-section .road-options {
   padding: 7px;
 }
 
+.marker-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.marker-actions button.active {
+  background: var(--ink);
+  color: white;
+}
+
 .marker-template-toggle {
   align-items: center;
   color: var(--muted);
