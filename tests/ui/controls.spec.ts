@@ -111,7 +111,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
       .getAttribute("data-base-scale"),
   );
   expect(initialHeightScale).toBeCloseTo(28 / 180, 4);
-  expect(initialBaseScale).toBeCloseTo(2.4 / 180, 4);
+  expect(initialBaseScale).toBeCloseTo(3.2 / 180, 4);
   await relief.fill("80");
   await expect(relief).toHaveValue("80");
   await expect
@@ -142,7 +142,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
           .getAttribute("data-base-scale"),
       ),
     )
-    .toBeCloseTo(2.4 / 300, 4);
+    .toBeCloseTo(3.2 / 300, 4);
 
   await page.getByRole("tab", { name: "Surface" }).click();
   const surfaceColors = page.getByRole("group", { name: "Surface colors" });
@@ -289,11 +289,25 @@ test("switches between the reflowed control panels", async ({ page }) => {
     name: "Floor thickness",
   });
   await expect(floorThickness).toHaveAttribute("max", "20");
-  await floorThickness.press("Home");
   const wallMountStyle = page.getByLabel("Wall mount style");
+  await expect(wallMountStyle.locator("option")).toHaveText([
+    "None",
+    "French cleat receiver (recommended)",
+    "Angled pin socket",
+    "Straight pin socket",
+  ]);
+  await expect(
+    mountingControls.getByText(
+      "French cleats spread the load across the full tile or display base",
+      { exact: false },
+    ),
+  ).toBeVisible();
   await wallMountStyle.selectOption("angled_pin");
   await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
   await expect(page.getByText("Pin engagement depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Pin engagement depth" }),
+  ).toHaveValue("1.6");
   await expect(
     page.getByRole("slider", { name: "Wall plate thickness" }),
   ).toBeVisible();
@@ -329,8 +343,12 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await exportWallHardware.check();
   await wallMountStyle.selectOption("french_cleat");
   await expect(page.getByText("Cleat engagement depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Cleat engagement depth" }),
+  ).toHaveValue("1.6");
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
+  await floorThickness.press("Home");
   await expect(
     page.getByText("display-base floor is too thin", { exact: false }),
   ).toBeVisible();
@@ -832,7 +850,7 @@ test("locks a height frame and maps a super-tile grid", async ({
     name: "Minimum piece height",
   });
   await expect(minimumHeight).toHaveAttribute("max", "20");
-  await expect(minimumHeight).toHaveValue("2.4");
+  await expect(minimumHeight).toHaveValue("3.2");
   await minimumHeight.fill("5");
   await expect(minimumHeight).toHaveValue("5");
 

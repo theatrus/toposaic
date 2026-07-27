@@ -1545,7 +1545,7 @@ mod tests {
             WallMountStyle::FrenchCleat,
         ] {
             let spec = GenerationSpec {
-                width_mm: 80.0,
+                width_mm: 120.0,
                 rows: 2,
                 columns: 2,
                 adjacent_interlocks: true,
