@@ -125,7 +125,7 @@ export function TerrainMap({
     worldY: number;
   } | null>(null);
   const [zoom, setZoom] = useState(9);
-  const [zoomLinked, setZoomLinked] = useState(true);
+  const [mapOnlyZoom, setMapOnlyZoom] = useState<number | null>(null);
   const [interactionMode, setInteractionMode] =
     useState<MapInteractionMode>("pan");
   const [viewCenter, setViewCenter] = useState<{
@@ -163,10 +163,12 @@ export function TerrainMap({
       ? (baseSelectionSize * superTileRows) / (size.height * 0.82)
       : 1,
   );
-  const mapZoom = Math.max(
+  const fittedMapZoom = Math.max(
     MIN_MAP_ZOOM,
     zoom - Math.max(0, Math.ceil(Math.log2(fitScale))),
   );
+  const mapZoom = mapOnlyZoom ?? fittedMapZoom;
+  const zoomLinked = mapOnlyZoom === null;
   const anchorWorld = useMemo(
     () => projectToWorld(spec.center_lon, spec.center_lat, mapZoom),
     [mapZoom, spec.center_lat, spec.center_lon],
@@ -486,6 +488,15 @@ export function TerrainMap({
 
   const changeZoom = useCallback(
     (delta: number) => {
+      if (!zoomLinked) {
+        setMapOnlyZoom((current) =>
+          Math.max(
+            MIN_MAP_ZOOM,
+            Math.min(MAX_MAP_ZOOM, (current ?? mapZoom) + delta),
+          ),
+        );
+        return;
+      }
       const nextZoom = Math.max(
         MIN_MAP_ZOOM,
         Math.min(MAX_MAP_ZOOM, zoom + delta),
@@ -503,7 +514,7 @@ export function TerrainMap({
       }
       setZoom(nextZoom);
     },
-    [onGroundSpanChange, spec.ground_span_km, zoom, zoomLinked],
+    [mapZoom, onGroundSpanChange, spec.ground_span_km, zoom, zoomLinked],
   );
 
   // React's onWheel registers a passive listener, so preventDefault is a
@@ -521,10 +532,10 @@ export function TerrainMap({
   }, [changeZoom]);
 
   const canZoomIn =
-    zoom < MAX_MAP_ZOOM &&
+    mapZoom < MAX_MAP_ZOOM &&
     (!zoomLinked || spec.ground_span_km / 2 >= MIN_GROUND_SPAN_KM);
   const canZoomOut =
-    zoom > MIN_MAP_ZOOM &&
+    mapZoom > MIN_MAP_ZOOM &&
     (!zoomLinked || spec.ground_span_km * 2 <= MAX_GROUND_SPAN_KM);
   const displayedViewCenter =
     viewCenter ?? moveToWorld(selectionWorldCenter.x, selectionWorldCenter.y);
@@ -754,7 +765,9 @@ export function TerrainMap({
           aria-label="Resize selected area with map zoom"
           aria-pressed={zoomLinked}
           className="map-zoom-mode"
-          onClick={() => setZoomLinked((linked) => !linked)}
+          onClick={() =>
+            setMapOnlyZoom((current) => (current === null ? mapZoom : null))
+          }
           title={
             zoomLinked
               ? "Zoom changes the selected area"

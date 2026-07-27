@@ -904,6 +904,9 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
     "aria-label",
     "Selected terrain area: 18 km square",
   );
+  await expect
+    .poll(async () => (await selection.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(20);
   const initialBounds = await selection.boundingBox();
   expect(initialBounds).not.toBeNull();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
@@ -962,6 +965,14 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
   const wheelZoomedBounds = await selection.boundingBox();
   expect(wheelZoomedBounds).not.toBeNull();
   expect(wheelZoomedBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+
+  // Map-only zoom keeps increasing after the selection grows beyond the
+  // viewport. Auto-fit must not cancel these explicit zoom steps.
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(selection).toHaveAttribute("data-map-zoom", "11");
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(selection).toHaveAttribute("data-map-zoom", "12");
+  await expect(groundSpan).toHaveValue("9");
 
   await groundSpan.fill("30");
   await expect(selection).toHaveAttribute(
