@@ -5,17 +5,12 @@ export function BuildingsPanel({
   hidden,
   spec,
   updateBuildings,
-  updateColor,
 }: {
   hidden: boolean;
   spec: GenerationSpec;
   updateBuildings: <Key extends keyof GenerationSpec["buildings"]>(
     key: Key,
     value: GenerationSpec["buildings"][Key],
-  ) => void;
-  updateColor: <Key extends keyof GenerationSpec["color_output"]>(
-    key: Key,
-    value: GenerationSpec["color_output"][Key],
   ) => void;
 }) {
   return (
@@ -29,33 +24,27 @@ export function BuildingsPanel({
           <strong className="color-title">Mapped buildings</strong>
           <p>Raise OpenStreetMap building footprints above the terrain.</p>
         </div>
-        <label className="color-toggle">
-          <input
-            type="checkbox"
-            checked={spec.buildings.enabled}
-            onChange={(event) =>
-              updateBuildings("enabled", event.target.checked)
-            }
-          />
-          <span>{spec.buildings.enabled ? "On" : "Off"}</span>
-        </label>
       </div>
+      <label className="option-toggle feature-enable-toggle">
+        <input
+          aria-label="Enable mapped buildings"
+          type="checkbox"
+          checked={spec.buildings.enabled}
+          onChange={(event) =>
+            updateBuildings("enabled", event.target.checked)
+          }
+        />
+        <span>
+          <strong>Enable mapped buildings</strong>
+          <small>
+            {spec.buildings.enabled
+              ? "On · building footprints will be fetched and raised."
+              : "Off · no mapped building geometry will be added."}
+          </small>
+        </span>
+      </label>
       {spec.buildings.enabled && (
         <>
-          <div className="color-swatches building-color-swatch">
-            <label>
-              <input
-                aria-label="Building color"
-                type="color"
-                value={spec.color_output.building_color}
-                onChange={(event) =>
-                  updateColor("building_color", event.target.value)
-                }
-              />
-              <span>Building color</span>
-              <code>{spec.color_output.building_color.toUpperCase()}</code>
-            </label>
-          </div>
           <RangeField
             label="Building Z scale"
             value={spec.buildings.z_scale}
@@ -67,10 +56,10 @@ export function BuildingsPanel({
           />
           <p className="color-note">
             Buildings use exact mapped footprints, flat roofs, straight
-            vertical walls, and their own 3MF color material. 1× keeps
-            true height against the map width. Higher values make small
-            buildings easier to print. Tagged heights are used first,
-            then floor count, then an 8 m default.
+            vertical walls, and their color from the Colors tab. 1× keeps true
+            height against the map width. Higher values make small buildings
+            easier to print. Tagged heights are used first, then floor count,
+            then an 8 m default.
           </p>
         </>
       )}

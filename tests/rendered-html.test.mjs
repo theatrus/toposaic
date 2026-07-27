@@ -50,6 +50,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /role="tablist"/);
   assert.match(html, />Model</);
   assert.match(html, />Surface</);
+  assert.match(html, />Colors</);
   assert.match(html, />Buildings</);
   assert.match(html, />Markers</);
   assert.match(html, />Mounting</);
@@ -64,9 +65,10 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Place name/);
   assert.match(html, /Selected terrain area: 18 km square/);
   assert.match(html, /Mapped buildings/);
-  // The building color swatch renders only once buildings are enabled,
-  // which they are not by default.
-  assert.doesNotMatch(html, /Building color/);
+  assert.match(html, /Enable mapped buildings/);
+  // All color targets render in one tab, even when their layers are off.
+  assert.match(html, /Print colors/);
+  assert.match(html, /Building color/);
   assert.match(html, /Render roads/);
   // Railways and aerial lifts default on with their style pickers
   // showing, since each layer switches apart from roads and from the
@@ -92,8 +94,8 @@ test("server-renders TopoSaic", async () => {
   );
   assert.doesNotMatch(html, /<option value="with_roads" selected="">/);
   assert.doesNotMatch(html, /<option value="with_rail" selected="">/);
-  // So both swatches and both width sliders render by default, with the
-  // default colors in them.
+  // Both colors render in the Colors tab, and both width sliders render in
+  // Surface.
   assert.match(html, /Railway color/);
   assert.match(html, /Railway minimum width/);
   assert.match(html, /Aerial lift color/);
@@ -145,9 +147,9 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Import GPX or KML files/);
   assert.match(html, /aria-label="Import trail files"/);
   assert.match(html, /Saved setups carry them/);
-  // Trail color and width controls only render once a trail is imported.
+  // Trail width renders after an import. Its saved color stays in Colors.
   assert.doesNotMatch(html, /Trail print width/);
-  assert.doesNotMatch(html, /Trail color/);
+  assert.match(html, /Imported trail color/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);
@@ -162,8 +164,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Fully supported/);
   assert.match(html, /Uses a thick deck between the abutments/);
   assert.match(html, /Fills from the deck down to the mapped ground or water/);
-  // The default building color appears only in the gated swatch.
-  assert.doesNotMatch(html, /#B8A890/i);
+  assert.match(html, /#B8A890/i);
   assert.match(html, /class="setup-menu-button"/);
   assert.match(html, /Saved setups/);
   assert.match(html, /aria-haspopup="menu"/);

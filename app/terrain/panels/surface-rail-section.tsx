@@ -52,31 +52,15 @@ export function SurfaceRailSection({
             </small>
           </label>
           {spec.color_output.rail_style === "separate" && (
-            <>
-              <div className="color-swatches rail-color-swatch">
-                <label>
-                  <input
-                    aria-label="Railway color"
-                    type="color"
-                    value={spec.color_output.rail_color}
-                    onChange={(event) =>
-                      updateColor("rail_color", event.target.value)
-                    }
-                  />
-                  <span>Railway color</span>
-                  <code>{spec.color_output.rail_color.toUpperCase()}</code>
-                </label>
-              </div>
-              <RangeField
-                label="Railway minimum width"
-                value={spec.color_output.rail_width_mm}
-                unit=" mm"
-                min={0.4}
-                max={4}
-                step={0.1}
-                onChange={(value) => updateColor("rail_width_mm", value)}
-              />
-            </>
+            <RangeField
+              label="Railway minimum width"
+              value={spec.color_output.rail_width_mm}
+              unit=" mm"
+              min={0.4}
+              max={4}
+              step={0.1}
+              onChange={(value) => updateColor("rail_width_mm", value)}
+            />
           )}
         </>
       )}
@@ -124,31 +108,15 @@ export function SurfaceRailSection({
             </small>
           </label>
           {spec.color_output.aerial_style === "separate" && (
-            <>
-              <div className="color-swatches aerial-color-swatch">
-                <label>
-                  <input
-                    aria-label="Aerial lift color"
-                    type="color"
-                    value={spec.color_output.aerial_color}
-                    onChange={(event) =>
-                      updateColor("aerial_color", event.target.value)
-                    }
-                  />
-                  <span>Aerial lift color</span>
-                  <code>{spec.color_output.aerial_color.toUpperCase()}</code>
-                </label>
-              </div>
-              <RangeField
-                label="Aerial lift print width"
-                value={spec.color_output.aerial_width_mm}
-                unit=" mm"
-                min={0.4}
-                max={4}
-                step={0.1}
-                onChange={(value) => updateColor("aerial_width_mm", value)}
-              />
-            </>
+            <RangeField
+              label="Aerial lift print width"
+              value={spec.color_output.aerial_width_mm}
+              unit=" mm"
+              min={0.4}
+              max={4}
+              step={0.1}
+              onChange={(value) => updateColor("aerial_width_mm", value)}
+            />
           )}
         </>
       )}

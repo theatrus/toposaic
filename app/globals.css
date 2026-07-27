@@ -1125,7 +1125,7 @@ a {
   display: grid;
   gap: 6px;
   grid-column: 4 / -1;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .control-tabs button {
@@ -1228,6 +1228,11 @@ fieldset.control-section > .mounting-section-heading,
 fieldset.control-section > .color-note,
 fieldset.control-section > .control-hint,
 fieldset.control-section > .surface-group {
+  grid-column: 1 / -1;
+}
+
+fieldset.control-section > .palette-group,
+fieldset.control-section > .palette-note {
   grid-column: 1 / -1;
 }
 
@@ -1920,6 +1925,121 @@ fieldset.control-section .road-options {
   font-size: 10px;
   font-weight: 720;
   text-transform: uppercase;
+}
+
+.feature-enable-toggle {
+  background: #f7f5ec;
+  min-height: 54px;
+  padding: 12px 14px;
+}
+
+.feature-enable-toggle input {
+  height: 18px;
+  width: 18px;
+}
+
+.feature-enable-toggle strong {
+  font-size: 11px;
+}
+
+.feature-enable-toggle small {
+  font-size: 9px;
+}
+
+.color-palette-panel {
+  align-content: start;
+}
+
+.palette-heading button,
+.palette-color-value button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 720;
+  padding: 8px 10px;
+}
+
+.palette-heading button:hover,
+.palette-heading button:focus-visible,
+.palette-color-value button:hover,
+.palette-color-value button:focus-visible {
+  border-color: var(--moss);
+  outline: 0;
+}
+
+.palette-group {
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+}
+
+.palette-group-heading strong {
+  font-size: 11px;
+}
+
+.palette-group-heading p {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 3px 0 0;
+}
+
+.palette-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.palette-color {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+}
+
+.palette-color-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.palette-color-heading input {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  flex: 0 0 30px;
+  height: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+.palette-color-heading strong {
+  font-size: 10px;
+}
+
+.palette-color-value {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.palette-color-value input {
+  background: white;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 0;
+  padding: 8px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.palette-color-value input[aria-invalid="true"] {
+  border-color: #b85f50;
 }
 
 .color-swatches {
@@ -2755,6 +2875,10 @@ fieldset.control-section .road-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .palette-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .coordinate-adjacent-row {
     grid-template-columns: 1fr;
   }
@@ -2829,6 +2953,7 @@ fieldset.control-section .road-options {
   }
 
   .control-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin: 14px 0;
   }
 
@@ -2860,6 +2985,10 @@ fieldset.control-section .road-options {
   }
 
   .surface-group {
+    grid-template-columns: 1fr;
+  }
+
+  .palette-grid {
     grid-template-columns: 1fr;
   }
 

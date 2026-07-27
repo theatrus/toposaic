@@ -3,6 +3,9 @@ import { expect, test } from "@playwright/test";
 import { appVersion } from "./helpers";
 
 test("switches between the reflowed control panels", async ({ page }) => {
+  await page
+    .context()
+    .grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
 
   const generate = page.getByRole("button", { name: /^Generate/ });
@@ -287,21 +290,68 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(bridgeThickness).toHaveValue("2.4");
   await surfaceColors.getByRole("checkbox").first().uncheck();
 
-  await page.getByRole("tab", { name: "Buildings" }).click();
+  await page.getByRole("tab", { name: "Colors" }).click();
+  const printColors = page.getByRole("group", { name: "Print colors" });
+  await expect(printColors).toBeVisible();
+  for (const label of [
+    "Forest",
+    "Rock",
+    "Snow",
+    "Water",
+    "Route",
+    "Building",
+    "Imported trail",
+    "Railway",
+    "Aerial lift",
+    "Map marker",
+    "Display base",
+    "Base contours",
+    "Base label",
+  ]) {
+    await expect(
+      printColors.getByRole("textbox", { name: `${label} color` }),
+    ).toBeVisible();
+    await expect(
+      printColors.getByRole("button", { name: `Copy ${label} color` }),
+    ).toBeVisible();
+  }
   await expect(
-    page.getByRole("group", { name: "Mapped buildings" }),
-  ).toBeVisible();
-  // The color swatch renders only once buildings are enabled, like the
-  // other per-feature controls.
-  const buildingColor = page.getByLabel("Building color");
-  await expect(buildingColor).toBeHidden();
-  await page
-    .getByRole("group", { name: "Mapped buildings" })
-    .getByRole("checkbox")
-    .check();
-  await expect(buildingColor).toHaveValue("#b8a890");
-  await buildingColor.fill("#8a5b3d");
-  await expect(buildingColor).toHaveValue("#8a5b3d");
+    printColors.getByRole("textbox", { name: "Forest color" }),
+  ).toHaveValue("#28543A");
+  const routeColor = printColors.getByRole("textbox", {
+    name: "Route color",
+  });
+  const buildingColor = printColors.getByRole("textbox", {
+    name: "Building color",
+  });
+  await routeColor.fill("#8A5B3D");
+  const copyRoute = printColors.getByRole("button", {
+    name: "Copy Route color",
+  });
+  await copyRoute.click();
+  await expect(copyRoute).toHaveText("Copied");
+  const copiedColor = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedColor).toBe("#8A5B3D");
+  await buildingColor.fill(copiedColor);
+  await expect(buildingColor).toHaveValue("#8A5B3D");
+  const copyPalette = printColors.getByRole("button", {
+    name: "Copy all colors",
+  });
+  await copyPalette.click();
+  await expect(copyPalette).toHaveText("Palette copied");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("Building: #8A5B3D");
+
+  await page.getByRole("tab", { name: "Buildings" }).click();
+  const buildings = page.getByRole("group", { name: "Mapped buildings" });
+  await expect(buildings).toBeVisible();
+  const enableBuildings = buildings.getByRole("checkbox", {
+    name: "Enable mapped buildings",
+  });
+  await expect(enableBuildings).toBeVisible();
+  await expect(enableBuildings).not.toBeChecked();
+  await enableBuildings.check();
   await expect(
     page
       .getByLabel("Surface color legend")
@@ -477,13 +527,20 @@ test("switches railways on apart from roads and submits them", async ({
   });
 
   await page.goto("/");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  const printColors = page.getByRole("group", { name: "Print colors" });
+  const railColor = printColors.getByRole("textbox", {
+    name: "Railway color",
+  });
+  await expect(railColor).toHaveValue("#C43D3D");
+  await railColor.fill("#2B3440");
+
   await page.getByRole("tab", { name: "Surface" }).click();
   const surfaceColors = page.getByRole("group", { name: "Surface settings" });
   const railways = surfaceColors.getByRole("checkbox", {
     name: "Render railways",
   });
   const railStyle = surfaceColors.getByLabel("Railway style");
-  const railColor = surfaceColors.getByLabel("Railway color");
   const railWidth = surfaceColors.getByRole("slider", {
     name: "Railway minimum width",
   });
@@ -491,12 +548,10 @@ test("switches railways on apart from roads and submits them", async ({
     .getByLabel("Surface color legend")
     .getByText("Rail", { exact: true });
 
-  // The layer starts on in its own color — picking railways out is the
-  // point of drawing them — so its swatch, width, and legend entry are all
+  // The layer starts on in its own color, so its width and legend entry are
   // there from the start.
   await expect(railways).toBeChecked();
   await expect(railStyle).toHaveValue("separate");
-  await expect(railColor).toHaveValue("#c43d3d");
   await expect(railWidth).toHaveValue("0.7");
   await expect(railLegend).toBeVisible();
   await expect(
@@ -507,26 +562,22 @@ test("switches railways on apart from roads and submits them", async ({
     surfaceColors.getByText(/uses a filament slot only where the map has a/),
   ).toBeVisible();
 
-  // Switching the layer off takes its style, color, width, and legend
-  // entry with it.
+  // Switching the layer off takes its style, width, and legend entry with it.
+  // Its saved color stays in the Colors tab.
   await railways.uncheck();
   await expect(railStyle).toBeHidden();
-  await expect(railColor).toBeHidden();
   await expect(railWidth).toBeHidden();
   await expect(railLegend).toBeHidden();
   await railways.check();
   await expect(railStyle).toHaveValue("separate");
 
-  // Folded into the roads they take the route color, so they need no
-  // swatch, no width of their own, and no legend entry.
+  // Folded into the roads they take the route color, so they need no width of
+  // their own and no legend entry.
   await railStyle.selectOption("with_roads");
-  await expect(railColor).toBeHidden();
   await expect(railWidth).toBeHidden();
   await expect(railLegend).toBeHidden();
 
   await railStyle.selectOption("separate");
-  await expect(railColor).toHaveValue("#c43d3d");
-  await railColor.fill("#2b3440");
   await railWidth.fill("1.2");
   await expect(railWidth).toHaveValue("1.2");
 
@@ -564,7 +615,7 @@ test("switches railways on apart from roads and submits them", async ({
     .toBe(true);
   const colorOutput = jobSpec.color_output as Record<string, unknown>;
   expect(colorOutput.rail_style).toBe("separate");
-  expect(colorOutput.rail_color).toBe("#2b3440");
+  expect(colorOutput.rail_color).toBe("#2B3440");
   expect(colorOutput.rail_width_mm).toBe(1.2);
   expect(colorOutput.scale_line_widths_by_span).toBe(true);
   expect(colorOutput.close_view_width_multiplier).toBe(2);
@@ -574,8 +625,9 @@ test("switches railways on apart from roads and submits them", async ({
   await page.getByRole("tab", { name: "Surface" }).click();
   await expect(railways).toBeChecked();
   await expect(railStyle).toHaveValue("separate");
-  await expect(railColor).toHaveValue("#2b3440");
   await expect(railWidth).toHaveValue("1.2");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(railColor).toHaveValue("#2B3440");
 });
 
 test("draws aerial lifts apart from railways and names every color", async ({
@@ -609,6 +661,14 @@ test("draws aerial lifts apart from railways and names every color", async ({
   });
 
   await page.goto("/");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  const printColors = page.getByRole("group", { name: "Print colors" });
+  const liftColor = printColors.getByRole("textbox", {
+    name: "Aerial lift color",
+  });
+  await expect(liftColor).toHaveValue("#6C4CB6");
+  await liftColor.fill("#7D3FA0");
+
   await page.getByRole("tab", { name: "Surface" }).click();
   const surfaceColors = page.getByRole("group", { name: "Surface settings" });
   const railways = surfaceColors.getByRole("checkbox", {
@@ -619,7 +679,6 @@ test("draws aerial lifts apart from railways and names every color", async ({
     name: "Render aerial lifts",
   });
   const liftStyle = surfaceColors.getByLabel("Aerial lift style");
-  const liftColor = surfaceColors.getByLabel("Aerial lift color");
   const liftWidth = surfaceColors.getByRole("slider", {
     name: "Aerial lift print width",
   });
@@ -633,7 +692,6 @@ test("draws aerial lifts apart from railways and names every color", async ({
   // all three line entries name themselves from the start.
   await expect(lifts).toBeChecked();
   await expect(liftStyle).toHaveValue("separate");
-  await expect(liftColor).toHaveValue("#6c4cb6");
   await expect(liftWidth).toHaveValue("0.7");
   await expect(routeLegend).toBeVisible();
   await expect(railLegend).toBeVisible();
@@ -648,7 +706,6 @@ test("draws aerial lifts apart from railways and names every color", async ({
   // Folded into the railways, lifts follow them wherever they go: into the
   // rail color first, then into the route color with them.
   await liftStyle.selectOption("with_rail");
-  await expect(liftColor).toBeHidden();
   await expect(liftWidth).toBeHidden();
   await expect(liftLegend).toBeHidden();
   await expect(railLegend).toBeVisible();
@@ -665,11 +722,9 @@ test("draws aerial lifts apart from railways and names every color", async ({
 
   // Their own color splits them back out of the rail family.
   await liftStyle.selectOption("separate");
-  await expect(liftColor).toHaveValue("#6c4cb6");
   await expect(liftWidth).toHaveValue("0.7");
   await expect(liftLegend).toBeVisible();
   await expect(railLegend).toBeVisible();
-  await liftColor.fill("#7d3fa0");
   await liftWidth.fill("0.9");
 
   // Lifts switch independently of railways: the railway toggle leaves the
@@ -713,14 +768,15 @@ test("draws aerial lifts apart from railways and names every color", async ({
     .toBe("separate");
   const colorOutput = jobSpec.color_output as Record<string, unknown>;
   expect(colorOutput.aerial_enabled).toBe(true);
-  expect(colorOutput.aerial_color).toBe("#7d3fa0");
+  expect(colorOutput.aerial_color).toBe("#7D3FA0");
   expect(colorOutput.aerial_width_mm).toBe(0.9);
   expect(colorOutput.rail_lifecycle).toBe("abandoned");
 
   await page.getByRole("tab", { name: "Surface" }).click();
   await expect(liftStyle).toHaveValue("separate");
-  await expect(liftColor).toHaveValue("#7d3fa0");
   await expect(history).toHaveValue("abandoned");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(liftColor).toHaveValue("#7D3FA0");
 });
 
 test("uses the selected elevation source for live previews", async ({
