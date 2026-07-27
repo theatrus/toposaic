@@ -262,8 +262,10 @@ export function ColorsPanel({
         />
       </ColorGroup>
       <p className="color-note palette-note">
-        Colors remain available here when a layer is off or shares another
-        layer. The generated 3MF includes only colors used by that model.
+        Colors stay editable while a layer is off so setups can be prepared in
+        advance. A color affects geometry only when its matching output is
+        enabled. Optional line and marker slots are also omitted when no
+        matching geometry exists.
       </p>
     </fieldset>
   );
