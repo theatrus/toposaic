@@ -102,7 +102,10 @@ pub(super) fn append_road_geometry(
         .filter(|line| {
             matches!(
                 line.class,
-                SurfaceClass::Road | SurfaceClass::Rail | SurfaceClass::Aerial
+                SurfaceClass::Road
+                    | SurfaceClass::Rail
+                    | SurfaceClass::Aerial
+                    | SurfaceClass::RouteTrail
             )
         })
         .filter(overlaps_piece)
@@ -178,6 +181,9 @@ pub(super) fn append_road_geometry(
     let (aerial_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::Aerial);
+    let (route_trail_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::RouteTrail);
     // Ordinary ribbons are clipped in parallel and unioned; the union is
     // shelled per connected component further below, once the bridge decks
     // it must keep clear of are known.
@@ -365,6 +371,25 @@ pub(super) fn append_road_geometry(
     // to the trails. Each layer only ever cedes ground to the layers added
     // before it, so adding railways leaves trail geometry untouched.
     let mut claimed = vec![road_area];
+    if !route_trail_regular.is_empty() {
+        let route_trail_area = append_overlay_geometry(
+            mesh,
+            spec,
+            SurfaceClass::RouteTrail,
+            "triangulate mapped trail ribbon",
+            &route_trail_regular,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(route_trail_area);
+    }
     if !trail_lines.is_empty() {
         let trail_area = append_overlay_geometry(
             mesh,

@@ -308,6 +308,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
     "Snow",
     "Water",
     "Route",
+    "Trail",
     "Building",
     "Imported trail",
     "Railway",
@@ -318,15 +319,24 @@ test("switches between the reflowed control panels", async ({ page }) => {
     "Base label",
   ]) {
     await expect(
-      printColors.getByRole("textbox", { name: `${label} color` }),
+      printColors.getByRole("textbox", {
+        name: `${label} color`,
+        exact: true,
+      }),
     ).toBeVisible();
     await expect(
-      printColors.getByRole("button", { name: `Copy ${label} color` }),
+      printColors.getByRole("button", {
+        name: `Copy ${label} color`,
+        exact: true,
+      }),
     ).toBeVisible();
   }
   await expect(
     printColors.getByRole("textbox", { name: "Forest color" }),
   ).toHaveValue("#28543A");
+  await expect(
+    printColors.getByRole("textbox", { name: "Trail color", exact: true }),
+  ).toHaveValue("#D8A33C");
   const routeColor = printColors.getByRole("textbox", {
     name: "Route color",
   });

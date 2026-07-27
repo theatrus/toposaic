@@ -57,6 +57,9 @@ pub(crate) fn build_preview(
                             || spec.color_output.rail_enabled
                             || spec.color_output.aerial_enabled)
                         && sample.class == SurfaceClass::Road)
+                        || (spec.color_output.enabled
+                            && spec.color_output.roads_enabled
+                            && sample.class == SurfaceClass::RouteTrail)
                         || (spec.uses_trails() && sample.class == SurfaceClass::Trail)
                         || (spec.uses_rail_or_aerial() && sample.class == SurfaceClass::Rail)
                         || (spec.uses_aerial() && sample.class == SurfaceClass::Aerial)
@@ -121,6 +124,16 @@ pub(crate) fn build_preview(
             preview["surface_palette"]["trail"] = serde_json::json!(spec.color_output.trail_color);
             preview["surface_coverage"]["trail"] =
                 serde_json::json!(coverage[SurfaceClass::Trail.material_index() as usize]);
+        }
+        if field.contained_classes()[SurfaceClass::RouteTrail.material_index() as usize] {
+            preview["surface_palette"]["route_trail"] = serde_json::json!(
+                spec.color_output
+                    .route_trail_color
+                    .as_deref()
+                    .unwrap_or(&spec.color_output.road_color)
+            );
+            preview["surface_coverage"]["route_trail"] =
+                serde_json::json!(coverage[SurfaceClass::RouteTrail.material_index() as usize]);
         }
         if spec.uses_colored_markers() {
             preview["surface_palette"]["marker"] = serde_json::json!(spec.marker_settings.color);

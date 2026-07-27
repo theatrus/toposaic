@@ -237,6 +237,22 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.equal(withTrail.trails[0].name, "Loop");
 });
 
+test("mapped trails follow the saved route color until split", () => {
+  assert.equal(
+    initialSpec.color_output.route_trail_color,
+    initialSpec.color_output.road_color,
+  );
+  const oldColorOutput = { ...initialSpec.color_output, road_color: "#123456" };
+  delete oldColorOutput.route_trail_color;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.route_trail_color, "#123456");
+
+  const split = mergeSpecDefaults({
+    color_output: { ...oldColorOutput, route_trail_color: "#654321" },
+  });
+  assert.equal(split.color_output.route_trail_color, "#654321");
+});
+
 test("old setups gain a stable puzzle identity without changing their old cuts", () => {
   const oldSpec = { ...initialSpec };
   delete oldSpec.puzzle_seed;

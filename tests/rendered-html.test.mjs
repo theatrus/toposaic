@@ -150,6 +150,7 @@ test("server-renders TopoSaic", async () => {
   // Trail width renders after an import. Its saved color stays in Colors.
   assert.doesNotMatch(html, /Trail print width/);
   assert.match(html, /Imported trail color/);
+  assert.match(html, /Trail color/);
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);

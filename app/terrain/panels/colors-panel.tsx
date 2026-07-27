@@ -128,10 +128,11 @@ export function ColorsPanel({
     ["Snow", spec.color_output.snow_color],
     ["Water", spec.color_output.water_color],
     ["Route", spec.color_output.road_color],
-    ["Building", spec.color_output.building_color],
+    ["Trail", spec.color_output.route_trail_color],
     ["Imported trail", spec.color_output.trail_color],
     ["Railway", spec.color_output.rail_color],
     ["Aerial lift", spec.color_output.aerial_color],
+    ["Building", spec.color_output.building_color],
     ["Map marker", spec.marker_settings.color],
     ["Display base", spec.tray.tray_color],
     ["Base contours", spec.tray.contour_color],
@@ -201,12 +202,17 @@ export function ColorsPanel({
 
       <ColorGroup
         title="Roads and transport"
-        description="Mapped routes, imported paths, railways, and aerial lifts."
+        description="Mapped routes and trails, imported tracks, railways, and aerial lifts."
       >
         <HexColorField
           label="Route"
           value={spec.color_output.road_color}
           onChange={(value) => updateColor("road_color", value)}
+        />
+        <HexColorField
+          label="Trail"
+          value={spec.color_output.route_trail_color}
+          onChange={(value) => updateColor("route_trail_color", value)}
         />
         <HexColorField
           label="Imported trail"

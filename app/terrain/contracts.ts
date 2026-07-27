@@ -113,6 +113,7 @@ export type GenerationSpec = {
     water_color: string;
     road_color: string;
     building_color: string;
+    route_trail_color: string;
     trail_color: string;
     trail_width_mm: number;
     roads_enabled: boolean;
@@ -219,6 +220,7 @@ export type PreviewData = {
     water: string;
     road: string;
     building: string;
+    route_trail?: string;
     trail?: string;
     rail?: string;
     aerialway?: string;
@@ -231,6 +233,7 @@ export type PreviewData = {
     water: number;
     road: number;
     building: number;
+    route_trail?: number;
     trail?: number;
     rail?: number;
     aerialway?: number;
