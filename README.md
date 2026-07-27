@@ -29,11 +29,23 @@ builds.
 
 ## Screenshots
 
-![TopoSaic v0.4 workspace showing the Mount Rainier map, interactive 3D terrain puzzle preview, and model controls](docs/images/toposaic-studio.png)
+![TopoSaic workspace showing a completed Mount Rainier job beside its generated 3D terrain puzzle preview](docs/images/toposaic-hero-generated-rainier.jpg)
 
-*Choose a place beside a live, rotatable preview. The lower workspace starts
-larger and can be resized with the horizontal divider. A second divider between
-the map and the 3D preview sets their side-by-side split.*
+*Choose a place beside a live, rotatable preview. When generation finishes,
+the preview updates with the final terrain and mapped surface classes. The
+workspace dividers can give the map, preview, or controls more room.*
+
+### Generated terrain examples
+
+| Mount Rainier | Matterhorn | Grand Canyon |
+| --- | --- | --- |
+| ![Generated 4×4 Mount Rainier terrain puzzle with forest, rock, snow, water, and mapped routes](docs/images/toposaic-generated-rainier.jpg) | ![Generated 4×4 Matterhorn terrain puzzle with alpine rock, snow, water, forest, and aerial lifts](docs/images/toposaic-generated-matterhorn.jpg) | ![Generated 4×4 Grand Canyon terrain puzzle with rock, forest, water, and mapped routes](docs/images/toposaic-generated-grand-canyon.jpg) |
+
+These are app captures from real generated `preview.json` output, not mock or
+AI-generated terrain. Each uses an 18 km ground span, a 180 mm model, a 4×4
+puzzle layout, and the 384-sample Draft mesh. TopoSaic sampled Mapzen elevation
+tiles, then applied ESA WorldCover and OpenStreetMap surface data before it
+updated the preview.
 
 The top bar holds one saved-setups control, labeled with the recalled setup's
 name. Open it to see every saved setup on its own row: click a name to recall
