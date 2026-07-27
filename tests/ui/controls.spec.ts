@@ -313,7 +313,30 @@ test("switches between the reflowed control panels", async ({ page }) => {
     name: "Mounting and display base",
   });
   await expect(mountingControls).toBeVisible();
-  await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
+  const placeName = page.getByLabel("Place name");
+  await expect(placeName).toHaveValue("Mount Rainier");
+  const fullUnicodeName = `${"山".repeat(47)}𠮷`;
+  await placeName.fill(`${fullUnicodeName}余`);
+  await expect(placeName).toHaveValue(fullUnicodeName);
+  await placeName.fill("富士山 Mount Fuji");
+  await expect(placeName).toHaveValue("富士山 Mount Fuji");
+  const labelFont = page.getByLabel("Label font");
+  await expect(labelFont).toHaveValue("atkinson_hyperlegible");
+  await expect(labelFont.locator("option")).toHaveText([
+    "Atkinson Hyperlegible",
+    "Noto Sans",
+    "B612 Mono",
+  ]);
+  await labelFont.selectOption("b612_mono");
+  await expect(labelFont).toHaveValue("b612_mono");
+  const labelHeight = page.getByRole("slider", { name: "Label height" });
+  await expect(labelHeight).toHaveValue("4");
+  await labelHeight.fill("5.5");
+  await expect(labelHeight).toHaveValue("5.5");
+  const labelPosition = page.getByLabel("Label position");
+  await expect(labelPosition).toHaveValue("center");
+  await labelPosition.selectOption("right");
+  await expect(labelPosition).toHaveValue("right");
   const retention = page.getByRole("checkbox", {
     name: "Pin puzzle into tray",
   });

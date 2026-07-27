@@ -11,6 +11,7 @@ import {
   formatBytes,
   groundMeshSpacing,
   initialSpec,
+  limitPlaceName,
   mergeSpecDefaults,
   minimumMappedWidthCap,
   normalizeMappedWidthCap,
@@ -33,6 +34,13 @@ test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.1.0", "0.1.0-beta.2"), true);
   assert.equal(isVersionNewer("v0.1.0-beta.2", "0.1.0"), false);
   assert.equal(isVersionNewer("not-a-version", "0.1.0"), false);
+});
+
+test("limits place names by Unicode characters without splitting a pair", () => {
+  const limited = limitPlaceName(`${"山".repeat(47)}𠮷余`);
+  assert.equal(Array.from(limited).length, 48);
+  assert.equal(limited.endsWith("𠮷"), true);
+  assert.equal(limited.includes("�"), false);
 });
 
 test("defaults the 3MF style to the embedded-settings project output", () => {
@@ -223,10 +231,16 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
 test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {
   const oldSpec = structuredClone(initialSpec);
   delete oldSpec.tray.contours_enabled;
+  delete oldSpec.tray.label_font;
+  delete oldSpec.tray.label_height_mm;
+  delete oldSpec.tray.label_position;
   delete oldSpec.puzzle_retention;
   delete oldSpec.wall_mount;
   const merged = mergeSpecDefaults(oldSpec);
   assert.equal(merged.tray.contours_enabled, true);
+  assert.equal(merged.tray.label_font, "atkinson_hyperlegible");
+  assert.equal(merged.tray.label_height_mm, 4);
+  assert.equal(merged.tray.label_position, "center");
   assert.deepEqual(merged.puzzle_retention, {
     enabled: false,
     pin_diameter_mm: 3,

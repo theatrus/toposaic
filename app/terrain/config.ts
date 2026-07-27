@@ -6,6 +6,14 @@ export const DEFAULT_SAMPLES_ACROSS = 640;
 export const LINE_SCALE_CLOSE_SPAN_KM = 2;
 export const LINE_SCALE_WIDE_SPAN_KM = 18;
 export const MAX_ROAD_CLASS_WIDTH_SCALE = 1.4;
+export const MAX_PLACE_NAME_CHARACTERS = 48;
+
+export function limitPlaceName(value: string) {
+  const characters = Array.from(value);
+  return characters.length > MAX_PLACE_NAME_CHARACTERS
+    ? characters.slice(0, MAX_PLACE_NAME_CHARACTERS).join("")
+    : value;
+}
 
 export function closeViewLineScale(
   spanKm: number,
@@ -63,6 +71,9 @@ export const initialSpec: GenerationSpec = {
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",
+    label_font: "atkinson_hyperlegible",
+    label_height_mm: 4,
+    label_position: "center",
     clearance_mm: 0.6,
     rim_width_mm: 8,
     floor_mm: 2.4,

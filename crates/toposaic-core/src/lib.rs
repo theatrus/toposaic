@@ -26,7 +26,7 @@ pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     ElevationSource, GenerationSpec, LineScaleSpec, LineStyle, PuzzleRetentionSpec, RailLifecycle,
     RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
-    SurfaceClass, ThreeMfStyle, TrailRoute, TraySpec, WallMountSpec, WallMountStyle,
-    WallMountTarget,
+    SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec,
+    WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

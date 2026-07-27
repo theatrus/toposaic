@@ -45,7 +45,10 @@
     "resources": {
       "../LICENSE": "LICENSE",
       "../NOTICE": "NOTICE",
-      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../assets/fonts/OFL.txt": "licenses/Atkinson-Hyperlegible-OFL.txt",
+      "../assets/fonts/OFL-NotoSansCJK.txt": "licenses/Noto-Sans-CJK-OFL.txt",
+      "../assets/fonts/OFL-B612Mono.txt": "licenses/B612-Mono-OFL.txt"
     },
     "icon": [
       "icons/32x32.png",

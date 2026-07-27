@@ -4,11 +4,19 @@ The Apache-2.0 license in `LICENSE` covers the TopoSaic source code and
 documentation. It does not relicense third-party software, the bundled font, or
 map data.
 
-## Bundled font
+## Bundled fonts
+
+`assets/fonts/NotoSansJP-Regular.otf` is Copyright 2014-2021 Adobe. The Noto
+CJK project supplies it under the SIL Open Font License, Version 1.1. The
+complete license is in `assets/fonts/OFL-NotoSansCJK.txt`.
 
 `assets/fonts/AtkinsonHyperlegible-Regular.ttf` is Copyright 2020 Braille
 Institute of America, Inc. It is distributed under the SIL Open Font License,
 Version 1.1. The complete license is in `assets/fonts/OFL.txt`.
+
+`assets/fonts/B612Mono-Bold.ttf` is Copyright 2012 The B612 Project Authors.
+It is distributed under the SIL Open Font License, Version 1.1. The complete
+license is in `assets/fonts/OFL-B612Mono.txt`.
 
 ## Software dependencies
 

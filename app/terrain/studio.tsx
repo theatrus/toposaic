@@ -31,6 +31,7 @@ import {
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
   initialSpec,
+  limitPlaceName,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
 } from "./config";
@@ -754,7 +755,10 @@ export function TerrainStudio() {
   const choosePlace = (place: PlaceResult) => {
     onCenterChange(place.longitude, place.latitude);
     setPlaceQuery(place.display_name);
-    update("place_name", place.display_name.split(",")[0].trim().slice(0, 48));
+    update(
+      "place_name",
+      limitPlaceName(place.display_name.split(",")[0].trim()),
+    );
     setPlaceResults([]);
     setPlaceMessage(`Map moved to ${place.display_name.split(",")[0]}.`);
     setGeneratedPreview(null);

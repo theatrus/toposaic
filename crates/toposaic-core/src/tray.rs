@@ -12,8 +12,8 @@ use crate::piece::{local_piece_outline, solid_outline};
 use crate::planar_mesh::{
     add_horizontal_polygons, closed_ring, polygon_from_outline as geo_polygon,
 };
-use crate::spec::{GenerationSpec, SurfaceClass};
-use crate::text::{EmbossedLabel, embossing_font};
+use crate::spec::{GenerationSpec, SurfaceClass, TrayLabelPosition};
+use crate::text::{EmbossedLabel, embossing_fonts, text_metrics};
 
 const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
 const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
@@ -1414,39 +1414,35 @@ fn insert_coordinate(coordinates: &mut Vec<f32>, value: f32) {
 }
 
 fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<EmbossedLabel> {
-    let mut place = spec
+    let place = spec
         .place_name
-        .chars()
-        .flat_map(char::to_uppercase)
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '\'' | '.') {
-                character
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>();
-    place = place.split_whitespace().collect::<Vec<_>>().join(" ");
-    place.truncate(place.floor_char_boundary(26));
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let latitude = coordinate_label(spec.center_lat, 'N', 'S');
     let longitude = coordinate_label(spec.center_lon, 'E', 'W');
     let text = format!("{place}  {latitude} {longitude}");
-    let face = embossing_font()?;
-    let logical_width = text
-        .chars()
-        .filter_map(|character| face.glyph_index(character))
-        .filter_map(|glyph_id| face.glyph_hor_advance(glyph_id))
-        .map(f32::from)
-        .sum::<f32>();
-    let cap_height = f32::from(face.capital_height().unwrap_or(face.ascender()));
-    let scale =
-        ((width - 4.0) / logical_width.max(1.0)).min((lip_depth - 1.6) / cap_height.max(1.0));
-    let text_width = logical_width * scale;
-    let text_height = cap_height * scale;
+    let fonts = embossing_fonts(spec.tray.label_font)?;
+    let metrics = text_metrics(&fonts, &text)?;
+    let horizontal_margin = 2.0_f32.min(width * 0.1);
+    let vertical_margin = 0.8_f32.min(lip_depth * 0.15);
+    let available_width = (width - horizontal_margin * 2.0).max(1.0);
+    let available_height = (lip_depth - vertical_margin * 2.0).max(1.0);
+    let scale = (spec.tray.label_height_mm / metrics.height)
+        .min(available_width / metrics.width)
+        .min(available_height / metrics.height);
+    let text_width = metrics.width * scale;
+    let text_height = metrics.height * scale;
+    let left = match spec.tray.label_position {
+        TrayLabelPosition::Left => horizontal_margin,
+        TrayLabelPosition::Center => (width - text_width) * 0.5,
+        TrayLabelPosition::Right => width - horizontal_margin - text_width,
+    };
     Ok(EmbossedLabel {
         text,
-        origin_x: (width - text_width) * 0.5,
-        baseline_y: (lip_depth - text_height) * 0.5,
+        font: spec.tray.label_font,
+        origin_x: left - metrics.minimum_x * scale,
+        baseline_y: (lip_depth - text_height) * 0.5 - metrics.minimum_y * scale,
         scale,
     })
 }
@@ -1467,7 +1463,8 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
     use crate::spec::{
-        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+        PuzzleRetentionSpec, TrayLabelFont, TraySpec, WallMountSpec, WallMountStyle,
+        WallMountTarget,
     };
 
     #[test]
@@ -1847,6 +1844,7 @@ mod tests {
     fn tray_label_uses_smooth_vector_curves() {
         let label = EmbossedLabel {
             text: "O".into(),
+            font: TrayLabelFont::AtkinsonHyperlegible,
             origin_x: 1.0,
             baseline_y: 1.0,
             scale: 0.005,
@@ -1883,6 +1881,97 @@ mod tests {
             slanted_side_edges > 24,
             "expected a smooth O outline, found {slanted_side_edges} curved segments"
         );
+    }
+
+    #[test]
+    fn tray_label_preserves_case_and_embosses_japanese() {
+        let spec = GenerationSpec {
+            place_name: "富士山 Mount Fuji".into(),
+            tray: TraySpec {
+                label_height_mm: 3.0,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let label = tray_label(&spec, 180.0, 10.0).unwrap();
+        assert!(label.text.starts_with("富士山 Mount Fuji  "));
+        assert!(!label.text.contains("MOUNT FUJI"));
+
+        let mut builder = MeshBuilder::default();
+        label.add_embossed_shapes(&mut builder, 3.0).unwrap();
+        let mesh = builder.finish("japanese-vector-label");
+        assert_watertight(&mesh);
+        assert!(mesh.triangles.len() > 100);
+    }
+
+    #[test]
+    fn tray_label_fonts_emboss_multilingual_watertight_text() {
+        let mut widths = Vec::new();
+        for font in [
+            TrayLabelFont::AtkinsonHyperlegible,
+            TrayLabelFont::NotoSans,
+            TrayLabelFont::B612Mono,
+        ] {
+            let spec = GenerationSpec {
+                place_name: "Hạ Long Москва 富士山".into(),
+                tray: TraySpec {
+                    label_font: font,
+                    label_height_mm: 3.0,
+                    ..TraySpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            let label = tray_label(&spec, 180.0, 10.0).unwrap();
+            assert_eq!(label.font, font);
+            assert!(label.text.starts_with("Hạ Long Москва 富士山  "));
+
+            let metrics = text_metrics(&embossing_fonts(font).unwrap(), "TopoSaic 123").unwrap();
+            widths.push(metrics.width);
+            let mut builder = MeshBuilder::default();
+            label.add_embossed_shapes(&mut builder, 3.0).unwrap();
+            assert_watertight(&builder.finish("multilingual-vector-label"));
+        }
+        assert!(
+            widths
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() > 1.0)
+        );
+    }
+
+    #[test]
+    fn tray_label_height_and_position_control_the_layout() {
+        let mut spec = GenerationSpec {
+            place_name: "Fuji".into(),
+            tray: TraySpec {
+                label_height_mm: 2.0,
+                label_position: TrayLabelPosition::Left,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let left = tray_label(&spec, 240.0, 12.0).unwrap();
+        spec.tray.label_position = TrayLabelPosition::Center;
+        let center = tray_label(&spec, 240.0, 12.0).unwrap();
+        spec.tray.label_position = TrayLabelPosition::Right;
+        let right = tray_label(&spec, 240.0, 12.0).unwrap();
+        assert!(left.origin_x < center.origin_x);
+        assert!(center.origin_x < right.origin_x);
+
+        spec.tray.label_position = TrayLabelPosition::Center;
+        spec.tray.label_height_mm = 4.0;
+        let larger = tray_label(&spec, 240.0, 12.0).unwrap();
+        assert!((larger.scale / center.scale - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn tray_label_reports_unsupported_characters() {
+        let spec = GenerationSpec {
+            place_name: "Fuji 🗻".into(),
+            ..GenerationSpec::default()
+        };
+        let error = tray_label(&spec, 180.0, 10.0).unwrap_err();
+        assert!(error.to_string().contains("cannot render"));
+        assert!(error.to_string().contains("🗻"));
     }
 
     #[test]
