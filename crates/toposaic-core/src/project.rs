@@ -206,7 +206,13 @@ pub fn generate_marker_artifacts(
     spec: &GenerationSpec,
     output_dir: &Path,
 ) -> Result<Vec<Artifact>> {
-    if !spec.uses_flag_holes() || !spec.marker_settings.export_flag_template {
+    let export_flags = spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind.is_flag())
+        .filter(|marker| marker.flag_style().export_template)
+        .collect::<Vec<_>>();
+    if export_flags.is_empty() {
         return Ok(Vec::new());
     }
     let mut flag_spec = spec.clone();
@@ -221,30 +227,39 @@ pub fn generate_marker_artifacts(
             kind: MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
             label_style: None,
         });
     }
     let mut artifacts = Vec::new();
-    if spec
-        .markers
+    let blank_flags = export_flags
         .iter()
-        .any(|marker| marker.kind == MarkerKind::FlagHole)
-    {
-        let blank = build_flag_template(&spec.marker_settings, None)?;
-        artifacts.extend(write_flag_artifacts(
-            &flag_spec,
-            output_dir,
-            "marker-flag-template",
-            &blank,
-        )?);
+        .copied()
+        .filter(|marker| marker.kind == MarkerKind::FlagHole)
+        .collect::<Vec<_>>();
+    for (index, marker) in blank_flags.iter().enumerate() {
+        let style = marker.flag_style();
+        let blank = build_flag_template(&style, None)?;
+        let stem = if blank_flags.len() == 1 {
+            "marker-flag-template".into()
+        } else {
+            format!(
+                "marker-flag-blank-{:02}-{}",
+                index + 1,
+                artifact_slug(&marker.name)
+            )
+        };
+        artifacts.extend(write_flag_artifacts(&flag_spec, output_dir, &stem, &blank)?);
     }
-    for (index, marker) in spec
-        .markers
+    for (index, marker) in export_flags
         .iter()
+        .copied()
         .filter(|marker| marker.kind == MarkerKind::FlagLabel)
         .enumerate()
     {
-        let flag = build_flag_template(&spec.marker_settings, Some(marker.name.trim()))?;
+        let style = marker.flag_style();
+        let flag = build_flag_template(&style, Some(marker.name.trim()))?;
         let stem = format!(
             "marker-flag-{:02}-{}",
             index + 1,
@@ -629,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn flag_jobs_export_blank_and_named_prints() {
+    fn flag_jobs_honor_each_markers_export_choice() {
         let output_dir =
             std::env::temp_dir().join(format!("toposaic-marker-flag-test-{}", std::process::id()));
         if output_dir.exists() {
@@ -646,6 +661,11 @@ mod tests {
                     kind: crate::spec::MarkerKind::FlagHole,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    dot_style: None,
+                    flag_style: Some(crate::spec::FlagMarkerStyle {
+                        export_template: false,
+                        ..crate::spec::FlagMarkerStyle::default()
+                    }),
                     label_style: None,
                 },
                 crate::spec::MapMarker {
@@ -655,6 +675,8 @@ mod tests {
                     kind: crate::spec::MarkerKind::FlagLabel,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    dot_style: None,
+                    flag_style: None,
                     label_style: None,
                 },
             ],
@@ -662,8 +684,6 @@ mod tests {
         };
         let manifest = generate_project(&spec, &output_dir).unwrap();
         for name in [
-            "marker-flag-template.stl",
-            "marker-flag-template.3mf",
             "marker-flag-01-mount-fuji.stl",
             "marker-flag-01-mount-fuji.3mf",
         ] {
@@ -675,6 +695,8 @@ mod tests {
                     .any(|artifact| artifact.name == name)
             );
         }
+        assert!(!output_dir.join("marker-flag-template.stl").exists());
+        assert!(!output_dir.join("marker-flag-template.3mf").exists());
         std::fs::remove_dir_all(output_dir).unwrap();
     }
 
@@ -697,6 +719,8 @@ mod tests {
                     kind: crate::spec::MarkerKind::PlaqueLabel,
                     label_height_mm: 4.0,
                     rotation_degrees: 25.0,
+                    dot_style: None,
+                    flag_style: None,
                     label_style: None,
                 },
                 crate::spec::MapMarker {
@@ -706,6 +730,8 @@ mod tests {
                     kind: crate::spec::MarkerKind::Dot,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    dot_style: None,
+                    flag_style: None,
                     label_style: None,
                 },
             ],

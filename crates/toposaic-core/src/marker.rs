@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::mesh::{Mesh, MeshBuilder, weld_export_mesh};
 use crate::planar_mesh::{add_horizontal_polygons, polygon_from_outline};
-use crate::spec::{MarkerSpec, SurfaceClass};
+use crate::spec::{FlagMarkerStyle, SurfaceClass};
 use crate::text::{EmbossedLabel, embossing_fonts, text_metrics};
 
 const FLAG_POST_LENGTH_MM: f32 = 10.0;
@@ -11,13 +11,13 @@ const FLAG_LABEL_MARGIN_MM: f32 = 1.0;
 /// A flat-print flag sized to the configured socket. The stem and banner form
 /// one watertight profile. A named flag adds fitted vector text to its top;
 /// a blank stays ready for symbols or later edits in a slicer or CAD tool.
-pub(crate) fn build_flag_template(settings: &MarkerSpec, label: Option<&str>) -> Result<Mesh> {
-    let post_diameter = settings.hole_diameter_mm - settings.flag_clearance_mm;
+pub(crate) fn build_flag_template(settings: &FlagMarkerStyle, label: Option<&str>) -> Result<Mesh> {
+    let post_diameter = settings.hole_diameter_mm - settings.fit_clearance_mm;
     let thickness = 0.8_f32.min(post_diameter * 0.7);
     let stem_width = (post_diameter * post_diameter - thickness * thickness).sqrt();
     let half_stem = stem_width * 0.5;
-    let banner_right = half_stem + settings.flag_width_mm;
-    let banner_top = FLAG_POST_LENGTH_MM + settings.flag_height_mm;
+    let banner_right = half_stem + settings.width_mm;
+    let banner_top = FLAG_POST_LENGTH_MM + settings.height_mm;
     let outline = [
         [-half_stem, 0.0],
         [half_stem, 0.0],
@@ -61,7 +61,7 @@ pub(crate) fn build_flag_template(settings: &MarkerSpec, label: Option<&str>) ->
 
 fn add_flag_label(
     builder: &mut MeshBuilder,
-    settings: &MarkerSpec,
+    settings: &FlagMarkerStyle,
     label: &str,
     half_stem: f32,
     surface_z: f32,
@@ -69,9 +69,9 @@ fn add_flag_label(
     let text = label.split_whitespace().collect::<Vec<_>>().join(" ");
     let fonts = embossing_fonts(settings.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
-    let available_width = (settings.flag_width_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
-    let available_height = (settings.flag_height_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
-    let scale = (settings.flag_label_height_mm / metrics.height)
+    let available_width = (settings.width_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
+    let available_height = (settings.height_mm - FLAG_LABEL_MARGIN_MM * 2.0).max(1.0);
+    let scale = (settings.label_height_mm / metrics.height)
         .min(available_width / metrics.width)
         .min(available_height / metrics.height);
     let text_width = metrics.width * scale;
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn flag_post_uses_the_requested_round_socket_clearance() {
-        let settings = MarkerSpec::default();
+        let settings = FlagMarkerStyle::default();
         let mesh = build_flag_template(&settings, None).unwrap();
         assert_watertight(&mesh);
         let stem = mesh
@@ -124,8 +124,7 @@ mod tests {
             .fold(f32::NEG_INFINITY, f32::max);
         let post_diagonal = (maximum_x - minimum_x).hypot(maximum_z - minimum_z);
         assert!(
-            (post_diagonal - (settings.hole_diameter_mm - settings.flag_clearance_mm)).abs()
-                < 0.001
+            (post_diagonal - (settings.hole_diameter_mm - settings.fit_clearance_mm)).abs() < 0.001
         );
     }
 
@@ -136,10 +135,10 @@ mod tests {
             crate::spec::LabelFont::NotoSans,
             crate::spec::LabelFont::B612Mono,
         ] {
-            let settings = MarkerSpec {
+            let settings = FlagMarkerStyle {
                 label_font: font,
-                flag_width_mm: 36.0,
-                ..MarkerSpec::default()
+                width_mm: 36.0,
+                ..FlagMarkerStyle::default()
             };
             let mesh = build_flag_template(&settings, Some("富士山 Mount Fuji")).unwrap();
             assert_watertight(&mesh);

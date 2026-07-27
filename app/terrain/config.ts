@@ -1,4 +1,4 @@
-import type { GenerationSpec, MarkerKind } from "./contracts";
+import type { GenerationSpec, MapMarker, MarkerKind } from "./contracts";
 
 // Client default for both sample totals; also stands in when a spec carries
 // an explicit null ("backend picks"), so label math never divides by zero.
@@ -8,6 +8,28 @@ export const LINE_SCALE_WIDE_SPAN_KM = 18;
 export const MAX_ROAD_CLASS_WIDTH_SCALE = 1.4;
 export const MAX_PLACE_NAME_CHARACTERS = 48;
 export const MAX_MARKER_NAME_CHARACTERS = 80;
+
+export const DEFAULT_DOT_MARKER_STYLE: NonNullable<MapMarker["dot_style"]> = {
+  diameter_mm: 3,
+};
+
+export const DEFAULT_FLAG_MARKER_STYLE: NonNullable<MapMarker["flag_style"]> = {
+  hole_diameter_mm: 2.4,
+  hole_depth_mm: 2,
+  fit_clearance_mm: 0.2,
+  label_font: "atkinson_hyperlegible",
+  label_height_mm: 4,
+  width_mm: 30,
+  height_mm: 12,
+  export_template: true,
+};
+
+export const DEFAULT_MAP_LABEL_STYLE: NonNullable<MapMarker["label_style"]> = {
+  label_font: "atkinson_hyperlegible",
+  relief_mm: 0.4,
+  plaque_padding_mm: 1.2,
+  plaque_thickness_mm: 0.8,
+};
 
 function limitCharacters(value: string, maximum: number) {
   const characters = Array.from(value);
@@ -97,18 +119,6 @@ export const initialSpec: GenerationSpec = {
   },
   marker_settings: {
     color: "#E24A33",
-    dot_diameter_mm: 3,
-    hole_diameter_mm: 2.4,
-    hole_depth_mm: 2,
-    flag_clearance_mm: 0.2,
-    label_font: "atkinson_hyperlegible",
-    flag_label_height_mm: 4,
-    flag_width_mm: 30,
-    flag_height_mm: 12,
-    map_label_relief_mm: 0.4,
-    plaque_padding_mm: 1.2,
-    plaque_thickness_mm: 0.8,
-    export_flag_template: true,
   },
   tray: {
     enabled: true,
@@ -255,7 +265,9 @@ export function normalizeMappedWidthCap(
 
 // Fill any field a saved spec is missing with the client default, so setups
 // saved before a field existed still recall cleanly.
-export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpec {
+export function mergeSpecDefaults(
+  saved: Partial<GenerationSpec>,
+): GenerationSpec {
   const savedWallMount = saved.wall_mount as
     | (Partial<GenerationSpec["wall_mount"]> & {
         depth_mm?: number;
@@ -298,8 +310,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     marker_settings: {
-      ...initialSpec.marker_settings,
-      ...saved.marker_settings,
+      color: saved.marker_settings?.color ?? initialSpec.marker_settings.color,
     },
     tray: { ...initialSpec.tray, ...saved.tray },
     puzzle_retention: {
@@ -313,24 +324,6 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       ...marker,
       label_height_mm: marker.label_height_mm ?? 4,
       rotation_degrees: marker.rotation_degrees ?? 0,
-      ...(isMapLabel(marker.kind)
-        ? {
-            label_style: {
-              relief_mm:
-                marker.label_style?.relief_mm ??
-                saved.marker_settings?.map_label_relief_mm ??
-                initialSpec.marker_settings.map_label_relief_mm,
-              plaque_padding_mm:
-                marker.label_style?.plaque_padding_mm ??
-                saved.marker_settings?.plaque_padding_mm ??
-                initialSpec.marker_settings.plaque_padding_mm,
-              plaque_thickness_mm:
-                marker.label_style?.plaque_thickness_mm ??
-                saved.marker_settings?.plaque_thickness_mm ??
-                initialSpec.marker_settings.plaque_thickness_mm,
-            },
-          }
-        : {}),
     })),
   };
 }
@@ -407,9 +400,7 @@ export function terrainSamplesAcross(spec: GenerationSpec) {
       total,
       Math.min(
         MAX_ASSEMBLED_SAMPLES,
-        Math.ceil(
-          (spec.ground_span_km * 1000) / FINE_DEM_TARGET_RESOLUTION_M,
-        ),
+        Math.ceil((spec.ground_span_km * 1000) / FINE_DEM_TARGET_RESOLUTION_M),
       ),
     );
   }

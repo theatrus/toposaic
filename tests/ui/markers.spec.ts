@@ -42,18 +42,29 @@ test("places map markers and submits their print modes", async ({ page }) => {
 
   await controls.getByRole("button", { name: "Color dot" }).click();
   await map.click({ position: { x: 260, y: 180 } });
+  await controls.getByLabel("Marker 2 dot diameter").fill("5");
   await controls.getByRole("button", { name: "Blank flag" }).click();
   await map.click({ position: { x: 300, y: 210 } });
+  await controls.getByLabel("Marker 3 flag-hole diameter").fill("3.2");
+  await controls.getByLabel("Marker 3 flag width").fill("34");
+  await controls.getByLabel("Marker 3 export printable flag").uncheck();
   await controls.getByRole("button", { name: "Named flag" }).click();
   await map.click({ position: { x: 180, y: 100 } });
   await controls.getByLabel("Marker 4 name").fill("富士山 Mount Fuji");
-  await expect(page.locator(".map-marker-name")).toHaveText("富士山 Mount Fuji");
+  await controls.getByLabel("Marker 4 label font").selectOption("noto_sans");
+  await controls.getByLabel("Marker 4 flag width").fill("42");
+  await controls.getByLabel("Marker 4 flag height").fill("14");
+  await controls.getByLabel("Marker 4 flag label height").fill("5");
+  await expect(page.locator(".map-marker-name")).toHaveText(
+    "富士山 Mount Fuji",
+  );
   await controls.getByRole("button", { name: "Surface label" }).click();
   await map.click({ position: { x: 340, y: 120 } });
   await controls.getByLabel("Marker 5 name").fill("North Fork");
   await controls.getByLabel("Marker 5 text height").fill("5.5");
   await controls.getByLabel("Marker 5 rotation").fill("35");
   await controls.getByLabel("Marker 5 relief").fill("0.7");
+  await controls.getByLabel("Marker 5 label font").selectOption("b612_mono");
   await controls.getByRole("button", { name: "Raised plaque" }).click();
   await map.click({ position: { x: 380, y: 80 } });
   await controls.getByLabel("Marker 6 name").fill("Mirror Lake");
@@ -108,26 +119,18 @@ test("places map markers and submits their print modes", async ({ page }) => {
     .getByRole("button", { name: "Cancel moving marker 富士山 Mount Fuji" })
     .click();
   await expect(moveFlag).toHaveAttribute("aria-pressed", "false");
-  await expect(controls.getByLabel("Label font")).toHaveValue(
-    "atkinson_hyperlegible",
-  );
-  await controls.getByLabel("Label font").selectOption("noto_sans");
-  await controls.getByRole("slider", { name: "Flag width" }).fill("42");
-  await controls.getByRole("slider", { name: "Flag height" }).fill("14");
-  await controls.getByRole("slider", { name: "Flag label height" }).fill("5");
   await expect(
-    controls.getByRole("checkbox", {
-      name: "Export printable blank and named flags",
-    }),
+    controls.getByLabel("Marker 4 export printable flag"),
   ).toBeChecked();
-
   await page.getByRole("tab", { name: "Colors" }).click();
   await expect(
     page.getByRole("textbox", { name: "Map marker color" }),
   ).toHaveValue("#E24A33");
 
   await page.getByRole("button", { name: /^Generate/ }).click();
-  await expect.poll(() => (jobSpec.markers as unknown[] | undefined)?.length).toBe(6);
+  await expect
+    .poll(() => (jobSpec.markers as unknown[] | undefined)?.length)
+    .toBe(6);
   const markers = jobSpec.markers as Array<{
     name: string;
     kind: string;
@@ -135,7 +138,17 @@ test("places map markers and submits their print modes", async ({ page }) => {
     longitude: number;
     label_height_mm: number;
     rotation_degrees: number;
+    dot_style?: { diameter_mm: number };
+    flag_style?: {
+      hole_diameter_mm: number;
+      width_mm: number;
+      height_mm: number;
+      label_height_mm: number;
+      label_font: string;
+      export_template: boolean;
+    };
     label_style: {
+      label_font: string;
       relief_mm: number;
       plaque_padding_mm: number;
       plaque_thickness_mm: number;
@@ -151,14 +164,31 @@ test("places map markers and submits their print modes", async ({ page }) => {
   ]);
   expect(markers[0].name).toBe("Home");
   expect(markers[0].latitude).not.toBe(46.900001);
-  expect(markers.every((marker) => Number.isFinite(marker.latitude))).toBe(true);
-  expect(markers.every((marker) => Number.isFinite(marker.longitude))).toBe(true);
+  expect(markers.every((marker) => Number.isFinite(marker.latitude))).toBe(
+    true,
+  );
+  expect(markers.every((marker) => Number.isFinite(marker.longitude))).toBe(
+    true,
+  );
   expect(markers[3].name).toBe("富士山 Mount Fuji");
+  expect(markers[1].dot_style).toEqual({ diameter_mm: 5 });
+  expect(markers[2].flag_style).toMatchObject({
+    hole_diameter_mm: 3.2,
+    width_mm: 34,
+    export_template: false,
+  });
+  expect(markers[3].flag_style).toMatchObject({
+    label_font: "noto_sans",
+    label_height_mm: 5,
+    width_mm: 42,
+    height_mm: 14,
+    export_template: true,
+  });
   expect(markers[4]).toMatchObject({
     name: "North Fork",
     label_height_mm: 5.5,
     rotation_degrees: 35,
-    label_style: { relief_mm: 0.7 },
+    label_style: { label_font: "b612_mono", relief_mm: 0.7 },
   });
   expect(markers[5]).toMatchObject({
     name: "Mirror Lake",
@@ -170,16 +200,5 @@ test("places map markers and submits their print modes", async ({ page }) => {
     },
   });
   expect((jobSpec.buildings as { enabled: boolean }).enabled).toBe(true);
-  const markerSettings = jobSpec.marker_settings as {
-    flag_height_mm: number;
-    label_font: string;
-    flag_label_height_mm: number;
-    flag_width_mm: number;
-    hole_diameter_mm: number;
-  };
-  expect(markerSettings.hole_diameter_mm).toBe(2.4);
-  expect(markerSettings.label_font).toBe("noto_sans");
-  expect(markerSettings.flag_label_height_mm).toBe(5);
-  expect(markerSettings.flag_width_mm).toBe(42);
-  expect(markerSettings.flag_height_mm).toBe(14);
+  expect(jobSpec.marker_settings).toEqual({ color: "#E24A33" });
 });

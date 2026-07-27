@@ -22,8 +22,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, GenerationSpec, artifact_path, generate_marker_artifacts,
-    generate_project_with_fields_cancellable, generate_tray_artifacts,
+    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, artifact_path,
+    generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -585,9 +585,17 @@ fn run_adjacent_grid_job(
             None
         };
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
-        // A super-tile shares one flag blank. Per-tile generation would
-        // build and discard the same STL and 3MF in every temporary folder.
-        terrain_spec.marker_settings.export_flag_template = false;
+        // A super-tile exports each requested flag once. Per-tile generation
+        // would build and discard the same files in every temporary folder.
+        for marker in terrain_spec
+            .markers
+            .iter_mut()
+            .filter(|marker| matches!(marker.kind, MarkerKind::FlagHole | MarkerKind::FlagLabel))
+        {
+            let mut style = marker.flag_style.unwrap_or_else(FlagMarkerStyle::default);
+            style.export_template = false;
+            marker.flag_style = Some(style);
+        }
         let manifest = generate_project_with_fields_cancellable(
             &terrain_spec,
             height_field,

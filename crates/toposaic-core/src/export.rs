@@ -676,6 +676,8 @@ mod tests {
             kind: crate::spec::MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
             label_style: None,
         }];
         let slot = spec
@@ -948,6 +950,8 @@ mod tests {
             kind: crate::spec::MarkerKind::SurfaceLabel,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
             label_style: None,
         });
         let field = field_with(&[]);
@@ -970,6 +974,8 @@ mod tests {
             kind: crate::spec::MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
             label_style: None,
         });
         let field = field_with(&[]);
@@ -1009,6 +1015,8 @@ mod tests {
             kind: crate::spec::MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
             label_style: None,
         }];
 

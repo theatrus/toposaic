@@ -259,18 +259,22 @@ impl GenerationSpec {
         for trail in &self.trails {
             trail.validate()?;
         }
-        self.marker_settings.validate(self)?;
+        self.marker_settings.validate()?;
         if self.markers.len() > MAX_MAP_MARKERS {
             bail!("map marker count must be at most {MAX_MAP_MARKERS}");
         }
         for marker in &self.markers {
-            marker.validate()?;
-            if (marker.kind == MarkerKind::FlagLabel && self.marker_settings.export_flag_template)
-                || marker.kind.is_map_label()
-            {
+            marker.validate(self.base_mm)?;
+            if marker.kind == MarkerKind::FlagLabel && marker.flag_style().export_template {
                 crate::text::validate_embossing_text(
                     marker.name.trim(),
-                    self.marker_settings.label_font,
+                    marker.flag_style().label_font,
+                )?;
+            }
+            if marker.kind.is_map_label() {
+                crate::text::validate_embossing_text(
+                    marker.name.trim(),
+                    marker.label_style().label_font,
                 )?;
             }
         }
@@ -290,7 +294,10 @@ impl GenerationSpec {
             for (second, second_point) in &flag_holes[index + 1..] {
                 let distance_mm = ((first_point[0] - second_point[0]) * self.width_mm)
                     .hypot((first_point[1] - second_point[1]) * self.height_mm());
-                if distance_mm < self.marker_settings.hole_diameter_mm {
+                let minimum_distance = (first.flag_style().hole_diameter_mm
+                    + second.flag_style().hole_diameter_mm)
+                    * 0.5;
+                if distance_mm < minimum_distance {
                     bail!(
                         "flag markers '{}' and '{}' overlap; move them farther apart",
                         first.name,
@@ -834,17 +841,75 @@ pub struct MapMarker {
     /// Clockwise rotation on the north-up map.
     #[serde(default)]
     pub rotation_degrees: f32,
-    /// Per-label print dimensions. Older setups omit this and keep using the
-    /// shared marker defaults so their output does not change.
+    /// Per-dot print dimensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_style: Option<DotMarkerStyle>,
+    /// Per-flag socket and printable-banner dimensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag_style: Option<FlagMarkerStyle>,
+    /// Per-label print dimensions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_style: Option<MapLabelStyle>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DotMarkerStyle {
+    pub diameter_mm: f32,
+}
+
+impl Default for DotMarkerStyle {
+    fn default() -> Self {
+        Self { diameter_mm: 3.0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FlagMarkerStyle {
+    pub hole_diameter_mm: f32,
+    pub hole_depth_mm: f32,
+    pub fit_clearance_mm: f32,
+    pub label_font: LabelFont,
+    pub label_height_mm: f32,
+    pub width_mm: f32,
+    pub height_mm: f32,
+    pub export_template: bool,
+}
+
+impl Default for FlagMarkerStyle {
+    fn default() -> Self {
+        Self {
+            hole_diameter_mm: 2.4,
+            hole_depth_mm: 2.0,
+            fit_clearance_mm: 0.2,
+            label_font: LabelFont::AtkinsonHyperlegible,
+            label_height_mm: 4.0,
+            width_mm: 30.0,
+            height_mm: 12.0,
+            export_template: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MapLabelStyle {
+    pub label_font: LabelFont,
     pub relief_mm: f32,
     pub plaque_padding_mm: f32,
     pub plaque_thickness_mm: f32,
+}
+
+impl Default for MapLabelStyle {
+    fn default() -> Self {
+        Self {
+            label_font: LabelFont::AtkinsonHyperlegible,
+            relief_mm: 0.4,
+            plaque_padding_mm: 1.2,
+            plaque_thickness_mm: 0.8,
+        }
+    }
 }
 
 fn default_map_label_height_mm() -> f32 {
@@ -852,7 +917,7 @@ fn default_map_label_height_mm() -> f32 {
 }
 
 impl MapMarker {
-    fn validate(&self) -> Result<()> {
+    fn validate(&self, base_mm: f32) -> Result<()> {
         if self.name.trim().is_empty() || self.name.chars().count() > MAX_MARKER_NAME_CHARS {
             bail!("marker names must contain between 1 and {MAX_MARKER_NAME_CHARS} characters");
         }
@@ -872,9 +937,44 @@ impl MapMarker {
         {
             bail!("map label rotation must be between -180 and 180 degrees");
         }
-        if self.kind.is_map_label()
-            && let Some(style) = self.label_style
-        {
+        if self.kind == MarkerKind::Dot {
+            let style = self.dot_style();
+            if !(1.0..=10.0).contains(&style.diameter_mm) {
+                bail!("marker dot diameter must be between 1 and 10 mm");
+            }
+        }
+        if self.kind.is_flag() {
+            let style = self.flag_style();
+            if !(1.2..=6.0).contains(&style.hole_diameter_mm) {
+                bail!("marker flag-hole diameter must be between 1.2 and 6 mm");
+            }
+            if !(0.6..=6.0).contains(&style.hole_depth_mm) {
+                bail!("marker flag-hole depth must be between 0.6 and 6 mm");
+            }
+            if style.hole_depth_mm > base_mm - 0.4 {
+                bail!("marker flag holes must leave at least 0.4 mm of terrain base");
+            }
+            if !(0.1..=0.6).contains(&style.fit_clearance_mm) {
+                bail!("marker flag clearance must be between 0.1 and 0.6 mm");
+            }
+            if style.hole_diameter_mm - style.fit_clearance_mm < 0.9 {
+                bail!("marker flag clearance must leave at least a 0.9 mm flag post");
+            }
+            if !(1.5..=10.0).contains(&style.label_height_mm) {
+                bail!("marker flag label height must be between 1.5 and 10 mm");
+            }
+            if !(12.0..=80.0).contains(&style.width_mm) {
+                bail!("marker flag width must be between 12 and 80 mm");
+            }
+            if !(6.0..=30.0).contains(&style.height_mm) {
+                bail!("marker flag height must be between 6 and 30 mm");
+            }
+            if style.label_height_mm > style.height_mm - 2.0 {
+                bail!("marker flag label height must leave a 1 mm margin above and below");
+            }
+        }
+        if self.kind.is_map_label() {
+            let style = self.label_style();
             if !(0.2..=1.2).contains(&style.relief_mm) {
                 bail!("map label relief must be between 0.2 and 1.2 mm");
             }
@@ -888,12 +988,16 @@ impl MapMarker {
         Ok(())
     }
 
-    pub(crate) fn label_style(&self, defaults: &MarkerSpec) -> MapLabelStyle {
-        self.label_style.unwrap_or(MapLabelStyle {
-            relief_mm: defaults.map_label_relief_mm,
-            plaque_padding_mm: defaults.plaque_padding_mm,
-            plaque_thickness_mm: defaults.plaque_thickness_mm,
-        })
+    pub(crate) fn dot_style(&self) -> DotMarkerStyle {
+        self.dot_style.unwrap_or_default()
+    }
+
+    pub(crate) fn flag_style(&self) -> FlagMarkerStyle {
+        self.flag_style.unwrap_or_default()
+    }
+
+    pub(crate) fn label_style(&self) -> MapLabelStyle {
+        self.label_style.unwrap_or_default()
     }
 }
 
@@ -901,83 +1005,20 @@ impl MapMarker {
 #[serde(default)]
 pub struct MarkerSpec {
     pub color: String,
-    pub dot_diameter_mm: f32,
-    pub hole_diameter_mm: f32,
-    pub hole_depth_mm: f32,
-    pub flag_clearance_mm: f32,
-    pub label_font: LabelFont,
-    pub flag_label_height_mm: f32,
-    pub flag_width_mm: f32,
-    pub flag_height_mm: f32,
-    pub map_label_relief_mm: f32,
-    pub plaque_padding_mm: f32,
-    pub plaque_thickness_mm: f32,
-    pub export_flag_template: bool,
 }
 
 impl Default for MarkerSpec {
     fn default() -> Self {
         Self {
             color: "#E24A33".into(),
-            dot_diameter_mm: 3.0,
-            hole_diameter_mm: 2.4,
-            hole_depth_mm: 2.0,
-            flag_clearance_mm: 0.2,
-            label_font: LabelFont::AtkinsonHyperlegible,
-            flag_label_height_mm: 4.0,
-            flag_width_mm: 30.0,
-            flag_height_mm: 12.0,
-            map_label_relief_mm: 0.4,
-            plaque_padding_mm: 1.2,
-            plaque_thickness_mm: 0.8,
-            export_flag_template: true,
         }
     }
 }
 
 impl MarkerSpec {
-    fn validate(&self, spec: &GenerationSpec) -> Result<()> {
+    fn validate(&self) -> Result<()> {
         if !valid_hex_color(&self.color) {
             bail!("marker color must be a #RRGGBB value");
-        }
-        if !(1.0..=10.0).contains(&self.dot_diameter_mm) {
-            bail!("marker dot diameter must be between 1 and 10 mm");
-        }
-        if !(1.2..=6.0).contains(&self.hole_diameter_mm) {
-            bail!("marker flag-hole diameter must be between 1.2 and 6 mm");
-        }
-        if !(0.6..=6.0).contains(&self.hole_depth_mm) {
-            bail!("marker flag-hole depth must be between 0.6 and 6 mm");
-        }
-        if !(0.1..=0.6).contains(&self.flag_clearance_mm) {
-            bail!("marker flag clearance must be between 0.1 and 0.6 mm");
-        }
-        if self.hole_diameter_mm - self.flag_clearance_mm < 0.9 {
-            bail!("marker flag clearance must leave at least a 0.9 mm flag post");
-        }
-        if !(1.5..=10.0).contains(&self.flag_label_height_mm) {
-            bail!("marker flag label height must be between 1.5 and 10 mm");
-        }
-        if !(12.0..=80.0).contains(&self.flag_width_mm) {
-            bail!("marker flag width must be between 12 and 80 mm");
-        }
-        if !(6.0..=30.0).contains(&self.flag_height_mm) {
-            bail!("marker flag height must be between 6 and 30 mm");
-        }
-        if self.flag_label_height_mm > self.flag_height_mm - 2.0 {
-            bail!("marker flag label height must leave a 1 mm margin above and below");
-        }
-        if !(0.2..=1.2).contains(&self.map_label_relief_mm) {
-            bail!("map label relief must be between 0.2 and 1.2 mm");
-        }
-        if !(0.5..=5.0).contains(&self.plaque_padding_mm) {
-            bail!("map label plaque padding must be between 0.5 and 5 mm");
-        }
-        if !(0.4..=3.0).contains(&self.plaque_thickness_mm) {
-            bail!("map label plaque thickness must be between 0.4 and 3 mm");
-        }
-        if spec.uses_flag_holes() && self.hole_depth_mm > spec.base_mm - 0.4 {
-            bail!("marker flag holes must leave at least 0.4 mm of terrain base");
         }
         Ok(())
     }
@@ -2099,7 +2140,7 @@ mod tests {
         let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
-            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\",\"dot_diameter_mm\":3.0,\"hole_diameter_mm\":2.4,\"hole_depth_mm\":2.0,\"flag_clearance_mm\":0.2,\"label_font\":\"atkinson_hyperlegible\",\"flag_label_height_mm\":4.0,\"flag_width_mm\":30.0,\"flag_height_mm\":12.0,\"map_label_relief_mm\":0.4,\"plaque_padding_mm\":1.2,\"plaque_thickness_mm\":0.8,\"export_flag_template\":true},",
+            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let expected = expected.replace(
@@ -2196,19 +2237,7 @@ mod tests {
             },
             "buildings": { "enabled": true, "z_scale": 2.0 },
             "marker_settings": {
-                "color": "#E24A33",
-                "dot_diameter_mm": 4.0,
-                "hole_diameter_mm": 3.0,
-                "hole_depth_mm": 2.0,
-                "flag_clearance_mm": 0.25,
-                "label_font": "noto_sans",
-                "flag_label_height_mm": 5.0,
-                "flag_width_mm": 42.0,
-                "flag_height_mm": 14.0,
-                "map_label_relief_mm": 0.5,
-                "plaque_padding_mm": 1.5,
-                "plaque_thickness_mm": 1.0,
-                "export_flag_template": true
+                "color": "#E24A33"
             },
             "color_output": {
                 "enabled": true,
@@ -2265,7 +2294,8 @@ mod tests {
                     "longitude": -110.5,
                     "kind": "dot",
                     "label_height_mm": 4.0,
-                    "rotation_degrees": 0.0
+                    "rotation_degrees": 0.0,
+                    "dot_style": { "diameter_mm": 4.0 }
                 }
             ]
         }"##,
@@ -2353,6 +2383,8 @@ mod tests {
                 kind: MarkerKind::Dot,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
                 label_style: None,
             }],
             ..GenerationSpec::default()
@@ -2395,9 +2427,12 @@ mod tests {
         assert!(spec.validate().unwrap_err().to_string().contains("height"));
         spec.markers[0].label_height_mm = 4.0;
         spec.markers[0].kind = MarkerKind::FlagHole;
-        spec.marker_settings.hole_depth_mm = spec.base_mm;
+        spec.markers[0].flag_style = Some(FlagMarkerStyle {
+            hole_depth_mm: spec.base_mm,
+            ..FlagMarkerStyle::default()
+        });
         assert!(spec.validate().is_err());
-        spec.marker_settings.hole_depth_mm = 2.0;
+        spec.markers[0].flag_style = Some(FlagMarkerStyle::default());
         spec.markers[0].latitude = 91.0;
         assert!(spec.validate().is_err());
 
@@ -2413,6 +2448,8 @@ mod tests {
                     kind: MarkerKind::FlagHole,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    dot_style: None,
+                    flag_style: None,
                     label_style: None,
                 },
                 MapMarker {
@@ -2422,6 +2459,8 @@ mod tests {
                     kind: MarkerKind::FlagLabel,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    dot_style: None,
+                    flag_style: None,
                     label_style: None,
                 },
             ],

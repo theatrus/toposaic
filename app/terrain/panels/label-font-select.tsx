@@ -1,6 +1,4 @@
-import type { GenerationSpec } from "../contracts";
-
-type LabelFont = GenerationSpec["marker_settings"]["label_font"];
+import type { LabelFont } from "../contracts";
 
 const LABEL_FONTS: Array<{ value: LabelFont; label: string }> = [
   { value: "atkinson_hyperlegible", label: "Atkinson Hyperlegible" },
@@ -9,10 +7,12 @@ const LABEL_FONTS: Array<{ value: LabelFont; label: string }> = [
 ];
 
 export function LabelFontSelect({
+  ariaLabel,
   note,
   onChange,
   value,
 }: {
+  ariaLabel?: string;
   note?: string;
   onChange: (font: LabelFont) => void;
   value: LabelFont;
@@ -22,7 +22,7 @@ export function LabelFontSelect({
       <span>Label font</span>
       <span className="font-select-control">
         <select
-          aria-label="Label font"
+          aria-label={ariaLabel ?? "Label font"}
           onChange={(event) => onChange(event.target.value as LabelFont)}
           value={value}
         >

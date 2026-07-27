@@ -60,13 +60,13 @@ pub(super) fn append_dot_geometry(
     building_union: Option<&MultiPolygon<f64>>,
 ) -> Result<()> {
     let piece_polygon = geo_polygon(piece_outline);
-    let radius = spec.marker_settings.dot_diameter_mm * 0.5;
     let footprints = spec
         .markers
         .iter()
         .filter(|marker| marker.kind == MarkerKind::Dot)
         .map(|marker| {
             let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
+            let radius = marker.dot_style().diameter_mm * 0.5;
             marker_circle(
                 [
                     uv[0] * assembled_width - origin_x,
@@ -97,7 +97,7 @@ pub(super) fn append_dot_geometry(
                     uv[0] * assembled_width - origin_x,
                     uv[1] * assembled_height - origin_y,
                 ],
-                spec.marker_settings.hole_diameter_mm * 0.5 + OVERLAY_SEPARATION_MM as f32,
+                marker.flag_style().hole_diameter_mm * 0.5 + OVERLAY_SEPARATION_MM as f32,
             )
             .intersection(&piece_polygon)
         })
@@ -244,9 +244,9 @@ pub(super) fn append_road_geometry(
         .iter()
         .filter_map(|marker| {
             let radius = f64::from(match marker.kind {
-                MarkerKind::Dot => spec.marker_settings.dot_diameter_mm * 0.5,
+                MarkerKind::Dot => marker.dot_style().diameter_mm * 0.5,
                 MarkerKind::FlagHole | MarkerKind::FlagLabel => {
-                    spec.marker_settings.hole_diameter_mm * 0.5
+                    marker.flag_style().hole_diameter_mm * 0.5
                 }
                 MarkerKind::Building | MarkerKind::SurfaceLabel | MarkerKind::PlaqueLabel => {
                     return None;
@@ -1018,7 +1018,7 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
     use crate::preview::build_preview;
-    use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
+    use crate::spec::{BuildingSpec, ColorOutputSpec, DotMarkerStyle, MapMarker, MarkerKind};
 
     #[test]
     fn dot_markers_are_smooth_vector_overlays_without_surface_data() {
@@ -1034,6 +1034,8 @@ mod tests {
                 kind: MarkerKind::Dot,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: Some(DotMarkerStyle { diameter_mm: 5.0 }),
+                flag_style: None,
                 label_style: None,
             }],
             ..defaults
@@ -1067,8 +1069,8 @@ mod tests {
             .iter()
             .map(|point| point[2])
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!((minimum_x - 28.5).abs() < 0.001);
-        assert!((maximum_x - 31.5).abs() < 0.001);
+        assert!((minimum_x - 27.5).abs() < 0.001);
+        assert!((maximum_x - 32.5).abs() < 0.001);
         assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
         assert!((maximum_z - (spec.base_mm + DOT_OVERLAY_HEIGHT_MM)).abs() < 0.001);
     }
@@ -1163,6 +1165,8 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
                 label_style: None,
             }],
             ..GenerationSpec::default()
@@ -1170,7 +1174,7 @@ mod tests {
 
         let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
-        let clear_radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        let clear_radius = spec.markers[0].flag_style().hole_diameter_mm * 0.5;
         assert!(
             mesh.triangles
                 .iter()

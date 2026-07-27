@@ -1,4 +1,5 @@
 export function RangeField({
+  ariaLabel,
   label,
   value,
   unit,
@@ -9,6 +10,7 @@ export function RangeField({
   onChange,
   note,
 }: {
+  ariaLabel?: string;
   label: string;
   value: number;
   unit: string;
@@ -26,7 +28,7 @@ export function RangeField({
         <output>{displayValue ?? `${value}${unit}`}</output>
       </span>
       <input
-        aria-label={label}
+        aria-label={ariaLabel ?? label}
         type="range"
         min={min}
         max={max}

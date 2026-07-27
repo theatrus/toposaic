@@ -42,8 +42,8 @@ pub(super) fn append_label_geometry(
     {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let center = [uv[0] * assembled_width, uv[1] * assembled_height];
-        let label_style = marker.label_style(&spec.marker_settings);
-        let prepared = prepare_label(spec, marker, center)?;
+        let label_style = marker.label_style();
+        let prepared = prepare_label(marker, center)?;
         let local_text = prepared
             .text
             .translate(-f64::from(origin_x), -f64::from(origin_y));
@@ -113,13 +113,10 @@ pub(super) fn append_label_geometry(
     Ok(())
 }
 
-fn prepare_label(
-    spec: &GenerationSpec,
-    marker: &MapMarker,
-    center: [f32; 2],
-) -> Result<PreparedLabel> {
+fn prepare_label(marker: &MapMarker, center: [f32; 2]) -> Result<PreparedLabel> {
     let text = marker.name.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fonts = embossing_fonts(spec.marker_settings.label_font)?;
+    let label_style = marker.label_style();
+    let fonts = embossing_fonts(label_style.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
     let scale = marker.label_height_mm / metrics.height;
     let text_width = metrics.width * scale;
@@ -128,7 +125,7 @@ fn prepare_label(
     let angle = -marker.rotation_degrees.to_radians();
     let contours = EmbossedLabel {
         text,
-        font: spec.marker_settings.label_font,
+        font: label_style.label_font,
         origin_x,
         baseline_y,
         scale,
@@ -142,7 +139,7 @@ fn prepare_label(
             .collect()
     })
     .collect::<Vec<Vec<[f32; 2]>>>();
-    let padding = marker.label_style(&spec.marker_settings).plaque_padding_mm;
+    let padding = label_style.plaque_padding_mm;
     let half_width = text_width * 0.5 + padding;
     let half_height = marker.label_height_mm * 0.5 + padding;
     let plaque = polygon_from_points(
@@ -342,6 +339,8 @@ mod tests {
                 kind,
                 label_height_mm: 5.0,
                 rotation_degrees,
+                dot_style: None,
+                flag_style: None,
                 label_style: None,
             }],
             ..defaults
@@ -454,6 +453,7 @@ mod tests {
     fn each_plaque_uses_its_own_relief_padding_and_base_height() {
         let mut spec = label_spec(MarkerKind::PlaqueLabel, 0.0);
         spec.markers[0].label_style = Some(MapLabelStyle {
+            label_font: crate::spec::LabelFont::AtkinsonHyperlegible,
             relief_mm: 0.9,
             plaque_padding_mm: 2.6,
             plaque_thickness_mm: 1.7,
@@ -465,7 +465,6 @@ mod tests {
         assert!(marker_bounds[2] - marker_bounds[0] > 20.0);
         let uv = spec.normalized_map_point(spec.markers[0].latitude, spec.markers[0].longitude);
         let prepared = prepare_label(
-            &spec,
             &spec.markers[0],
             [uv[0] * spec.width_mm, uv[1] * spec.height_mm()],
         )
@@ -521,6 +520,8 @@ mod tests {
                 kind: MarkerKind::PlaqueLabel,
                 label_height_mm: 5.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
                 label_style: None,
             }],
             ..defaults
