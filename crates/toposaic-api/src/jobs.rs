@@ -444,7 +444,10 @@ fn run_adjacent_grid_job(
         } else {
             None
         };
-        let terrain_spec = output_plan.terrain_spec(tile_spec);
+        let mut terrain_spec = output_plan.terrain_spec(tile_spec);
+        // A super-tile shares one flag blank. Per-tile generation would
+        // build and discard the same STL and 3MF in every temporary folder.
+        terrain_spec.marker_settings.export_flag_template = false;
         let manifest = generate_project_with_fields_cancellable(
             &terrain_spec,
             height_field,

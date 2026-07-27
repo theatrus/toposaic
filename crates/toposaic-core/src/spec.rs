@@ -245,6 +245,31 @@ impl GenerationSpec {
         for marker in &self.markers {
             marker.validate()?;
         }
+        let flag_holes = self
+            .markers
+            .iter()
+            .filter(|marker| marker.kind == MarkerKind::FlagHole)
+            .map(|marker| {
+                (
+                    marker,
+                    self.normalized_map_point(marker.latitude, marker.longitude),
+                )
+            })
+            .filter(|(_, point)| (0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1]))
+            .collect::<Vec<_>>();
+        for (index, (first, first_point)) in flag_holes.iter().enumerate() {
+            for (second, second_point) in &flag_holes[index + 1..] {
+                let distance_mm = ((first_point[0] - second_point[0]) * self.width_mm)
+                    .hypot((first_point[1] - second_point[1]) * self.height_mm());
+                if distance_mm < self.marker_settings.hole_diameter_mm {
+                    bail!(
+                        "flag markers '{}' and '{}' overlap; move them farther apart",
+                        first.name,
+                        second.name
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -781,8 +806,8 @@ impl MarkerSpec {
         if !(0.1..=0.6).contains(&self.flag_clearance_mm) {
             bail!("marker flag clearance must be between 0.1 and 0.6 mm");
         }
-        if self.flag_clearance_mm >= self.hole_diameter_mm - 0.4 {
-            bail!("marker flag clearance leaves no printable flag post");
+        if self.hole_diameter_mm - self.flag_clearance_mm < 0.9 {
+            bail!("marker flag clearance must leave at least a 0.9 mm flag post");
         }
         if spec.uses_flag_holes() && self.hole_depth_mm > spec.base_mm - 0.4 {
             bail!("marker flag holes must leave at least 0.4 mm of terrain base");
@@ -2131,6 +2156,30 @@ mod tests {
         spec.marker_settings.hole_depth_mm = 2.0;
         spec.markers[0].latitude = 91.0;
         assert!(spec.validate().is_err());
+
+        let mut overlapping = GenerationSpec {
+            width_mm: 100.0,
+            rows: 2,
+            columns: 2,
+            markers: vec![
+                MapMarker {
+                    name: "First".into(),
+                    latitude: 46.8523,
+                    longitude: -121.7603,
+                    kind: MarkerKind::FlagHole,
+                },
+                MapMarker {
+                    name: "Second".into(),
+                    latitude: 46.8523,
+                    longitude: -121.7603,
+                    kind: MarkerKind::FlagHole,
+                },
+            ],
+            ..GenerationSpec::default()
+        };
+        assert!(overlapping.validate().is_err());
+        overlapping.markers[1].longitude += 0.01;
+        overlapping.validate().unwrap();
     }
 
     #[test]

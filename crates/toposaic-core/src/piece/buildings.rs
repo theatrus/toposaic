@@ -86,6 +86,29 @@ pub(super) fn append_building_geometry(
         .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
         .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
         .collect::<Vec<_>>();
+    let flag_cavities = spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
+        .map(|marker| {
+            let point = spec.normalized_map_point(marker.latitude, marker.longitude);
+            let center = [
+                point[0] * assembled_width - origin_x,
+                point[1] * assembled_height - origin_y,
+            ];
+            let radius =
+                spec.marker_settings.hole_diameter_mm * 0.5 + super::OVERLAY_SEPARATION_MM as f32;
+            (0..32)
+                .map(|index| {
+                    let angle = index as f32 / 32.0 * std::f32::consts::TAU;
+                    [
+                        center[0] + radius * angle.cos(),
+                        center[1] + radius * angle.sin(),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let clipped_buildings = candidates
         .par_iter()
         .map(|building| {
@@ -211,7 +234,24 @@ pub(super) fn append_building_geometry(
                 }
             }
             retract_isolated_member_contacts(&mut constraint_rings, outline_ring_count);
-            build_building_union_shell(&snapped_component, constraint_rings, members, &bottom)
+            let cavity_rings = flag_cavities
+                .iter()
+                .filter(|ring| {
+                    geo_polygon(ring)
+                        .intersection(&snapped_component)
+                        .unsigned_area()
+                        > MINIMUM_OVERLAY_AREA_MM2
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            constraint_rings.extend(cavity_rings.iter().cloned());
+            build_building_union_shell(
+                &snapped_component,
+                constraint_rings,
+                &cavity_rings,
+                members,
+                &bottom,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
     for shell in shells {
@@ -458,6 +498,7 @@ fn smooth_roof_partition(
 fn build_building_union_shell(
     component: &Polygon<f64>,
     constraint_rings: Vec<Vec<[f32; 2]>>,
+    cavity_rings: &[Vec<[f32; 2]>],
     members: &[&ClippedBuilding],
     bottom: &impl Fn([f32; 2]) -> f32,
 ) -> Result<MeshBuilder> {
@@ -492,9 +533,14 @@ fn build_building_union_shell(
         if !component.contains(&centroid) {
             continue;
         }
-        let Some((roof, material)) =
-            face_roof_material(members, [centroid.x() as f32, centroid.y() as f32])
-        else {
+        let centroid_xy = [centroid.x() as f32, centroid.y() as f32];
+        if cavity_rings
+            .iter()
+            .any(|ring| point_in_polygon(centroid_xy, ring))
+        {
+            continue;
+        }
+        let Some((roof, material)) = face_roof_material(members, centroid_xy) else {
             continue;
         };
         let index = face.fix().index();
@@ -755,7 +801,7 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
-    use crate::spec::{BuildingSpec, ColorOutputSpec};
+    use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
 
     #[test]
     fn highlighted_building_uses_the_marker_material() {
@@ -780,6 +826,49 @@ mod tests {
         let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
         assert!(mesh.materials.contains(&SurfaceClass::Marker));
+    }
+
+    #[test]
+    fn flag_sockets_cut_through_building_roofs() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "building").unwrap();
+        field.paint_building(&[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]], 12.0);
+        let defaults = GenerationSpec::default();
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 1,
+            columns: 1,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            markers: vec![MapMarker {
+                name: "Covered flag".into(),
+                latitude: defaults.center_lat,
+                longitude: defaults.center_lon,
+                kind: MarkerKind::FlagHole,
+            }],
+            ..defaults
+        };
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let roof_covers_socket = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Building)
+            .any(|(triangle, _)| {
+                let vertices = triangle.map(|index| mesh.vertices[index as usize]);
+                let flat = (vertices[0][2] - vertices[1][2]).abs() < 0.0001
+                    && (vertices[0][2] - vertices[2][2]).abs() < 0.0001;
+                flat && vertices[0][2] > spec.base_mm
+                    && point_in_polygon(
+                        [50.0, 50.0],
+                        &vertices.map(|vertex| [vertex[0], vertex[1]]),
+                    )
+            });
+        assert!(!roof_covers_socket);
     }
 
     #[test]

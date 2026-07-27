@@ -206,7 +206,10 @@ export function MarkersPanel({
       />
       <RangeField
         label="Flag fit clearance"
-        max={0.6}
+        max={Math.min(
+          0.6,
+          Math.max(0.1, spec.marker_settings.hole_diameter_mm - 0.9),
+        )}
         min={0.1}
         onChange={(value) => updateMarkerSettings("flag_clearance_mm", value)}
         step={0.05}

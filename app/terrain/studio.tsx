@@ -495,10 +495,16 @@ export function TerrainStudio() {
       value: GenerationSpec["marker_settings"][Key],
     ) => {
       setGeneratedPreview(null);
-      setSpec((current) => ({
-        ...current,
-        marker_settings: { ...current.marker_settings, [key]: value },
-      }));
+      setSpec((current) => {
+        const markerSettings = { ...current.marker_settings, [key]: value };
+        if (key === "hole_diameter_mm") {
+          markerSettings.flag_clearance_mm = Math.min(
+            markerSettings.flag_clearance_mm,
+            Math.max(0.1, (value as number) - 0.9),
+          );
+        }
+        return { ...current, marker_settings: markerSettings };
+      });
     },
     [],
   );

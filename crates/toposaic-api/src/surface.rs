@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{
@@ -547,6 +547,9 @@ pub fn fetch_surface_field(
                 ),
             ),
             Err(error) => {
+                if spec.uses_building_markers() {
+                    return Err(error).context("map building markers require OpenStreetMap data");
+                }
                 warn!(%error, "OpenStreetMap buildings unavailable; omitting buildings");
                 append_source(
                     &mut field.source,
@@ -1435,18 +1438,34 @@ fn paint_buildings(
     field: &mut SurfaceField,
 ) -> Result<usize> {
     let response = fetch_osm_response(spec, cache_dir, "buildings", building_query(bounds))?;
+    let building_markers = spec
+        .markers
+        .iter()
+        .enumerate()
+        .filter(|(_, marker)| marker.kind == MarkerKind::Building)
+        .map(|(index, marker)| {
+            (
+                index,
+                marker,
+                spec.normalized_map_point(marker.latitude, marker.longitude),
+            )
+        })
+        .filter(|(_, _, point)| (0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1]))
+        .collect::<Vec<_>>();
+    let mut matched_markers = HashSet::new();
     let mut painted = 0;
     for building in response.elements {
         if building.geometry.len() < 3 {
             continue;
         }
         let points = normalized_osm_points(&building, spec, bounds);
-        let highlighted = spec
-            .markers
-            .iter()
-            .filter(|marker| marker.kind == MarkerKind::Building)
-            .map(|marker| spec.normalized_map_point(marker.latitude, marker.longitude))
-            .any(|point| point_in_polygon(point, &points));
+        let mut highlighted = false;
+        for (index, _, point) in &building_markers {
+            if point_in_polygon(*point, &points) {
+                matched_markers.insert(*index);
+                highlighted = true;
+            }
+        }
         field.paint_building_with_class(
             &points,
             building_height_m(&building.tags),
@@ -1457,6 +1476,15 @@ fn paint_buildings(
             },
         );
         painted += 1;
+    }
+    if let Some((_, marker, _)) = building_markers
+        .iter()
+        .find(|(index, _, _)| !matched_markers.contains(index))
+    {
+        bail!(
+            "building marker '{}' does not fall inside an OpenStreetMap building footprint",
+            marker.name
+        );
     }
     Ok(painted)
 }

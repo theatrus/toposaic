@@ -898,6 +898,21 @@ impl SurfaceField {
     ) -> SurfaceSample {
         let bucket = vector_bucket_index(u, v);
         let building_height_m = self.building_height_at_in_bucket(u, v, bucket);
+        let has_marker = self.vector_area_buckets[bucket]
+            .iter()
+            .rev()
+            .map(|index| &self.vector_areas[*index])
+            .any(|area| {
+                area.building_height_m == 0.0
+                    && area.class == Some(SurfaceClass::Marker)
+                    && point_in_polygon([u, v], &area.points)
+            });
+        if has_marker {
+            return SurfaceSample {
+                class: SurfaceClass::Marker,
+                building_height_m,
+            };
+        }
         if include_buildings && building_height_m > 0.0 {
             return SurfaceSample {
                 class: SurfaceClass::Building,
@@ -2071,5 +2086,19 @@ mod tests {
             (scaled_building_height_mm(&spec, field.building_height_at(0.5, 0.5)) - 2.4).abs()
                 < 0.001
         );
+    }
+
+    #[test]
+    fn marker_areas_take_priority_over_crossing_roads() {
+        let mut field =
+            SurfaceField::new(21, 21, vec![SurfaceClass::Rock; 21 * 21], "markers").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 100.0, 1.0, SurfaceClass::Road);
+        field.paint_surface_area(
+            &[[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]],
+            SurfaceClass::Marker,
+        );
+
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Marker);
+        assert_eq!(field.class_at(0.25, 0.5), SurfaceClass::Road);
     }
 }
