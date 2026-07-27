@@ -68,6 +68,7 @@ export function TerrainMap({
     worldY: number;
   } | null>(null);
   const [zoom, setZoom] = useState(9);
+  const [zoomLinked, setZoomLinked] = useState(true);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [tilesLoaded, setTilesLoaded] = useState(false);
   const superTileColumns = Math.max(1, spec.adjacent_columns);
@@ -323,17 +324,19 @@ export function TerrainMap({
         Math.min(MAX_MAP_ZOOM, zoom + delta),
       );
       if (nextZoom === zoom) return;
-      const nextGroundSpan = spec.ground_span_km * 2 ** (zoom - nextZoom);
-      if (
-        nextGroundSpan < MIN_GROUND_SPAN_KM ||
-        nextGroundSpan > MAX_GROUND_SPAN_KM
-      ) {
-        return;
+      if (zoomLinked) {
+        const nextGroundSpan = spec.ground_span_km * 2 ** (zoom - nextZoom);
+        if (
+          nextGroundSpan < MIN_GROUND_SPAN_KM ||
+          nextGroundSpan > MAX_GROUND_SPAN_KM
+        ) {
+          return;
+        }
+        onGroundSpanChange(Math.round(nextGroundSpan * 4) / 4);
       }
       setZoom(nextZoom);
-      onGroundSpanChange(Math.round(nextGroundSpan * 4) / 4);
     },
-    [onGroundSpanChange, spec.ground_span_km, zoom],
+    [onGroundSpanChange, spec.ground_span_km, zoom, zoomLinked],
   );
 
   // React's onWheel registers a passive listener, so preventDefault is a
@@ -342,6 +345,7 @@ export function TerrainMap({
     const container = containerRef.current;
     if (!container) return;
     const wheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
       event.preventDefault();
       changeZoom(event.deltaY < 0 ? 1 : -1);
     };
@@ -351,10 +355,10 @@ export function TerrainMap({
 
   const canZoomIn =
     zoom < MAX_MAP_ZOOM &&
-    spec.ground_span_km / 2 >= MIN_GROUND_SPAN_KM;
+    (!zoomLinked || spec.ground_span_km / 2 >= MIN_GROUND_SPAN_KM);
   const canZoomOut =
     zoom > MIN_MAP_ZOOM &&
-    spec.ground_span_km * 2 <= MAX_GROUND_SPAN_KM;
+    (!zoomLinked || spec.ground_span_km * 2 <= MAX_GROUND_SPAN_KM);
 
   return (
     <div className="map-shell">
@@ -362,7 +366,7 @@ export function TerrainMap({
         ref={containerRef}
         className="map-canvas"
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-        aria-label="Terrain map. Drag to choose a place, or focus the map and pan with the arrow keys."
+        aria-label="Terrain map. Drag to choose a place, use the mouse wheel to zoom, or focus the map and pan with the arrow keys."
         onKeyDown={keyDown}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
@@ -372,7 +376,7 @@ export function TerrainMap({
         }}
         role="application"
         tabIndex={0}
-        title="Arrow keys pan the focused map · Shift for bigger steps"
+        title="Scroll to zoom · Arrow keys pan · Shift for bigger steps"
       >
         <div className="map-tiles" aria-hidden="true">
           {tiles.map((tile) => (
@@ -457,6 +461,20 @@ export function TerrainMap({
       <div className="map-zoom" aria-label="Map zoom">
         <button
           type="button"
+          aria-label="Resize selected area with map zoom"
+          aria-pressed={zoomLinked}
+          className="map-zoom-mode"
+          onClick={() => setZoomLinked((linked) => !linked)}
+          title={
+            zoomLinked
+              ? "Zoom changes the selected area"
+              : "Zoom changes the map view only"
+          }
+        >
+          {zoomLinked ? "Linked" : "Map only"}
+        </button>
+        <button
+          type="button"
           aria-label="Zoom in"
           disabled={!canZoomIn}
           onClick={() => changeZoom(1)}
@@ -489,7 +507,10 @@ export function TerrainMap({
             {superTileActive
               ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
               : "Drag the map to choose a place"}
-            <small>Arrow keys pan · Shift for bigger steps</small>
+            <small>
+              {zoomLinked ? "Linked zoom" : "Map-only zoom"} · Scroll to zoom
+              · Arrow keys pan · Shift for bigger steps
+            </small>
           </>
         ) : (
           "Loading map tiles…"
