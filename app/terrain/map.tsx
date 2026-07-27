@@ -27,6 +27,44 @@ const MAX_MAP_ZOOM = 17;
 // Arrow keys pan the focused map by a share of the current ground span.
 const KEYBOARD_PAN_SHARE = 0.1;
 const KEYBOARD_PAN_SHARE_SHIFT = 0.5;
+
+type MapInteractionMode = "pan" | "select";
+
+type SelectionDraft = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  cellSize: number;
+};
+
+function selectionDraft(
+  startX: number,
+  startY: number,
+  currentX: number,
+  currentY: number,
+  columns: number,
+  rows: number,
+): SelectionDraft {
+  const deltaX = currentX - startX;
+  const deltaY = currentY - startY;
+  const cellSize = Math.max(
+    Math.abs(deltaX) / Math.max(1, columns),
+    Math.abs(deltaY) / Math.max(1, rows),
+  );
+  const width = cellSize * Math.max(1, columns);
+  const height = cellSize * Math.max(1, rows);
+  const endX = startX + (deltaX < 0 ? -width : width);
+  const endY = startY + (deltaY < 0 ? -height : height);
+  return {
+    left: Math.min(startX, endX),
+    top: Math.min(startY, endY),
+    width,
+    height,
+    cellSize,
+  };
+}
+
 function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
   const clampedLatitude = Math.max(
@@ -54,6 +92,14 @@ function unprojectFromWorld(x: number, y: number, zoom: number) {
   };
 }
 
+function metresPerPixelAtLatitude(latitude: number, zoom: number) {
+  return (
+    (156543.03392 *
+      Math.max(0.1, Math.cos((latitude * Math.PI) / 180))) /
+    2 ** zoom
+  );
+}
+
 export function TerrainMap({
   spec,
   markerPlacementMode,
@@ -70,13 +116,23 @@ export function TerrainMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
     pointerId: number;
+    mode: MapInteractionMode | "marker";
     startX: number;
     startY: number;
+    localStartX: number;
+    localStartY: number;
     worldX: number;
     worldY: number;
   } | null>(null);
   const [zoom, setZoom] = useState(9);
   const [zoomLinked, setZoomLinked] = useState(true);
+  const [interactionMode, setInteractionMode] =
+    useState<MapInteractionMode>("pan");
+  const [viewCenter, setViewCenter] = useState<{
+    longitude: number;
+    latitude: number;
+  } | null>(null);
+  const [draft, setDraft] = useState<SelectionDraft | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [tilesLoaded, setTilesLoaded] = useState(false);
   const superTileColumns = Math.max(1, spec.adjacent_columns);
@@ -96,10 +152,7 @@ export function TerrainMap({
     return () => observer.disconnect();
   }, []);
 
-  const baseMetresPerPixel =
-    (156543.03392 *
-      Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
-    2 ** zoom;
+  const baseMetresPerPixel = metresPerPixelAtLatitude(spec.center_lat, zoom);
   const baseSelectionSize = (spec.ground_span_km * 1000) / baseMetresPerPixel;
   const fitScale = Math.max(
     1,
@@ -160,7 +213,7 @@ export function TerrainMap({
     superTileColumns,
     superTileRows,
   ]);
-  const viewWorldCenter = useMemo(() => {
+  const selectionWorldCenter = useMemo(() => {
     const firstCell = superTileCells[0];
     const lastCell = superTileCells.at(-1);
     if (!firstCell || !lastCell) return anchorWorld;
@@ -169,6 +222,13 @@ export function TerrainMap({
       y: (firstCell.worldY + lastCell.worldY) / 2,
     };
   }, [anchorWorld, superTileCells]);
+  const viewWorldCenter = useMemo(
+    () =>
+      viewCenter
+        ? projectToWorld(viewCenter.longitude, viewCenter.latitude, mapZoom)
+        : selectionWorldCenter,
+    [mapZoom, selectionWorldCenter, viewCenter],
+  );
   const tiles = useMemo(() => {
     if (!size.width || !size.height) return [];
     const firstX =
@@ -251,10 +311,7 @@ export function TerrainMap({
     });
   }, [anchorWorld.x, mapZoom, size, spec.markers, viewWorldCenter]);
 
-  const metresPerPixel =
-    (156543.03392 *
-      Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
-    2 ** mapZoom;
+  const metresPerPixel = metresPerPixelAtLatitude(spec.center_lat, mapZoom);
   const selectionSize = Math.max(
     8,
     Math.min(
@@ -280,31 +337,49 @@ export function TerrainMap({
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
+    const bounds = event.currentTarget.getBoundingClientRect();
     dragRef.current = {
       pointerId: event.pointerId,
+      mode: markerPlacementMode ? "marker" : interactionMode,
       startX: event.clientX,
       startY: event.clientY,
-      worldX: anchorWorld.x,
-      worldY: anchorWorld.y,
+      localStartX: event.clientX - bounds.left,
+      localStartY: event.clientY - bounds.top,
+      worldX: viewWorldCenter.x,
+      worldY: viewWorldCenter.y,
     };
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (markerPlacementMode) return;
+    if (drag.mode === "marker") return;
+    if (drag.mode === "select") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setDraft(
+        selectionDraft(
+          drag.localStartX,
+          drag.localStartY,
+          event.clientX - bounds.left,
+          event.clientY - bounds.top,
+          superTileColumns,
+          superTileRows,
+        ),
+      );
+      return;
+    }
     const next = moveToWorld(
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
     );
-    onCenterChange(next.longitude, next.latitude);
+    setViewCenter(next);
   };
 
   const pointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    if (markerPlacementMode) {
+    if (drag.mode === "marker") {
       if (
         Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <=
         6
@@ -318,11 +393,62 @@ export function TerrainMap({
       }
       return;
     }
+    if (drag.mode === "select") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const nextDraft = selectionDraft(
+        drag.localStartX,
+        drag.localStartY,
+        event.clientX - bounds.left,
+        event.clientY - bounds.top,
+        superTileColumns,
+        superTileRows,
+      );
+      setDraft(null);
+      if (nextDraft.cellSize < 8) return;
+      const draftCenter = moveToWorld(
+        viewWorldCenter.x +
+          nextDraft.left +
+          nextDraft.width * 0.5 -
+          size.width * 0.5,
+        viewWorldCenter.y +
+          nextDraft.top +
+          nextDraft.height * 0.5 -
+          size.height * 0.5,
+      );
+      const draftMetresPerPixel = metresPerPixelAtLatitude(
+        draftCenter.latitude,
+        mapZoom,
+      );
+      const nextGroundSpan = Math.max(
+        MIN_GROUND_SPAN_KM,
+        Math.min(
+          MAX_GROUND_SPAN_KM,
+          Math.round(((nextDraft.cellSize * draftMetresPerPixel) / 1000) * 4) /
+            4,
+        ),
+      );
+      const anchorX =
+        spec.super_tile_anchor === "center"
+          ? nextDraft.left + nextDraft.width * 0.5
+          : nextDraft.left + nextDraft.cellSize * 0.5;
+      const anchorY =
+        spec.super_tile_anchor === "center"
+          ? nextDraft.top + nextDraft.height * 0.5
+          : nextDraft.top + nextDraft.cellSize * 0.5;
+      const nextAnchor = moveToWorld(
+        viewWorldCenter.x + anchorX - size.width * 0.5,
+        viewWorldCenter.y + anchorY - size.height * 0.5,
+      );
+      setViewCenter(moveToWorld(viewWorldCenter.x, viewWorldCenter.y));
+      onGroundSpanChange(nextGroundSpan);
+      onCenterChange(nextAnchor.longitude, nextAnchor.latitude);
+      return;
+    }
     const next = moveToWorld(
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
     );
-    onCenterChange(next.longitude, next.latitude);
+    setViewCenter(next);
   };
 
   const keyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -342,14 +468,20 @@ export function TerrainMap({
     const share = event.shiftKey
       ? KEYBOARD_PAN_SHARE_SHIFT
       : KEYBOARD_PAN_SHARE;
-    const panPixels = (spec.ground_span_km * 1000 * share) / metresPerPixel;
+    const viewPosition = moveToWorld(viewWorldCenter.x, viewWorldCenter.y);
+    const viewMetresPerPixel = metresPerPixelAtLatitude(
+      viewPosition.latitude,
+      mapZoom,
+    );
+    const panPixels =
+      (spec.ground_span_km * 1000 * share) / viewMetresPerPixel;
     // moveToWorld runs the same unproject as drags, so latitude clamps to
     // the Mercator range and longitude wraps at the antimeridian.
     const next = moveToWorld(
-      anchorWorld.x + east * panPixels,
-      anchorWorld.y - north * panPixels,
+      viewWorldCenter.x + east * panPixels,
+      viewWorldCenter.y - north * panPixels,
     );
-    onCenterChange(next.longitude, next.latitude);
+    setViewCenter(next);
   };
 
   const changeZoom = useCallback(
@@ -394,24 +526,30 @@ export function TerrainMap({
   const canZoomOut =
     zoom > MIN_MAP_ZOOM &&
     (!zoomLinked || spec.ground_span_km * 2 <= MAX_GROUND_SPAN_KM);
+  const displayedViewCenter =
+    viewCenter ?? moveToWorld(selectionWorldCenter.x, selectionWorldCenter.y);
 
   return (
     <div className="map-shell">
       <div
         ref={containerRef}
-        className={`map-canvas${markerPlacementMode ? " placing-marker" : ""}`}
+        className={`map-canvas map-${interactionMode}${markerPlacementMode ? " placing-marker" : ""}`}
+        data-interaction-mode={markerPlacementMode ? "marker" : interactionMode}
+        data-view-latitude={displayedViewCenter.latitude.toFixed(8)}
+        data-view-longitude={displayedViewCenter.longitude.toFixed(8)}
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-        aria-label="Terrain map. Drag to choose a place, use the mouse wheel to zoom, or focus the map and pan with the arrow keys."
+        aria-label="Terrain map. Pan the map or draw a terrain area. Use the mouse wheel to zoom or focus the map and pan with the arrow keys."
         onKeyDown={keyDown}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
         onPointerUp={pointerUp}
         onPointerCancel={() => {
           dragRef.current = null;
+          setDraft(null);
         }}
         role="application"
         tabIndex={0}
-        title="Scroll to zoom · Arrow keys pan · Shift for bigger steps"
+        title="Drag to pan or draw · Scroll to zoom · Arrow keys pan"
       >
         <div className="map-tiles" aria-hidden="true">
           {tiles.map((tile) => (
@@ -463,6 +601,28 @@ export function TerrainMap({
             );
           })}
         </div>
+        {draft && (
+          <div
+            aria-label={`New terrain area: ${superTileColumns} across by ${superTileRows} down`}
+            className="map-selection-draft"
+            data-cell-size={draft.cellSize}
+            role="img"
+            style={
+              {
+                height: draft.height,
+                left: draft.left,
+                top: draft.top,
+                width: draft.width,
+                "--draft-columns": superTileColumns,
+                "--draft-rows": superTileRows,
+              } as CSSProperties
+            }
+          >
+            <span>
+              {superTileColumns} × {superTileRows}
+            </span>
+          </div>
+        )}
         {trailPaths.length > 0 && (
           <svg
             aria-hidden="true"
@@ -542,6 +702,52 @@ export function TerrainMap({
           </div>
         )}
       </div>
+      <div
+        className="map-mode-tools"
+        aria-label="Map interaction"
+        role="toolbar"
+      >
+        <button
+          aria-label="Pan map without moving terrain area"
+          aria-pressed={interactionMode === "pan"}
+          onClick={() => {
+            setDraft(null);
+            setInteractionMode("pan");
+          }}
+          type="button"
+        >
+          Pan
+        </button>
+        <button
+          aria-label="Draw terrain area"
+          aria-pressed={interactionMode === "select"}
+          onClick={() => setInteractionMode("select")}
+          type="button"
+        >
+          Draw area
+        </button>
+        <button
+          aria-label="Center map on terrain area"
+          disabled={viewCenter === null}
+          onClick={() => setViewCenter(null)}
+          type="button"
+        >
+          Center
+        </button>
+        <span className="map-instruction" role="status">
+          {tilesLoaded
+            ? markerPlacementMode
+              ? markerPlacementMode === "move"
+                ? "Click the map to move the marker"
+                : "Click the map to place the marker"
+              : interactionMode === "pan"
+                ? "Drag to pan"
+                : superTileActive
+                  ? `Drag ${superTileColumns} × ${superTileRows} area`
+                  : "Drag a terrain area"
+            : "Loading map…"}
+        </span>
+      </div>
       <div className="map-zoom" aria-label="Map zoom">
         <button
           type="button"
@@ -584,25 +790,6 @@ export function TerrainMap({
       >
         <span />
         <span />
-      </div>
-      <div className="map-instruction">
-        {tilesLoaded ? (
-          <>
-            {markerPlacementMode
-              ? markerPlacementMode === "move"
-                ? "Click the map to move the marker"
-                : "Click the map to place the marker"
-              : superTileActive
-                ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
-                : "Drag the map to choose a place"}
-            <small>
-              {zoomLinked ? "Linked zoom" : "Map-only zoom"} · Scroll to zoom ·
-              Arrow keys pan · Shift for bigger steps
-            </small>
-          </>
-        ) : (
-          "Loading map tiles…"
-        )}
       </div>
       <a
         className="map-attribution"

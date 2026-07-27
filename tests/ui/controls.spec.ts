@@ -3,9 +3,7 @@ import { expect, test } from "@playwright/test";
 import { appVersion } from "./helpers";
 
 test("switches between the reflowed control panels", async ({ page }) => {
-  await page
-    .context()
-    .grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
 
   const generate = page.getByRole("button", { name: /^Generate/ });
@@ -100,12 +98,16 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByLabel("Place name")).toBeHidden();
   await solidModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeHidden();
-  await expect(page.getByText(/2048 across · about 0\.98 m ground spacing/)).toBeVisible();
+  await expect(
+    page.getByText(/2048 across · about 0\.98 m ground spacing/),
+  ).toBeVisible();
   await puzzleModel.click();
   await expect(page.getByRole("group", { name: "Piece layout" })).toBeVisible();
   // 2048 samples across 10 pieces round up to 205 per piece, so the
   // assembled model carries 2050 — the same figure the backend reports.
-  await expect(page.getByText(/2050 across · about 0\.98 m ground spacing/)).toBeVisible();
+  await expect(
+    page.getByText(/2050 across · about 0\.98 m ground spacing/),
+  ).toBeVisible();
   const pieceShape = page.getByRole("group", { name: "Piece shape" });
   const preview = page.getByLabel("Interactive 3D terrain preview");
   const straightGrid = pieceShape.getByRole("checkbox", {
@@ -217,9 +219,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(closeViewScaling).toBeChecked();
   await expect(closeViewBoost).toHaveValue("2");
   await expect(maximumMappedWidth).toHaveValue("4");
-  await expect(
-    surfaceColors.getByText(/use 2.00× at 2 km/),
-  ).toBeVisible();
+  await expect(surfaceColors.getByText(/use 2.00× at 2 km/)).toBeVisible();
   await closeViewBoost.fill("2.5");
   await expect(closeViewBoost).toHaveValue("2.5");
   await maximumMappedWidth.fill("5.5");
@@ -465,9 +465,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
     name: "Export matching wall hardware",
   });
   await expect(exportWallHardware).toBeChecked();
-  await expect(
-    page.getByRole("slider", { name: "Wall offset" }),
-  ).toBeVisible();
+  await expect(page.getByRole("slider", { name: "Wall offset" })).toBeVisible();
   await expect(
     page.getByRole("slider", { name: "Mount position from top" }),
   ).toHaveValue("28");
@@ -502,7 +500,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByText("alignment jig uses the same holes", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("flat alignment spacer", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("flat alignment spacer", { exact: false }),
+  ).toBeVisible();
   await mountingControls.getByRole("checkbox").first().uncheck();
   await expect(retention).not.toBeChecked();
   await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
@@ -512,7 +512,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const threeMfStyle = page.getByLabel("3MF style");
   await expect(threeMfStyle).toHaveValue("project");
   await expect(
-    page.getByText(/OrcaSlicer and Bambu\s+Studio import the file as a project/),
+    page.getByText(
+      /OrcaSlicer and Bambu\s+Studio import the file as a project/,
+    ),
   ).toBeVisible();
   await threeMfStyle.selectOption("painted");
   await expect(threeMfStyle).toHaveValue("painted");
@@ -794,9 +796,7 @@ test("draws aerial lifts apart from railways and names every color", async ({
 
   await page.getByRole("button", { name: /^Generate/ }).click();
   await expect
-    .poll(
-      () => (jobSpec.color_output as Record<string, unknown>)?.aerial_style,
-    )
+    .poll(() => (jobSpec.color_output as Record<string, unknown>)?.aerial_style)
     .toBe("separate");
   const colorOutput = jobSpec.color_output as Record<string, unknown>;
   expect(colorOutput.aerial_enabled).toBe(true);
@@ -892,9 +892,7 @@ test("resizes the preview area to make room for controls", async ({ page }) => {
     .toBeGreaterThan(28);
 });
 
-test("supports linked and map-only zoom controls", async ({
-  page,
-}) => {
+test("supports linked and map-only zoom controls", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
@@ -976,9 +974,7 @@ test("supports linked and map-only zoom controls", async ({
   expect(largerBounds!.width).toBeGreaterThan(mapOnlyZoomBounds!.width);
 });
 
-test("locks a height frame and maps a super-tile grid", async ({
-  page,
-}) => {
+test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   const previewSpecs: Array<Record<string, unknown>> = [];
   await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
     const spec = route.request().postDataJSON() as Record<string, unknown>;
@@ -1006,7 +1002,9 @@ test("locks a height frame and maps a super-tile grid", async ({
   const reseed = page.getByRole("button", { name: "Generate new seed" });
   await expect(reseed).toBeVisible();
   await expect(reseed).toHaveCSS("border-top-style", "solid");
-  await expect.poll(async () => Number(await puzzleSeed.inputValue())).not.toBe(0);
+  await expect
+    .poll(async () => Number(await puzzleSeed.inputValue()))
+    .not.toBe(0);
   await puzzleSeed.fill("305419896");
   await expect(puzzleSeed).toHaveValue("305419896");
   await expect(page.getByLabel("Tile column")).toHaveValue("0");
@@ -1041,13 +1039,14 @@ test("locks a height frame and maps a super-tile grid", async ({
   expect(
     previewSpecs.some(
       (spec) =>
-        spec.elevation_datum_m === 96 &&
-        Number(spec.elevation_m_per_mm) > 0,
+        spec.elevation_datum_m === 96 && Number(spec.elevation_m_per_mm) > 0,
     ),
   ).toBe(true);
 
   await page.getByRole("button", { name: "Unlock height" }).click();
-  await expect(page.getByText(/manual neighbors may form a step/)).toBeVisible();
+  await expect(
+    page.getByText(/manual neighbors may form a step/),
+  ).toBeVisible();
 
   const superTileControls = page.getByLabel("Super-tile grid");
   const latitudeBounds = await page.getByLabel("Latitude").boundingBox();
@@ -1069,9 +1068,8 @@ test("locks a height frame and maps a super-tile grid", async ({
   await expect(mapGrid).toHaveAttribute("data-super-tile-columns", "8");
   await expect(mapGrid).toHaveAttribute("data-super-tile-rows", "6");
   await expect(page.locator(".map-selection")).toHaveCount(48);
-  await expect(
-    page.getByText(/Super-tile mode · 8 × 6 · current tile is top-left tile/),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Draw terrain area" }).click();
+  await expect(page.locator(".map-instruction")).toHaveText("Drag 8 × 6 area");
   const currentMapTile = page.locator(
     '.map-selection[data-super-tile-row="1"][data-super-tile-column="1"]',
   );
@@ -1096,19 +1094,14 @@ test("locks a height frame and maps a super-tile grid", async ({
     anchorChoice.getByRole("radio", { name: "Top-left tile" }),
   ).toBeChecked();
   await anchorChoice.getByRole("radio", { name: "Center tile" }).check();
-  await expect(
-    page.getByText(/grid changed to 9 × 7/),
-  ).toBeVisible();
+  await expect(page.getByText(/grid changed to 9 × 7/)).toBeVisible();
   await expect(superTileControls.getByLabel("Across")).toHaveValue("9");
   await expect(superTileControls.getByLabel("Down")).toHaveValue("7");
   await expect(page.locator(".map-selection")).toHaveCount(63);
   const centeredMapGrid = page.getByRole("group", {
     name: "Super-tile map: 9 across by 7 down, anchored at center tile",
   });
-  await expect(centeredMapGrid).toHaveAttribute(
-    "data-super-tile-columns",
-    "9",
-  );
+  await expect(centeredMapGrid).toHaveAttribute("data-super-tile-columns", "9");
   await expect(centeredMapGrid).toHaveAttribute("data-super-tile-rows", "7");
   const centeredMapTile = page.locator(
     '.map-selection.current[data-super-tile-row="4"][data-super-tile-column="5"]',
