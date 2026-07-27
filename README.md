@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.4.1](https://github.com/theatrus/toposaic/releases/tag/v0.4.1).
+[TopoSaic v0.5.0](https://github.com/theatrus/toposaic/releases/tag/v0.5.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.4.1/TopoSaic-0.4.1-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -91,6 +91,24 @@ manifest in this tab.*
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. Bambu Studio and
 OrcaSlicer load the palette colors as filament assignments.*
+
+## Version 0.5 highlights
+
+- Mount a full terrain tile or display base with printable straight pins,
+  angled pins, or a flush French-cleat receiver. Matching wall hardware,
+  screw clearance, alignment spacers, and shared cuts across puzzle pieces
+  support both single models and large super-tile displays.
+- Use linked map zoom to resize the selected ground area, or switch to
+  map-only zoom while keeping the model span fixed.
+- Scan the rebuilt Surface tab by terrain, water, roads and bridges, railways
+  and lifts, or imported trails. Its layout adapts from wide desktop windows
+  to narrow views.
+- Scale roads and railways from mapped OpenStreetMap widths where available,
+  with class minimums and a user-set maximum. Close views can strengthen
+  estimated widths, while dense-network thinning leaves mapped widths real.
+- Open color 3MF output as separated pieces in Bambu Studio and OrcaSlicer.
+  New real-world examples cover mountain terrain and dense Shibuya buildings,
+  roads, rail lines, and water.
 
 ## Version 0.4.1 highlights
 
