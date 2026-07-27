@@ -122,9 +122,9 @@ export function ModelPanel({
         <div
           className="coordinate-box"
           role="group"
-          aria-label="Map center"
+          aria-label="Map position"
         >
-          <strong>Map center</strong>
+          <strong>Map position</strong>
           <div className="coordinate-row">
             <label>
               Latitude
@@ -163,6 +163,79 @@ export function ModelPanel({
               />
             </label>
           </div>
+          <div className="tile-position-block">
+            <div className="tile-position-heading">
+              <span>
+                <strong>Matching tile position</strong>
+                <small>
+                  Move one tile while keeping every shared edge aligned.
+                </small>
+              </span>
+              <div className="adjacent-actions" aria-label="Move one tile">
+                {(["north", "west", "east", "south"] as const).map(
+                  (direction) => (
+                    <button
+                      type="button"
+                      key={direction}
+                      aria-label={`Move ${direction} one tile`}
+                      title={`Move ${direction} one tile`}
+                      onClick={() => moveToAdjacentTile(direction)}
+                    >
+                      <span aria-hidden="true">
+                        {direction === "north"
+                          ? "↑"
+                          : direction === "south"
+                            ? "↓"
+                            : direction === "east"
+                              ? "→"
+                              : "←"}
+                      </span>
+                    </button>
+                  ),
+                )}
+              </div>
+            </div>
+            <div className="coordinate-row">
+              <label>
+                Tile column
+                <input
+                  type="number"
+                  min="-1000000"
+                  max="1000000"
+                  step="1"
+                  value={spec.puzzle_tile_column}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (
+                      Number.isInteger(value) &&
+                      Math.abs(value) <= 1_000_000
+                    ) {
+                      update("puzzle_tile_column", value);
+                    }
+                  }}
+                />
+              </label>
+              <label>
+                Tile row
+                <input
+                  type="number"
+                  min="-1000000"
+                  max="1000000"
+                  step="1"
+                  value={spec.puzzle_tile_row}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (
+                      Number.isInteger(value) &&
+                      Math.abs(value) <= 1_000_000
+                    ) {
+                      update("puzzle_tile_row", value);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
         </div>
         <div
           className="adjacent-tiles"
@@ -181,29 +254,6 @@ export function ModelPanel({
             </button>
           </div>
           <div className="adjacent-compact-row">
-            <div className="adjacent-actions" aria-label="Move one tile">
-              {(["north", "west", "east", "south"] as const).map(
-                (direction) => (
-                  <button
-                    type="button"
-                    key={direction}
-                    aria-label={`Move ${direction} one tile`}
-                    title={`Move ${direction} one tile`}
-                    onClick={() => moveToAdjacentTile(direction)}
-                  >
-                    <span aria-hidden="true">
-                      {direction === "north"
-                        ? "↑"
-                        : direction === "south"
-                          ? "↓"
-                          : direction === "east"
-                            ? "→"
-                            : "←"}
-                    </span>
-                  </button>
-                ),
-              )}
-            </div>
             <div className="adjacent-grid" aria-label="Super-tile grid">
               <span>Grid</span>
               <label>
@@ -235,66 +285,6 @@ export function ModelPanel({
               </label>
             </div>
           </div>
-          <div className="coordinate-row" aria-label="Puzzle identity">
-            <label>
-              Puzzle seed
-              <input
-                type="number"
-                min="0"
-                max="4294967295"
-                step="1"
-                value={spec.puzzle_seed}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (Number.isInteger(value) && value >= 0 && value <= 4_294_967_295) {
-                    update("puzzle_seed", value);
-                  }
-                }}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => update("puzzle_seed", randomPuzzleSeed())}
-            >
-              New seed
-            </button>
-            <label>
-              Tile column
-              <input
-                type="number"
-                min="-1000000"
-                max="1000000"
-                step="1"
-                value={spec.puzzle_tile_column}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (Number.isInteger(value) && Math.abs(value) <= 1_000_000) {
-                    update("puzzle_tile_column", value);
-                  }
-                }}
-              />
-            </label>
-            <label>
-              Tile row
-              <input
-                type="number"
-                min="-1000000"
-                max="1000000"
-                step="1"
-                value={spec.puzzle_tile_row}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (Number.isInteger(value) && Math.abs(value) <= 1_000_000) {
-                    update("puzzle_tile_row", value);
-                  }
-                }}
-              />
-            </label>
-          </div>
-          <p className="place-search-note">
-            The saved seed and tile coordinates fix every edge. Keep the piece
-            grid size too when adding matching tiles later.
-          </p>
           <div
             className="super-tile-anchor"
             role="radiogroup"
@@ -381,6 +371,42 @@ export function ModelPanel({
           )}
         </div>
       </div>
+      <details className="puzzle-seed-advanced">
+        <summary>Advanced puzzle identity</summary>
+        <div className="puzzle-seed-row" aria-label="Puzzle identity">
+          <label>
+            Puzzle seed
+            <input
+              type="number"
+              min="0"
+              max="4294967295"
+              step="1"
+              value={spec.puzzle_seed}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (
+                  Number.isInteger(value) &&
+                  value >= 0 &&
+                  value <= 4_294_967_295
+                ) {
+                  update("puzzle_seed", value);
+                }
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => update("puzzle_seed", randomPuzzleSeed())}
+          >
+            Generate new seed
+          </button>
+          <p>
+            This seed controls jigsaw edges for single tiles and super-tiles.
+            Changing it changes every edge. Keep it with the tile row, tile
+            column, and piece grid when making matching tiles later.
+          </p>
+        </div>
+      </details>
       <label className="elevation-source-field">
         Elevation tiles
         <select
