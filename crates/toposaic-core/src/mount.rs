@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use geo::{Area, BooleanOps, Contains, LineString, Point, Polygon};
+use geo::{Area, BooleanOps, Contains, ConvexHull, LineString, MultiPoint, Point, Polygon};
 
 use crate::mesh::{Mesh, MeshBuilder, weld_export_mesh};
 use crate::planar_mesh::{
@@ -40,6 +40,156 @@ pub(crate) fn mount_bottom(
 ) -> Result<MeshBuilder> {
     let outline_polygon = polygon(outline);
     mount_bottom_polygons(&[outline_polygon], mount, mount_frame)
+}
+
+pub(crate) fn validate_wall_mount_frame(
+    mount: &WallMountSpec,
+    width: f32,
+    height: f32,
+) -> Result<()> {
+    let frame = [0.0, 0.0, width, height];
+    let frame_polygon = polygon(&rectangle(
+        width * 0.5,
+        height * 0.5,
+        width * 0.5,
+        height * 0.5,
+    ));
+    let pocket = polygon(&wall_plate_pocket(mount, frame));
+    let fit_error = || {
+        anyhow::anyhow!(
+            "wall mount does not fit the full terrain tile or display base; reduce its width, height, travel, or screw-hole size"
+        )
+    };
+    let receivers = cavities_for_frame(mount, frame).map_err(|_| fit_error())?;
+    if !frame_polygon.contains(&pocket)
+        || receivers.iter().any(|receiver| {
+            !frame_polygon.contains(&polygon(&receiver.opening))
+                || !frame_polygon.contains(&polygon(&receiver.ceiling))
+        })
+    {
+        return Err(fit_error());
+    }
+    Ok(())
+}
+
+/// Cuts one full-model mount through a single puzzle-piece outline.
+///
+/// A jigsaw split is a later XY partition of the mounted terrain. The plate
+/// pocket and receiver therefore stay in full-model coordinates, while each
+/// piece gets only the slice that crosses its outline. Layered lower walls
+/// leave shared piece edges open wherever the wall hardware must pass.
+pub(crate) fn mount_bottom_across_outline(
+    outline: &[[f32; 2]],
+    mount: &WallMountSpec,
+    mount_frame: [f32; 4],
+) -> Result<MeshBuilder> {
+    let base = polygon(outline);
+    let pocket = polygon(&wall_plate_pocket(mount, mount_frame));
+    let receiver_sweeps = receiver_sweep_polygons(mount, mount_frame)?;
+
+    let mut bottom = base.difference(&pocket);
+    let mut pocket_floor = base.intersection(&pocket);
+    let mut receiver_ceiling = Vec::new();
+    for receiver in &receiver_sweeps {
+        pocket_floor = pocket_floor.difference(receiver);
+        bottom = bottom.difference(receiver);
+        receiver_ceiling.extend(base.intersection(receiver).0);
+    }
+    let mut upper_layer = vec![base];
+    for receiver in &receiver_sweeps {
+        upper_layer = upper_layer
+            .into_iter()
+            .flat_map(|part| part.difference(receiver).0)
+            .collect();
+    }
+
+    let pocket_depth = mount.pocket_depth_mm();
+    let ceiling = mount.embedded_depth_mm();
+    let mut mesh = MeshBuilder::default();
+    add_horizontal_polygons(&mut mesh, &bottom.0, 0.0, SurfaceClass::Rock, true)?;
+    add_horizontal_polygons(
+        &mut mesh,
+        &pocket_floor.0,
+        pocket_depth,
+        SurfaceClass::Rock,
+        true,
+    )?;
+    add_horizontal_polygons(
+        &mut mesh,
+        &receiver_ceiling,
+        ceiling,
+        SurfaceClass::Rock,
+        true,
+    )?;
+    add_polygon_walls(&mut mesh, &bottom.0, 0.0, pocket_depth);
+    add_polygon_walls(&mut mesh, &upper_layer, pocket_depth, ceiling);
+    Ok(mesh)
+}
+
+/// Adds exact mount-boundary crossings to a jigsaw outline. The terrain side
+/// wall and each clipped mount layer then share the same seam vertices instead
+/// of meeting at a T-junction.
+pub(crate) fn split_outline_at_mount(
+    outline: &[[f32; 2]],
+    mount: &WallMountSpec,
+    mount_frame: [f32; 4],
+) -> Result<Vec<[f32; 2]>> {
+    let mut cut_rings = vec![wall_plate_pocket(mount, mount_frame)];
+    cut_rings.extend(
+        receiver_sweep_polygons(mount, mount_frame)?
+            .into_iter()
+            .map(|receiver| {
+                receiver
+                    .exterior()
+                    .0
+                    .iter()
+                    .take(receiver.exterior().0.len().saturating_sub(1))
+                    .map(|point| [point.x as f32, point.y as f32])
+                    .collect()
+            }),
+    );
+
+    let mut split = Vec::with_capacity(outline.len() + cut_rings.len() * 2);
+    for (start, end) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+        let mut cuts = vec![0.0_f32];
+        for ring in &cut_rings {
+            for (cut_start, cut_end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                if let Some(t) = segment_crossing(*start, *end, *cut_start, *cut_end)
+                    && t > 0.000_01
+                    && t < 0.999_99
+                {
+                    cuts.push(t);
+                }
+            }
+        }
+        cuts.sort_by(f32::total_cmp);
+        cuts.dedup_by(|left, right| (*left - *right).abs() < 0.000_01);
+        split.extend(cuts.into_iter().map(|t| {
+            [
+                start[0] + (end[0] - start[0]) * t,
+                start[1] + (end[1] - start[1]) * t,
+            ]
+        }));
+    }
+    Ok(split)
+}
+
+fn segment_crossing(
+    start: [f32; 2],
+    end: [f32; 2],
+    cut_start: [f32; 2],
+    cut_end: [f32; 2],
+) -> Option<f32> {
+    let segment = [end[0] - start[0], end[1] - start[1]];
+    let cut = [cut_end[0] - cut_start[0], cut_end[1] - cut_start[1]];
+    let offset = [cut_start[0] - start[0], cut_start[1] - start[1]];
+    let denominator = segment[0] * cut[1] - segment[1] * cut[0];
+    if denominator.abs() < 0.000_001 {
+        return None;
+    }
+    let t = (offset[0] * cut[1] - offset[1] * cut[0]) / denominator;
+    let u = (offset[0] * segment[1] - offset[1] * segment[0]) / denominator;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(t)
 }
 
 /// The split tray keeps its floor and rim as separate bottom polygons because
@@ -371,6 +521,34 @@ fn cavities_for_outline(
     Ok(cavities)
 }
 
+fn cavities_for_frame(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Result<Vec<MountCavity>> {
+    let frame = polygon(&rectangle(
+        (mount_frame[0] + mount_frame[2]) * 0.5,
+        (mount_frame[1] + mount_frame[3]) * 0.5,
+        (mount_frame[2] - mount_frame[0]) * 0.5,
+        (mount_frame[3] - mount_frame[1]) * 0.5,
+    ));
+    cavities_for_outline(&frame, mount, mount_frame)
+}
+
+fn receiver_sweep_polygons(
+    mount: &WallMountSpec,
+    mount_frame: [f32; 4],
+) -> Result<Vec<Polygon<f64>>> {
+    Ok(cavities_for_frame(mount, mount_frame)?
+        .into_iter()
+        .map(|receiver| {
+            let points = receiver
+                .opening
+                .into_iter()
+                .chain(receiver.ceiling)
+                .map(|point| Point::new(f64::from(point[0]), f64::from(point[1])))
+                .collect::<Vec<_>>();
+            MultiPoint::new(points).convex_hull()
+        })
+        .collect())
+}
+
 pub(crate) fn circle_points(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
     (0..CIRCLE_SAMPLES)
         .map(|index| {
@@ -670,6 +848,20 @@ fn add_line_string_wall(
     add_ring_wall(mesh, &points, lower_z, upper_z, inward);
 }
 
+fn add_polygon_walls(
+    mesh: &mut MeshBuilder,
+    polygons: &[Polygon<f64>],
+    lower_z: f32,
+    upper_z: f32,
+) {
+    for polygon in polygons {
+        add_line_string_wall(mesh, polygon.exterior(), lower_z, upper_z, false);
+        for interior in polygon.interiors() {
+            add_line_string_wall(mesh, interior, lower_z, upper_z, true);
+        }
+    }
+}
+
 fn add_ring_wall(
     mesh: &mut MeshBuilder,
     points: &[[f32; 2]],
@@ -761,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn french_cleat_alignment_spacer_is_watertight_and_matches_one_piece() {
+    fn french_cleat_alignment_spacer_is_watertight_and_matches_one_terrain_tile() {
         let spec = GenerationSpec {
             width_mm: 180.0,
             rows: 10,
@@ -780,7 +972,7 @@ mod tests {
             .map(|point| [point[0], point[1]])
             .collect::<Vec<_>>();
         let spacer_bounds = bounds(&points);
-        assert_eq!(spacer_bounds, [0.0, 0.0, 18.0, 18.0]);
+        assert_eq!(spacer_bounds, [0.0, 0.0, 180.0, 180.0]);
         assert!(
             spacer
                 .vertices

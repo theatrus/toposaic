@@ -890,7 +890,7 @@ test("locks a height frame and maps a super-tile grid", async ({
   const wallMountStyle = page.getByLabel("Wall mount style");
   await wallMountStyle.selectOption("straight_pin");
   await expect(
-    page.getByText(/Print 6300 copies of the wall-side hardware/),
+    page.getByText(/Print 63 copies of the wall-side hardware/),
   ).toBeVisible();
   await page.getByLabel("Wall mount target").selectOption("tray");
   await expect(

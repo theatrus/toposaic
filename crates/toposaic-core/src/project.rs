@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn per_piece_wall_mount_jobs_export_hardware_and_alignment_spacer() {
+    fn puzzle_wall_mount_jobs_export_full_tile_hardware_and_alignment_spacer() {
         let output_dir = std::env::temp_dir().join(format!(
             "toposaic-wall-hardware-test-{}",
             std::process::id()

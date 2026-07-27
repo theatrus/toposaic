@@ -88,7 +88,7 @@ export function WallMountControls({
                 value="terrain"
                 disabled={spec.puzzle_retention.enabled}
               >
-                Terrain pieces or solid
+                Full terrain tile
               </option>
               <option value="tray">Tray or tray sections</option>
             </select>
@@ -227,8 +227,10 @@ export function WallMountControls({
             to its model face. Wall offset is the finished gap for an uneven
             wall. TopoSaic derives the hidden pocket from plate thickness minus
             wall offset. Every cut keeps at least 0.4 mm below the terrain or
-            display-base face. The pocket covers the full wall plate at entry
-            and at lock; French
+            display-base face. Terrain mounts use one full-tile layout; jigsaw
+            pieces receive the sections that cross them, while tray-retention
+            pins remain per piece. The pocket covers the full wall plate at
+            entry and at lock; French
             cleat travel grows with slot height. French cleats and angled pins
             slide toward the map north edge to lock.
             {spec.wall_mount.export_hardware &&

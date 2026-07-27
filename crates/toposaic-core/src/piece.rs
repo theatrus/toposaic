@@ -12,7 +12,9 @@ use crate::mesh::{
     Mesh, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
     quantize_export_coordinate, unit_vector, weld_export_mesh,
 };
-use crate::mount::{mount_bottom, retention_bottom};
+use crate::mount::{
+    mount_bottom, mount_bottom_across_outline, retention_bottom, split_outline_at_mount,
+};
 use crate::mount_layout::retention_centers_local;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
@@ -242,6 +244,18 @@ pub(crate) fn build_piece_with_height_range(
     let terrain_spacing = piece_width.min(piece_height) / samples as f32;
     let boundary_spacing = piece_width.min(piece_height) / outline_samples as f32;
     let outline = densify_outline_for_triangulation(&outline, boundary_spacing);
+    let mounted_piece_back = spec.wall_mount.cuts_terrain() && !spec.solid_model;
+    let mount_frame = [
+        -origin_x,
+        -origin_y,
+        assembled_width - origin_x,
+        assembled_height - origin_y,
+    ];
+    let outline = if mounted_piece_back {
+        split_outline_at_mount(&outline, &spec.wall_mount, mount_frame)?
+    } else {
+        outline
+    };
     let mut points = outline
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
@@ -325,9 +339,14 @@ pub(crate) fn build_piece_with_height_range(
         let z = spec.base_mm + spec.relief_mm * terrain;
         vertices.push([position.x as f32, position.y as f32, z]);
     }
+    let lower_side_z = if mounted_piece_back {
+        spec.wall_mount.embedded_depth_mm()
+    } else {
+        0.0
+    };
     for vertex in triangulation.vertices() {
         let position = vertex.position();
-        vertices.push([position.x as f32, position.y as f32, 0.0]);
+        vertices.push([position.x as f32, position.y as f32, lower_side_z]);
     }
 
     let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
@@ -424,11 +443,16 @@ pub(crate) fn build_piece_with_height_range(
         quantization_collisions: Vec::new(),
     };
     if mounted_back {
-        mesh.append_isolated(mount_bottom(
-            &outline,
-            &spec.wall_mount,
-            [0.0, 0.0, piece_width, piece_height],
-        )?);
+        let bottom = if spec.solid_model {
+            mount_bottom(
+                &outline,
+                &spec.wall_mount,
+                [0.0, 0.0, piece_width, piece_height],
+            )?
+        } else {
+            mount_bottom_across_outline(&outline, &spec.wall_mount, mount_frame)?
+        };
+        mesh.append_isolated(bottom);
     } else if retained_back {
         mesh.append_isolated(retention_bottom(
             &outline,
@@ -1338,6 +1362,29 @@ mod tests {
             assert!(mesh.vertices.iter().any(|vertex| {
                 (vertex[2] - spec.wall_mount.embedded_depth_mm()).abs() < 0.000_01
             }));
+        }
+    }
+
+    #[test]
+    fn jigsaw_wall_mount_uses_one_full_model_layout_across_piece_seams() {
+        let spec = GenerationSpec {
+            width_mm: 180.0,
+            rows: 10,
+            columns: 10,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                target: WallMountTarget::Terrain,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.validate().unwrap();
+
+        for (row, column) in [(0, 0), (4, 4), (4, 5), (5, 4), (5, 5)] {
+            let mesh = build_piece(&spec, None, None, row, column).unwrap_or_else(|error| {
+                panic!("piece {}, {} failed: {error:#}", row + 1, column + 1)
+            });
+            assert_watertight(&mesh);
         }
     }
 

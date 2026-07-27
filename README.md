@@ -114,11 +114,13 @@ Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
 French-cleat receiver into the flat back. Every wall mount also cuts a visible
 rectangular pocket swept over the wall plate's full entry-to-lock travel.
 French-cleat travel grows with slot height. Terrain targets put that pocket in
-each puzzle piece or solid model; display-base targets put it only in each base
-section. Puzzle-retention pins stay separate and never add wall pockets to the
-terrain. The French-cleat receiver has a lower entry box: set it over the wall
-cleat, then slide it toward map north to lock. Cleats can span up to 400 mm when
-the chosen piece, solid, or base section leaves a 2 mm side wall.
+one full-tile layout across the assembled puzzle or solid model; each puzzle
+piece receives only the part of the shared cut that crosses it. Display-base
+targets put the layout in the base. Puzzle-retention pins stay per piece and
+never add wall pockets to the terrain. The French-cleat receiver has a lower
+entry box: set it over the wall cleat, then slide it toward map north to lock.
+Cleats can span up to 400 mm when the full terrain tile or base leaves a 2 mm
+side wall.
 
 Each job can also export matching wall hardware as STL and 3MF: a peg or male
 cleat on an integral screw plate. Controls set pin count and spacing, cleat width
@@ -130,7 +132,7 @@ cut that would leave less than 0.4 mm of the chosen minimum Z height instead of
 raising that height. French-cleat
 jobs also include a thin
 alignment spacer with matching screw pilots. Print one per mounted output and
-place the frames edge-to-edge to align per-piece puzzles, split bases, or a full
+place the frames edge-to-edge to align terrain tiles, split bases, or a full
 super-tile panel before removing the frames and installing the cleats.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF

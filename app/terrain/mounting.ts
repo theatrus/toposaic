@@ -29,7 +29,7 @@ export function maximumRetentionHeight(spec: GenerationSpec) {
 
 export function wallMountTargetWidth(spec: GenerationSpec) {
   if (spec.wall_mount.target === "terrain") {
-    return spec.solid_model ? spec.width_mm : spec.width_mm / spec.columns;
+    return spec.width_mm;
   }
 
   const extra = (spec.tray.clearance_mm + spec.tray.rim_width_mm) * 2;
@@ -53,5 +53,5 @@ export function wallHardwareQuantity(spec: GenerationSpec) {
       ? superTileCount
       : spec.tray.segment_columns * spec.tray.segment_rows;
   }
-  return superTileCount * (spec.solid_model ? 1 : spec.rows * spec.columns);
+  return superTileCount;
 }

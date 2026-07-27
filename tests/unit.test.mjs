@@ -224,7 +224,7 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   const puzzleGrid = structuredClone(initialSpec);
   puzzleGrid.adjacent_columns = 3;
   puzzleGrid.adjacent_rows = 2;
-  assert.equal(wallHardwareQuantity(puzzleGrid), 600);
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
 
   puzzleGrid.wall_mount.target = "tray";
   assert.equal(wallHardwareQuantity(puzzleGrid), 6);
@@ -246,8 +246,8 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   assert.equal(maximumCleatWidth(puzzleGrid), 316);
   puzzleGrid.solid_model = false;
   puzzleGrid.columns = 4;
-  assert.equal(wallMountTargetWidth(puzzleGrid), 80);
-  assert.equal(maximumCleatWidth(puzzleGrid), 76);
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  assert.equal(maximumCleatWidth(puzzleGrid), 316);
 
   puzzleGrid.wall_mount.target = "tray";
   puzzleGrid.tray.segment_columns = 1;

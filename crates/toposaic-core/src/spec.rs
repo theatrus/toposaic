@@ -195,11 +195,16 @@ impl GenerationSpec {
         self.tray.validate()?;
         self.puzzle_retention
             .validate(self.base_mm, self.tray.enabled)?;
-        self.wall_mount.validate(
-            self.base_mm,
-            self.tray.floor_mm,
-            self.wall_mount_target_size()[0],
-        )?;
+        let wall_mount_target = self.wall_mount_target_size();
+        self.wall_mount
+            .validate(self.base_mm, self.tray.floor_mm, wall_mount_target[0])?;
+        if self.wall_mount.style != WallMountStyle::None {
+            crate::mount::validate_wall_mount_frame(
+                &self.wall_mount,
+                wall_mount_target[0],
+                wall_mount_target[1],
+            )?;
+        }
         if self.wall_mount.cuts_tray() && !self.tray.enabled {
             bail!("tray wall mounting needs an enabled tray");
         }
@@ -316,14 +321,7 @@ impl GenerationSpec {
 
     pub(crate) fn wall_mount_target_size(&self) -> [f32; 2] {
         if self.wall_mount.target == WallMountTarget::Terrain {
-            return if self.solid_model {
-                [self.width_mm, self.height_mm()]
-            } else {
-                [
-                    self.width_mm / self.columns as f32,
-                    self.height_mm() / self.rows as f32,
-                ]
-            };
+            return [self.width_mm, self.height_mm()];
         }
 
         let extra = (self.tray.clearance_mm + self.tray.rim_width_mm) * 2.0;
@@ -1870,15 +1868,36 @@ mod tests {
         spec.solid_model = false;
         spec.rows = 4;
         spec.columns = 16;
-        spec.wall_mount.cleat_width_mm = 16.0;
+        spec.wall_mount.cleat_width_mm = 316.0;
         assert!(spec.validate().is_ok());
-        spec.wall_mount.cleat_width_mm = 16.01;
+        spec.wall_mount.cleat_width_mm = 316.01;
         assert!(
             spec.validate()
                 .unwrap_err()
                 .to_string()
                 .contains("2 mm on each side")
         );
+    }
+
+    #[test]
+    fn wall_mount_preflight_checks_the_full_tile_in_both_axes() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 16,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                target: WallMountTarget::Terrain,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("full terrain tile or display base"));
+
+        spec.rows = 16;
+        spec.columns = 2;
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
