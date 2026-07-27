@@ -65,6 +65,7 @@ export type GenerationSpec = {
   wall_mount: {
     style: "none" | "straight_pin" | "angled_pin" | "french_cleat";
     target: "terrain" | "tray";
+    vertical_position_ratio: number;
     depth_mm: number;
     thickness_mm: number;
     wall_offset_mm: number;
@@ -77,6 +78,7 @@ export type GenerationSpec = {
     screw_hole_diameter_mm: number;
     screw_countersink_depth_mm: number;
     screw_head_clearance_mm: number;
+    wide_edge_screws: boolean;
   };
   color_output: {
     enabled: boolean;

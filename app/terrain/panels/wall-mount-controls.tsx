@@ -24,6 +24,10 @@ export function WallMountControls({
   const hardwareQuantity = wallHardwareQuantity(spec);
   const backThickness =
     spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
+  const backThicknessLabel =
+    spec.wall_mount.target === "tray"
+      ? "display-base floor"
+      : "minimum piece height";
   const maximumCountersinkDepth = Math.max(
     0,
     Math.min(3, Number((spec.wall_mount.thickness_mm - 0.4).toFixed(2))),
@@ -36,6 +40,7 @@ export function WallMountControls({
       spec.wall_mount.screw_head_clearance_mm,
     );
   const depthViolation = mountEnabled && embeddedDepth > backThickness - 0.4;
+  const requiredBackThickness = embeddedDepth + 0.4;
 
   useEffect(() => {
     if (
@@ -118,6 +123,22 @@ export function WallMountControls({
             )}
           </label>
           <RangeField
+            label="Mount position from top"
+            value={Number(
+              (spec.wall_mount.vertical_position_ratio * 100).toFixed(1),
+            )}
+            unit="%"
+            min={16.7}
+            max={83.3}
+            step={0.1}
+            onChange={(value) =>
+              updateWallMount(
+                "vertical_position_ratio",
+                Number((value / 100).toFixed(4)),
+              )
+            }
+          />
+          <RangeField
             label={
               spec.wall_mount.style === "french_cleat"
                 ? "Cleat engagement depth"
@@ -141,11 +162,11 @@ export function WallMountControls({
           />
           {depthViolation && (
             <p className="color-note" role="alert">
-              This mount needs {embeddedDepth.toFixed(1)} mm of the{" "}
-              {backThickness.toFixed(1)} mm minimum Z height. Raise the minimum
-              piece height or display-base floor, reduce the engagement depth
-              or screw-head clearance, reduce the plate thickness, or raise the
-              wall offset. The generator will not add thickness for you.
+              The {backThickness.toFixed(1)} mm {backThicknessLabel} is too thin
+              for this mount. Raise it to at least{" "}
+              {requiredBackThickness.toFixed(1)} mm, or reduce the engagement
+              depth, screw-head clearance, or plate thickness, or raise the wall
+              offset. TopoSaic will not add height for you.
             </p>
           )}
           <RangeField
@@ -260,6 +281,23 @@ export function WallMountControls({
               updateWallMount("screw_head_clearance_mm", value)
             }
           />
+          <label className="option-toggle">
+            <input
+              aria-label="Add edge screw holes on wide mounts"
+              type="checkbox"
+              checked={spec.wall_mount.wide_edge_screws}
+              onChange={(event) =>
+                updateWallMount("wide_edge_screws", event.target.checked)
+              }
+            />
+            <span>
+              <strong>Wide-mount edge screws</strong>
+              <small>
+                Add a screw near each end on mounts at least 40 mm wide when
+                the target has room. The alignment jig uses the same holes.
+              </small>
+            </span>
+          </label>
           <p className="color-note">
             Engagement depth sets how far the pin or cleat enters the model for
             rigidity. Wall plate thickness is the full plate from its wall face
@@ -272,7 +310,10 @@ export function WallMountControls({
             entry and at lock. A 90° countersink keeps flat screw heads in the
             printed plate; set its depth to zero for plain holes. Screw-head
             pocket clearance adds local depth behind each swept head without
-            changing wall offset. French cleat travel grows with slot height.
+            changing wall offset. Mount position measures down from the map
+            north edge. Wide mounts can add end screws when the target fits
+            them; the printed hardware, pocket, and alignment jig share one
+            screw layout. French cleat travel grows with slot height.
             French cleats and angled pins slide toward the map north edge to
             lock.
             {spec.wall_mount.export_hardware &&

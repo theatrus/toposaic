@@ -304,6 +304,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
     page.getByRole("slider", { name: "Wall offset" }),
   ).toBeVisible();
   await expect(
+    page.getByRole("slider", { name: "Mount position from top" }),
+  ).toHaveValue("28");
+  await expect(
     page.getByRole("slider", { name: "Screw countersink depth" }),
   ).toHaveValue("0.8");
   await expect(
@@ -312,6 +315,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByRole("slider", { name: "Pocket and hardware fit clearance" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "Add edge screw holes on wide mounts" }),
+  ).toBeChecked();
   await exportWallHardware.uncheck();
   await expect(
     page.getByRole("slider", { name: "Screw-head pocket clearance" }),
@@ -322,7 +328,10 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
   await expect(
-    page.getByText("generator will not add thickness for you", { exact: false }),
+    page.getByText("display-base floor is too thin", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("alignment jig uses the same holes", { exact: false }),
   ).toBeVisible();
   await expect(page.getByText("flat alignment spacer", { exact: false })).toBeVisible();
   await mountingControls.getByRole("checkbox").first().uncheck();

@@ -193,6 +193,7 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
   assert.deepEqual(merged.wall_mount, {
     style: "none",
     target: "terrain",
+    vertical_position_ratio: 0.28,
     depth_mm: 0.8,
     thickness_mm: 1.2,
     wall_offset_mm: 0.8,
@@ -205,6 +206,7 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     screw_hole_diameter_mm: 3.5,
     screw_countersink_depth_mm: 0.8,
     screw_head_clearance_mm: 0.4,
+    wide_edge_screws: true,
   });
 });
 

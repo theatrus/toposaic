@@ -18,6 +18,7 @@ const FRENCH_CLEAT_DEGREES: f32 = 35.0;
 const FRENCH_CLEAT_MIN_SLIDE_MM: f32 = 2.0;
 const WALL_PLATE_MARGIN_MM: f32 = 1.2;
 const WALL_PLATE_SCREW_GAP_MM: f32 = 0.4;
+const WIDE_MOUNT_EDGE_SCREW_MIN_WIDTH_MM: f32 = 40.0;
 const ALIGNMENT_FRAME_BAND_MM: f32 = 1.6;
 const ALIGNMENT_FRAME_THICKNESS_MM: f32 = 1.2;
 const ALIGNMENT_RAIL_HALF_WIDTH_MM: f32 = 0.8;
@@ -60,7 +61,7 @@ pub(crate) fn validate_wall_mount_frame(
     let screw_head_reliefs = screw_head_sweep_polygons(mount, frame);
     let fit_error = || {
         anyhow::anyhow!(
-            "wall mount does not fit the full terrain tile or display base; reduce its width, height, travel, or screw-hole size"
+            "wall mount does not fit the full terrain tile or display base; move it farther from an edge or reduce its width, height, travel, or screw-hole size"
         )
     };
     let receivers = cavities_for_frame(mount, frame).map_err(|_| fit_error())?;
@@ -334,7 +335,7 @@ fn bottom_with_wall_plate_pocket(
             .any(|relief| !mount_region.contains(relief))
     {
         bail!(
-            "wall-mount plate does not fit this part; reduce the mount, pocket, or screw size, or use fewer pieces"
+            "wall-mount plate does not fit this part; move it farther from an edge or reduce the mount, pocket, or screw size"
         );
     }
 
@@ -437,7 +438,8 @@ fn add_cavity_wall(
 fn wall_plate_pocket(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Vec<[f32; 2]> {
     let (_, features) = wall_hardware_features(mount);
     let feature_bounds = feature_bounds(&features);
-    let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds);
+    let target_width = mount_frame[2] - mount_frame[0];
+    let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds, target_width);
     let plate_bounds = bounds(&plate);
     let slide = wall_mount_slide(mount);
     let [center_x, center_y] = wall_mount_center(mount, mount_frame);
@@ -464,15 +466,17 @@ fn wall_mount_center(mount: &WallMountSpec, mount_frame: [f32; 4]) -> [f32; 2] {
         return frame_center;
     }
     let (_, features) = wall_hardware_features(mount);
-    let (plate, _) = hardware_plate_and_screw_centers(mount, feature_bounds(&features));
+    let (plate, _) =
+        hardware_plate_and_screw_centers(mount, feature_bounds(&features), maximum_x - minimum_x);
     let plate_bounds = bounds(&plate);
     let plate_center = [
         (plate_bounds[0] + plate_bounds[2]) * 0.5,
         (plate_bounds[1] + plate_bounds[3]) * 0.5,
     ];
+    let position_y = maximum_y - (maximum_y - minimum_y) * mount.vertical_position_ratio;
     [
         frame_center[0] - plate_center[0],
-        frame_center[1] - plate_center[1] + wall_mount_slide(mount) * 0.5,
+        position_y - plate_center[1] + wall_mount_slide(mount) * 0.5,
     ]
 }
 
@@ -560,7 +564,7 @@ fn cavities_for_outline(
             || !outline_polygon.contains(&polygon(&cavity.ceiling))
         {
             bail!(
-                "wall-mount feature does not fit this part; reduce the pin size or use fewer pieces"
+                "wall-mount feature does not fit this part; move it farther from an edge or reduce the pin size"
             );
         }
     }
@@ -602,15 +606,11 @@ fn screw_head_sweep_polygons(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Ve
     if mount.screw_head_clearance_mm <= 0.000_01 {
         return Vec::new();
     }
-    let (_, features) = wall_hardware_features(mount);
-    let (_, screw_centers) = hardware_plate_and_screw_centers(mount, feature_bounds(&features));
-    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
     let slide = wall_mount_slide(mount);
     let radius = screw_head_radius(mount) + mount.fit_clearance_mm;
-    screw_centers
+    positioned_screw_centers(mount, mount_frame)
         .into_iter()
-        .map(|screw_center| {
-            let locked = [center_x + screw_center[0], center_y + screw_center[1]];
+        .map(|locked| {
             let entry = [locked[0], locked[1] - slide];
             let points = circle(locked, radius)
                 .into_iter()
@@ -619,6 +619,20 @@ fn screw_head_sweep_polygons(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Ve
                 .collect::<Vec<_>>();
             MultiPoint::new(points).convex_hull()
         })
+        .collect()
+}
+
+fn positioned_screw_centers(mount: &WallMountSpec, mount_frame: [f32; 4]) -> Vec<[f32; 2]> {
+    let (_, features) = wall_hardware_features(mount);
+    let (_, offsets) = hardware_plate_and_screw_centers(
+        mount,
+        feature_bounds(&features),
+        mount_frame[2] - mount_frame[0],
+    );
+    let [center_x, center_y] = wall_mount_center(mount, mount_frame);
+    offsets
+        .into_iter()
+        .map(|offset| [center_x + offset[0], center_y + offset[1]])
         .collect()
 }
 
@@ -749,6 +763,7 @@ fn feature_bounds(features: &[MountCavity]) -> [f32; 4] {
 fn hardware_plate_and_screw_centers(
     mount: &WallMountSpec,
     feature_bounds: [f32; 4],
+    target_width: f32,
 ) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
     let screw_radius = screw_head_radius(mount);
     let center_x = (feature_bounds[0] + feature_bounds[2]) * 0.5;
@@ -757,10 +772,45 @@ fn hardware_plate_and_screw_centers(
     // cleat reaches its locked position.
     let lower_screw_y = feature_bounds[1] - slide - screw_radius - WALL_PLATE_SCREW_GAP_MM;
     let upper_screw_y = feature_bounds[3] + slide + screw_radius + WALL_PLATE_SCREW_GAP_MM;
-    let minimum_x = feature_bounds[0] - WALL_PLATE_MARGIN_MM;
-    let maximum_x = feature_bounds[2] + WALL_PLATE_MARGIN_MM;
-    let minimum_y = lower_screw_y - screw_radius - WALL_PLATE_MARGIN_MM;
-    let maximum_y = upper_screw_y + screw_radius + WALL_PLATE_MARGIN_MM;
+    let mut screw_centers = vec![[center_x, lower_screw_y], [center_x, upper_screw_y]];
+
+    let feature_width = feature_bounds[2] - feature_bounds[0];
+    let edge_screw_y = (feature_bounds[1] + feature_bounds[3]) * 0.5;
+    let edge_screws = [
+        [
+            feature_bounds[0] - screw_radius - WALL_PLATE_SCREW_GAP_MM,
+            edge_screw_y,
+        ],
+        [
+            feature_bounds[2] + screw_radius + WALL_PLATE_SCREW_GAP_MM,
+            edge_screw_y,
+        ],
+    ];
+    let edge_plate_width =
+        edge_screws[1][0] - edge_screws[0][0] + screw_radius * 2.0 + WALL_PLATE_MARGIN_MM * 2.0;
+    if mount.wide_edge_screws
+        && feature_width >= WIDE_MOUNT_EDGE_SCREW_MIN_WIDTH_MM
+        && edge_plate_width + mount.fit_clearance_mm * 2.0 < target_width - 0.000_01
+    {
+        screw_centers.extend(edge_screws);
+    }
+
+    let minimum_x = screw_centers
+        .iter()
+        .map(|center| center[0] - screw_radius - WALL_PLATE_MARGIN_MM)
+        .fold(feature_bounds[0] - WALL_PLATE_MARGIN_MM, f32::min);
+    let maximum_x = screw_centers
+        .iter()
+        .map(|center| center[0] + screw_radius + WALL_PLATE_MARGIN_MM)
+        .fold(feature_bounds[2] + WALL_PLATE_MARGIN_MM, f32::max);
+    let minimum_y = screw_centers
+        .iter()
+        .map(|center| center[1] - screw_radius - WALL_PLATE_MARGIN_MM)
+        .fold(feature_bounds[1] - WALL_PLATE_MARGIN_MM, f32::min);
+    let maximum_y = screw_centers
+        .iter()
+        .map(|center| center[1] + screw_radius + WALL_PLATE_MARGIN_MM)
+        .fold(feature_bounds[3] + WALL_PLATE_MARGIN_MM, f32::max);
     (
         rectangle(
             (minimum_x + maximum_x) * 0.5,
@@ -768,7 +818,7 @@ fn hardware_plate_and_screw_centers(
             (maximum_x - minimum_x) * 0.5,
             (maximum_y - minimum_y) * 0.5,
         ),
-        vec![[center_x, lower_screw_y], [center_x, upper_screw_y]],
+        screw_centers,
     )
 }
 
@@ -786,14 +836,15 @@ fn hardware_plate_thickness(mount: &WallMountSpec) -> f32 {
 /// Builds the wall-side half of the selected mount. The flat plate is both a
 /// screw flange and the requested wall spacer; its peg or cleat uses the same
 /// angle as the receiver, reduced by the chosen fit clearance.
-pub(crate) fn build_wall_hardware(mount: &WallMountSpec) -> Result<Mesh> {
+pub(crate) fn build_wall_hardware(mount: &WallMountSpec, target_width: f32) -> Result<Mesh> {
     let (engagement, features) = wall_hardware_features(mount);
     if features.is_empty() {
         bail!("wall hardware needs an enabled mount style");
     }
 
     let feature_bounds = feature_bounds(&features);
-    let (plate, screw_centers) = hardware_plate_and_screw_centers(mount, feature_bounds);
+    let (plate, screw_centers) =
+        hardware_plate_and_screw_centers(mount, feature_bounds, target_width);
     let plate_thickness = hardware_plate_thickness(mount);
     let screw_radius = mount.screw_hole_diameter_mm * 0.5;
     let screw_head_radius = screw_head_radius(mount);
@@ -893,7 +944,7 @@ pub(crate) fn build_wall_alignment_spacer(spec: &GenerationSpec) -> Result<Mesh>
 
     let (_, features) = wall_hardware_features(&spec.wall_mount);
     let feature_bounds = feature_bounds(&features);
-    let (plate, screw_offsets) = hardware_plate_and_screw_centers(&spec.wall_mount, feature_bounds);
+    let (plate, _) = hardware_plate_and_screw_centers(&spec.wall_mount, feature_bounds, width);
     let plate_bounds = bounds(&plate);
     let mount_center = wall_mount_center(&spec.wall_mount, [0.0, 0.0, width, height]);
     if plate_bounds[0] + mount_center[0] < 0.0
@@ -902,7 +953,7 @@ pub(crate) fn build_wall_alignment_spacer(spec: &GenerationSpec) -> Result<Mesh>
         || plate_bounds[3] + mount_center[1] > height
     {
         bail!(
-            "French-cleat plate does not fit its alignment spacer; reduce the cleat height, width, or screw-hole size, or use fewer pieces"
+            "French-cleat plate does not fit its alignment spacer; move it farther from an edge or reduce the cleat height, width, or screw-hole size"
         );
     }
 
@@ -928,8 +979,7 @@ pub(crate) fn build_wall_alignment_spacer(spec: &GenerationSpec) -> Result<Mesh>
     shape = shape.union(&vertical_rail);
 
     let screw_radius = spec.wall_mount.screw_hole_diameter_mm * 0.5;
-    for offset in screw_offsets {
-        let center = [mount_center[0] + offset[0], mount_center[1] + offset[1]];
+    for center in positioned_screw_centers(&spec.wall_mount, [0.0, 0.0, width, height]) {
         let rail = polygon(&rectangle(
             width * 0.5,
             center[1],
@@ -1068,7 +1118,7 @@ mod tests {
                 pin_count: 2,
                 ..WallMountSpec::default()
             };
-            let hardware = build_wall_hardware(&mount).unwrap();
+            let hardware = build_wall_hardware(&mount, 80.0).unwrap();
             assert_watertight(&hardware);
             let plate_thickness = hardware_plate_thickness(&mount);
             assert!(
@@ -1089,9 +1139,10 @@ mod tests {
             ..WallMountSpec::default()
         };
         let (_, features) = wall_hardware_features(&mount);
-        let deep_plate = hardware_plate_and_screw_centers(&mount, feature_bounds(&features)).0;
+        let deep_plate =
+            hardware_plate_and_screw_centers(&mount, feature_bounds(&features), 80.0).0;
         let deep_bounds = bounds(&deep_plate);
-        let hardware = build_wall_hardware(&mount).unwrap();
+        let hardware = build_wall_hardware(&mount, 80.0).unwrap();
         assert_watertight(&hardware);
         assert!(hardware.vertices.iter().any(|point| {
             (point[2] - (mount.thickness_mm - mount.screw_countersink_depth_mm)).abs() < 0.000_01
@@ -1104,10 +1155,11 @@ mod tests {
         );
 
         mount.screw_countersink_depth_mm = 0.0;
-        let plain_plate = hardware_plate_and_screw_centers(&mount, feature_bounds(&features)).0;
+        let plain_plate =
+            hardware_plate_and_screw_centers(&mount, feature_bounds(&features), 80.0).0;
         let plain_bounds = bounds(&plain_plate);
         assert!(deep_bounds[3] - deep_bounds[1] > plain_bounds[3] - plain_bounds[1]);
-        assert_watertight(&build_wall_hardware(&mount).unwrap());
+        assert_watertight(&build_wall_hardware(&mount, 80.0).unwrap());
     }
 
     #[test]
@@ -1177,14 +1229,61 @@ mod tests {
     }
 
     #[test]
+    fn wall_mount_position_tracks_a_ratio_from_the_north_edge() {
+        let frame = [0.0, 0.0, 180.0, 120.0];
+        let mut mount = WallMountSpec {
+            style: WallMountStyle::FrenchCleat,
+            vertical_position_ratio: 0.25,
+            ..WallMountSpec::default()
+        };
+        let upper_bounds = bounds(&wall_plate_pocket(&mount, frame));
+        let upper_center = (upper_bounds[1] + upper_bounds[3]) * 0.5;
+        assert!((upper_center - 90.0).abs() < 0.000_01);
+
+        mount.vertical_position_ratio = 0.75;
+        let lower_bounds = bounds(&wall_plate_pocket(&mount, frame));
+        let lower_center = (lower_bounds[1] + lower_bounds[3]) * 0.5;
+        assert!((lower_center - 30.0).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn wide_mount_adds_edge_screws_only_when_the_target_has_room() {
+        let mount = WallMountSpec {
+            style: WallMountStyle::FrenchCleat,
+            cleat_width_mm: 48.0,
+            wide_edge_screws: true,
+            ..WallMountSpec::default()
+        };
+        let (_, features) = wall_hardware_features(&mount);
+        let feature_bounds = feature_bounds(&features);
+        let (_, wide_screws) = hardware_plate_and_screw_centers(&mount, feature_bounds, 100.0);
+        let (_, narrow_screws) = hardware_plate_and_screw_centers(&mount, feature_bounds, 60.0);
+        assert_eq!(wide_screws.len(), 4);
+        assert_eq!(narrow_screws.len(), 2);
+        assert_watertight(&build_wall_hardware(&mount, 100.0).unwrap());
+
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            wall_mount: mount,
+            ..GenerationSpec::default()
+        };
+        assert_watertight(&build_wall_alignment_spacer(&spec).unwrap());
+        assert_eq!(
+            positioned_screw_centers(&spec.wall_mount, [0.0, 0.0, 100.0, 100.0]).len(),
+            4
+        );
+    }
+
+    #[test]
     fn french_cleat_derives_its_pocket_from_thickness_and_offset() {
         let mut mount = WallMountSpec {
             style: WallMountStyle::FrenchCleat,
+            vertical_position_ratio: 0.5,
             thickness_mm: 1.7,
             wall_offset_mm: 0.5,
             ..WallMountSpec::default()
         };
-        let close_hardware = build_wall_hardware(&mount).unwrap();
+        let close_hardware = build_wall_hardware(&mount, 80.0).unwrap();
         let close_height = close_hardware
             .vertices
             .iter()
@@ -1192,7 +1291,7 @@ mod tests {
             .fold(f32::NEG_INFINITY, f32::max);
 
         mount.wall_offset_mm = 1.0;
-        let offset_hardware = build_wall_hardware(&mount).unwrap();
+        let offset_hardware = build_wall_hardware(&mount, 80.0).unwrap();
         let offset_height = offset_hardware
             .vertices
             .iter()
@@ -1250,7 +1349,8 @@ mod tests {
         let frame = [0.0, 0.0, 60.0, 50.0];
         let [center_x, center_y] = wall_mount_center(&mount, frame);
         let (_, features) = wall_hardware_features(&mount);
-        let (plate, _) = hardware_plate_and_screw_centers(&mount, feature_bounds(&features));
+        let (plate, _) =
+            hardware_plate_and_screw_centers(&mount, feature_bounds(&features), frame[2]);
         let plate_bounds = bounds(&plate);
         let pocket_bounds = bounds(&wall_plate_pocket(&mount, frame));
         let slide = wall_mount_slide(&mount);

@@ -1560,6 +1560,7 @@ mod tests {
                 wall_mount: WallMountSpec {
                     style,
                     target: WallMountTarget::Tray,
+                    vertical_position_ratio: 0.5,
                     pin_diameter_mm: 4.0,
                     ..WallMountSpec::default()
                 },

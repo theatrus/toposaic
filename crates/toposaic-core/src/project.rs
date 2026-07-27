@@ -168,7 +168,7 @@ pub fn generate_wall_mount_artifacts(
             output_dir.display()
         )
     })?;
-    let hardware = build_wall_hardware(&spec.wall_mount)?;
+    let hardware = build_wall_hardware(&spec.wall_mount, spec.wall_mount_target_size()[0])?;
     let stl_path = output_dir.join("wall-mount-hardware.stl");
     write_binary_stl(&hardware, &stl_path)?;
 

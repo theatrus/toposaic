@@ -15,7 +15,10 @@ export function maximumWallPlateThickness(spec: GenerationSpec) {
     13,
     spec.wall_mount.wall_offset_mm +
       thickness -
-      spec.wall_mount.depth_mm -
+      Math.max(
+        spec.wall_mount.depth_mm,
+        spec.wall_mount.screw_head_clearance_mm,
+      ) -
       0.4,
   );
 }
