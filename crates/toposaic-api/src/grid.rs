@@ -77,11 +77,13 @@ pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> 
         SuperTileAnchor::TopLeft => 0,
         SuperTileAnchor::Center => (spec.adjacent_columns as i32 - 1) / 2,
     };
-    let transform = GeoTransform::new(
+    let projection_latitude = spec.map_projection_latitude.unwrap_or(spec.center_lat);
+    let transform = GeoTransform::with_reference_latitude(
         spec.center_lat,
         spec.center_lon,
         spec.ground_span_km,
         spec.terrain_rotation_degrees,
+        projection_latitude,
     );
     (0..spec.adjacent_rows)
         .flat_map(|row| {
@@ -95,6 +97,7 @@ pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> 
                 );
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
+                tile.map_projection_latitude = Some(projection_latitude);
                 tile.puzzle_tile_column = spec.puzzle_tile_column + column_offset;
                 tile.puzzle_tile_row = spec.puzzle_tile_row + row_offset;
                 tile
@@ -305,6 +308,25 @@ mod tests {
             assert!((point[0] - expected[0]).abs() < 0.000_01);
             assert!((point[1] - expected[1]).abs() < 0.000_01);
         }
+
+        let north_west = tiles[0].geo_transform();
+        let north_east = tiles[1].geo_transform();
+        let south_west = tiles[2].geo_transform();
+        for along_edge in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_coordinates_match(
+                north_west.coordinate_at_uv(1.0, along_edge),
+                north_east.coordinate_at_uv(0.0, along_edge),
+            );
+            assert_coordinates_match(
+                north_west.coordinate_at_uv(along_edge, 0.0),
+                south_west.coordinate_at_uv(along_edge, 1.0),
+            );
+        }
+    }
+
+    fn assert_coordinates_match(left: (f64, f64), right: (f64, f64)) {
+        assert!((left.0 - right.0).abs() < 0.000_000_001);
+        assert!((left.1 - right.1).abs() < 0.000_000_001);
     }
 
     #[test]

@@ -34,6 +34,11 @@ pub struct GenerationSpec {
     pub ground_span_km: f64,
     /// Clockwise rotation of the model's top edge from true north.
     pub terrain_rotation_degrees: f64,
+    /// Shared equirectangular projection latitude for tiles in one generated
+    /// grid. This is derived at run time and never stored in saved specs.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub map_projection_latitude: Option<f64>,
     pub width_mm: f32,
     pub rows: u32,
     pub columns: u32,
@@ -95,6 +100,7 @@ impl Default for GenerationSpec {
             elevation_source: ElevationSource::Mapzen,
             ground_span_km: 18.0,
             terrain_rotation_degrees: 0.0,
+            map_projection_latitude: None,
             width_mm: 180.0,
             rows: 3,
             columns: 3,
@@ -358,13 +364,18 @@ impl GenerationSpec {
     /// The API uses this same helper for OSM data, so markers, trails, and
     /// fetched features cannot drift apart at high latitude or the date line.
     pub fn normalized_map_point(&self, latitude: f64, longitude: f64) -> [f32; 2] {
-        GeoTransform::new(
+        self.geo_transform().normalized_point(latitude, longitude)
+    }
+
+    /// Geographic transform shared by DEM, vector, and marker inputs.
+    pub fn geo_transform(&self) -> GeoTransform {
+        GeoTransform::with_reference_latitude(
             self.center_lat,
             self.center_lon,
             self.ground_span_km,
             self.terrain_rotation_degrees,
+            self.map_projection_latitude.unwrap_or(self.center_lat),
         )
-        .normalized_point(latitude, longitude)
     }
 
     /// Whether the railway layer — `railway=*`: trains, trams, metros,

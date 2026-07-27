@@ -74,6 +74,25 @@ impl GeoTransform {
         span_km: f64,
         rotation_degrees: f64,
     ) -> Self {
+        Self::with_reference_latitude(
+            center_latitude,
+            center_longitude,
+            span_km,
+            rotation_degrees,
+            center_latitude,
+        )
+    }
+
+    /// Builds a transform whose east-west scale comes from a shared map
+    /// projection. Adjacent tiles use the same reference latitude so their
+    /// sampled edges meet exactly after rotation.
+    pub fn with_reference_latitude(
+        center_latitude: f64,
+        center_longitude: f64,
+        span_km: f64,
+        rotation_degrees: f64,
+        reference_latitude: f64,
+    ) -> Self {
         let rotation_degrees = canonical_rotation(rotation_degrees);
         let (rotation_sine, rotation_cosine) = rotation_degrees.to_radians().sin_cos();
         Self {
@@ -83,7 +102,7 @@ impl GeoTransform {
             rotation_degrees,
             rotation_sine,
             rotation_cosine,
-            longitude_scale: longitude_scale(center_latitude),
+            longitude_scale: longitude_scale(reference_latitude),
         }
     }
 

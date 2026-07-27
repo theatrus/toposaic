@@ -697,12 +697,7 @@ fn waterway_print_width(spec: &GenerationSpec, feature: &WaterwayFeature) -> f32
 }
 
 fn transform_for(spec: &GenerationSpec) -> GeoTransform {
-    GeoTransform::new(
-        spec.center_lat,
-        spec.center_lon,
-        spec.ground_span_km,
-        spec.terrain_rotation_degrees,
-    )
+    spec.geo_transform()
 }
 
 #[cfg(test)]

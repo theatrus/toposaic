@@ -11,7 +11,7 @@ use reqwest::{StatusCode, blocking::Client};
 use toposaic_core::{DespikeReport, ElevationSource, GenerationSpec, HeightField};
 use tracing::warn;
 
-use crate::{cache, geo::GeoTransform, http};
+use crate::{cache, http};
 
 #[cfg(test)]
 use crate::geo::normalize_longitude;
@@ -121,12 +121,7 @@ fn fetch_height_field_at_size(
     let client = elevation_client()?;
     let mut tiles = HashMap::new();
     let mut missing_tiles = HashSet::new();
-    let transform = GeoTransform::new(
-        spec.center_lat,
-        spec.center_lon,
-        spec.ground_span_km,
-        spec.terrain_rotation_degrees,
-    );
+    let transform = spec.geo_transform();
     let mut values_m = Vec::with_capacity(sample_width * sample_height);
     let mut sampler = ElevationSampler {
         client: &client,
