@@ -89,7 +89,7 @@ pub(super) fn append_building_geometry(
     let flag_cavities = spec
         .markers
         .iter()
-        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
+        .filter(|marker| marker.kind.is_flag())
         .map(|marker| {
             let point = spec.normalized_map_point(marker.latitude, marker.longitude);
             let center = [

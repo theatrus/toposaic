@@ -35,6 +35,7 @@ import {
   aerialLineClass,
   assembledMeshSamples,
   effectiveMeshSamples,
+  isFlagMarker,
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
@@ -346,7 +347,7 @@ export function ReliefPreview({
   } = spec.color_output;
   const markerColor = spec.marker_settings.color;
   const coloredMarkersPresent = spec.markers.some(
-    (marker) => marker.kind !== "flag_hole",
+    (marker) => !isFlagMarker(marker.kind),
   );
   const buildingsEnabled =
     spec.buildings.enabled ||

@@ -1465,8 +1465,7 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
     use crate::spec::{
-        PuzzleRetentionSpec, TrayLabelFont, TraySpec, WallMountSpec, WallMountStyle,
-        WallMountTarget,
+        LabelFont, PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
     };
 
     #[test]
@@ -1848,7 +1847,7 @@ mod tests {
     fn tray_label_uses_smooth_vector_curves() {
         let label = EmbossedLabel {
             text: "O".into(),
-            font: TrayLabelFont::AtkinsonHyperlegible,
+            font: LabelFont::AtkinsonHyperlegible,
             origin_x: 1.0,
             baseline_y: 1.0,
             scale: 0.005,
@@ -1912,9 +1911,9 @@ mod tests {
     fn tray_label_fonts_emboss_multilingual_watertight_text() {
         let mut widths = Vec::new();
         for font in [
-            TrayLabelFont::AtkinsonHyperlegible,
-            TrayLabelFont::NotoSans,
-            TrayLabelFont::B612Mono,
+            LabelFont::AtkinsonHyperlegible,
+            LabelFont::NotoSans,
+            LabelFont::B612Mono,
         ] {
             let spec = GenerationSpec {
                 place_name: "Hạ Long Москва 富士山".into(),

@@ -138,7 +138,9 @@ pub(super) fn append_road_geometry(
         .filter_map(|marker| {
             let radius = f64::from(match marker.kind {
                 MarkerKind::Dot => spec.marker_settings.dot_diameter_mm * 0.5,
-                MarkerKind::FlagHole => spec.marker_settings.hole_diameter_mm * 0.5,
+                MarkerKind::FlagHole | MarkerKind::FlagLabel => {
+                    spec.marker_settings.hole_diameter_mm * 0.5
+                }
                 MarkerKind::Building => return None,
             }) + OVERLAY_SEPARATION_MM;
             let point = spec.normalized_map_point(marker.latitude, marker.longitude);

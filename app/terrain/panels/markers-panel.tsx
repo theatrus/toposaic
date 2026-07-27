@@ -1,10 +1,12 @@
 import type { GenerationSpec, MarkerKind } from "../contracts";
+import { isFlagMarker, limitMarkerName } from "../config";
 import { RangeField } from "./range-field";
 
 const kindLabel: Record<MarkerKind, string> = {
   building: "Highlight building",
   dot: "Color dot",
-  flag_hole: "Flag hole",
+  flag_hole: "Blank flag",
+  flag_label: "Named flag",
 };
 
 function MarkerCoordinateInput({
@@ -71,6 +73,10 @@ export function MarkersPanel({
     value: GenerationSpec["marker_settings"][Key],
   ) => void;
 }) {
+  const showFlagControls =
+    (placementKind !== null && isFlagMarker(placementKind)) ||
+    spec.markers.some((marker) => isFlagMarker(marker.kind));
+
   return (
     <fieldset
       aria-label="Map markers"
@@ -102,7 +108,7 @@ export function MarkersPanel({
       <p className="color-note" role="status">
         {placementKind
           ? `Click the map to place a ${kindLabel[placementKind].toLowerCase()}.`
-          : "Building markers color the footprint under the point. Dots print flush with the terrain. Flag holes hold the exported flag blank."}
+          : "Building markers color the footprint under the point. Dots print flush with the terrain. Flag holes use a blank flag; flag labels print the editable marker name."}
       </p>
 
       {spec.markers.length > 0 && (
@@ -111,12 +117,16 @@ export function MarkersPanel({
             <li key={`${marker.latitude}:${marker.longitude}:${index}`}>
               <input
                 aria-label={`Marker ${index + 1} name`}
-                maxLength={80}
                 onChange={(event) =>
-                  updateMarker(index, { name: event.target.value })
+                  updateMarker(index, {
+                    name: limitMarkerName(event.target.value),
+                  })
                 }
                 value={marker.name}
               />
+              {marker.kind === "flag_label" && (
+                <small>This name prints on the flag.</small>
+              )}
               <select
                 aria-label={`Marker ${index + 1} type`}
                 onChange={(event) =>
@@ -169,49 +179,119 @@ export function MarkersPanel({
         unit="mm"
         value={spec.marker_settings.dot_diameter_mm}
       />
-      <RangeField
-        label="Flag-hole diameter"
-        max={6}
-        min={1.2}
-        onChange={(value) => updateMarkerSettings("hole_diameter_mm", value)}
-        step={0.2}
-        unit="mm"
-        value={spec.marker_settings.hole_diameter_mm}
-      />
-      <RangeField
-        label="Flag-hole depth"
-        max={Math.min(6, Math.max(0.6, spec.base_mm - 0.4))}
-        min={0.6}
-        onChange={(value) => updateMarkerSettings("hole_depth_mm", value)}
-        step={0.2}
-        unit="mm"
-        value={Math.min(
-          spec.marker_settings.hole_depth_mm,
-          Math.max(0.6, spec.base_mm - 0.4),
-        )}
-      />
-      <RangeField
-        label="Flag fit clearance"
-        max={Math.min(
-          0.6,
-          Math.max(0.1, spec.marker_settings.hole_diameter_mm - 0.9),
-        )}
-        min={0.1}
-        onChange={(value) => updateMarkerSettings("flag_clearance_mm", value)}
-        step={0.05}
-        unit="mm"
-        value={spec.marker_settings.flag_clearance_mm}
-      />
-      <label className="marker-template-toggle">
-        <input
-          checked={spec.marker_settings.export_flag_template}
-          onChange={(event) =>
-            updateMarkerSettings("export_flag_template", event.target.checked)
-          }
-          type="checkbox"
-        />
-        Export a printable flag blank with flag-hole jobs
-      </label>
+      {showFlagControls && (
+        <>
+          <RangeField
+            label="Flag-hole diameter"
+            max={6}
+            min={1.2}
+            onChange={(value) =>
+              updateMarkerSettings("hole_diameter_mm", value)
+            }
+            step={0.2}
+            unit="mm"
+            value={spec.marker_settings.hole_diameter_mm}
+          />
+          <RangeField
+            label="Flag-hole depth"
+            max={Math.min(6, Math.max(0.6, spec.base_mm - 0.4))}
+            min={0.6}
+            onChange={(value) =>
+              updateMarkerSettings("hole_depth_mm", value)
+            }
+            step={0.2}
+            unit="mm"
+            value={Math.min(
+              spec.marker_settings.hole_depth_mm,
+              Math.max(0.6, spec.base_mm - 0.4),
+            )}
+          />
+          <RangeField
+            label="Flag fit clearance"
+            max={Math.min(
+              0.6,
+              Math.max(0.1, spec.marker_settings.hole_diameter_mm - 0.9),
+            )}
+            min={0.1}
+            onChange={(value) =>
+              updateMarkerSettings("flag_clearance_mm", value)
+            }
+            step={0.05}
+            unit="mm"
+            value={spec.marker_settings.flag_clearance_mm}
+          />
+          <label className="marker-flag-font-field">
+            <span>Flag label font</span>
+            <select
+              aria-label="Flag label font"
+              onChange={(event) =>
+                updateMarkerSettings(
+                  "flag_label_font",
+                  event.target
+                    .value as GenerationSpec["marker_settings"]["flag_label_font"],
+                )
+              }
+              value={spec.marker_settings.flag_label_font}
+            >
+              <option value="atkinson_hyperlegible">
+                Atkinson Hyperlegible
+              </option>
+              <option value="noto_sans">Noto Sans</option>
+              <option value="b612_mono">B612 Mono</option>
+            </select>
+          </label>
+          <RangeField
+            label="Flag width"
+            max={80}
+            min={12}
+            onChange={(value) =>
+              updateMarkerSettings("flag_width_mm", value)
+            }
+            step={1}
+            unit="mm"
+            value={spec.marker_settings.flag_width_mm}
+          />
+          <RangeField
+            label="Flag height"
+            max={30}
+            min={6}
+            onChange={(value) =>
+              updateMarkerSettings("flag_height_mm", value)
+            }
+            step={1}
+            unit="mm"
+            value={spec.marker_settings.flag_height_mm}
+          />
+          <RangeField
+            label="Flag label height"
+            max={Math.min(10, spec.marker_settings.flag_height_mm - 2)}
+            min={1.5}
+            note="Long names shrink to fit the banner."
+            onChange={(value) =>
+              updateMarkerSettings("flag_label_height_mm", value)
+            }
+            step={0.1}
+            unit="mm"
+            value={Math.min(
+              spec.marker_settings.flag_label_height_mm,
+              spec.marker_settings.flag_height_mm - 2,
+            )}
+          />
+          <label className="marker-template-toggle">
+            <input
+              checked={spec.marker_settings.export_flag_template}
+              onChange={(event) =>
+                updateMarkerSettings(
+                  "export_flag_template",
+                  event.target.checked,
+                )
+              }
+              type="checkbox"
+            />
+            Export printable blank and named flags
+          </label>
+        </>
+      )}
     </fieldset>
   );
 }

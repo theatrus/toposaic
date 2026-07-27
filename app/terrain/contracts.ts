@@ -4,7 +4,7 @@ export type TrailRoute = {
   points: [number, number][];
 };
 
-export type MarkerKind = "building" | "dot" | "flag_hole";
+export type MarkerKind = "building" | "dot" | "flag_hole" | "flag_label";
 
 export type MapMarker = {
   name: string;
@@ -60,6 +60,10 @@ export type GenerationSpec = {
     hole_diameter_mm: number;
     hole_depth_mm: number;
     flag_clearance_mm: number;
+    flag_label_font: "atkinson_hyperlegible" | "noto_sans" | "b612_mono";
+    flag_label_height_mm: number;
+    flag_width_mm: number;
+    flag_height_mm: number;
     export_flag_template: boolean;
   };
   tray: {

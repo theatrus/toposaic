@@ -94,8 +94,9 @@ OrcaSlicer load the palette colors as filament assignments.*
 
 ## Version 0.5 highlights
 
-- Place editable building highlights, color dots, and flag sockets by latitude
-  and longitude. Flag jobs include a printable flag blank.
+- Place editable building highlights, color dots, blank flags, and named flags
+  by latitude and longitude. Named flags emboss their editable text in a chosen
+  bundled font; controls set the banner width, height, and text size.
 - Save a stable puzzle seed and signed tile coordinates with each setup so
   later super-tile runs can make matching edges. Outer edge notches are
   optional and off by default.

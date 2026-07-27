@@ -510,7 +510,11 @@ export function TerrainMap({
                   "--marker-color": spec.marker_settings.color,
                 } as CSSProperties}
                 title={marker.name}
-              />
+              >
+                {marker.kind === "flag_label" && (
+                  <span className="map-marker-name">{marker.name}</span>
+                )}
+              </span>
             ))}
           </div>
         )}

@@ -1,4 +1,4 @@
-import type { GenerationSpec } from "./contracts";
+import type { GenerationSpec, MarkerKind } from "./contracts";
 
 // Client default for both sample totals; also stands in when a spec carries
 // an explicit null ("backend picks"), so label math never divides by zero.
@@ -7,12 +7,25 @@ export const LINE_SCALE_CLOSE_SPAN_KM = 2;
 export const LINE_SCALE_WIDE_SPAN_KM = 18;
 export const MAX_ROAD_CLASS_WIDTH_SCALE = 1.4;
 export const MAX_PLACE_NAME_CHARACTERS = 48;
+export const MAX_MARKER_NAME_CHARACTERS = 80;
+
+function limitCharacters(value: string, maximum: number) {
+  const characters = Array.from(value);
+  return characters.length > maximum
+    ? characters.slice(0, maximum).join("")
+    : value;
+}
 
 export function limitPlaceName(value: string) {
-  const characters = Array.from(value);
-  return characters.length > MAX_PLACE_NAME_CHARACTERS
-    ? characters.slice(0, MAX_PLACE_NAME_CHARACTERS).join("")
-    : value;
+  return limitCharacters(value, MAX_PLACE_NAME_CHARACTERS);
+}
+
+export function limitMarkerName(value: string) {
+  return limitCharacters(value, MAX_MARKER_NAME_CHARACTERS);
+}
+
+export function isFlagMarker(kind: MarkerKind) {
+  return kind === "flag_hole" || kind === "flag_label";
 }
 
 export function randomPuzzleSeed() {
@@ -80,6 +93,10 @@ export const initialSpec: GenerationSpec = {
     hole_diameter_mm: 2.4,
     hole_depth_mm: 2,
     flag_clearance_mm: 0.2,
+    flag_label_font: "atkinson_hyperlegible",
+    flag_label_height_mm: 4,
+    flag_width_mm: 30,
+    flag_height_mm: 12,
     export_flag_template: true,
   },
   tray: {

@@ -840,13 +840,31 @@ a {
   width: 13px;
 }
 
-.map-marker.flag_hole {
+.map-marker.flag_hole,
+.map-marker.flag_label {
   background: transparent;
   border: 3px solid var(--marker-color);
   border-radius: 50%;
   height: 13px;
   transform: translate(-50%, -50%);
   width: 13px;
+}
+
+.map-marker-name {
+  background: rgba(20, 32, 29, 0.9);
+  border-radius: 3px;
+  color: white;
+  font-size: 9px;
+  font-style: normal;
+  left: 14px;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 2px 5px;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
 }
 
 .map-instruction {

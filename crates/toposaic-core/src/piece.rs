@@ -269,11 +269,7 @@ pub(crate) fn build_piece_with_height_range(
         .map(|index| [index, (index + 1) % outline.len()])
         .collect::<Vec<_>>();
     let mut flag_cavities = Vec::<(Vec<usize>, Vec<[f32; 2]>)>::new();
-    for marker in spec
-        .markers
-        .iter()
-        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
-    {
+    for marker in spec.markers.iter().filter(|marker| marker.kind.is_flag()) {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let center = [
             uv[0] * assembled_width - origin_x,

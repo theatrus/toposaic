@@ -264,11 +264,17 @@ impl GenerationSpec {
         }
         for marker in &self.markers {
             marker.validate()?;
+            if marker.kind == MarkerKind::FlagLabel && self.marker_settings.export_flag_template {
+                crate::text::validate_embossing_text(
+                    marker.name.trim(),
+                    self.marker_settings.flag_label_font,
+                )?;
+            }
         }
         let flag_holes = self
             .markers
             .iter()
-            .filter(|marker| marker.kind == MarkerKind::FlagHole)
+            .filter(|marker| marker.kind.is_flag())
             .map(|marker| {
                 (
                     marker,
@@ -306,9 +312,7 @@ impl GenerationSpec {
     }
 
     pub fn uses_colored_markers(&self) -> bool {
-        self.markers
-            .iter()
-            .any(|marker| marker.kind != MarkerKind::FlagHole)
+        self.markers.iter().any(|marker| !marker.kind.is_flag())
     }
 
     pub fn uses_building_markers(&self) -> bool {
@@ -318,9 +322,13 @@ impl GenerationSpec {
     }
 
     pub fn uses_flag_holes(&self) -> bool {
+        self.markers.iter().any(|marker| marker.kind.is_flag())
+    }
+
+    pub fn uses_named_flags(&self) -> bool {
         self.markers
             .iter()
-            .any(|marker| marker.kind == MarkerKind::FlagHole)
+            .any(|marker| marker.kind == MarkerKind::FlagLabel)
     }
 
     /// Maps a geographic point into this tile's normalized model square.
@@ -785,6 +793,13 @@ pub enum MarkerKind {
     Building,
     Dot,
     FlagHole,
+    FlagLabel,
+}
+
+impl MarkerKind {
+    pub(crate) fn is_flag(self) -> bool {
+        matches!(self, Self::FlagHole | Self::FlagLabel)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -821,6 +836,10 @@ pub struct MarkerSpec {
     pub hole_diameter_mm: f32,
     pub hole_depth_mm: f32,
     pub flag_clearance_mm: f32,
+    pub flag_label_font: LabelFont,
+    pub flag_label_height_mm: f32,
+    pub flag_width_mm: f32,
+    pub flag_height_mm: f32,
     pub export_flag_template: bool,
 }
 
@@ -832,6 +851,10 @@ impl Default for MarkerSpec {
             hole_diameter_mm: 2.4,
             hole_depth_mm: 2.0,
             flag_clearance_mm: 0.2,
+            flag_label_font: LabelFont::AtkinsonHyperlegible,
+            flag_label_height_mm: 4.0,
+            flag_width_mm: 30.0,
+            flag_height_mm: 12.0,
             export_flag_template: true,
         }
     }
@@ -856,6 +879,18 @@ impl MarkerSpec {
         }
         if self.hole_diameter_mm - self.flag_clearance_mm < 0.9 {
             bail!("marker flag clearance must leave at least a 0.9 mm flag post");
+        }
+        if !(1.5..=10.0).contains(&self.flag_label_height_mm) {
+            bail!("marker flag label height must be between 1.5 and 10 mm");
+        }
+        if !(12.0..=80.0).contains(&self.flag_width_mm) {
+            bail!("marker flag width must be between 12 and 80 mm");
+        }
+        if !(6.0..=30.0).contains(&self.flag_height_mm) {
+            bail!("marker flag height must be between 6 and 30 mm");
+        }
+        if self.flag_label_height_mm > self.flag_height_mm - 2.0 {
+            bail!("marker flag label height must leave a 1 mm margin above and below");
         }
         if spec.uses_flag_holes() && self.hole_depth_mm > spec.base_mm - 0.4 {
             bail!("marker flag holes must leave at least 0.4 mm of terrain base");
@@ -914,7 +949,7 @@ pub struct TraySpec {
     pub tray_color: String,
     pub contour_color: String,
     pub label_color: String,
-    pub label_font: TrayLabelFont,
+    pub label_font: LabelFont,
     pub label_height_mm: f32,
     pub label_position: TrayLabelPosition,
     pub clearance_mm: f32,
@@ -935,7 +970,7 @@ impl Default for TraySpec {
             tray_color: "#252822".into(),
             contour_color: "#E7E4D8".into(),
             label_color: "#F4F3EC".into(),
-            label_font: TrayLabelFont::AtkinsonHyperlegible,
+            label_font: LabelFont::AtkinsonHyperlegible,
             label_height_mm: 4.0,
             label_position: TrayLabelPosition::Center,
             clearance_mm: 0.6,
@@ -951,12 +986,15 @@ impl Default for TraySpec {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrayLabelFont {
+pub enum LabelFont {
     #[default]
     AtkinsonHyperlegible,
     NotoSans,
     B612Mono,
 }
+
+/// Kept for source compatibility with clients that used the tray-only name.
+pub type TrayLabelFont = LabelFont;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1977,7 +2015,7 @@ mod tests {
         let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
-            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\",\"dot_diameter_mm\":3.0,\"hole_diameter_mm\":2.4,\"hole_depth_mm\":2.0,\"flag_clearance_mm\":0.2,\"export_flag_template\":true},",
+            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\",\"dot_diameter_mm\":3.0,\"hole_diameter_mm\":2.4,\"hole_depth_mm\":2.0,\"flag_clearance_mm\":0.2,\"flag_label_font\":\"atkinson_hyperlegible\",\"flag_label_height_mm\":4.0,\"flag_width_mm\":30.0,\"flag_height_mm\":12.0,\"export_flag_template\":true},",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let expected = expected.replace(
@@ -2079,6 +2117,10 @@ mod tests {
                 "hole_diameter_mm": 3.0,
                 "hole_depth_mm": 2.0,
                 "flag_clearance_mm": 0.25,
+                "flag_label_font": "noto_sans",
+                "flag_label_height_mm": 5.0,
+                "flag_width_mm": 42.0,
+                "flag_height_mm": 14.0,
                 "export_flag_template": true
             },
             "color_output": {
@@ -2229,6 +2271,18 @@ mod tests {
         assert!((center[0] - 0.5).abs() < 0.000_001);
         assert!((center[1] - 0.5).abs() < 0.000_001);
 
+        spec.markers[0].kind = MarkerKind::FlagLabel;
+        spec.markers[0].name = "富士山".into();
+        assert!(spec.uses_named_flags());
+        spec.validate().unwrap();
+        spec.markers[0].name = "Fuji 🗻".into();
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("cannot render")
+        );
+        spec.markers[0].name = "Blank".into();
         spec.markers[0].kind = MarkerKind::FlagHole;
         spec.marker_settings.hole_depth_mm = spec.base_mm;
         assert!(spec.validate().is_err());
@@ -2251,7 +2305,7 @@ mod tests {
                     name: "Second".into(),
                     latitude: 46.8523,
                     longitude: -121.7603,
-                    kind: MarkerKind::FlagHole,
+                    kind: MarkerKind::FlagLabel,
                 },
             ],
             ..GenerationSpec::default()
@@ -2268,7 +2322,7 @@ mod tests {
         }))
         .unwrap();
         assert!(old.tray.contours_enabled);
-        assert_eq!(old.tray.label_font, TrayLabelFont::AtkinsonHyperlegible);
+        assert_eq!(old.tray.label_font, LabelFont::AtkinsonHyperlegible);
         assert_eq!(old.tray.label_height_mm, 4.0);
         assert_eq!(old.tray.label_position, TrayLabelPosition::Center);
         assert!(!old.puzzle_retention.enabled);
@@ -2353,7 +2407,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(spec.tray.label_font, TrayLabelFont::B612Mono);
+        assert_eq!(spec.tray.label_font, LabelFont::B612Mono);
         assert_eq!(spec.tray.label_height_mm, 6.5);
         assert_eq!(spec.tray.label_position, TrayLabelPosition::Right);
         spec.place_name = "富士山".into();
