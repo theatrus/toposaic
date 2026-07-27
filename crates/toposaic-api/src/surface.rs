@@ -14,8 +14,8 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, NativeClassGrid, RailLifecycle, ResolvedRoadDetail,
-    SlopeGates, SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, LineStyle, NativeClassGrid, RailLifecycle,
+    ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
 };
 use tracing::warn;
 
@@ -96,6 +96,11 @@ const GONE_LIFECYCLE_PREFIXES: [&str; 6] = [
 /// Narrowest line any overlay prints. Below roughly one nozzle width a line
 /// stops being reliably extruded, so every width scale bottoms out here.
 const MINIMUM_LINE_WIDTH_MM: f32 = 0.4;
+/// Working width for a railway whose OSM way has no explicit `width=*`.
+/// Standard gauge is 1.435 m; a representative 3.15 m loading envelope adds
+/// room for the vehicle around it. This is a print-width estimate, not a
+/// claim about the full formation, ballast, or right of way.
+const DEFAULT_RAILWAY_WIDTH_M: f32 = 1.435 + 3.15;
 const OVERPASS_ATTEMPTS: usize = 2;
 const OVERPASS_RETRY_DELAY: Duration = Duration::from_millis(750);
 static OVERPASS_REQUEST_LOCK: Mutex<()> = Mutex::new(());
@@ -236,6 +241,7 @@ struct WaterCounts {
 struct RouteFeature {
     points: Vec<[f32; 2]>,
     width_scale: f32,
+    mapped_width_m: Option<f32>,
     path_or_trail: bool,
     bridge_elevations_m: Option<[f32; 2]>,
 }
@@ -757,6 +763,7 @@ fn paint_osm_ways(
         features.push(RouteFeature {
             points,
             width_scale: scale,
+            mapped_width_m: osm_width_m(&way.tags),
             path_or_trail: is_path_or_trail(&way.tags),
             bridge_elevations_m,
         });
@@ -767,8 +774,7 @@ fn paint_osm_ways(
         1.0
     };
     for feature in &features {
-        let line_width = (spec.color_output.road_width_mm * feature.width_scale * density_scale)
-            .max(MINIMUM_LINE_WIDTH_MM);
+        let line_width = road_line_width_mm(spec, feature, density_scale);
         if let Some(elevations_m) = feature.bridge_elevations_m {
             field.paint_bridge_polyline(&feature.points, spec.width_mm, line_width, elevations_m);
         } else {
@@ -922,8 +928,7 @@ fn paint_rail_ways(
         };
         let style = styles[kind.index()];
         let points = normalized_osm_points(&way, spec, bounds);
-        let line_width =
-            (style.width_mm * scale * lifecycle_width_scale(state)).max(MINIMUM_LINE_WIDTH_MM);
+        let line_width = rail_family_line_width_mm(spec, &way.tags, kind, style, scale, state);
         if is_bridge(&way.tags) {
             let first = points[0];
             let last = points[points.len() - 1];
@@ -1139,13 +1144,148 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
                     width.hypot(height)
                 })
                 .sum::<f32>()
-                * spec.color_output.road_width_mm
-                * feature.width_scale
+                * provisional_road_width_mm(spec, feature)
         })
         .sum::<f32>();
     let model_area = spec.width_mm * spec.height_mm();
     let estimated_coverage = printed_length / model_area.max(f32::EPSILON);
     (0.06 / estimated_coverage.max(0.06)).clamp(0.35, 1.0)
+}
+
+fn road_line_width_mm(spec: &GenerationSpec, feature: &RouteFeature, density_scale: f32) -> f32 {
+    let provisional_width = provisional_road_width_mm(spec, feature);
+    if feature.mapped_width_m.is_some() {
+        // A mapped physical width already expresses the road's scale. It
+        // contributes to the density budget, but thinning it would make the
+        // printed result cease to be the mapped width.
+        provisional_width
+    } else {
+        (provisional_width * density_scale).max(MINIMUM_LINE_WIDTH_MM)
+    }
+}
+
+fn provisional_road_width_mm(spec: &GenerationSpec, feature: &RouteFeature) -> f32 {
+    let class_width = spec.color_output.road_width_mm * feature.width_scale;
+    let minimum_width = class_width.max(MINIMUM_LINE_WIDTH_MM);
+    feature
+        .mapped_width_m
+        .map(|width_m| mapped_line_width_mm(spec, minimum_width, width_m))
+        .unwrap_or_else(|| {
+            (class_width * road_close_view_scale(spec, feature.width_scale))
+                .max(MINIMUM_LINE_WIDTH_MM)
+        })
+}
+
+fn rail_family_line_width_mm(
+    spec: &GenerationSpec,
+    tags: &HashMap<String, String>,
+    kind: RailKind,
+    style: LineStyle,
+    width_scale: f32,
+    state: WayLifecycle,
+) -> f32 {
+    if kind == RailKind::Aerialway {
+        return (style.width_mm
+            * width_scale
+            * lifecycle_width_scale(state)
+            * spec.close_view_line_scale())
+        .max(MINIMUM_LINE_WIDTH_MM);
+    }
+
+    let minimum_width =
+        (style.width_mm * width_scale * lifecycle_width_scale(state)).max(MINIMUM_LINE_WIDTH_MM);
+    let physical_width_m = osm_width_m(tags).unwrap_or(DEFAULT_RAILWAY_WIDTH_M);
+    mapped_line_width_mm(spec, minimum_width, physical_width_m)
+}
+
+/// Converts an OSM ground width into print millimetres without changing the
+/// non-zoom class minimum. Between that floor and the user's safety cap, the
+/// line stays at its real scale on the model.
+fn mapped_line_width_mm(
+    spec: &GenerationSpec,
+    minimum_width_mm: f32,
+    physical_width_m: f32,
+) -> f32 {
+    let mapped_width_mm = physical_width_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0);
+    mapped_width_mm.clamp(
+        minimum_width_mm,
+        spec.color_output
+            .line_scaling
+            .maximum_mapped_width_mm
+            .max(minimum_width_mm),
+    )
+}
+
+/// Reads the common OSM width forms. Bare values and `m` use metres; feet,
+/// inches, centimetres, and kilometres carry an explicit suffix. OSM also
+/// uses `est_width=*` when a mapper estimated rather than measured a width.
+fn osm_width_m(tags: &HashMap<String, String>) -> Option<f32> {
+    tags.get("width")
+        .and_then(|value| parse_osm_length_m(value))
+        .or_else(|| {
+            tags.get("est_width")
+                .and_then(|value| parse_osm_length_m(value))
+        })
+}
+
+fn parse_osm_length_m(value: &str) -> Option<f32> {
+    let mut value = value.trim().to_ascii_lowercase();
+    for prefix in ["~", "approx.", "approx", "ca.", "ca"] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            value = rest.trim().to_owned();
+            break;
+        }
+    }
+    if value.contains(';') {
+        return None;
+    }
+
+    if let Some(feet_end) = value.find('\'') {
+        let feet = value[..feet_end].trim().parse::<f32>().ok()?;
+        let inches = value[feet_end + 1..]
+            .trim()
+            .trim_end_matches(['"', 'i', 'n'])
+            .trim()
+            .parse::<f32>()
+            .unwrap_or(0.0);
+        return positive_finite_metres(feet * 0.3048 + inches * 0.0254);
+    }
+
+    let units = [
+        ("kilometres", 1_000.0),
+        ("kilometers", 1_000.0),
+        ("km", 1_000.0),
+        ("centimetres", 0.01),
+        ("centimeters", 0.01),
+        ("cm", 0.01),
+        ("metres", 1.0),
+        ("meters", 1.0),
+        ("meter", 1.0),
+        ("metre", 1.0),
+        ("m", 1.0),
+        ("feet", 0.3048),
+        ("foot", 0.3048),
+        ("ft", 0.3048),
+        ("inches", 0.0254),
+        ("inch", 0.0254),
+        ("in", 0.0254),
+    ];
+    for (suffix, scale) in units {
+        if let Some(number) = value.strip_suffix(suffix) {
+            return positive_finite_metres(number.trim().parse::<f32>().ok()? * scale);
+        }
+    }
+    positive_finite_metres(value.parse::<f32>().ok()?)
+}
+
+fn positive_finite_metres(value: f32) -> Option<f32> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+/// Major roads get the full close-view boost. Smaller road classes get a
+/// smaller share, so local streets gain detail without filling an urban map.
+fn road_close_view_scale(spec: &GenerationSpec, road_class_scale: f32) -> f32 {
+    1.0 + (spec.close_view_line_scale() - 1.0) * road_class_scale.clamp(0.0, 1.0)
 }
 
 /// How far outside the model square a trail keeps painting, per axis, in
@@ -2129,6 +2269,73 @@ mod tests {
     }
 
     #[test]
+    fn close_views_boost_major_roads_more_than_local_lines() {
+        let mut spec = GenerationSpec {
+            ground_span_km: 2.0,
+            ..GenerationSpec::default()
+        };
+        assert_eq!(road_close_view_scale(&spec, 1.4), 2.0);
+        assert_eq!(road_close_view_scale(&spec, 1.0), 2.0);
+        assert!(road_close_view_scale(&spec, 0.56) < 2.0);
+        assert!(road_close_view_scale(&spec, 0.38) < road_close_view_scale(&spec, 0.56));
+
+        spec.ground_span_km = 18.0;
+        assert_eq!(road_close_view_scale(&spec, 1.4), 1.0);
+        assert_eq!(road_close_view_scale(&spec, 0.38), 1.0);
+    }
+
+    #[test]
+    fn reads_common_osm_width_units_and_estimates() {
+        let width = |value: &str| HashMap::from([("width".into(), value.into())]);
+        assert_eq!(osm_width_m(&width("4.5")), Some(4.5));
+        assert_eq!(osm_width_m(&width("250 cm")), Some(2.5));
+        assert!((osm_width_m(&width("10 ft")).unwrap() - 3.048).abs() < 0.0001);
+        assert!((osm_width_m(&width("12' 6\"")).unwrap() - 3.81).abs() < 0.0001);
+        assert_eq!(osm_width_m(&width("~ 6 m")), Some(6.0));
+        assert_eq!(osm_width_m(&width("3;4")), None);
+
+        let estimated = HashMap::from([("est_width".into(), "7".into())]);
+        assert_eq!(osm_width_m(&estimated), Some(7.0));
+        let measured_wins = HashMap::from([
+            ("width".into(), "5".into()),
+            ("est_width".into(), "7".into()),
+        ]);
+        assert_eq!(osm_width_m(&measured_wins), Some(5.0));
+    }
+
+    #[test]
+    fn mapped_road_widths_stay_real_between_the_print_limits() {
+        let mut spec = GenerationSpec {
+            ground_span_km: 2.0,
+            ..GenerationSpec::default()
+        };
+        let feature = |mapped_width_m| RouteFeature {
+            points: vec![[0.0, 0.5], [1.0, 0.5]],
+            width_scale: 1.0,
+            mapped_width_m,
+            path_or_trail: false,
+            bridge_elevations_m: None,
+        };
+
+        // Ten ground metres across a 2 km, 180 mm model is 0.9 print mm.
+        assert!((road_line_width_mm(&spec, &feature(Some(10.0)), 1.0) - 0.9).abs() < 0.0001);
+        assert!((road_line_width_mm(&spec, &feature(Some(10.0)), 0.35) - 0.9).abs() < 0.0001);
+        // An unknown width keeps the existing 2x close-view boost.
+        assert!((road_line_width_mm(&spec, &feature(None), 1.0) - 1.4).abs() < 0.0001);
+        assert!((road_line_width_mm(&spec, &feature(None), 0.35) - 0.49).abs() < 0.0001);
+
+        spec.ground_span_km = 18.0;
+        // A real width below the configured class floor never makes a road
+        // narrower than the old wide-area default.
+        assert!((road_line_width_mm(&spec, &feature(Some(10.0)), 1.0) - 0.7).abs() < 0.0001);
+
+        spec.ground_span_km = 0.25;
+        assert_eq!(road_line_width_mm(&spec, &feature(Some(10.0)), 1.0), 4.0);
+        spec.color_output.line_scaling.maximum_mapped_width_mm = 6.0;
+        assert_eq!(road_line_width_mm(&spec, &feature(Some(10.0)), 1.0), 6.0);
+    }
+
+    #[test]
     fn thins_dense_road_networks_but_not_sparse_routes() {
         let spec = GenerationSpec {
             width_mm: 100.0,
@@ -2139,12 +2346,27 @@ mod tests {
         let route = || RouteFeature {
             points: vec![[0.0, 0.5], [1.0, 0.5]],
             width_scale: 1.0,
+            mapped_width_m: None,
             path_or_trail: false,
             bridge_elevations_m: None,
         };
         assert_eq!(route_density_scale(&spec, &[route()]), 1.0);
         let dense = (0..24).map(|_| route()).collect::<Vec<_>>();
         assert!(route_density_scale(&spec, &dense) < 0.5);
+
+        let close_spec = GenerationSpec {
+            ground_span_km: 0.25,
+            ..spec
+        };
+        let mapped_route = || RouteFeature {
+            points: vec![[0.0, 0.5], [1.0, 0.5]],
+            width_scale: 1.0,
+            mapped_width_m: Some(20.0),
+            path_or_trail: false,
+            bridge_elevations_m: None,
+        };
+        assert_eq!(route_density_scale(&close_spec, &[route(), route()]), 1.0);
+        assert!(route_density_scale(&close_spec, &[mapped_route(), mapped_route()]) < 1.0);
     }
 
     #[test]
@@ -2439,6 +2661,53 @@ mod tests {
                 > lifecycle_width_scale(WayLifecycle::Abandoned)
         );
         assert!(lifecycle_width_scale(WayLifecycle::Abandoned) > 0.0);
+    }
+
+    #[test]
+    fn railways_use_a_physical_default_but_aerialways_keep_the_boost() {
+        let mut spec = GenerationSpec {
+            ground_span_km: 0.5,
+            ..GenerationSpec::default()
+        };
+        let style = LineStyle {
+            class: SurfaceClass::Rail,
+            width_mm: 0.7,
+        };
+        let tags = HashMap::new();
+        let rail = rail_family_line_width_mm(
+            &spec,
+            &tags,
+            RailKind::Railway,
+            style,
+            1.0,
+            WayLifecycle::InService,
+        );
+        let expected = DEFAULT_RAILWAY_WIDTH_M * 180.0 / 500.0;
+        assert!((rail - expected).abs() < 0.0001);
+
+        let aerial = rail_family_line_width_mm(
+            &spec,
+            &tags,
+            RailKind::Aerialway,
+            style,
+            1.0,
+            WayLifecycle::InService,
+        );
+        assert_eq!(aerial, 1.4);
+
+        spec.ground_span_km = 0.25;
+        let explicit = HashMap::from([("width".into(), "20".into())]);
+        assert_eq!(
+            rail_family_line_width_mm(
+                &spec,
+                &explicit,
+                RailKind::Railway,
+                style,
+                1.0,
+                WayLifecycle::InService,
+            ),
+            4.0
+        );
     }
 
     #[test]
@@ -2915,6 +3184,8 @@ mod tests {
         let mut second = first.clone();
         second.color_output.road_width_mm = 0.4;
         second.color_output.adaptive_road_widths = false;
+        second.color_output.line_scaling.scale_line_widths_by_span = false;
+        second.color_output.line_scaling.close_view_width_multiplier = 2.8;
         second.color_output.osm_water_enabled = false;
         second.color_output.waterway_coverage_percent = 3.0;
         let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);

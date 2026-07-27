@@ -920,7 +920,7 @@ mod tests {
             Some(&city),
         ));
         assert_eq!(model.matches("<m:color ").count(), 7);
-        assert!(model.contains("color=\"#4A5568FF\""), "the rail color");
+        assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
         assert!(
             !model.contains("color=\"#6C4CB6FF\""),
             "no lift color for a map with no lifts"
@@ -1042,7 +1042,7 @@ mod tests {
         }
         let model = model_xml(&write_spec_meshes(&spec, &meshes, None));
         assert_eq!(model.matches("<m:color ").count(), 8);
-        assert!(model.contains("color=\"#4A5568FF\""), "the rail color");
+        assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
         assert!(model.contains("color=\"#6C4CB6FF\""), "the aerialway color");
         assert!(
             !model.contains("color=\"#D6336CFF\""),
@@ -1146,7 +1146,7 @@ mod tests {
                 "{style:?} should keep six colors"
             );
             assert!(!model.contains("paint_color=\"4C\""), "{style:?}");
-            assert!(!model.contains("#4A5568"), "{style:?}");
+            assert!(!model.contains("#C43D3D"), "{style:?}");
             if style == ThreeMfStyle::Project {
                 let bytes = write_rail_fixture(style, RailStyle::WithRoads);
                 let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
@@ -1186,7 +1186,7 @@ mod tests {
                 !model.contains("color=\"#D6336CFF\""),
                 "{style:?} must not emit an unreferenced trail placeholder"
             );
-            assert!(model.contains("color=\"#4A5568FF\""), "{style:?}");
+            assert!(model.contains("color=\"#C43D3DFF\""), "{style:?}");
             assert!(
                 model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"),
                 "{style:?} should face-paint the rail triangle for extruder 7"
@@ -1221,7 +1221,7 @@ mod tests {
         let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
         let colors = settings["filament_colour"].as_array().unwrap();
         assert_eq!(colors.len(), 7);
-        assert_eq!(colors[6], "#4A5568");
+        assert_eq!(colors[6], "#C43D3D");
         for key in ["filament_settings_id", "filament_type", "filament_vendor"] {
             assert_eq!(settings[key].as_array().unwrap().len(), 7, "{key}");
         }

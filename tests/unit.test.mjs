@@ -12,6 +12,8 @@ import {
   groundMeshSpacing,
   initialSpec,
   mergeSpecDefaults,
+  minimumMappedWidthCap,
+  normalizeMappedWidthCap,
   railLineClass,
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
@@ -43,10 +45,51 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("defaults close-view line scaling on and recalls old setups", () => {
+  assert.equal(initialSpec.color_output.scale_line_widths_by_span, true);
+  assert.equal(initialSpec.color_output.close_view_width_multiplier, 2);
+  assert.equal(initialSpec.color_output.maximum_mapped_width_mm, 4);
+  const oldColorOutput = { ...initialSpec.color_output };
+  delete oldColorOutput.scale_line_widths_by_span;
+  delete oldColorOutput.close_view_width_multiplier;
+  delete oldColorOutput.maximum_mapped_width_mm;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.scale_line_widths_by_span, true);
+  assert.equal(merged.color_output.close_view_width_multiplier, 2);
+  assert.equal(merged.color_output.maximum_mapped_width_mm, 4);
+});
+
+test("keeps the mapped-width cap above active route and railway floors", () => {
+  const wideRoads = {
+    ...initialSpec.color_output,
+    road_width_mm: 4,
+    maximum_mapped_width_mm: 1,
+  };
+  assert.equal(minimumMappedWidthCap(wideRoads), 5.6);
+  assert.equal(normalizeMappedWidthCap(wideRoads).maximum_mapped_width_mm, 5.6);
+
+  const recalled = mergeSpecDefaults({
+    color_output: {
+      ...initialSpec.color_output,
+      road_width_mm: 4,
+      maximum_mapped_width_mm: 1,
+    },
+  });
+  assert.equal(recalled.color_output.maximum_mapped_width_mm, 5.6);
+
+  const railwayOnly = {
+    ...wideRoads,
+    roads_enabled: false,
+    rail_enabled: true,
+    rail_width_mm: 3.2,
+  };
+  assert.equal(minimumMappedWidthCap(railwayOnly), 3.2);
+});
+
 test("defaults railways on in their own color and recalls old setups", () => {
   // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
   assert.equal(initialSpec.color_output.rail_enabled, true);
-  assert.equal(initialSpec.color_output.rail_color, "#4A5568");
+  assert.equal(initialSpec.color_output.rail_color, "#C43D3D");
   assert.equal(initialSpec.color_output.rail_width_mm, 0.7);
   // Picked out in their own color, which is the point of drawing them. The
   // slot is only spent where the mapped data holds railways.
@@ -61,7 +104,7 @@ test("defaults railways on in their own color and recalls old setups", () => {
   const merged = mergeSpecDefaults({ color_output: oldColorOutput });
   assert.equal(merged.color_output.rail_enabled, true);
   assert.equal(merged.color_output.rail_style, "separate");
-  assert.equal(merged.color_output.rail_color, "#4A5568");
+  assert.equal(merged.color_output.rail_color, "#C43D3D");
   // A setup that folded railways into the roads keeps that choice.
   const mergedRail = mergeSpecDefaults({
     color_output: {

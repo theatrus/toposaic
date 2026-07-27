@@ -32,6 +32,7 @@ import {
   deriveHeightFrame,
   initialSpec,
   mergeSpecDefaults,
+  normalizeMappedWidthCap,
 } from "./config";
 import type {
   Artifact,
@@ -407,10 +408,13 @@ export function TerrainStudio() {
       value: GenerationSpec["color_output"][Key],
     ) => {
       setGeneratedPreview(null);
-      setSpec((current) => ({
-        ...current,
-        color_output: { ...current.color_output, [key]: value },
-      }));
+      setSpec((current) => {
+        const colorOutput = normalizeMappedWidthCap({
+          ...current.color_output,
+          [key]: value,
+        });
+        return { ...current, color_output: colorOutput };
+      });
     },
     [],
   );

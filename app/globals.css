@@ -1186,7 +1186,8 @@ fieldset.control-section {
 fieldset.control-section > .color-heading,
 fieldset.control-section > .mounting-section-heading,
 fieldset.control-section > .color-note,
-fieldset.control-section > .control-hint {
+fieldset.control-section > .control-hint,
+fieldset.control-section > .surface-group {
   grid-column: 1 / -1;
 }
 
@@ -1756,6 +1757,39 @@ fieldset.control-section .road-options {
   padding: 15px 0 0;
 }
 
+.surface-group {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 4px;
+  min-width: 0;
+  padding-top: 14px;
+}
+
+.surface-group-heading,
+.surface-group > .control-hint {
+  grid-column: 1 / -1;
+}
+
+.surface-group-heading strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.surface-group-heading p {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 3px 0 0;
+}
+
+.surface-group .road-options {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .mounting-controls {
   margin-top: 0;
 }
@@ -1878,7 +1912,8 @@ fieldset.control-section .road-options {
   font-size: 9px;
 }
 
-.road-options.trail-import {
+.road-options.trail-import,
+.trail-import {
   align-items: stretch;
   display: grid;
   gap: 10px;
@@ -2554,6 +2589,10 @@ fieldset.control-section .road-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .surface-group {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .coordinate-adjacent-row {
     grid-template-columns: 1fr;
   }
@@ -2655,6 +2694,10 @@ fieldset.control-section .road-options {
   }
 
   fieldset.control-section {
+    grid-template-columns: 1fr;
+  }
+
+  .surface-group {
     grid-template-columns: 1fr;
   }
 
