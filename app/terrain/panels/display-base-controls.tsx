@@ -102,7 +102,7 @@ export function DisplayBaseControls({
             value={spec.tray.floor_mm}
             unit=" mm"
             min={1}
-            max={4}
+            max={20}
             step={0.2}
             onChange={(value) => updateTray("floor_mm", value)}
           />

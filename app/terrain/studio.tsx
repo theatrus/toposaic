@@ -1757,6 +1757,16 @@ export function TerrainStudio() {
             ))}
           </div>
 
+          {job?.status === "failed" && activeSection !== "output" && (
+            <section className="generation-error-banner" role="alert">
+              <span className="status-dot" aria-hidden="true" />
+              <strong>{job.error ?? "Generation failed."}</strong>
+              <button type="button" onClick={() => setActiveSection("output")}>
+                View output
+              </button>
+            </section>
+          )}
+
           <ModelPanel
             adjacentMessage={adjacentMessage}
             choosePlace={choosePlace}

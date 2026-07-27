@@ -20,6 +20,9 @@ export function WallMountControls({
   const mountEnabled = spec.wall_mount.style !== "none";
   const maximumDepth = maximumMountDepth(spec);
   const maximumThickness = maximumWallPlateThickness(spec);
+  const minimumThickness = Number(
+    (spec.wall_mount.wall_offset_mm + 0.4).toFixed(2),
+  );
   const maximumWidth = maximumCleatWidth(spec);
   const hardwareQuantity = wallHardwareQuantity(spec);
   const backThickness =
@@ -41,6 +44,17 @@ export function WallMountControls({
     );
   const depthViolation = mountEnabled && embeddedDepth > backThickness - 0.4;
   const requiredBackThickness = embeddedDepth + 0.4;
+
+  useEffect(() => {
+    if (mountEnabled && spec.wall_mount.thickness_mm < minimumThickness) {
+      updateWallMount("thickness_mm", minimumThickness);
+    }
+  }, [
+    minimumThickness,
+    mountEnabled,
+    spec.wall_mount.thickness_mm,
+    updateWallMount,
+  ]);
 
   useEffect(() => {
     if (
@@ -155,8 +169,8 @@ export function WallMountControls({
             label="Wall plate thickness"
             value={spec.wall_mount.thickness_mm}
             unit=" mm"
-            min={spec.wall_mount.wall_offset_mm + 0.4}
-            max={Math.max(spec.wall_mount.wall_offset_mm + 0.4, maximumThickness)}
+            min={minimumThickness}
+            max={Math.max(minimumThickness, maximumThickness)}
             step={0.2}
             onChange={(value) => updateWallMount("thickness_mm", value)}
           />

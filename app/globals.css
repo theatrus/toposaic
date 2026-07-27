@@ -1120,6 +1120,39 @@ a {
   background: #858d89;
 }
 
+.generation-error-banner {
+  align-items: center;
+  background: #f6e6e2;
+  border: 1px solid #d5a095;
+  display: grid;
+  font-size: 11px;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.generation-error-banner .status-dot {
+  background: #c45f4d;
+}
+
+.generation-error-banner button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 760;
+  padding: 3px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.generation-error-banner button:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+
 .control-section {
   border: 0;
   border-top: 1px solid var(--line);

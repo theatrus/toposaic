@@ -126,8 +126,8 @@ impl GenerationSpec {
         if !(2..=16).contains(&self.rows) || !(2..=16).contains(&self.columns) {
             bail!("piece rows and columns must each be between 2 and 16");
         }
-        if !(1.0..=12.0).contains(&self.base_mm) {
-            bail!("base depth must be between 1 and 12 mm");
+        if !(1.0..=20.0).contains(&self.base_mm) {
+            bail!("minimum piece height must be between 1 and 20 mm");
         }
         if !(1.0..=80.0).contains(&self.relief_mm) {
             bail!("relief must be between 1 and 80 mm");
@@ -939,8 +939,8 @@ impl TraySpec {
         if !(5.0..=16.0).contains(&self.rim_width_mm) {
             bail!("tray rim width must be between 5 and 16 mm");
         }
-        if !(1.0..=4.0).contains(&self.floor_mm) {
-            bail!("tray floor must be between 1 and 4 mm");
+        if !(1.0..=20.0).contains(&self.floor_mm) {
+            bail!("display-base floor thickness must be between 1 and 20 mm");
         }
         if !(2.0..=8.0).contains(&self.rim_height_mm) {
             bail!("tray rim height must be between 2 and 8 mm");
@@ -1913,6 +1913,25 @@ mod tests {
                 .to_string()
                 .contains("minimum piece height is too thin")
         );
+    }
+
+    #[test]
+    fn thick_terrain_backs_and_tray_floors_have_a_usable_range() {
+        let mut spec = GenerationSpec {
+            base_mm: 20.0,
+            tray: TraySpec {
+                floor_mm: 20.0,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.base_mm = 20.01;
+        assert!(spec.validate().unwrap_err().to_string().contains("20 mm"));
+        spec.base_mm = 20.0;
+        spec.tray.floor_mm = 20.01;
+        assert!(spec.validate().unwrap_err().to_string().contains("20 mm"));
     }
 
     #[test]

@@ -285,7 +285,11 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(trayContours).toBeChecked();
   await trayContours.uncheck();
   await expect(page.getByText("Contour line count")).toBeHidden();
-  await page.getByRole("slider", { name: "Floor thickness" }).press("Home");
+  const floorThickness = page.getByRole("slider", {
+    name: "Floor thickness",
+  });
+  await expect(floorThickness).toHaveAttribute("max", "20");
+  await floorThickness.press("Home");
   const wallMountStyle = page.getByLabel("Wall mount style");
   await wallMountStyle.selectOption("angled_pin");
   await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
@@ -802,6 +806,7 @@ test("locks a height frame and maps a super-tile grid", async ({
   const minimumHeight = page.getByRole("slider", {
     name: "Minimum piece height",
   });
+  await expect(minimumHeight).toHaveAttribute("max", "20");
   await expect(minimumHeight).toHaveValue("2.4");
   await minimumHeight.fill("5");
   await expect(minimumHeight).toHaveValue("5");
