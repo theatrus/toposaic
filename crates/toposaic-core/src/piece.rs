@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 use geo::{Area, Buffer, Coord, LineString, MultiPolygon, Polygon};
@@ -265,9 +265,52 @@ pub(crate) fn build_piece_with_height_range(
         .enumerate()
         .map(|(index, point)| (triangulation_point_key(*point), index))
         .collect::<HashMap<_, _>>();
-    let constraints = (0..outline.len())
+    let mut constraints = (0..outline.len())
         .map(|index| [index, (index + 1) % outline.len()])
         .collect::<Vec<_>>();
+    let mut flag_cavities = Vec::<(Vec<usize>, Vec<[f32; 2]>)>::new();
+    for marker in spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
+    {
+        let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
+        let center = [
+            uv[0] * assembled_width - origin_x,
+            uv[1] * assembled_height - origin_y,
+        ];
+        if !point_in_polygon(center, &outline) {
+            continue;
+        }
+        let radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        let ring = (0..32)
+            .map(|index| {
+                let angle = index as f32 / 32.0 * std::f32::consts::TAU;
+                [
+                    center[0] + radius * angle.cos(),
+                    center[1] + radius * angle.sin(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if ring.iter().any(|point| !point_in_polygon(*point, &outline)) {
+            bail!(
+                "flag marker '{}' is too close to a terrain or puzzle-piece edge",
+                marker.name
+            );
+        }
+        let indices = ring
+            .iter()
+            .copied()
+            .map(|point| push_unique_triangulation_point(&mut points, &mut point_keys, point))
+            .collect::<Vec<_>>();
+        constraints.extend(
+            indices
+                .iter()
+                .zip(indices.iter().cycle().skip(1))
+                .map(|(start, end)| [*start, *end]),
+        );
+        flag_cavities.push((indices, ring));
+    }
 
     let minimum_x = outline
         .iter()
@@ -320,6 +363,22 @@ pub(crate) fn build_piece_with_height_range(
     let triangulation =
         ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(points, constraints)
             .context("triangulate terrain outline")?;
+    let triangulation_indices = triangulation
+        .vertices()
+        .map(|vertex| {
+            let point = vertex.position();
+            (
+                triangulation_point_key([point.x as f32, point.y as f32]),
+                vertex.fix().index(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for (indices, ring) in &mut flag_cavities {
+        *indices = ring
+            .iter()
+            .map(|point| triangulation_indices[&triangulation_point_key(*point)])
+            .collect();
+    }
     let top_count = triangulation.num_vertices();
     let mut vertices = Vec::with_capacity(top_count * 2);
     for vertex in triangulation.vertices() {
@@ -358,7 +417,11 @@ pub(crate) fn build_piece_with_height_range(
             ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
             ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
         ];
-        if !outline_index.contains(centroid) {
+        if !outline_index.contains(centroid)
+            || flag_cavities
+                .iter()
+                .any(|(_, points)| point_in_polygon(centroid, points))
+        {
             continue;
         }
         let face_indices = face_vertices.map(|vertex| vertex.fix().index());
@@ -418,10 +481,30 @@ pub(crate) fn build_piece_with_height_range(
     // HashMap iteration order is randomized per process; sort the boundary
     // edges so the emitted mesh (and every artifact hashed from it) is
     // byte-for-byte reproducible across runs.
+    let flag_edges = flag_cavities
+        .iter()
+        .flat_map(|(ring, _)| ring.iter().zip(ring.iter().cycle().skip(1)))
+        .map(|(start, end)| {
+            let (start, end) = (*start as u32, *end as u32);
+            if start < end {
+                (start, end)
+            } else {
+                (end, start)
+            }
+        })
+        .collect::<HashSet<_>>();
     let mut boundary_edges = edge_uses
         .into_values()
         .filter(|(uses, _)| *uses == 1)
         .map(|(_, edge)| edge)
+        .filter(|edge| {
+            let key = if edge[0] < edge[1] {
+                (edge[0], edge[1])
+            } else {
+                (edge[1], edge[0])
+            };
+            !flag_edges.contains(&key)
+        })
         .collect::<Vec<_>>();
     boundary_edges.sort_unstable();
     for [from, to] in boundary_edges {
@@ -442,6 +525,13 @@ pub(crate) fn build_piece_with_height_range(
         materials,
         quantization_collisions: Vec::new(),
     };
+    append_flag_cavities(
+        &mut mesh,
+        &flag_cavities,
+        top_count,
+        spec.marker_settings.hole_depth_mm,
+        !rebuilt_back,
+    );
     if mounted_back {
         let bottom = if spec.solid_model {
             mount_bottom(
@@ -461,7 +551,7 @@ pub(crate) fn build_piece_with_height_range(
         )?);
     }
     let mut building_union = None;
-    if spec.buildings.enabled
+    if (spec.buildings.enabled || spec.uses_building_markers())
         && let Some(field) = surface_field
     {
         building_union = Some(append_building_geometry(
@@ -498,6 +588,77 @@ pub(crate) fn build_piece_with_height_range(
     }
     weld_export_mesh(&mut mesh);
     Ok(mesh)
+}
+
+fn append_flag_cavities(
+    mesh: &mut Mesh,
+    cavities: &[(Vec<usize>, Vec<[f32; 2]>)],
+    top_count: usize,
+    depth_mm: f32,
+    close_bottom: bool,
+) {
+    for (ring, _) in cavities {
+        if ring.len() < 3 {
+            continue;
+        }
+        let floor_z = ring
+            .iter()
+            .map(|index| mesh.vertices[*index][2])
+            .fold(f32::INFINITY, f32::min)
+            - depth_mm;
+        let floor_start = mesh.vertices.len() as u32;
+        let floor_vertices = ring
+            .iter()
+            .map(|index| {
+                let point = mesh.vertices[*index];
+                [point[0], point[1], floor_z]
+            })
+            .collect::<Vec<_>>();
+        mesh.vertices.extend(floor_vertices);
+        let center_index = mesh.vertices.len() as u32;
+        let center = ring.iter().fold([0.0_f32; 2], |sum, index| {
+            [
+                sum[0] + mesh.vertices[*index][0],
+                sum[1] + mesh.vertices[*index][1],
+            ]
+        });
+        mesh.vertices.push([
+            center[0] / ring.len() as f32,
+            center[1] / ring.len() as f32,
+            floor_z,
+        ]);
+        let bottom_center_index = if close_bottom {
+            let index = mesh.vertices.len() as u32;
+            mesh.vertices.push([
+                center[0] / ring.len() as f32,
+                center[1] / ring.len() as f32,
+                0.0,
+            ]);
+            Some(index)
+        } else {
+            None
+        };
+        for index in 0..ring.len() {
+            let next = (index + 1) % ring.len();
+            let top_a = ring[index] as u32;
+            let top_b = ring[next] as u32;
+            let floor_a = floor_start + index as u32;
+            let floor_b = floor_start + next as u32;
+            mesh.triangles.push([top_a, top_b, floor_b]);
+            mesh.materials.push(SurfaceClass::Rock);
+            mesh.triangles.push([top_a, floor_b, floor_a]);
+            mesh.materials.push(SurfaceClass::Rock);
+            mesh.triangles.push([floor_a, floor_b, center_index]);
+            mesh.materials.push(SurfaceClass::Rock);
+            if let Some(bottom_center_index) = bottom_center_index {
+                let bottom_a = top_a + top_count as u32;
+                let bottom_b = top_b + top_count as u32;
+                mesh.triangles
+                    .push([bottom_a, bottom_center_index, bottom_b]);
+                mesh.materials.push(SurfaceClass::Rock);
+            }
+        }
+    }
 }
 
 fn multi_polygon_bounds(multi_polygon: &MultiPolygon<f64>) -> [f32; 4] {
@@ -1009,7 +1170,11 @@ fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
         };
         return [x, y];
     }
-    let seed = ((row as u64) << 32) | column as u64;
+    let global_row = i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(row);
+    let global_column =
+        i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(column);
+    let grid_key = ((global_row as u32 as u64) << 32) | global_column as u32 as u64;
+    let seed = grid_key ^ (spec.puzzle_seed as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93);
     let x = if column == 0 {
         0.0
     } else if column == spec.columns {
@@ -1034,14 +1199,29 @@ fn puzzle_edge_sign(
     line: u32,
     line_count: u32,
 ) -> f32 {
-    if let Some((global_segment, global_line, global_line_count)) =
-        adjacent_edge_key(spec, orientation, segment, line, line_count)
-    {
-        edge_sign(orientation, global_segment, global_line, global_line_count)
-    } else if spec.puzzle_tabs {
-        edge_sign(orientation, segment, line, line_count)
+    let tile_edge = line == 0 || line == line_count;
+    let inside_super_tile = tile_edge && super_tile_edge_has_neighbor(spec, orientation, line);
+    let enabled = if !tile_edge {
+        spec.puzzle_tabs
+    } else if inside_super_tile {
+        spec.adjacent_interlocks
     } else {
-        0.0
+        spec.outer_edge_interlocks
+    };
+    if !enabled {
+        return 0.0;
+    }
+    let (global_segment, global_line) = global_edge_key(spec, orientation, segment, line);
+    edge_sign(spec.puzzle_seed, orientation, global_segment, global_line)
+}
+
+fn super_tile_edge_has_neighbor(spec: &GenerationSpec, orientation: u64, line: u32) -> bool {
+    if orientation == 0 {
+        (line == 0 && spec.adjacent_tile_row > 0)
+            || (line == spec.rows && spec.adjacent_tile_row + 1 < spec.adjacent_rows)
+    } else {
+        (line == 0 && spec.adjacent_tile_column > 0)
+            || (line == spec.columns && spec.adjacent_tile_column + 1 < spec.adjacent_columns)
     }
 }
 
@@ -1051,55 +1231,21 @@ fn piece_edge_pattern(
     segment: u32,
     line: u32,
 ) -> EdgePattern {
-    adjacent_edge_key(
-        spec,
-        orientation,
-        segment,
-        line,
-        if orientation == 0 {
-            spec.rows
-        } else {
-            spec.columns
-        },
-    )
-    .map(|(global_segment, global_line, _)| {
-        shared_edge_pattern(orientation, global_line, global_segment)
-    })
-    .unwrap_or_else(|| shared_edge_pattern(orientation, line, segment))
+    let (global_segment, global_line) = global_edge_key(spec, orientation, segment, line);
+    shared_edge_pattern(spec.puzzle_seed, orientation, global_line, global_segment)
 }
 
-fn adjacent_edge_key(
-    spec: &GenerationSpec,
-    orientation: u64,
-    segment: u32,
-    line: u32,
-    line_count: u32,
-) -> Option<(u32, u32, u32)> {
-    if !spec.adjacent_interlocks || (line != 0 && line != line_count) {
-        return None;
-    }
+fn global_edge_key(spec: &GenerationSpec, orientation: u64, segment: u32, line: u32) -> (i64, i64) {
     if orientation == 0 {
-        let global_line = if line == 0 {
-            spec.adjacent_tile_row + 1
-        } else {
-            spec.adjacent_tile_row
-        };
-        Some((
-            spec.adjacent_tile_column * spec.columns + segment,
-            global_line,
-            spec.adjacent_rows,
-        ))
+        (
+            i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(segment),
+            i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(line),
+        )
     } else {
-        let global_line = if line == 0 {
-            spec.adjacent_tile_column
-        } else {
-            spec.adjacent_tile_column + 1
-        };
-        Some((
-            spec.adjacent_tile_row * spec.rows + segment,
-            global_line,
-            spec.adjacent_columns,
-        ))
+        (
+            i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(segment),
+            i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(line),
+        )
     }
 }
 
@@ -1144,7 +1290,7 @@ fn inset_outline(outline: &[[f32; 2]], distance: f32) -> Result<Vec<[f32; 2]>> {
 }
 
 pub(crate) fn scaled_building_height_mm(spec: &GenerationSpec, height_m: f32) -> f32 {
-    if !spec.buildings.enabled {
+    if !spec.buildings.enabled && !spec.uses_building_markers() {
         return 0.0;
     }
     height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.buildings.z_scale
@@ -1157,8 +1303,33 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::spec::{
-        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+        MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle,
+        WallMountTarget,
     };
+
+    #[test]
+    fn flag_marker_cuts_a_watertight_blind_socket() {
+        let spec = GenerationSpec {
+            solid_model: true,
+            samples_per_piece: 32,
+            markers: vec![MapMarker {
+                name: "Home".into(),
+                latitude: 46.8523,
+                longitude: -121.7603,
+                kind: MarkerKind::FlagHole,
+            }],
+            ..GenerationSpec::default()
+        };
+        spec.validate().unwrap();
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(mesh.vertices.iter().any(|vertex| {
+            (vertex[0] - spec.width_mm * 0.5).abs() < 0.001
+                && (vertex[1] - spec.height_mm() * 0.5).abs() < 0.001
+                && vertex[2] > 0.4
+                && vertex[2] < spec.base_mm + spec.relief_mm
+        }));
+    }
 
     #[test]
     fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
@@ -1207,25 +1378,29 @@ mod tests {
     #[test]
     fn optional_adjacent_tile_edges_interlock_without_warping_the_grid() {
         let left_spec = GenerationSpec {
-            solid_model: true,
             adjacent_columns: 2,
             adjacent_rows: 1,
             adjacent_interlocks: true,
             adjacent_tile_column: 0,
+            puzzle_seed: 0x1234_5678,
+            puzzle_tile_column: -3,
+            puzzle_tile_row: 5,
             ..GenerationSpec::default()
         };
         let right_spec = GenerationSpec {
             adjacent_tile_column: 1,
+            puzzle_tile_column: left_spec.puzzle_tile_column + 1,
             ..left_spec.clone()
         };
-        let left = solid_outline(&left_spec, 96).unwrap();
-        let right = solid_outline(&right_spec, 96)
+        let row = 1;
+        let left = piece_outline(&left_spec, row, left_spec.columns - 1, true).unwrap();
+        let right = piece_outline(&right_spec, row, 0, true)
             .unwrap()
             .into_iter()
             .map(|point| [point[0] + left_spec.width_mm, point[1]])
             .collect::<Vec<_>>();
 
-        let edge_samples = left.len() / 4;
+        let edge_samples = left_spec.samples_per_piece as usize;
         let left_shared = left[edge_samples..edge_samples * 2]
             .iter()
             .collect::<Vec<_>>();
@@ -1244,18 +1419,35 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(distance < 0.001);
         }
+        let outer_plain = piece_outline(&left_spec, 0, 0, true).unwrap();
         assert!(
-            left.iter()
-                .filter(|point| point[1] < 0.001)
-                .all(|point| point[1].abs() < 0.001)
+            outer_plain[..edge_samples]
+                .iter()
+                .all(|point| point[1].abs() < 0.0001)
         );
-
-        let plain = solid_outline(
+        let outer_notched = piece_outline(
+            &GenerationSpec {
+                outer_edge_interlocks: true,
+                ..left_spec.clone()
+            },
+            0,
+            0,
+            true,
+        )
+        .unwrap();
+        assert!(
+            outer_notched[..edge_samples]
+                .iter()
+                .any(|point| point[1].abs() > left_spec.height_mm() * 0.01)
+        );
+        let plain = piece_outline(
             &GenerationSpec {
                 adjacent_interlocks: false,
                 ..left_spec
             },
-            96,
+            row,
+            right_spec.columns - 1,
+            true,
         )
         .unwrap();
         assert!(

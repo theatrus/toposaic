@@ -33,6 +33,7 @@ struct ClippedBuilding {
     /// Local-mm bounding box of the clipped footprint.
     bounds: [f32; 4],
     roof_z: f32,
+    material: SurfaceClass,
 }
 
 /// Builds all building prisms of one piece as one welded shell per connected
@@ -85,6 +86,29 @@ pub(super) fn append_building_geometry(
         .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
         .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
         .collect::<Vec<_>>();
+    let flag_cavities = spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
+        .map(|marker| {
+            let point = spec.normalized_map_point(marker.latitude, marker.longitude);
+            let center = [
+                point[0] * assembled_width - origin_x,
+                point[1] * assembled_height - origin_y,
+            ];
+            let radius =
+                spec.marker_settings.hole_diameter_mm * 0.5 + super::OVERLAY_SEPARATION_MM as f32;
+            (0..32)
+                .map(|index| {
+                    let angle = index as f32 / 32.0 * std::f32::consts::TAU;
+                    [
+                        center[0] + radius * angle.cos(),
+                        center[1] + radius * angle.sin(),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let clipped_buildings = candidates
         .par_iter()
         .map(|building| {
@@ -122,6 +146,7 @@ pub(super) fn append_building_geometry(
                 footprint,
                 bounds,
                 roof_z,
+                material: building.class.unwrap_or(SurfaceClass::Building),
             })
         })
         .collect::<Vec<_>>()
@@ -209,7 +234,24 @@ pub(super) fn append_building_geometry(
                 }
             }
             retract_isolated_member_contacts(&mut constraint_rings, outline_ring_count);
-            build_building_union_shell(&snapped_component, constraint_rings, members, &bottom)
+            let cavity_rings = flag_cavities
+                .iter()
+                .filter(|ring| {
+                    geo_polygon(ring)
+                        .intersection(&snapped_component)
+                        .unsigned_area()
+                        > MINIMUM_OVERLAY_AREA_MM2
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            constraint_rings.extend(cavity_rings.iter().cloned());
+            build_building_union_shell(
+                &snapped_component,
+                constraint_rings,
+                &cavity_rings,
+                members,
+                &bottom,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
     for shell in shells {
@@ -269,15 +311,26 @@ fn retract_isolated_member_contacts(
 /// building whose footprint contains the face centroid, or `None` when no
 /// member covers it — such a face lies outside this component's buildings
 /// and stays out of the shell.
-fn face_roof_z(members: &[&ClippedBuilding], centroid: [f32; 2]) -> Option<f32> {
+fn face_roof_material(
+    members: &[&ClippedBuilding],
+    centroid: [f32; 2],
+) -> Option<(f32, SurfaceClass)> {
     let centroid_point = Point::new(f64::from(centroid[0]), f64::from(centroid[1]));
-    let mut roof: Option<f32> = None;
+    let mut selected: Option<(f32, SurfaceClass)> = None;
     for member in members {
-        if point_in_bounds(centroid, member.bounds) && member.footprint.contains(&centroid_point) {
-            roof = Some(roof.map_or(member.roof_z, |best| best.max(member.roof_z)));
+        if point_in_bounds(centroid, member.bounds)
+            && member.footprint.contains(&centroid_point)
+            && selected.is_none_or(|(roof, material)| {
+                member.roof_z > roof
+                    || (member.roof_z == roof
+                        && member.material == SurfaceClass::Marker
+                        && material != SurfaceClass::Marker)
+            })
+        {
+            selected = Some((member.roof_z, member.material));
         }
     }
-    roof
+    selected
 }
 
 /// Removes pinches from the roof partition of one building union shell.
@@ -445,6 +498,7 @@ fn smooth_roof_partition(
 fn build_building_union_shell(
     component: &Polygon<f64>,
     constraint_rings: Vec<Vec<[f32; 2]>>,
+    cavity_rings: &[Vec<[f32; 2]>],
     members: &[&ClippedBuilding],
     bottom: &impl Fn([f32; 2]) -> f32,
 ) -> Result<MeshBuilder> {
@@ -469,6 +523,7 @@ fn build_building_union_shell(
     // face its roof and smooth away pinches in the roof partition itself.
     let mut inside = vec![false; triangulation.num_all_faces()];
     let mut face_roofs = vec![f32::NAN; triangulation.num_all_faces()];
+    let mut face_materials = vec![SurfaceClass::Building; triangulation.num_all_faces()];
     for face in triangulation.inner_faces() {
         let positions = face.vertices().map(|vertex| vertex.position());
         let centroid = Point::new(
@@ -478,17 +533,25 @@ fn build_building_union_shell(
         if !component.contains(&centroid) {
             continue;
         }
-        let Some(roof) = face_roof_z(members, [centroid.x() as f32, centroid.y() as f32]) else {
+        let centroid_xy = [centroid.x() as f32, centroid.y() as f32];
+        if cavity_rings
+            .iter()
+            .any(|ring| point_in_polygon(centroid_xy, ring))
+        {
+            continue;
+        }
+        let Some((roof, material)) = face_roof_material(members, centroid_xy) else {
             continue;
         };
         let index = face.fix().index();
         inside[index] = true;
         face_roofs[index] = roof;
+        face_materials[index] = material;
     }
     repair_classification_pinches(&triangulation, &mut inside, false);
     smooth_roof_partition(&triangulation, &inside, &mut face_roofs, bottom);
     let mut output = MeshBuilder::default();
-    let mut edge_faces = HashMap::<(usize, usize), Vec<([usize; 2], f32)>>::new();
+    let mut edge_faces = HashMap::<(usize, usize), Vec<([usize; 2], f32, SurfaceClass)>>::new();
     let mut vertex_positions = HashMap::<usize, [f32; 2]>::new();
     // Every roof level that appears on a vertex. Wall quads sharing that
     // vertex's vertical line must subdivide at these levels, or a short
@@ -505,6 +568,7 @@ fn build_building_union_shell(
             [point.x as f32, point.y as f32]
         });
         let roof = face_roofs[face.fix().index()];
+        let material = face_materials[face.fix().index()];
         let mut ordered = face_points;
         let mut ordered_indices = face_vertices.map(|vertex| vertex.fix().index());
         let area = (ordered[1][0] - ordered[0][0]) * (ordered[2][1] - ordered[0][1])
@@ -530,19 +594,22 @@ fn build_building_union_shell(
             } else {
                 (directed[1], directed[0])
             };
-            edge_faces.entry(key).or_default().push((directed, roof));
+            edge_faces
+                .entry(key)
+                .or_default()
+                .push((directed, roof, material));
         }
         output.triangle(
             [ordered[0][0], ordered[0][1], roof],
             [ordered[1][0], ordered[1][1], roof],
             [ordered[2][0], ordered[2][1], roof],
-            SurfaceClass::Building,
+            material,
         );
         output.triangle(
             [ordered[0][0], ordered[0][1], bottom(ordered[0])],
             [ordered[2][0], ordered[2][1], bottom(ordered[2])],
             [ordered[1][0], ordered[1][1], bottom(ordered[1])],
-            SurfaceClass::Building,
+            material,
         );
     }
     for roofs in vertex_roofs.values_mut() {
@@ -557,7 +624,8 @@ fn build_building_union_shell(
                      from: usize,
                      to: usize,
                      low_z: &dyn Fn([f32; 2]) -> f32,
-                     high_z: f32| {
+                     high_z: f32,
+                     material: SurfaceClass| {
         let side = |index: usize| {
             let point = vertex_positions[&index];
             let floor = low_z(point);
@@ -587,7 +655,7 @@ fn build_building_union_shell(
                     [start[0], start[1], left[i]],
                     [end[0], end[1], right[j]],
                     [end[0], end[1], right[j + 1]],
-                    SurfaceClass::Building,
+                    material,
                 );
                 j += 1;
             } else {
@@ -595,7 +663,7 @@ fn build_building_union_shell(
                     [start[0], start[1], left[i]],
                     [end[0], end[1], right[j]],
                     [start[0], start[1], left[i + 1]],
-                    SurfaceClass::Building,
+                    material,
                 );
                 i += 1;
             }
@@ -606,8 +674,8 @@ fn build_building_union_shell(
     edges.sort_unstable_by_key(|(key, _)| *key);
     for (_, faces) in edges {
         match faces.as_slice() {
-            [([from, to], roof)] => {
-                emit_wall(&mut output, *from, *to, &bottom, *roof);
+            [([from, to], roof, material)] => {
+                emit_wall(&mut output, *from, *to, &bottom, *roof, *material);
             }
             [first, second] => {
                 if first.1 == second.1 {
@@ -620,7 +688,14 @@ fn build_building_union_shell(
                 };
                 let [from, to] = high.0;
                 let low_roof = low.1;
-                emit_wall(&mut output, from, to, &move |_point| low_roof, high.1);
+                emit_wall(
+                    &mut output,
+                    from,
+                    to,
+                    &move |_point| low_roof,
+                    high.1,
+                    high.2,
+                );
             }
             _ => {}
         }
@@ -726,7 +801,75 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
-    use crate::spec::{BuildingSpec, ColorOutputSpec};
+    use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
+
+    #[test]
+    fn highlighted_building_uses_the_marker_material() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "highlight").unwrap();
+        field.paint_building_with_class(
+            &[[0.35, 0.35], [0.65, 0.35], [0.65, 0.65], [0.35, 0.65]],
+            12.0,
+            SurfaceClass::Marker,
+        );
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 1,
+            columns: 1,
+            samples_per_piece: 24,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 2.0,
+            },
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(mesh.materials.contains(&SurfaceClass::Marker));
+    }
+
+    #[test]
+    fn flag_sockets_cut_through_building_roofs() {
+        let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "building").unwrap();
+        field.paint_building(&[[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]], 12.0);
+        let defaults = GenerationSpec::default();
+        let spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 1,
+            columns: 1,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            markers: vec![MapMarker {
+                name: "Covered flag".into(),
+                latitude: defaults.center_lat,
+                longitude: defaults.center_lon,
+                kind: MarkerKind::FlagHole,
+            }],
+            ..defaults
+        };
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let roof_covers_socket = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Building)
+            .any(|(triangle, _)| {
+                let vertices = triangle.map(|index| mesh.vertices[index as usize]);
+                let flat = (vertices[0][2] - vertices[1][2]).abs() < 0.0001
+                    && (vertices[0][2] - vertices[2][2]).abs() < 0.0001;
+                flat && vertices[0][2] > spec.base_mm
+                    && point_in_polygon(
+                        [50.0, 50.0],
+                        &vertices.map(|vertex| [vertex[0], vertex[1]]),
+                    )
+            });
+        assert!(!roof_covers_socket);
+    }
 
     #[test]
     fn building_solids_keep_exact_straight_walls_and_flat_roofs() {

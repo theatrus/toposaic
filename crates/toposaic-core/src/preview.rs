@@ -122,6 +122,11 @@ pub(crate) fn build_preview(
             preview["surface_coverage"]["trail"] =
                 serde_json::json!(coverage[SurfaceClass::Trail.material_index() as usize]);
         }
+        if spec.uses_colored_markers() {
+            preview["surface_palette"]["marker"] = serde_json::json!(spec.marker_settings.color);
+            preview["surface_coverage"]["marker"] =
+                serde_json::json!(coverage[SurfaceClass::Marker.material_index() as usize]);
+        }
         // Railways and aerialways only get their own preview entries under
         // the `separate` style; otherwise they paint in a class already
         // counted here, so preview.json keeps its existing shape.

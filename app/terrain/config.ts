@@ -15,6 +15,12 @@ export function limitPlaceName(value: string) {
     : value;
 }
 
+export function randomPuzzleSeed() {
+  const value = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(value);
+  return value[0] || 1;
+}
+
 export function closeViewLineScale(
   spanKm: number,
   enabled: boolean,
@@ -47,8 +53,12 @@ export const initialSpec: GenerationSpec = {
   adjacent_rows: 1,
   super_tile_anchor: "top_left",
   adjacent_interlocks: false,
+  outer_edge_interlocks: false,
   adjacent_tile_column: 0,
   adjacent_tile_row: 0,
+  puzzle_seed: 0,
+  puzzle_tile_column: 0,
+  puzzle_tile_row: 0,
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
@@ -63,6 +73,14 @@ export const initialSpec: GenerationSpec = {
   buildings: {
     enabled: false,
     z_scale: 5,
+  },
+  marker_settings: {
+    color: "#E24A33",
+    dot_diameter_mm: 3,
+    hole_diameter_mm: 2.4,
+    hole_depth_mm: 2,
+    flag_clearance_mm: 0.2,
+    export_flag_template: true,
   },
   tray: {
     enabled: true,
@@ -167,6 +185,7 @@ export const initialSpec: GenerationSpec = {
     snow_slope_limit_degrees: 65,
   },
   trails: [],
+  markers: [],
 };
 
 export function minimumMappedWidthCap(
@@ -239,6 +258,10 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     overlay_samples_across:
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
+    marker_settings: {
+      ...initialSpec.marker_settings,
+      ...saved.marker_settings,
+    },
     tray: { ...initialSpec.tray, ...saved.tray },
     puzzle_retention: {
       ...initialSpec.puzzle_retention,
@@ -247,6 +270,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     wall_mount: wallMount,
     color_output: colorOutput,
     trails: saved.trails ?? [],
+    markers: saved.markers ?? [],
   };
 }
 

@@ -716,6 +716,11 @@ a {
   cursor: grabbing;
 }
 
+.map-canvas.placing-marker,
+.map-canvas.placing-marker:active {
+  cursor: crosshair;
+}
+
 /* Matches the 3D preview's focus treatment so keyboard panning reads the
    same across the visual column. */
 .map-canvas:focus-visible {
@@ -810,6 +815,40 @@ a {
   width: 2px;
 }
 
+.map-markers {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 4;
+}
+
+.map-marker {
+  background: var(--marker-color);
+  border: 2px solid white;
+  border-radius: 50% 50% 50% 0;
+  box-shadow: 0 1px 5px rgba(20, 32, 29, 0.55);
+  height: 16px;
+  position: absolute;
+  transform: translate(-50%, -100%) rotate(-45deg);
+  width: 16px;
+}
+
+.map-marker.dot {
+  border-radius: 50%;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  width: 13px;
+}
+
+.map-marker.flag_hole {
+  background: transparent;
+  border: 3px solid var(--marker-color);
+  border-radius: 50%;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  width: 13px;
+}
+
 .map-instruction {
   background: rgba(20, 32, 29, 0.88);
   bottom: 20px;
@@ -819,6 +858,7 @@ a {
   left: 20px;
   letter-spacing: 0.04em;
   padding: 11px 14px;
+  pointer-events: none;
   position: absolute;
   text-transform: uppercase;
   z-index: 4;
@@ -1085,7 +1125,7 @@ a {
   display: grid;
   gap: 6px;
   grid-column: 4 / -1;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .control-tabs button {
@@ -2010,6 +2050,99 @@ fieldset.control-section .road-options {
 .trail-notice {
   color: var(--muted);
   font-size: 9px;
+}
+
+.marker-controls > .marker-kind-buttons,
+.marker-controls > .marker-list,
+.marker-controls > .marker-template-toggle {
+  grid-column: 1 / -1;
+}
+
+.marker-kind-buttons {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.marker-kind-buttons button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 9px;
+}
+
+.marker-kind-buttons button.active {
+  background: var(--ink);
+  color: white;
+}
+
+.marker-list {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.marker-list li {
+  align-items: center;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(100px, 1fr) minmax(110px, 0.8fr) minmax(160px, 1.2fr) auto;
+  padding: 7px;
+}
+
+.marker-list input,
+.marker-list select {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  min-width: 0;
+  padding: 7px;
+}
+
+.marker-coordinates {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.marker-coordinates label {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.marker-coordinates input {
+  display: block;
+  margin-top: 2px;
+  width: 100%;
+}
+
+.marker-list button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  padding: 7px;
+}
+
+.marker-template-toggle {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 10px;
+  gap: 8px;
 }
 
 .road-detail-field {

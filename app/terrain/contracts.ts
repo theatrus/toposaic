@@ -4,6 +4,15 @@ export type TrailRoute = {
   points: [number, number][];
 };
 
+export type MarkerKind = "building" | "dot" | "flag_hole";
+
+export type MapMarker = {
+  name: string;
+  latitude: number;
+  longitude: number;
+  kind: MarkerKind;
+};
+
 export type GenerationSpec = {
   center_lat: number;
   center_lon: number;
@@ -20,8 +29,12 @@ export type GenerationSpec = {
   adjacent_rows: number;
   super_tile_anchor: "top_left" | "center";
   adjacent_interlocks: boolean;
+  outer_edge_interlocks: boolean;
   adjacent_tile_column: number;
   adjacent_tile_row: number;
+  puzzle_seed: number;
+  puzzle_tile_column: number;
+  puzzle_tile_row: number;
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;
@@ -40,6 +53,14 @@ export type GenerationSpec = {
   buildings: {
     enabled: boolean;
     z_scale: number;
+  };
+  marker_settings: {
+    color: string;
+    dot_diameter_mm: number;
+    hole_diameter_mm: number;
+    hole_depth_mm: number;
+    flag_clearance_mm: number;
+    export_flag_template: boolean;
   };
   tray: {
     enabled: boolean;
@@ -134,6 +155,7 @@ export type GenerationSpec = {
     snow_slope_limit_degrees: number;
   };
   trails: TrailRoute[];
+  markers: MapMarker[];
 };
 
 export type CacheCategoryKey = "elevation" | "world_cover" | "osm" | "places";
@@ -200,6 +222,7 @@ export type PreviewData = {
     trail?: string;
     rail?: string;
     aerialway?: string;
+    marker?: string;
   };
   surface_coverage?: {
     rock: number;
@@ -211,6 +234,7 @@ export type PreviewData = {
     trail?: number;
     rail?: number;
     aerialway?: number;
+    marker?: number;
   };
   surface_source?: string;
   minimum_elevation_m?: number;

@@ -56,6 +56,7 @@ const CLASS_KEYS = [
   "trail",
   "rail",
   "aerialway",
+  "marker",
 ] as const;
 
 function cubicBezier(
@@ -107,11 +108,13 @@ function edgeNoise(seed: bigint, lane: bigint) {
 }
 
 function sharedEdgePattern(
+  puzzleSeed: number,
   orientation: number,
   line: number,
   segment: number,
 ): EdgePattern {
   const seed =
+    BigInt.asUintN(64, BigInt(puzzleSeed) * 0xd6e8feb86659fd93n) ^
     BigInt.asUintN(64, BigInt(orientation) * 0x9e3779b97f4a7c15n) ^
     BigInt.asUintN(64, BigInt(line) * 0xbf58476d1ce4e5b9n) ^
     BigInt.asUintN(64, BigInt(segment) * 0x94d049bb133111ebn);
@@ -125,7 +128,13 @@ function sharedEdgePattern(
 
 type PuzzleGridSpec = Pick<
   GenerationSpec,
-  "width_mm" | "rows" | "columns" | "straight_piece_sides"
+  | "width_mm"
+  | "rows"
+  | "columns"
+  | "straight_piece_sides"
+  | "puzzle_seed"
+  | "puzzle_tile_column"
+  | "puzzle_tile_row"
 >;
 
 function puzzleGridPoint(spec: PuzzleGridSpec, row: number, column: number) {
@@ -140,7 +149,14 @@ function puzzleGridPoint(spec: PuzzleGridSpec, row: number, column: number) {
           : row * pieceHeight,
     };
   }
-  const seed = (BigInt(row) << 32n) | BigInt(column);
+  const globalRow = spec.puzzle_tile_row * spec.rows + row;
+  const globalColumn = spec.puzzle_tile_column * spec.columns + column;
+  const gridKey =
+    (BigInt.asUintN(32, BigInt(globalRow)) << 32n) |
+    BigInt.asUintN(32, BigInt(globalColumn));
+  const seed =
+    gridKey ^
+    BigInt.asUintN(64, BigInt(spec.puzzle_seed) * 0xd6e8feb86659fd93n);
   const x =
     column === 0
       ? 0
@@ -160,13 +176,13 @@ function puzzleGridPoint(spec: PuzzleGridSpec, row: number, column: number) {
 }
 
 function edgeSign(
+  puzzleSeed: number,
   orientation: number,
   segment: number,
   line: number,
-  lineCount: number,
 ) {
-  if (line === 0 || line === lineCount) return 0;
   const seed =
+    BigInt.asUintN(64, BigInt(puzzleSeed) * 0xd6e8feb86659fd93n) ^
     BigInt.asUintN(64, BigInt(orientation) * 0xa24baed4963ee407n) ^
     BigInt.asUintN(64, BigInt(line) * 0x9fb21c651e98df25n) ^
     BigInt.asUintN(64, BigInt(segment) * 0xc13fa9a902a6328fn);
@@ -310,6 +326,9 @@ export function ReliefPreview({
     solid_model,
     puzzle_tabs,
     straight_piece_sides,
+    puzzle_seed,
+    puzzle_tile_column,
+    puzzle_tile_row,
   } = spec;
   const {
     enabled: colorOutputEnabled,
@@ -323,7 +342,13 @@ export function ReliefPreview({
     rail_color,
     aerial_color,
   } = spec.color_output;
-  const buildingsEnabled = spec.buildings.enabled;
+  const markerColor = spec.marker_settings.color;
+  const coloredMarkersPresent = spec.markers.some(
+    (marker) => marker.kind !== "flag_hole",
+  );
+  const buildingsEnabled =
+    spec.buildings.enabled ||
+    spec.markers.some((marker) => marker.kind === "building");
   const trailsPresent = spec.trails.length > 0;
   // Which class each rail-family layer's lines actually land in, resolved
   // the way the backend resolves it. A layer only earns its own legend
@@ -430,6 +455,7 @@ export function ReliefPreview({
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
       aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
+      marker: preview?.surface_palette?.marker ?? markerColor,
     };
     const classColor = (surfaceClass?: number) => {
       // Preview classes are raw SurfaceClass material indices, in the
@@ -486,7 +512,10 @@ export function ReliefPreview({
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
         const surfaceClass =
-          colorOutputEnabled || buildingsEnabled || trailsPresent
+          colorOutputEnabled ||
+          buildingsEnabled ||
+          trailsPresent ||
+          coloredMarkersPresent
             ? preview?.surface_classes?.[y * sampleWidth + x]
             : undefined;
         const color = new Color(classColor(surfaceClass));
@@ -571,7 +600,15 @@ export function ReliefPreview({
       ),
     );
 
-    const gridSpec = { width_mm, rows, columns, straight_piece_sides };
+    const gridSpec = {
+      width_mm,
+      rows,
+      columns,
+      straight_piece_sides,
+      puzzle_seed,
+      puzzle_tile_column,
+      puzzle_tile_row,
+    };
     const modelHeight = (width_mm * rows) / columns;
     const puzzleTabDepth =
       Math.min(width_mm / columns, modelHeight / rows) * 0.17;
@@ -580,9 +617,16 @@ export function ReliefPreview({
         for (let row = 0; row < rows; row += 1) {
           const start = puzzleGridPoint(gridSpec, row, edgeColumn);
           const end = puzzleGridPoint(gridSpec, row + 1, edgeColumn);
-          const pattern = sharedEdgePattern(1, edgeColumn, row);
+          const globalLine = puzzle_tile_column * columns + edgeColumn;
+          const globalSegment = puzzle_tile_row * rows + row;
+          const pattern = sharedEdgePattern(
+            puzzle_seed,
+            1,
+            globalLine,
+            globalSegment,
+          );
           const sign = puzzle_tabs
-            ? edgeSign(1, row, edgeColumn, columns)
+            ? edgeSign(puzzle_seed, 1, globalSegment, globalLine)
             : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
@@ -614,9 +658,16 @@ export function ReliefPreview({
         for (let column = 0; column < columns; column += 1) {
           const start = puzzleGridPoint(gridSpec, edgeRow, column);
           const end = puzzleGridPoint(gridSpec, edgeRow, column + 1);
-          const pattern = sharedEdgePattern(0, edgeRow, column);
+          const globalLine = puzzle_tile_row * rows + edgeRow;
+          const globalSegment = puzzle_tile_column * columns + column;
+          const pattern = sharedEdgePattern(
+            puzzle_seed,
+            0,
+            globalLine,
+            globalSegment,
+          );
           const sign = puzzle_tabs
-            ? edgeSign(0, column, edgeRow, rows)
+            ? edgeSign(puzzle_seed, 0, globalSegment, globalLine)
             : 0;
           const points = [];
           for (let step = 0; step <= 48; step += 1) {
@@ -755,9 +806,13 @@ export function ReliefPreview({
     solid_model,
     puzzle_tabs,
     straight_piece_sides,
+    puzzle_seed,
+    puzzle_tile_column,
+    puzzle_tile_row,
     colorOutputEnabled,
     buildingsEnabled,
     trailsPresent,
+    coloredMarkersPresent,
     rock_color,
     forest_color,
     snow_color,
@@ -767,6 +822,7 @@ export function ReliefPreview({
     trail_color,
     rail_color,
     aerial_color,
+    markerColor,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -843,6 +899,7 @@ export function ReliefPreview({
               ["Trail", "trail", spec.color_output.trail_color],
               ["Rail", "rail", spec.color_output.rail_color],
               ["Aerial", "aerialway", spec.color_output.aerial_color],
+              ["Marker", "marker", spec.marker_settings.color],
             ] as const
           )
             .filter(
@@ -850,10 +907,13 @@ export function ReliefPreview({
                 if (key === "trail") {
                   return trailsPresent;
                 }
+                if (key === "marker") {
+                  return coloredMarkersPresent;
+                }
                 if (!spec.color_output.enabled) {
                   return (
                     key === "rock" ||
-                    (key === "building" && spec.buildings.enabled)
+                    (key === "building" && buildingsEnabled)
                   );
                 }
                 // Every color the model shows carries exactly one name, so
@@ -862,7 +922,7 @@ export function ReliefPreview({
                 // whether its own toggle happens to be on.
                 return (
                   (key !== "road" || roadClassDrawn) &&
-                  (key !== "building" || spec.buildings.enabled) &&
+                  (key !== "building" || buildingsEnabled) &&
                   (key !== "rail" || railClassDrawn) &&
                   (key !== "aerialway" || aerialClassDrawn)
                 );

@@ -94,6 +94,11 @@ OrcaSlicer load the palette colors as filament assignments.*
 
 ## Version 0.5 highlights
 
+- Place editable building highlights, color dots, and flag sockets by latitude
+  and longitude. Flag jobs include a printable flag blank.
+- Save a stable puzzle seed and signed tile coordinates with each setup so
+  later super-tile runs can make matching edges. Outer edge notches are
+  optional and off by default.
 - Mount a full terrain tile or display base with printable straight pins,
   angled pins, or a flush French-cleat receiver. Matching wall hardware,
   screw clearance, alignment spacers, and shared cuts across puzzle pieces

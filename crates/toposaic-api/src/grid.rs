@@ -72,27 +72,29 @@ impl AdjacentGridOutputPlan {
 
 pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> {
     let row_anchor = match spec.super_tile_anchor {
-        SuperTileAnchor::TopLeft => 0.0,
-        SuperTileAnchor::Center => (f64::from(spec.adjacent_rows) - 1.0) / 2.0,
+        SuperTileAnchor::TopLeft => 0,
+        SuperTileAnchor::Center => (spec.adjacent_rows as i32 - 1) / 2,
     };
     let column_anchor = match spec.super_tile_anchor {
-        SuperTileAnchor::TopLeft => 0.0,
-        SuperTileAnchor::Center => (f64::from(spec.adjacent_columns) - 1.0) / 2.0,
+        SuperTileAnchor::TopLeft => 0,
+        SuperTileAnchor::Center => (spec.adjacent_columns as i32 - 1) / 2,
     };
     (0..spec.adjacent_rows)
         .flat_map(|row| {
             (0..spec.adjacent_columns).map(move |column| {
                 let mut tile = spec.clone();
-                let row_offset = f64::from(row) - row_anchor;
-                let column_offset = f64::from(column) - column_anchor;
+                let row_offset = row as i32 - row_anchor;
+                let column_offset = column as i32 - column_anchor;
                 (tile.center_lat, tile.center_lon) = geo::offset_coordinates(
                     spec.center_lat,
                     spec.center_lon,
-                    -row_offset * spec.ground_span_km,
-                    column_offset * spec.ground_span_km,
+                    -f64::from(row_offset) * spec.ground_span_km,
+                    f64::from(column_offset) * spec.ground_span_km,
                 );
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
+                tile.puzzle_tile_column = spec.puzzle_tile_column + column_offset;
+                tile.puzzle_tile_row = spec.puzzle_tile_row + row_offset;
                 tile
             })
         })
@@ -207,6 +209,8 @@ mod tests {
             ground_span_km: 10.0,
             adjacent_columns: 3,
             adjacent_rows: 2,
+            puzzle_tile_column: -4,
+            puzzle_tile_row: 7,
             ..GenerationSpec::default()
         };
         let tiles = adjacent_tile_specs(&spec);
@@ -218,6 +222,8 @@ mod tests {
         assert!(tiles[3].center_lat < tiles[0].center_lat);
         assert_eq!(tiles[5].adjacent_tile_column, 2);
         assert_eq!(tiles[5].adjacent_tile_row, 1);
+        assert_eq!(tiles[5].puzzle_tile_column, -2);
+        assert_eq!(tiles[5].puzzle_tile_row, 8);
     }
 
     #[test]
@@ -229,6 +235,8 @@ mod tests {
             adjacent_columns: 5,
             adjacent_rows: 3,
             super_tile_anchor: SuperTileAnchor::Center,
+            puzzle_tile_column: 12,
+            puzzle_tile_row: -8,
             ..GenerationSpec::default()
         };
         let tiles = adjacent_tile_specs(&spec);
@@ -241,6 +249,19 @@ mod tests {
         assert!(top_left.center_lon < spec.center_lon);
         assert_eq!(center.center_lat, spec.center_lat);
         assert_eq!(center.center_lon, spec.center_lon);
+        assert_eq!(center.puzzle_tile_column, 12);
+        assert_eq!(center.puzzle_tile_row, -8);
+        assert_eq!(
+            (top_left.puzzle_tile_column, top_left.puzzle_tile_row),
+            (10, -9)
+        );
+        assert_eq!(
+            (
+                bottom_right.puzzle_tile_column,
+                bottom_right.puzzle_tile_row
+            ),
+            (14, -7)
+        );
         assert!(bottom_right.center_lat < spec.center_lat);
         assert!(bottom_right.center_lon > spec.center_lon);
         assert!(

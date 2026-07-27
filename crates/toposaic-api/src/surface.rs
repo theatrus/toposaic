@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     sync::{
@@ -14,8 +14,8 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, LineStyle, NativeClassGrid, RailLifecycle,
-    ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, LineStyle, MarkerKind, NativeClassGrid,
+    RailLifecycle, ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
 };
 use tracing::warn;
 
@@ -531,7 +531,14 @@ pub fn fetch_surface_field(
             ),
         );
     }
-    if spec.buildings.enabled {
+    let marker_dots = paint_marker_dots(spec, &mut field);
+    if marker_dots > 0 {
+        append_source(
+            &mut field.source,
+            format!("map markers: {marker_dots} colored dots drawn on the terrain"),
+        );
+    }
+    if spec.buildings.enabled || spec.uses_building_markers() {
         match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(count) => append_source(
                 &mut field.source,
@@ -540,6 +547,9 @@ pub fn fetch_surface_field(
                 ),
             ),
             Err(error) => {
+                if spec.uses_building_markers() {
+                    return Err(error).context("map building markers require OpenStreetMap data");
+                }
                 warn!(%error, "OpenStreetMap buildings unavailable; omitting buildings");
                 append_source(
                     &mut field.source,
@@ -1428,16 +1438,95 @@ fn paint_buildings(
     field: &mut SurfaceField,
 ) -> Result<usize> {
     let response = fetch_osm_response(spec, cache_dir, "buildings", building_query(bounds))?;
+    let building_markers = spec
+        .markers
+        .iter()
+        .enumerate()
+        .filter(|(_, marker)| marker.kind == MarkerKind::Building)
+        .map(|(index, marker)| {
+            (
+                index,
+                marker,
+                spec.normalized_map_point(marker.latitude, marker.longitude),
+            )
+        })
+        .filter(|(_, _, point)| (0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1]))
+        .collect::<Vec<_>>();
+    let mut matched_markers = HashSet::new();
     let mut painted = 0;
     for building in response.elements {
         if building.geometry.len() < 3 {
             continue;
         }
         let points = normalized_osm_points(&building, spec, bounds);
-        field.paint_building(&points, building_height_m(&building.tags));
+        let mut highlighted = false;
+        for (index, _, point) in &building_markers {
+            if point_in_polygon(*point, &points) {
+                matched_markers.insert(*index);
+                highlighted = true;
+            }
+        }
+        field.paint_building_with_class(
+            &points,
+            building_height_m(&building.tags),
+            if highlighted {
+                SurfaceClass::Marker
+            } else {
+                SurfaceClass::Building
+            },
+        );
         painted += 1;
     }
+    if let Some((_, marker, _)) = building_markers
+        .iter()
+        .find(|(index, _, _)| !matched_markers.contains(index))
+    {
+        bail!(
+            "building marker '{}' does not fall inside an OpenStreetMap building footprint",
+            marker.name
+        );
+    }
     Ok(painted)
+}
+
+fn paint_marker_dots(spec: &GenerationSpec, field: &mut SurfaceField) -> usize {
+    let radius_mm = spec.marker_settings.dot_diameter_mm * 0.5;
+    let mut painted = 0;
+    for marker in spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == MarkerKind::Dot)
+    {
+        let center = spec.normalized_map_point(marker.latitude, marker.longitude);
+        if !(0.0..=1.0).contains(&center[0]) || !(0.0..=1.0).contains(&center[1]) {
+            continue;
+        }
+        let points = (0..32)
+            .map(|index| {
+                let angle = index as f32 / 32.0 * std::f32::consts::TAU;
+                [
+                    center[0] + angle.cos() * radius_mm / spec.width_mm,
+                    center[1] + angle.sin() * radius_mm / spec.height_mm(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        field.paint_surface_area(&points, SurfaceClass::Marker);
+        painted += 1;
+    }
+    painted
+}
+
+fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+    let mut inside = false;
+    for (start, end) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
+        if (start[1] > point[1]) != (end[1] > point[1])
+            && point[0]
+                < (end[0] - start[0]) * (point[1] - start[1]) / (end[1] - start[1]) + start[0]
+        {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 fn building_height_m(tags: &HashMap<String, String>) -> f32 {
@@ -2120,6 +2209,7 @@ fn world_cover_tile(longitude: f64, latitude: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use toposaic_core::MapMarker;
 
     #[test]
     fn resolves_world_cover_tile_names() {
@@ -2135,6 +2225,29 @@ mod tests {
         assert_eq!(classify_world_cover(80), SurfaceClass::Water);
         assert_eq!(classify_world_cover(60), SurfaceClass::Rock);
         assert_eq!(classify_world_cover(30), SurfaceClass::Rock);
+    }
+
+    #[test]
+    fn dot_markers_paint_the_marker_material_at_their_map_position() {
+        let mut spec = GenerationSpec::default();
+        spec.markers.push(MapMarker {
+            name: "Centre".into(),
+            latitude: spec.center_lat,
+            longitude: spec.center_lon,
+            kind: MarkerKind::Dot,
+        });
+        let mut field =
+            SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "marker test").unwrap();
+
+        assert_eq!(paint_marker_dots(&spec, &mut field), 1);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Marker);
+    }
+
+    #[test]
+    fn building_marker_intersection_handles_points_inside_and_outside() {
+        let footprint = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]];
+        assert!(point_in_polygon([0.5, 0.5], &footprint));
+        assert!(!point_in_polygon([0.1, 0.5], &footprint));
     }
 
     #[test]

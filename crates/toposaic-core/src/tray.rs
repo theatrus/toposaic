@@ -405,6 +405,7 @@ fn build_tray_segment(
         ],
         rows: tray.segment_rows,
         columns: tray.segment_columns,
+        puzzle_seed: spec.puzzle_seed,
         interlocks: spec.adjacent_interlocks,
         clearance_mm: if spec.adjacent_interlocks {
             spec.clearance_mm
@@ -581,6 +582,7 @@ struct TraySegmentGrid {
     terrain_bounds: [f32; 4],
     rows: u32,
     columns: u32,
+    puzzle_seed: u32,
     interlocks: bool,
     clearance_mm: f32,
 }
@@ -618,9 +620,9 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
         (
             corners[0],
             corners[1],
-            shared_edge_pattern(0, row, column),
-            if grid.interlocks {
-                edge_sign(0, column, row, rows)
+            shared_edge_pattern(grid.puzzle_seed, 0, i64::from(row), i64::from(column)),
+            if grid.interlocks && row > 0 {
+                edge_sign(grid.puzzle_seed, 0, i64::from(column), i64::from(row))
             } else {
                 0.0
             },
@@ -634,9 +636,9 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
         (
             corners[1],
             corners[2],
-            shared_edge_pattern(1, column + 1, row),
-            if grid.interlocks {
-                edge_sign(1, row, column + 1, columns)
+            shared_edge_pattern(grid.puzzle_seed, 1, i64::from(column + 1), i64::from(row)),
+            if grid.interlocks && column + 1 < columns {
+                edge_sign(grid.puzzle_seed, 1, i64::from(row), i64::from(column + 1))
             } else {
                 0.0
             },
@@ -650,9 +652,9 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
         (
             corners[3],
             corners[2],
-            shared_edge_pattern(0, row + 1, column),
-            if grid.interlocks {
-                edge_sign(0, column, row + 1, rows)
+            shared_edge_pattern(grid.puzzle_seed, 0, i64::from(row + 1), i64::from(column)),
+            if grid.interlocks && row + 1 < rows {
+                edge_sign(grid.puzzle_seed, 0, i64::from(column), i64::from(row + 1))
             } else {
                 0.0
             },
@@ -666,9 +668,9 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
         (
             corners[0],
             corners[3],
-            shared_edge_pattern(1, column, row),
-            if grid.interlocks {
-                edge_sign(1, row, column, columns)
+            shared_edge_pattern(grid.puzzle_seed, 1, i64::from(column), i64::from(row)),
+            if grid.interlocks && column > 0 {
+                edge_sign(grid.puzzle_seed, 1, i64::from(row), i64::from(column))
             } else {
                 0.0
             },
@@ -1590,7 +1592,7 @@ mod tests {
             width_mm: 80.0,
             rows: 3,
             columns: 3,
-            adjacent_interlocks: true,
+            adjacent_interlocks: false,
             tray: TraySpec {
                 enabled: true,
                 contours_enabled: false,
@@ -1710,6 +1712,7 @@ mod tests {
             terrain_bounds: [8.0, 8.0, 72.0, 72.0],
             rows: 2,
             columns: 2,
+            puzzle_seed: 7,
             interlocks: true,
             clearance_mm: 0.14,
         };
@@ -1756,6 +1759,7 @@ mod tests {
                 terrain_bounds: [5.0, 8.0, 105.0, 72.0],
                 rows: 1,
                 columns: 4,
+                puzzle_seed: 7,
                 interlocks: false,
                 clearance_mm: 0.0,
             },

@@ -913,6 +913,12 @@ test("locks a height frame and maps a super-tile grid", async ({
 
   await page.goto("/");
   await expect(page.getByText("Live elevation preview")).toBeVisible();
+  const puzzleSeed = page.getByLabel("Puzzle seed");
+  await expect.poll(async () => Number(await puzzleSeed.inputValue())).not.toBe(0);
+  await puzzleSeed.fill("305419896");
+  await expect(puzzleSeed).toHaveValue("305419896");
+  await expect(page.getByLabel("Tile column")).toHaveValue("0");
+  await expect(page.getByLabel("Tile row")).toHaveValue("0");
 
   const minimumHeight = page.getByRole("slider", {
     name: "Minimum piece height",
@@ -931,6 +937,8 @@ test("locks a height frame and maps a super-tile grid", async ({
     .click();
 
   await expect(page.getByText(/Moved east by one tile/)).toBeVisible();
+  await expect(page.getByLabel("Tile column")).toHaveValue("1");
+  await expect(page.getByLabel("Tile row")).toHaveValue("0");
   await expect(page.getByText(/Shared datum 96\.0 m/)).toBeVisible();
   await expect
     .poll(async () => Number(await page.getByLabel("Longitude").inputValue()))
@@ -1015,10 +1023,16 @@ test("locks a height frame and maps a super-tile grid", async ({
   );
   await expect(centeredMapTile).toHaveCount(1);
   const tileInterlocks = page.getByRole("checkbox", {
-    name: /Interlock super-tile and tray edges/,
+    name: /Interlock super-tile and tray joins/,
   });
   await tileInterlocks.check();
   await expect(tileInterlocks).toBeChecked();
+  const outerEdgeInterlocks = page.getByRole("checkbox", {
+    name: /Add notches to outer super-tile edges/,
+  });
+  await expect(outerEdgeInterlocks).not.toBeChecked();
+  await outerEdgeInterlocks.check();
+  await expect(outerEdgeInterlocks).toBeChecked();
 
   await page.getByRole("tab", { name: "Mounting" }).click();
   const separateTrays = page.getByRole("checkbox", {

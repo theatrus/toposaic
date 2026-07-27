@@ -109,7 +109,8 @@ export function OutputPanel({
         )}
         {((spec.color_output.enabled &&
           spec.color_output.roads_enabled) ||
-          spec.buildings.enabled) && (
+          spec.buildings.enabled ||
+          spec.markers.some((marker) => marker.kind === "building")) && (
           <strong>
             <a
               href="https://www.openstreetmap.org/copyright"

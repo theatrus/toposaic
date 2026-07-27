@@ -53,6 +53,15 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("old setups recall empty markers and current marker print settings", () => {
+  const merged = mergeSpecDefaults({ marker_settings: undefined, markers: undefined });
+  assert.deepEqual(merged.markers, []);
+  assert.equal(merged.marker_settings.color, "#E24A33");
+  assert.equal(merged.marker_settings.dot_diameter_mm, 3);
+  assert.equal(merged.marker_settings.hole_diameter_mm, 2.4);
+  assert.equal(merged.marker_settings.export_flag_template, true);
+});
+
 test("defaults close-view line scaling on and recalls old setups", () => {
   assert.equal(initialSpec.color_output.scale_line_widths_by_span, true);
   assert.equal(initialSpec.color_output.close_view_width_multiplier, 2);
@@ -226,6 +235,19 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   });
   assert.equal(withTrail.trails.length, 1);
   assert.equal(withTrail.trails[0].name, "Loop");
+});
+
+test("old setups gain a stable puzzle identity without changing their old cuts", () => {
+  const oldSpec = { ...initialSpec };
+  delete oldSpec.puzzle_seed;
+  delete oldSpec.puzzle_tile_column;
+  delete oldSpec.puzzle_tile_row;
+  delete oldSpec.outer_edge_interlocks;
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.puzzle_seed, 0);
+  assert.equal(merged.puzzle_tile_column, 0);
+  assert.equal(merged.puzzle_tile_row, 0);
+  assert.equal(merged.outer_edge_interlocks, false);
 });
 
 test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {

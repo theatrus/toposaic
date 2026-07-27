@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use geo::{
-    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Polygon, Simplify,
+    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Point, Polygon, Simplify,
     unary_union,
 };
 use rayon::prelude::*;
@@ -16,7 +16,7 @@ use crate::mesh::{
     Mesh, MeshBuilder, distance_squared, quantize_export_coordinate, triangulate_constraints,
 };
 use crate::planar_mesh::polygon_from_outline as geo_polygon;
-use crate::spec::{BridgeStructure, GenerationSpec, SurfaceClass};
+use crate::spec::{BridgeStructure, GenerationSpec, MarkerKind, SurfaceClass};
 use crate::surface::{ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_line_progress};
 
 use super::{
@@ -129,6 +129,25 @@ pub(super) fn append_road_geometry(
                 .collect::<Vec<_>>();
             unary_union(buffered.iter())
         });
+    let marker_areas = spec
+        .markers
+        .iter()
+        .filter_map(|marker| {
+            let radius = f64::from(match marker.kind {
+                MarkerKind::Dot => spec.marker_settings.dot_diameter_mm * 0.5,
+                MarkerKind::FlagHole => spec.marker_settings.hole_diameter_mm * 0.5,
+                MarkerKind::Building => return None,
+            }) + OVERLAY_SEPARATION_MM;
+            let point = spec.normalized_map_point(marker.latitude, marker.longitude);
+            let center = Point::new(
+                f64::from(point[0] * assembled_width - origin_x),
+                f64::from(point[1] * assembled_height - origin_y),
+            );
+            let clipped = center.buffer(radius).intersection(&piece_polygon);
+            (!clipped.0.is_empty()).then_some(clipped)
+        })
+        .collect::<Vec<_>>();
+    let marker_obstacles = (!marker_areas.is_empty()).then(|| unary_union(marker_areas.iter()));
     let clip_ribbon = |line: &VectorSurfaceLine| {
         let local_points = line
             .points_mm
@@ -142,6 +161,9 @@ pub(super) fn append_road_geometry(
         let mut clipped = ribbon.intersection(&piece_polygon);
         if let Some(obstacles) = &obstacles {
             clipped = clipped.difference(obstacles);
+        }
+        if let Some(marker_obstacles) = &marker_obstacles {
+            clipped = clipped.difference(marker_obstacles);
         }
         clipped
     };
@@ -857,7 +879,7 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
     use crate::preview::build_preview;
-    use crate::spec::{BuildingSpec, ColorOutputSpec};
+    use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
 
     #[test]
     fn roads_use_smooth_vector_ribbons_one_layer_above_terrain() {
@@ -925,6 +947,44 @@ mod tests {
         assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
         assert!(!flat.materials.contains(&SurfaceClass::Road));
         assert_watertight(&raised);
+    }
+
+    #[test]
+    fn roads_yield_to_flag_sockets() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "roads").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 1,
+            columns: 1,
+            samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            markers: vec![MapMarker {
+                name: "Flag".into(),
+                latitude: GenerationSpec::default().center_lat,
+                longitude: GenerationSpec::default().center_lon,
+                kind: MarkerKind::FlagHole,
+            }],
+            ..GenerationSpec::default()
+        };
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let clear_radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        assert!(
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Road)
+                .flat_map(|(triangle, _)| triangle)
+                .map(|index| mesh.vertices[*index as usize])
+                .all(|vertex| (vertex[0] - 30.0).hypot(vertex[1] - 30.0) >= clear_radius)
+        );
     }
 
     #[test]

@@ -34,12 +34,14 @@ import {
   limitPlaceName,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
+  randomPuzzleSeed,
 } from "./config";
 import type {
   Artifact,
   ArtifactFeedback,
   GenerationSpec,
   Job,
+  MarkerKind,
   PlaceResult,
   PreviewData,
   SavedSetup,
@@ -59,6 +61,7 @@ import { BuildingsPanel } from "./panels/buildings-panel";
 import { ModelPanel } from "./panels/model-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
 import { MountingPanel } from "./panels/mounting-panel";
+import { MarkersPanel } from "./panels/markers-panel";
 import { OutputPanel } from "./panels/output-panel";
 import { SurfacePanel } from "./panels/surface-panel";
 import { displayVersion, isVersionNewer } from "../updates/version";
@@ -135,6 +138,7 @@ function oddSuperTileSize(value: number) {
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const seededInitialSetup = useRef(false);
   const [appVersion, setAppVersion] = useState(APP_VERSION);
   const [availableUpdate, setAvailableUpdate] =
     useState<AvailableUpdate | null>(null);
@@ -153,8 +157,10 @@ export function TerrainStudio() {
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
   const [activeSection, setActiveSection] = useState<
-    "model" | "surface" | "buildings" | "mounting" | "output"
+    "model" | "surface" | "buildings" | "markers" | "mounting" | "output"
   >("model");
+  const [markerPlacementKind, setMarkerPlacementKind] =
+    useState<MarkerKind | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [generatedPreview, setGeneratedPreview] =
     useState<PreviewData | null>(null);
@@ -198,6 +204,14 @@ export function TerrainStudio() {
   // "__first" focuses the first enabled item; a setup id focuses that row.
   const setupFocusRef = useRef<string | null>(null);
   const skipSetupNameBlurRef = useRef(false);
+
+  useEffect(() => {
+    if (seededInitialSetup.current) return;
+    seededInitialSetup.current = true;
+    // Browser entropy gives each new setup its own saved seed. The mesh code
+    // uses only fixed integer math after this point.
+    setSpec((current) => ({ ...current, puzzle_seed: randomPuzzleSeed() }));
+  }, []);
 
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -381,7 +395,21 @@ export function TerrainStudio() {
   const update = useCallback(
     <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) => {
       setGeneratedPreview(null);
-      setSpec((current) => ({ ...current, [key]: value }));
+      setSpec((current) => {
+        if (key !== "base_mm") return { ...current, [key]: value };
+        const baseMm = value as number;
+        return {
+          ...current,
+          [key]: value,
+          marker_settings: {
+            ...current.marker_settings,
+            hole_depth_mm: Math.min(
+              current.marker_settings.hole_depth_mm,
+              Math.max(0.6, baseMm - 0.4),
+            ),
+          },
+        };
+      });
     },
     [],
   );
@@ -471,6 +499,88 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updateMarkerSettings = useCallback(
+    <Key extends keyof GenerationSpec["marker_settings"]>(
+      key: Key,
+      value: GenerationSpec["marker_settings"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => {
+        const markerSettings = { ...current.marker_settings, [key]: value };
+        if (key === "hole_diameter_mm") {
+          markerSettings.flag_clearance_mm = Math.min(
+            markerSettings.flag_clearance_mm,
+            Math.max(0.1, (value as number) - 0.9),
+          );
+        }
+        return { ...current, marker_settings: markerSettings };
+      });
+    },
+    [],
+  );
+  const addMarker = useCallback(
+    (longitude: number, latitude: number) => {
+      if (!markerPlacementKind) return;
+      setGeneratedPreview(null);
+      setSpec((current) => {
+        const number = current.markers.length + 1;
+        const label =
+          markerPlacementKind === "building"
+            ? "Building"
+            : markerPlacementKind === "dot"
+              ? "Point"
+              : "Flag";
+        return {
+          ...current,
+          buildings:
+            markerPlacementKind === "building"
+              ? { ...current.buildings, enabled: true }
+              : current.buildings,
+          marker_settings: {
+            ...current.marker_settings,
+            hole_depth_mm: Math.min(
+              current.marker_settings.hole_depth_mm,
+              Math.max(0.6, current.base_mm - 0.4),
+            ),
+          },
+          markers: [
+            ...current.markers,
+            {
+              kind: markerPlacementKind,
+              latitude,
+              longitude,
+              name: `${label} ${number}`,
+            },
+          ].slice(0, 50),
+        };
+      });
+      setMarkerPlacementKind(null);
+    },
+    [markerPlacementKind],
+  );
+  const updateMarker = useCallback(
+    (index: number, patch: Partial<GenerationSpec["markers"][number]>) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        buildings:
+          patch.kind === "building"
+            ? { ...current.buildings, enabled: true }
+            : current.buildings,
+        markers: current.markers.map((marker, position) =>
+          position === index ? { ...marker, ...patch } : marker,
+        ),
+      }));
+    },
+    [],
+  );
+  const removeMarker = useCallback((index: number) => {
+    setGeneratedPreview(null);
+    setSpec((current) => ({
+      ...current,
+      markers: current.markers.filter((_, position) => position !== index),
+    }));
+  }, []);
   const importTrailFiles = async (files: File[]) => {
     if (files.length === 0) return;
     const notices: string[] = [];
@@ -645,6 +755,12 @@ export function TerrainStudio() {
         center_lon: Number(next.longitude.toFixed(5)),
         elevation_datum_m: datum,
         elevation_m_per_mm: metresPerMm,
+        puzzle_tile_column:
+          current.puzzle_tile_column +
+          (direction === "east" ? 1 : direction === "west" ? -1 : 0),
+        puzzle_tile_row:
+          current.puzzle_tile_row +
+          (direction === "south" ? 1 : direction === "north" ? -1 : 0),
       }));
       setAdjacentMessage(
         `Moved ${direction} by one tile. The shared height frame stays locked.`,
@@ -1232,10 +1348,15 @@ export function TerrainStudio() {
       job.progress < 65 &&
       (job.spec.color_output.enabled ||
         job.spec.buildings.enabled ||
-        job.spec.trails.length > 0)
+        job.spec.trails.length > 0 ||
+        job.spec.markers.some((marker) => marker.kind !== "flag_hole"))
     ) {
       // The backend runs the surface phase for trail-only jobs too.
-      if (!job.spec.color_output.enabled && !job.spec.buildings.enabled) {
+      if (
+        !job.spec.color_output.enabled &&
+        !job.spec.buildings.enabled &&
+        job.spec.markers.length === 0
+      ) {
         return "Mapping imported trails…";
       }
       if (job.spec.buildings.enabled && !job.spec.color_output.enabled) {
@@ -1263,7 +1384,8 @@ export function TerrainStudio() {
     const hasSurface =
       job.spec.color_output.enabled ||
       job.spec.buildings.enabled ||
-      job.spec.trails.length > 0;
+      job.spec.trails.length > 0 ||
+      job.spec.markers.some((marker) => marker.kind !== "flag_hole");
     const stages = [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
       ...(hasSurface
@@ -1656,6 +1778,8 @@ export function TerrainStudio() {
         >
           <TerrainMap
             spec={spec}
+            markerPlacementKind={markerPlacementKind}
+            onAddMarker={addMarker}
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
@@ -1745,6 +1869,7 @@ export function TerrainStudio() {
                 ["model", "Model"],
                 ["surface", "Surface"],
                 ["buildings", "Buildings"],
+                ["markers", "Markers"],
                 ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
@@ -1811,6 +1936,16 @@ export function TerrainStudio() {
             spec={spec}
             updateBuildings={updateBuildings}
             updateColor={updateColor}
+          />
+
+          <MarkersPanel
+            hidden={activeSection !== "markers"}
+            placementKind={markerPlacementKind}
+            removeMarker={removeMarker}
+            setPlacementKind={setMarkerPlacementKind}
+            spec={spec}
+            updateMarker={updateMarker}
+            updateMarkerSettings={updateMarkerSettings}
           />
 
           <ModelTypePanel
