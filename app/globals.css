@@ -834,6 +834,7 @@ a {
 
 .map-zoom {
   display: grid;
+  justify-items: end;
   position: absolute;
   right: 18px;
   top: 18px;
@@ -862,6 +863,20 @@ a {
 
 .map-zoom button + button {
   border-top: 0;
+}
+
+.map-zoom .map-zoom-mode {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0 6px;
+  text-transform: uppercase;
+  width: 62px;
+}
+
+.map-zoom .map-zoom-mode[aria-pressed="false"] {
+  background: rgba(20, 32, 29, 0.88);
+  color: white;
 }
 
 .map-attribution {

@@ -649,7 +649,9 @@ test("resizes the preview area to make room for controls", async ({ page }) => {
     .toBeGreaterThan(28);
 });
 
-test("keeps map zoom and ground span in sync", async ({ page }) => {
+test("supports linked and map-only zoom controls", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
@@ -682,6 +684,10 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
     page.getByText(/640 across · about 28\.1 m ground spacing/),
   ).toBeVisible();
 
+  const zoomMode = page.getByRole("button", {
+    name: "Resize selected area with map zoom",
+  });
+  await expect(zoomMode).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Zoom in" }).click();
   await expect(groundSpan).toHaveValue("9");
   await expect(selection).toHaveAttribute(
@@ -693,9 +699,28 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
     page.getByText(/640 across · about 14\.1 m ground spacing/),
   ).toBeVisible();
 
-  const zoomedBounds = await selection.boundingBox();
-  expect(zoomedBounds).not.toBeNull();
-  expect(zoomedBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+  const linkedZoomBounds = await selection.boundingBox();
+  expect(linkedZoomBounds).not.toBeNull();
+  expect(linkedZoomBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+
+  await zoomMode.click();
+  await expect(zoomMode).toHaveAttribute("aria-pressed", "false");
+  await expect(zoomMode).toHaveText("Map only");
+  await page.getByRole("button", { name: "Zoom out" }).click();
+  await expect(selection).toHaveAttribute("data-map-zoom", "9");
+  await expect(groundSpan).toHaveValue("9");
+  const mapOnlyZoomBounds = await selection.boundingBox();
+  expect(mapOnlyZoomBounds).not.toBeNull();
+  expect(mapOnlyZoomBounds!.width).toBeCloseTo(initialBounds!.width / 2, 0);
+
+  const map = page.locator(".map-canvas");
+  await map.hover();
+  await page.mouse.wheel(0, -100);
+  await expect(selection).toHaveAttribute("data-map-zoom", "10");
+  await expect(groundSpan).toHaveValue("9");
+  const wheelZoomedBounds = await selection.boundingBox();
+  expect(wheelZoomedBounds).not.toBeNull();
+  expect(wheelZoomedBounds!.width).toBeCloseTo(initialBounds!.width, 0);
 
   await groundSpan.fill("30");
   await expect(selection).toHaveAttribute(
@@ -705,7 +730,7 @@ test("keeps map zoom and ground span in sync", async ({ page }) => {
   await expect(selection).toHaveAttribute("data-ground-span-km", "30");
   const largerBounds = await selection.boundingBox();
   expect(largerBounds).not.toBeNull();
-  expect(largerBounds!.width).toBeGreaterThan(zoomedBounds!.width);
+  expect(largerBounds!.width).toBeGreaterThan(mapOnlyZoomBounds!.width);
 });
 
 test("locks a height frame and maps a super-tile grid", async ({
