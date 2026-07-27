@@ -107,6 +107,11 @@ pub(crate) fn text_metrics(fonts: &EmbossingFonts, text: &str) -> Result<TextMet
     })
 }
 
+pub(crate) fn validate_embossing_text(text: &str) -> Result<()> {
+    let fonts = embossing_fonts()?;
+    text_metrics(&fonts, text).map(|_| ())
+}
+
 /// A run of text embossed onto a mesh at a position and scale.
 #[derive(Debug)]
 pub(crate) struct EmbossedLabel {

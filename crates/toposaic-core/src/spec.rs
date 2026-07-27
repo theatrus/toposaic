@@ -195,6 +195,9 @@ impl GenerationSpec {
             bail!("place label cannot contain control characters");
         }
         self.tray.validate()?;
+        if self.tray.enabled {
+            crate::text::validate_embossing_text(&self.place_name)?;
+        }
         self.puzzle_retention
             .validate(self.base_mm, self.tray.enabled)?;
         let wall_mount_target = self.wall_mount_target_size();
@@ -2010,6 +2013,7 @@ mod tests {
         .unwrap();
         assert_eq!(spec.tray.label_height_mm, 6.5);
         assert_eq!(spec.tray.label_position, TrayLabelPosition::Right);
+        spec.place_name = "富士山".into();
         assert!(spec.validate().is_ok());
 
         spec.tray.label_height_mm = 1.4;
@@ -2018,6 +2022,15 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("tray label height")
+        );
+
+        spec.tray.label_height_mm = 4.0;
+        spec.place_name = "Fuji 🗻".into();
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("cannot render")
         );
     }
 

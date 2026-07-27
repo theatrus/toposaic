@@ -1,4 +1,5 @@
 import type { GenerationSpec } from "../contracts";
+import { limitPlaceName } from "../config";
 import type {
   UpdateGenerationSpec,
   UpdateTray,
@@ -39,14 +40,15 @@ export function DisplayBaseControls({
             Place name
             <input
               type="text"
-              maxLength={48}
               required
               value={spec.place_name}
-              onChange={(event) => update("place_name", event.target.value)}
+              onChange={(event) =>
+                update("place_name", limitPlaceName(event.target.value))
+              }
             />
             <small>
-              The tray adds the coordinates after this name. Letter case and
-              Japanese text are preserved.
+              Up to 48 characters. The tray adds the coordinates after this
+              name. Letter case and Japanese text are preserved.
             </small>
           </label>
           <RangeField

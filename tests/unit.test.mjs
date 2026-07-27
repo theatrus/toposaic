@@ -11,6 +11,7 @@ import {
   formatBytes,
   groundMeshSpacing,
   initialSpec,
+  limitPlaceName,
   mergeSpecDefaults,
   minimumMappedWidthCap,
   normalizeMappedWidthCap,
@@ -33,6 +34,13 @@ test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.1.0", "0.1.0-beta.2"), true);
   assert.equal(isVersionNewer("v0.1.0-beta.2", "0.1.0"), false);
   assert.equal(isVersionNewer("not-a-version", "0.1.0"), false);
+});
+
+test("limits place names by Unicode characters without splitting a pair", () => {
+  const limited = limitPlaceName(`${"山".repeat(47)}𠮷余`);
+  assert.equal(Array.from(limited).length, 48);
+  assert.equal(limited.endsWith("𠮷"), true);
+  assert.equal(limited.includes("�"), false);
 });
 
 test("defaults the 3MF style to the embedded-settings project output", () => {

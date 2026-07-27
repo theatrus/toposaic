@@ -315,6 +315,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(mountingControls).toBeVisible();
   const placeName = page.getByLabel("Place name");
   await expect(placeName).toHaveValue("Mount Rainier");
+  const fullUnicodeName = `${"山".repeat(47)}𠮷`;
+  await placeName.fill(`${fullUnicodeName}余`);
+  await expect(placeName).toHaveValue(fullUnicodeName);
   await placeName.fill("富士山 Mount Fuji");
   await expect(placeName).toHaveValue("富士山 Mount Fuji");
   const labelHeight = page.getByRole("slider", { name: "Label height" });

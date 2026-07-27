@@ -12,7 +12,7 @@ use crate::piece::{local_piece_outline, solid_outline};
 use crate::planar_mesh::{
     add_horizontal_polygons, closed_ring, polygon_from_outline as geo_polygon,
 };
-use crate::spec::{GenerationSpec, SurfaceClass};
+use crate::spec::{GenerationSpec, SurfaceClass, TrayLabelPosition};
 use crate::text::{EmbossedLabel, embossing_fonts, text_metrics};
 
 const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
@@ -1434,9 +1434,9 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<Embos
     let text_width = metrics.width * scale;
     let text_height = metrics.height * scale;
     let left = match spec.tray.label_position {
-        crate::spec::TrayLabelPosition::Left => horizontal_margin,
-        crate::spec::TrayLabelPosition::Center => (width - text_width) * 0.5,
-        crate::spec::TrayLabelPosition::Right => width - horizontal_margin - text_width,
+        TrayLabelPosition::Left => horizontal_margin,
+        TrayLabelPosition::Center => (width - text_width) * 0.5,
+        TrayLabelPosition::Right => width - horizontal_margin - text_width,
     };
     Ok(EmbossedLabel {
         text,
@@ -1462,8 +1462,7 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
     use crate::spec::{
-        PuzzleRetentionSpec, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle,
-        WallMountTarget,
+        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
     };
 
     #[test]
@@ -1900,6 +1899,24 @@ mod tests {
         let mesh = builder.finish("japanese-vector-label");
         assert_watertight(&mesh);
         assert!(mesh.triangles.len() > 100);
+    }
+
+    #[test]
+    fn tray_label_embosses_cyrillic_and_vietnamese() {
+        let spec = GenerationSpec {
+            place_name: "Hạ Long Москва".into(),
+            tray: TraySpec {
+                label_height_mm: 3.0,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let label = tray_label(&spec, 180.0, 10.0).unwrap();
+        assert!(label.text.starts_with("Hạ Long Москва  "));
+
+        let mut builder = MeshBuilder::default();
+        label.add_embossed_shapes(&mut builder, 3.0).unwrap();
+        assert_watertight(&builder.finish("multilingual-vector-label"));
     }
 
     #[test]
