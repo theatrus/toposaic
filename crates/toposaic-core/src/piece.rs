@@ -29,6 +29,9 @@ const BUILDING_GROUND_STEP_MM: f32 = 0.25;
 /// into non-manifold four-face edges. Five microns is far below print
 /// resolution but far above the 1e-5 mm export grid.
 const OVERLAY_SEPARATION_MM: f64 = 0.005;
+/// Keeps an automatically fitted flag socket clear of a puzzle edge after
+/// the circle and outline are rounded onto the export coordinate grid.
+const FLAG_EDGE_GAP_MM: f32 = 0.02;
 /// Overlay footprint fragments below this area (mm^2) are unprintable dust
 /// left over from boolean clipping and are dropped before shelling.
 const MINIMUM_OVERLAY_AREA_MM2: f64 = 0.000_01;
@@ -273,26 +276,28 @@ pub(crate) fn build_piece_with_height_range(
     let mut flag_cavities = Vec::<(Vec<usize>, Vec<[f32; 2]>)>::new();
     for marker in spec.markers.iter().filter(|marker| marker.kind.is_flag()) {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
-        let center = [
+        let requested_center = [
             uv[0] * assembled_width - origin_x,
             uv[1] * assembled_height - origin_y,
         ];
-        if !point_in_polygon(center, &outline) {
+        let nominal_owner = nominal_flag_marker_piece(spec, uv);
+        if !spec.solid_model
+            && (row.abs_diff(nominal_owner.0) > 1 || column.abs_diff(nominal_owner.1) > 1)
+        {
+            continue;
+        }
+        if flag_marker_owner(spec, uv)? != (row, column) {
             continue;
         }
         let radius = spec.marker_settings.hole_diameter_mm * 0.5;
-        let ring = (0..32)
-            .map(|index| {
-                let angle = index as f32 / 32.0 * std::f32::consts::TAU;
-                [
-                    center[0] + radius * angle.cos(),
-                    center[1] + radius * angle.sin(),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let center =
+            fit_flag_cavity_center(requested_center, radius, &outline).with_context(|| {
+                format!("fit flag marker '{}' within its puzzle piece", marker.name)
+            })?;
+        let ring = flag_cavity_ring(center, radius);
         if ring.iter().any(|point| !point_in_polygon(*point, &outline)) {
             bail!(
-                "flag marker '{}' is too close to a terrain or puzzle-piece edge",
+                "flag marker '{}' could not fit clear of its terrain or puzzle-piece edge",
                 marker.name
             );
         }
@@ -1300,6 +1305,88 @@ fn inset_outline(outline: &[[f32; 2]], distance: f32) -> Result<Vec<[f32; 2]>> {
     Ok(result)
 }
 
+fn flag_cavity_ring(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
+    (0..32)
+        .map(|index| {
+            let angle = index as f32 / 32.0 * std::f32::consts::TAU;
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        })
+        .collect()
+}
+
+fn flag_marker_owner(spec: &GenerationSpec, uv: [f32; 2]) -> Result<(u32, u32)> {
+    if spec.solid_model {
+        return Ok((0, 0));
+    }
+    let point = [uv[0] * spec.width_mm, uv[1] * spec.height_mm()];
+    let (nominal_row, nominal_column) = nominal_flag_marker_piece(spec, uv);
+    let first_row = nominal_row.saturating_sub(1);
+    let last_row = (nominal_row + 1).min(spec.rows - 1);
+    let first_column = nominal_column.saturating_sub(1);
+    let last_column = (nominal_column + 1).min(spec.columns - 1);
+    for row in first_row..=last_row {
+        for column in first_column..=last_column {
+            if point_in_polygon(point, &piece_outline(spec, row, column, true)?) {
+                return Ok((row, column));
+            }
+        }
+    }
+
+    // A point exactly on a shared polygon edge can fall outside both sides
+    // under floating-point containment. Give it one stable owner so the
+    // socket cannot disappear into the fit-clearance gap.
+    Ok((nominal_row, nominal_column))
+}
+
+fn nominal_flag_marker_piece(spec: &GenerationSpec, uv: [f32; 2]) -> (u32, u32) {
+    let row = (uv[1].clamp(0.0, 1.0 - f32::EPSILON) * spec.rows as f32) as u32;
+    let column = (uv[0].clamp(0.0, 1.0 - f32::EPSILON) * spec.columns as f32) as u32;
+    (row, column)
+}
+
+/// Moves a flag socket only when its requested circle would cross the edge of
+/// its owning piece. The closest point on an eroded copy of the piece is the
+/// smallest deterministic correction that leaves the complete socket inside.
+fn fit_flag_cavity_center(
+    requested: [f32; 2],
+    radius: f32,
+    outline: &[[f32; 2]],
+) -> Result<[f32; 2]> {
+    let requested_ring = flag_cavity_ring(requested, radius);
+    if requested_ring
+        .iter()
+        .all(|point| point_in_polygon(*point, outline))
+    {
+        return Ok(requested);
+    }
+
+    let safe_centers = inset_outline(outline, radius + FLAG_EDGE_GAP_MM)
+        .context("this puzzle piece is too small for the flag socket")?;
+    let mut closest = None::<([f32; 2], f32)>;
+    for (start, end) in safe_centers.iter().zip(safe_centers.iter().cycle().skip(1)) {
+        let segment = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = segment[0] * segment[0] + segment[1] * segment[1];
+        if length_squared <= f32::EPSILON {
+            continue;
+        }
+        let t = (((requested[0] - start[0]) * segment[0] + (requested[1] - start[1]) * segment[1])
+            / length_squared)
+            .clamp(0.0, 1.0);
+        let candidate = [start[0] + segment[0] * t, start[1] + segment[1] * t];
+        let distance_squared =
+            (candidate[0] - requested[0]).powi(2) + (candidate[1] - requested[1]).powi(2);
+        if closest.is_none_or(|(_, best)| distance_squared < best) {
+            closest = Some((candidate, distance_squared));
+        }
+    }
+    closest
+        .map(|(point, _)| point)
+        .context("this puzzle piece has no valid flag socket position")
+}
+
 pub(crate) fn scaled_building_height_mm(spec: &GenerationSpec, height_m: f32) -> f32 {
     if !spec.buildings.enabled && !spec.uses_building_markers() {
         return 0.0;
@@ -1342,6 +1429,52 @@ mod tests {
                 && vertex[2] > 0.4
                 && vertex[2] < spec.base_mm + spec.relief_mm
         }));
+    }
+
+    #[test]
+    fn flag_marker_from_failed_piece_6_7_builds() {
+        let spec = GenerationSpec {
+            center_lat: 46.8523,
+            center_lon: -121.7603,
+            ground_span_km: 2.25,
+            width_mm: 180.0,
+            rows: 10,
+            columns: 10,
+            samples_per_piece: 64,
+            mesh_samples_across: Some(640),
+            puzzle_seed: 3_372_996_238,
+            markers: vec![MapMarker {
+                name: "Flag 1".into(),
+                latitude: 46.853_696_811_101_67,
+                longitude: -121.756_909_687_805_2,
+                kind: MarkerKind::FlagHole,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
+            }],
+            ..GenerationSpec::default()
+        };
+
+        spec.validate().unwrap();
+        let uv = spec.normalized_map_point(spec.markers[0].latitude, spec.markers[0].longitude);
+        assert_eq!(flag_marker_owner(&spec, uv).unwrap(), (5, 6));
+        let piece_width = spec.width_mm / spec.columns as f32;
+        let piece_height = spec.height_mm() / spec.rows as f32;
+        let requested = [
+            uv[0] * spec.width_mm - 6.0 * piece_width,
+            uv[1] * spec.height_mm() - 5.0 * piece_height,
+        ];
+        let outline = local_piece_outline(&spec, 5, 6).unwrap();
+        let radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        let fitted = fit_flag_cavity_center(requested, radius, &outline).unwrap();
+        let shift = (fitted[0] - requested[0]).hypot(fitted[1] - requested[1]);
+        assert!(shift > 0.0 && shift < spec.marker_settings.hole_diameter_mm);
+        assert!(
+            flag_cavity_ring(fitted, radius)
+                .iter()
+                .all(|point| point_in_polygon(*point, &outline))
+        );
+        let mesh = build_piece(&spec, None, None, 5, 6).unwrap();
+        assert_watertight(&mesh);
     }
 
     #[test]

@@ -1241,6 +1241,24 @@ a {
   background: #c45f4d;
 }
 
+.generation-error-copy {
+  display: grid;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.generation-error-copy span {
+  color: #694d46;
+}
+
+.generation-error-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .generation-error-banner button {
   background: transparent;
   border: 0;
@@ -1302,6 +1320,7 @@ fieldset.control-section .road-options {
 .model-controls .place-search,
 .model-controls .place-label-field,
 .model-controls .coordinate-adjacent-row,
+.model-controls .puzzle-seed-advanced,
 .model-controls .elevation-source-field {
   grid-column: 1 / -1;
 }
@@ -1511,8 +1530,7 @@ fieldset.control-section .road-options {
   align-items: start;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
-  margin-bottom: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .coordinate-row {
@@ -1534,6 +1552,40 @@ fieldset.control-section .road-options {
 
 .coordinate-box .coordinate-row {
   margin-top: 7px;
+}
+
+.tile-position-block {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.tile-position-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.tile-position-heading > span {
+  display: grid;
+  gap: 2px;
+}
+
+.tile-position-heading strong {
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tile-position-heading small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.tile-position-block .coordinate-row {
+  margin-top: 8px;
 }
 
 .coordinate-row label {
@@ -1634,7 +1686,6 @@ fieldset.control-section .road-options {
   align-items: end;
   display: flex;
   gap: 5px;
-  margin-left: auto;
 }
 
 .adjacent-grid > span:first-child {
@@ -1748,6 +1799,83 @@ fieldset.control-section .road-options {
 
 .adjacent-message {
   color: var(--moss);
+}
+
+.puzzle-seed-advanced {
+  border: 1px solid var(--line);
+  margin: 10px 0;
+}
+
+.puzzle-seed-advanced summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 740;
+  letter-spacing: 0.05em;
+  padding: 9px 10px;
+  text-transform: uppercase;
+}
+
+.puzzle-seed-advanced[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.puzzle-seed-row {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 0.6fr) auto minmax(260px, 1fr);
+  padding: 10px;
+}
+
+.puzzle-seed-row label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.puzzle-seed-row input {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  margin-top: 6px;
+  outline: none;
+  padding: 9px;
+  width: 100%;
+}
+
+.puzzle-seed-row input:focus {
+  border-color: var(--moss);
+}
+
+.puzzle-seed-row button {
+  background: transparent;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 720;
+  padding: 9px 11px;
+}
+
+.puzzle-seed-row button:hover,
+.puzzle-seed-row button:focus-visible {
+  background: var(--ink);
+  color: white;
+}
+
+.puzzle-seed-row p {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  margin: 0 0 2px;
 }
 
 .option-toggle {
@@ -2730,6 +2858,42 @@ fieldset.control-section .road-options {
   background: #858d89;
 }
 
+.generation-failure-detail {
+  background: #f8eeeb;
+  border: 1px solid #d5a095;
+  color: #694d46;
+  display: grid;
+  font-size: 11px;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.generation-failure-detail p {
+  margin: 0;
+}
+
+.generation-failure-detail details {
+  border-top: 1px solid #dfb9b0;
+  padding-top: 7px;
+}
+
+.generation-failure-detail summary {
+  color: var(--moss);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.generation-failure-detail code {
+  display: block;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .job-steps {
   display: grid;
   gap: 6px;
@@ -3100,6 +3264,16 @@ fieldset.control-section .road-options {
 
   .adjacent-grid {
     margin-left: 0;
+  }
+
+  .tile-position-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .puzzle-seed-row {
+    align-items: stretch;
+    grid-template-columns: 1fr;
   }
 
   .piece-grid {

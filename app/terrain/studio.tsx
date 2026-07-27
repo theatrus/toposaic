@@ -40,6 +40,7 @@ import {
 import type {
   Artifact,
   ArtifactFeedback,
+  GenerationControlTab,
   GenerationSpec,
   Job,
   MarkerKind,
@@ -48,6 +49,7 @@ import type {
   SavedSetup,
   TrailRoute,
 } from "./contracts";
+import { describeJobFailure } from "./generation-failure";
 import {
   MAX_TRAILS,
   MAX_TRAIL_FILE_BYTES,
@@ -78,6 +80,15 @@ const GENERATOR_STALLED_MESSAGE =
   "The generator stopped responding. The job is safe in SQLite.";
 
 const DEFAULT_VISUAL_HEIGHT_PERCENT = 37;
+const CONTROL_TAB_LABELS: Record<GenerationControlTab, string> = {
+  model: "Model",
+  surface: "Surface",
+  buildings: "Buildings",
+  markers: "Markers",
+  colors: "Colors",
+  mounting: "Mounting",
+  output: "Output",
+};
 const MIN_VISUAL_HEIGHT_PERCENT = 28;
 const MAX_VISUAL_HEIGHT_PERCENT = 76;
 const VISUAL_HEIGHT_KEYBOARD_STEP = 4;
@@ -158,15 +169,8 @@ export function TerrainStudio() {
   const [visualHeightPercent, setVisualHeightPercent] = useState(
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
-  const [activeSection, setActiveSection] = useState<
-    | "model"
-    | "surface"
-    | "colors"
-    | "buildings"
-    | "markers"
-    | "mounting"
-    | "output"
-  >("model");
+  const [activeSection, setActiveSection] =
+    useState<GenerationControlTab>("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
     useState<MarkerKind | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -1356,10 +1360,13 @@ export function TerrainStudio() {
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
   };
 
+  const generationFailure = useMemo(() => describeJobFailure(job), [job]);
   const statusLabel = useMemo(() => {
     if (!job) return null;
     if (job.status === "complete") return "Your print files are ready.";
-    if (job.status === "failed") return job.error ?? "Generation failed.";
+    if (job.status === "failed") {
+      return generationFailure?.title ?? "Generation failed.";
+    }
     if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.progress < 8) return "Preparing source data…";
@@ -1397,7 +1404,7 @@ export function TerrainStudio() {
     return job.spec.solid_model
       ? "Building one watertight terrain model…"
       : "Building watertight pieces…";
-  }, [job]);
+  }, [generationFailure, job]);
 
   const generationStages = useMemo(() => {
     if (!job) return [];
@@ -1913,13 +1920,35 @@ export function TerrainStudio() {
             ))}
           </div>
 
-          {job?.status === "failed" && activeSection !== "output" && (
+          {generationFailure && activeSection !== "output" && (
             <section className="generation-error-banner" role="alert">
               <span className="status-dot" aria-hidden="true" />
-              <strong>{job.error ?? "Generation failed."}</strong>
-              <button type="button" onClick={() => setActiveSection("output")}>
-                View output
-              </button>
+              <div className="generation-error-copy">
+                <strong>{generationFailure.title}</strong>
+                <span>{generationFailure.message}</span>
+              </div>
+              <div className="generation-error-actions">
+                {generationFailure.control_tab &&
+                  generationFailure.control_tab !== activeSection &&
+                  generationFailure.control_tab !== "output" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setActiveSection(
+                          generationFailure.control_tab ?? "output",
+                        )
+                      }
+                    >
+                      Open {CONTROL_TAB_LABELS[generationFailure.control_tab]}
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => setActiveSection("output")}
+                >
+                  Technical details
+                </button>
+              </div>
             </section>
           )}
 
@@ -1996,6 +2025,7 @@ export function TerrainStudio() {
 
           <OutputPanel
             artifactFeedback={artifactFeedback}
+            failure={generationFailure}
             generationStages={generationStages}
             hidden={activeSection !== "output"}
             job={job}

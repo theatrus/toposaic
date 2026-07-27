@@ -57,14 +57,25 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(fineDemDetail).not.toBeChecked();
   await fineDemDetail.check();
   await expect(fineDemDetail).toBeChecked();
-  const mapCenter = page.getByRole("group", { name: "Map center" });
+  const mapPosition = page.getByRole("group", { name: "Map position" });
   const superTileMode = page.getByRole("group", { name: "Super-tile mode" });
-  await expect(mapCenter).toHaveCSS("border-top-style", "solid");
-  const mapCenterBounds = await mapCenter.boundingBox();
+  await expect(mapPosition).toHaveCSS("border-top-style", "solid");
+  const mapPositionBounds = await mapPosition.boundingBox();
   const superTileBounds = await superTileMode.boundingBox();
-  expect(mapCenterBounds).not.toBeNull();
+  expect(mapPositionBounds).not.toBeNull();
   expect(superTileBounds).not.toBeNull();
-  expect(Math.abs(mapCenterBounds!.y - superTileBounds!.y)).toBeLessThan(2);
+  expect(Math.abs(mapPositionBounds!.y - superTileBounds!.y)).toBeLessThan(2);
+  const puzzleIdentity = page.locator("details.puzzle-seed-advanced");
+  await expect(puzzleIdentity).not.toHaveAttribute("open", "");
+  await expect(page.getByLabel("Puzzle seed")).toBeHidden();
+  const puzzleIdentityBounds = await puzzleIdentity.boundingBox();
+  expect(puzzleIdentityBounds).not.toBeNull();
+  expect(puzzleIdentityBounds!.y).toBeGreaterThan(
+    Math.max(
+      mapPositionBounds!.y + mapPositionBounds!.height,
+      superTileBounds!.y + superTileBounds!.height,
+    ),
+  );
   const modelType = page.getByRole("group", { name: "Model type" });
   const puzzleModel = modelType.getByRole("button", {
     name: /Jigsaw puzzle/,
@@ -988,7 +999,11 @@ test("locks a height frame and maps a super-tile grid", async ({
 
   await page.goto("/");
   await expect(page.getByText("Live elevation preview")).toBeVisible();
+  await page.getByText("Advanced puzzle identity", { exact: true }).click();
   const puzzleSeed = page.getByLabel("Puzzle seed");
+  const reseed = page.getByRole("button", { name: "Generate new seed" });
+  await expect(reseed).toBeVisible();
+  await expect(reseed).toHaveCSS("border-top-style", "solid");
   await expect.poll(async () => Number(await puzzleSeed.inputValue())).not.toBe(0);
   await puzzleSeed.fill("305419896");
   await expect(puzzleSeed).toHaveValue("305419896");
@@ -1007,7 +1022,7 @@ test("locks a height frame and maps a super-tile grid", async ({
     await page.getByLabel("Longitude").inputValue(),
   );
   await page
-    .getByRole("group", { name: "Super-tile mode" })
+    .getByRole("group", { name: "Map position" })
     .getByRole("button", { name: /east/i })
     .click();
 
