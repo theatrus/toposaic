@@ -137,6 +137,7 @@ export const initialSpec: GenerationSpec = {
     adaptive_road_widths: true,
     scale_line_widths_by_span: true,
     close_view_width_multiplier: 2,
+    maximum_mapped_width_mm: 4,
     osm_water_enabled: true,
     waterway_coverage_percent: 12,
     road_width_mm: 0.7,

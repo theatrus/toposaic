@@ -180,18 +180,24 @@ test("switches between the reflowed control panels", async ({ page }) => {
     ),
   ).toBeVisible();
   const closeViewScaling = surfaceColors.getByRole("checkbox", {
-    name: "Scale roads and railways at close views",
+    name: "Boost lines without mapped widths at close views",
   });
   const closeViewBoost = surfaceColors.getByRole("slider", {
     name: "Close-view line boost",
   });
+  const maximumMappedWidth = surfaceColors.getByRole("slider", {
+    name: "Maximum mapped width",
+  });
   await expect(closeViewScaling).toBeChecked();
   await expect(closeViewBoost).toHaveValue("2");
+  await expect(maximumMappedWidth).toHaveValue("4");
   await expect(
     surfaceColors.getByText(/use 2.00× at 2 km/),
   ).toBeVisible();
   await closeViewBoost.fill("2.5");
   await expect(closeViewBoost).toHaveValue("2.5");
+  await maximumMappedWidth.fill("5.5");
+  await expect(maximumMappedWidth).toHaveValue("5.5");
   await closeViewScaling.uncheck();
   await expect(closeViewBoost).toBeHidden();
   await closeViewScaling.check();
@@ -534,6 +540,7 @@ test("switches railways on apart from roads and submits them", async ({
   expect(colorOutput.rail_width_mm).toBe(1.2);
   expect(colorOutput.scale_line_widths_by_span).toBe(true);
   expect(colorOutput.close_view_width_multiplier).toBe(2);
+  expect(colorOutput.maximum_mapped_width_mm).toBe(4);
 
   // The chosen settings survive a trip away from the tab.
   await page.getByRole("tab", { name: "Surface" }).click();

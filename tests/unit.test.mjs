@@ -46,12 +46,15 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
 test("defaults close-view line scaling on and recalls old setups", () => {
   assert.equal(initialSpec.color_output.scale_line_widths_by_span, true);
   assert.equal(initialSpec.color_output.close_view_width_multiplier, 2);
+  assert.equal(initialSpec.color_output.maximum_mapped_width_mm, 4);
   const oldColorOutput = { ...initialSpec.color_output };
   delete oldColorOutput.scale_line_widths_by_span;
   delete oldColorOutput.close_view_width_multiplier;
+  delete oldColorOutput.maximum_mapped_width_mm;
   const merged = mergeSpecDefaults({ color_output: oldColorOutput });
   assert.equal(merged.color_output.scale_line_widths_by_span, true);
   assert.equal(merged.color_output.close_view_width_multiplier, 2);
+  assert.equal(merged.color_output.maximum_mapped_width_mm, 4);
 });
 
 test("defaults railways on in their own color and recalls old setups", () => {

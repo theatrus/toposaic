@@ -88,9 +88,9 @@ export function SurfaceRoadSection({
               updateColor("scale_line_widths_by_span", event.target.checked)
             }
           />
-          <span>Scale roads and railways at close views</span>
+          <span>Boost lines without mapped widths at close views</span>
         </label>
-        <small>Strengthens key lines as the mapped area shrinks.</small>
+        <small>Strengthens roads with no usable width tag and aerial lifts as the mapped area shrinks.</small>
       </div>
       {spec.color_output.scale_line_widths_by_span && (
         <RangeField
@@ -103,9 +103,19 @@ export function SurfaceRoadSection({
           onChange={(value) =>
             updateColor("close_view_width_multiplier", value)
           }
-          note={`Major roads and railways use ${currentScale.toFixed(2)}× at ${spec.ground_span_km.toLocaleString()} km. Full boost applies at ${LINE_SCALE_CLOSE_SPAN_KM} km and below; it fades to 1× at ${LINE_SCALE_WIDE_SPAN_KM} km.`}
+          note={`Major roads without a mapped width and aerial lifts use ${currentScale.toFixed(2)}× at ${spec.ground_span_km.toLocaleString()} km. Full boost applies at ${LINE_SCALE_CLOSE_SPAN_KM} km and below; it fades to 1× at ${LINE_SCALE_WIDE_SPAN_KM} km.`}
         />
       )}
+      <RangeField
+        label="Maximum mapped width"
+        value={spec.color_output.maximum_mapped_width_mm}
+        unit=" mm"
+        min={0.4}
+        max={8}
+        step={0.1}
+        onChange={(value) => updateColor("maximum_mapped_width_mm", value)}
+        note="Caps roads and railways whose physical OSM width would print larger. Mapped widths below this cap stay at real scale; routes without a width use the close-view boost."
+      />
       {spec.color_output.roads_enabled && (
         <>
           <div className="road-options">
