@@ -68,7 +68,7 @@ export function SurfaceRailSection({
                 </label>
               </div>
               <RangeField
-                label="Railway print width"
+                label="Railway minimum width"
                 value={spec.color_output.rail_width_mm}
                 unit=" mm"
                 min={0.4}

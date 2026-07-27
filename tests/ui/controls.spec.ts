@@ -188,6 +188,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const maximumMappedWidth = surfaceColors.getByRole("slider", {
     name: "Maximum mapped width",
   });
+  const routeMinimumWidth = surfaceColors.getByRole("slider", {
+    name: "Route minimum width",
+  });
   await expect(closeViewScaling).toBeChecked();
   await expect(closeViewBoost).toHaveValue("2");
   await expect(maximumMappedWidth).toHaveValue("4");
@@ -198,6 +201,8 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(closeViewBoost).toHaveValue("2.5");
   await maximumMappedWidth.fill("5.5");
   await expect(maximumMappedWidth).toHaveValue("5.5");
+  await routeMinimumWidth.fill("4");
+  await expect(maximumMappedWidth).toHaveValue("5.6");
   await closeViewScaling.uncheck();
   await expect(closeViewBoost).toBeHidden();
   await closeViewScaling.check();
@@ -457,7 +462,7 @@ test("switches railways on apart from roads and submits them", async ({
   const railStyle = surfaceColors.getByLabel("Railway style");
   const railColor = surfaceColors.getByLabel("Railway color");
   const railWidth = surfaceColors.getByRole("slider", {
-    name: "Railway print width",
+    name: "Railway minimum width",
   });
   const railLegend = page
     .getByLabel("Surface color legend")

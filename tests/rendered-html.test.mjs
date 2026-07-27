@@ -94,7 +94,7 @@ test("server-renders TopoSaic", async () => {
   // So both swatches and both width sliders render by default, with the
   // default colors in them.
   assert.match(html, /Railway color/);
-  assert.match(html, /Railway print width/);
+  assert.match(html, /Railway minimum width/);
   assert.match(html, /Aerial lift color/);
   assert.match(html, /Aerial lift print width/);
   assert.match(html, /#4A5568/i);
@@ -150,8 +150,8 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Route detail/);
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);
-  assert.match(html, /Thin dense road networks/);
-  assert.match(html, /keeps all chosen road classes/);
+  assert.match(html, /Thin estimated widths in dense networks/);
+  assert.match(html, /Mapped physical widths stay at real scale/);
   assert.match(html, /Mesh detail/);
   assert.match(html, /Standard/);
   assert.match(html, /Ultra/);

@@ -5,6 +5,7 @@ import type { GenerationSpec } from "./contracts";
 export const DEFAULT_SAMPLES_ACROSS = 640;
 export const LINE_SCALE_CLOSE_SPAN_KM = 2;
 export const LINE_SCALE_WIDE_SPAN_KM = 18;
+export const MAX_ROAD_CLASS_WIDTH_SCALE = 1.4;
 
 export function closeViewLineScale(
   spanKm: number,
@@ -157,6 +158,41 @@ export const initialSpec: GenerationSpec = {
   trails: [],
 };
 
+export function minimumMappedWidthCap(
+  colorOutput: GenerationSpec["color_output"],
+) {
+  let minimum = 0.4;
+  if (colorOutput.roads_enabled) {
+    minimum = Math.max(
+      minimum,
+      colorOutput.road_width_mm * MAX_ROAD_CLASS_WIDTH_SCALE,
+    );
+  }
+  if (colorOutput.rail_enabled) {
+    minimum = Math.max(
+      minimum,
+      colorOutput.rail_style === "separate"
+        ? colorOutput.rail_width_mm
+        : colorOutput.road_width_mm,
+    );
+  }
+  // The matching sliders advance by tenths. Rounding up keeps their value
+  // valid even when floating-point multiplication lands just above a step.
+  return Math.ceil((minimum - Number.EPSILON) * 10) / 10;
+}
+
+export function normalizeMappedWidthCap(
+  colorOutput: GenerationSpec["color_output"],
+) {
+  return {
+    ...colorOutput,
+    maximum_mapped_width_mm: Math.max(
+      colorOutput.maximum_mapped_width_mm,
+      minimumMappedWidthCap(colorOutput),
+    ),
+  };
+}
+
 // Fill any field a saved spec is missing with the client default, so setups
 // saved before a field existed still recall cleanly.
 export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpec {
@@ -178,6 +214,10 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     ...(legacyThickness === undefined ? {} : { thickness_mm: legacyThickness }),
   } as GenerationSpec["wall_mount"] & { pocket_depth_mm?: number };
   delete wallMount.pocket_depth_mm;
+  const colorOutput = normalizeMappedWidthCap({
+    ...initialSpec.color_output,
+    ...saved.color_output,
+  });
   return {
     ...initialSpec,
     ...saved,
@@ -194,7 +234,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       ...saved.puzzle_retention,
     },
     wall_mount: wallMount,
-    color_output: { ...initialSpec.color_output, ...saved.color_output },
+    color_output: colorOutput,
     trails: saved.trails ?? [],
   };
 }

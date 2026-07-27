@@ -3,6 +3,7 @@ import {
   LINE_SCALE_WIDE_SPAN_KM,
   automaticRoadDetail,
   closeViewLineScale,
+  minimumMappedWidthCap,
 } from "../config";
 import type { GenerationSpec } from "../contracts";
 import { RangeField } from "./range-field";
@@ -21,6 +22,7 @@ export function SurfaceRoadSection({
     spec.color_output.scale_line_widths_by_span,
     spec.color_output.close_view_width_multiplier,
   );
+  const mappedWidthFloor = minimumMappedWidthCap(spec.color_output);
 
   return (
     <SurfaceSection
@@ -69,7 +71,7 @@ export function SurfaceRoadSection({
             </small>
           </label>
           <RangeField
-            label="Route print width"
+            label="Route minimum width"
             value={spec.color_output.road_width_mm}
             unit=" mm"
             min={0.4}
@@ -110,11 +112,11 @@ export function SurfaceRoadSection({
         label="Maximum mapped width"
         value={spec.color_output.maximum_mapped_width_mm}
         unit=" mm"
-        min={0.4}
+        min={mappedWidthFloor}
         max={8}
         step={0.1}
         onChange={(value) => updateColor("maximum_mapped_width_mm", value)}
-        note="Caps roads and railways whose physical OSM width would print larger. Mapped widths below this cap stay at real scale; routes without a width use the close-view boost."
+        note={`Caps physical OSM widths after scaling. Active route and railway minimums set a ${mappedWidthFloor.toFixed(1)} mm floor; the app raises this cap when those minimums grow.`}
       />
       {spec.color_output.roads_enabled && (
         <>
@@ -127,9 +129,9 @@ export function SurfaceRoadSection({
                   updateColor("adaptive_road_widths", event.target.checked)
                 }
               />
-              <span>Thin dense road networks</span>
+              <span>Thin estimated widths in dense networks</span>
             </label>
-            <small>Reduces width as road coverage rises. It keeps all chosen road classes.</small>
+            <small>Mapped physical widths stay at real scale and count toward the budget; estimated widths shrink as coverage rises.</small>
           </div>
           <RangeField
             label="Road layer height"

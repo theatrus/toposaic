@@ -1144,9 +1144,7 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
                     width.hypot(height)
                 })
                 .sum::<f32>()
-                * spec.color_output.road_width_mm
-                * feature.width_scale
-                * road_close_view_scale(spec, feature.width_scale)
+                * provisional_road_width_mm(spec, feature)
         })
         .sum::<f32>();
     let model_area = spec.width_mm * spec.height_mm();
@@ -1155,17 +1153,27 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
 }
 
 fn road_line_width_mm(spec: &GenerationSpec, feature: &RouteFeature, density_scale: f32) -> f32 {
-    let minimum_width = (spec.color_output.road_width_mm * feature.width_scale * density_scale)
-        .max(MINIMUM_LINE_WIDTH_MM);
-    let unknown_width = (spec.color_output.road_width_mm
-        * feature.width_scale
-        * road_close_view_scale(spec, feature.width_scale)
-        * density_scale)
-        .max(MINIMUM_LINE_WIDTH_MM);
+    let provisional_width = provisional_road_width_mm(spec, feature);
+    if feature.mapped_width_m.is_some() {
+        // A mapped physical width already expresses the road's scale. It
+        // contributes to the density budget, but thinning it would make the
+        // printed result cease to be the mapped width.
+        provisional_width
+    } else {
+        (provisional_width * density_scale).max(MINIMUM_LINE_WIDTH_MM)
+    }
+}
+
+fn provisional_road_width_mm(spec: &GenerationSpec, feature: &RouteFeature) -> f32 {
+    let class_width = spec.color_output.road_width_mm * feature.width_scale;
+    let minimum_width = class_width.max(MINIMUM_LINE_WIDTH_MM);
     feature
         .mapped_width_m
         .map(|width_m| mapped_line_width_mm(spec, minimum_width, width_m))
-        .unwrap_or(unknown_width)
+        .unwrap_or_else(|| {
+            (class_width * road_close_view_scale(spec, feature.width_scale))
+                .max(MINIMUM_LINE_WIDTH_MM)
+        })
 }
 
 fn rail_family_line_width_mm(
@@ -2311,8 +2319,10 @@ mod tests {
 
         // Ten ground metres across a 2 km, 180 mm model is 0.9 print mm.
         assert!((road_line_width_mm(&spec, &feature(Some(10.0)), 1.0) - 0.9).abs() < 0.0001);
+        assert!((road_line_width_mm(&spec, &feature(Some(10.0)), 0.35) - 0.9).abs() < 0.0001);
         // An unknown width keeps the existing 2x close-view boost.
         assert!((road_line_width_mm(&spec, &feature(None), 1.0) - 1.4).abs() < 0.0001);
+        assert!((road_line_width_mm(&spec, &feature(None), 0.35) - 0.49).abs() < 0.0001);
 
         spec.ground_span_km = 18.0;
         // A real width below the configured class floor never makes a road
@@ -2343,6 +2353,20 @@ mod tests {
         assert_eq!(route_density_scale(&spec, &[route()]), 1.0);
         let dense = (0..24).map(|_| route()).collect::<Vec<_>>();
         assert!(route_density_scale(&spec, &dense) < 0.5);
+
+        let close_spec = GenerationSpec {
+            ground_span_km: 0.25,
+            ..spec
+        };
+        let mapped_route = || RouteFeature {
+            points: vec![[0.0, 0.5], [1.0, 0.5]],
+            width_scale: 1.0,
+            mapped_width_m: Some(20.0),
+            path_or_trail: false,
+            bridge_elevations_m: None,
+        };
+        assert_eq!(route_density_scale(&close_spec, &[route(), route()]), 1.0);
+        assert!(route_density_scale(&close_spec, &[mapped_route(), mapped_route()]) < 1.0);
     }
 
     #[test]

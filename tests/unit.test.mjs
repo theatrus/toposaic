@@ -12,6 +12,8 @@ import {
   groundMeshSpacing,
   initialSpec,
   mergeSpecDefaults,
+  minimumMappedWidthCap,
+  normalizeMappedWidthCap,
   railLineClass,
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
@@ -55,6 +57,33 @@ test("defaults close-view line scaling on and recalls old setups", () => {
   assert.equal(merged.color_output.scale_line_widths_by_span, true);
   assert.equal(merged.color_output.close_view_width_multiplier, 2);
   assert.equal(merged.color_output.maximum_mapped_width_mm, 4);
+});
+
+test("keeps the mapped-width cap above active route and railway floors", () => {
+  const wideRoads = {
+    ...initialSpec.color_output,
+    road_width_mm: 4,
+    maximum_mapped_width_mm: 1,
+  };
+  assert.equal(minimumMappedWidthCap(wideRoads), 5.6);
+  assert.equal(normalizeMappedWidthCap(wideRoads).maximum_mapped_width_mm, 5.6);
+
+  const recalled = mergeSpecDefaults({
+    color_output: {
+      ...initialSpec.color_output,
+      road_width_mm: 4,
+      maximum_mapped_width_mm: 1,
+    },
+  });
+  assert.equal(recalled.color_output.maximum_mapped_width_mm, 5.6);
+
+  const railwayOnly = {
+    ...wideRoads,
+    roads_enabled: false,
+    rail_enabled: true,
+    rail_width_mm: 3.2,
+  };
+  assert.equal(minimumMappedWidthCap(railwayOnly), 3.2);
 });
 
 test("defaults railways on in their own color and recalls old setups", () => {
