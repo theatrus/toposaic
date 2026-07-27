@@ -114,6 +114,7 @@ pub fn generate_tray_artifacts(
     tray_spec.color_output.water_color = spec.tray.tray_color.clone();
     tray_spec.color_output.road_color = spec.tray.tray_color.clone();
     tray_spec.color_output.building_color = spec.tray.tray_color.clone();
+    tray_spec.color_output.route_trail_color = Some(spec.tray.tray_color.clone());
     tray_spec.color_output.trail_color = spec.tray.tray_color.clone();
     tray_spec.color_output.rail_color = spec.tray.tray_color.clone();
     tray_spec.color_output.aerial_color = spec.tray.tray_color.clone();

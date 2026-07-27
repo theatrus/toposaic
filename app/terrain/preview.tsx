@@ -57,6 +57,7 @@ const CLASS_KEYS = [
   "rail",
   "aerialway",
   "marker",
+  "route_trail",
 ] as const;
 
 function cubicBezier(
@@ -338,6 +339,7 @@ export function ReliefPreview({
     water_color,
     road_color,
     building_color,
+    route_trail_color,
     trail_color,
     rail_color,
     aerial_color,
@@ -452,6 +454,8 @@ export function ReliefPreview({
       water: preview?.surface_palette?.water ?? water_color,
       road: preview?.surface_palette?.road ?? road_color,
       building: preview?.surface_palette?.building ?? building_color,
+      route_trail:
+        preview?.surface_palette?.route_trail ?? route_trail_color,
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
       aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
@@ -820,6 +824,7 @@ export function ReliefPreview({
     road_color,
     building_color,
     trail_color,
+    route_trail_color,
     rail_color,
     aerial_color,
     markerColor,
@@ -895,8 +900,9 @@ export function ReliefPreview({
               ["Snow", "snow", spec.color_output.snow_color],
               ["Water", "water", spec.color_output.water_color],
               ["Route", "road", spec.color_output.road_color],
+              ["Trail", "route_trail", spec.color_output.route_trail_color],
               ["Building", "building", spec.color_output.building_color],
-              ["Trail", "trail", spec.color_output.trail_color],
+              ["Imported trail", "trail", spec.color_output.trail_color],
               ["Rail", "rail", spec.color_output.rail_color],
               ["Aerial", "aerialway", spec.color_output.aerial_color],
               ["Marker", "marker", spec.marker_settings.color],
@@ -906,6 +912,9 @@ export function ReliefPreview({
               ([, key]) => {
                 if (key === "trail") {
                   return trailsPresent;
+                }
+                if (key === "route_trail") {
+                  return spec.color_output.enabled && spec.color_output.roads_enabled;
                 }
                 if (key === "marker") {
                   return coloredMarkersPresent;

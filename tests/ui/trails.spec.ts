@@ -57,9 +57,14 @@ test("imports a GPX trail, shows its controls, and submits it in the spec", asyn
   await expect(trailsGroup.getByText("Skyline Loop")).toBeVisible();
   await expect(trailsGroup.getByText("3 points")).toBeVisible();
   await expect(trailsGroup.getByText("Imported 1 trail.")).toBeVisible();
-  await expect(trailsGroup.getByLabel("Trail color")).toBeVisible();
   const width = trailsGroup.getByRole("slider", { name: "Trail print width" });
   await expect(width).toHaveValue("0.7");
+
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Imported trail color" }),
+  ).toHaveValue("#D6336C");
+  await page.getByRole("tab", { name: "Surface" }).click();
 
   // The map draws the imported trail as a polyline overlay.
   await expect(page.locator(".map-trails polyline")).toHaveCount(1);

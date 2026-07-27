@@ -160,20 +160,6 @@ export function MarkersPanel({
         </ul>
       )}
 
-      <div className="color-swatches building-color-swatch">
-        <label>
-          <input
-            aria-label="Marker color"
-            onChange={(event) =>
-              updateMarkerSettings("color", event.target.value)
-            }
-            type="color"
-            value={spec.marker_settings.color}
-          />
-          <span>Marker color</span>
-          <code>{spec.marker_settings.color.toUpperCase()}</code>
-        </label>
-      </div>
       <RangeField
         label="Dot diameter"
         max={10}

@@ -48,12 +48,16 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await expect(page.locator(".map-marker")).toHaveCount(3);
   await expect(page.locator(".map-marker.dot")).toHaveCount(1);
   await expect(page.locator(".map-marker.flag_hole")).toHaveCount(1);
-  await expect(controls.getByLabel("Marker color")).toHaveValue("#e24a33");
   await expect(
     controls.getByRole("checkbox", {
       name: "Export a printable flag blank with flag-hole jobs",
     }),
   ).toBeChecked();
+
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Map marker color" }),
+  ).toHaveValue("#E24A33");
 
   await page.getByRole("button", { name: /^Generate/ }).click();
   await expect.poll(() => (jobSpec.markers as unknown[] | undefined)?.length).toBe(3);

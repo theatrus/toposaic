@@ -785,15 +785,21 @@ fn paint_osm_ways(
     };
     for feature in &features {
         let line_width = road_line_width_mm(spec, feature, density_scale);
-        if let Some(elevations_m) = feature.bridge_elevations_m {
-            field.paint_bridge_polyline(&feature.points, spec.width_mm, line_width, elevations_m);
+        let class = if feature.path_or_trail {
+            SurfaceClass::RouteTrail
         } else {
-            field.paint_polyline(
+            SurfaceClass::Road
+        };
+        if let Some(elevations_m) = feature.bridge_elevations_m {
+            field.paint_bridge_polyline_as(
                 &feature.points,
                 spec.width_mm,
                 line_width,
-                SurfaceClass::Road,
+                elevations_m,
+                class,
             );
+        } else {
+            field.paint_polyline(&feature.points, spec.width_mm, line_width, class);
         }
     }
     let trail_count = features
@@ -2499,6 +2505,42 @@ mod tests {
         assert!(road_width_scale(&tags("track")) > road_width_scale(&tags("path")));
         assert!(is_path_or_trail(&tags("path")));
         assert!(!is_path_or_trail(&tags("residential")));
+    }
+
+    #[test]
+    fn mapped_paths_use_their_own_class_while_roads_keep_the_route_class() {
+        let mut spec = rail_bounds_spec();
+        spec.color_output.road_width_mm = 2.0;
+        let bounds = bounds_for(&spec);
+        let height_field = HeightField::new(2, 2, vec![100.0; 4], "routes").unwrap();
+
+        let mut paths = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "paths").unwrap();
+        let counts = paint_osm_ways(
+            &spec,
+            &height_field,
+            bounds,
+            &mut paths,
+            OverpassResponse {
+                elements: vec![crossing_way(bounds, &[("highway", "path")])],
+                remark: None,
+            },
+        );
+        assert_eq!(counts, (0, 1, 0));
+        assert_eq!(paths.class_at(0.5, 0.5), SurfaceClass::RouteTrail);
+
+        let mut roads = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "roads").unwrap();
+        let counts = paint_osm_ways(
+            &spec,
+            &height_field,
+            bounds,
+            &mut roads,
+            OverpassResponse {
+                elements: vec![crossing_way(bounds, &[("highway", "residential")])],
+                remark: None,
+            },
+        );
+        assert_eq!(counts, (1, 0, 0));
+        assert_eq!(roads.class_at(0.5, 0.5), SurfaceClass::Road);
     }
 
     #[test]

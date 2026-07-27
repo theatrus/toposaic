@@ -99,25 +99,6 @@ export function DisplayBaseControls({
             </select>
             <small>Place the full name and coordinate line on the lip.</small>
           </label>
-          <div className="color-swatches">
-            {(
-              [
-                ["Tray", "tray_color"],
-                ["Contours", "contour_color"],
-                ["Label", "label_color"],
-              ] as const
-            ).map(([label, key]) => (
-              <label key={key}>
-                <input
-                  type="color"
-                  value={spec.tray[key]}
-                  onChange={(event) => updateTray(key, event.target.value)}
-                />
-                <span>{label}</span>
-                <code>{String(spec.tray[key]).toUpperCase()}</code>
-              </label>
-            ))}
-          </div>
           <label className="option-toggle">
             <input
               aria-label="Draw contour lines on tray"

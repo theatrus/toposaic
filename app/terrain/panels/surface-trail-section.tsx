@@ -62,31 +62,15 @@ export function SurfaceTrailSection({
         )}
       </div>
       {spec.trails.length > 0 && (
-        <>
-          <div className="color-swatches trail-color-swatch">
-            <label>
-              <input
-                aria-label="Trail color"
-                type="color"
-                value={spec.color_output.trail_color}
-                onChange={(event) =>
-                  updateColor("trail_color", event.target.value)
-                }
-              />
-              <span>Trail color</span>
-              <code>{spec.color_output.trail_color.toUpperCase()}</code>
-            </label>
-          </div>
-          <RangeField
-            label="Trail print width"
-            value={spec.color_output.trail_width_mm}
-            unit=" mm"
-            min={0.4}
-            max={4}
-            step={0.1}
-            onChange={(value) => updateColor("trail_width_mm", value)}
-          />
-        </>
+        <RangeField
+          label="Trail print width"
+          value={spec.color_output.trail_width_mm}
+          unit=" mm"
+          min={0.4}
+          max={4}
+          step={0.1}
+          onChange={(value) => updateColor("trail_width_mm", value)}
+        />
       )}
       <small className="control-hint">
         Imported routes print as raised lines in their own color. Saved setups carry them.

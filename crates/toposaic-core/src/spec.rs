@@ -608,7 +608,7 @@ impl GenerationSpec {
         for class in SurfaceClass::ALL {
             // Only the optional layers consult the data; see above for why
             // the base six are unconditional.
-            let in_data = matches!(
+            let base_class = matches!(
                 class,
                 SurfaceClass::Rock
                     | SurfaceClass::Forest
@@ -616,9 +616,29 @@ impl GenerationSpec {
                     | SurfaceClass::Water
                     | SurfaceClass::Road
                     | SurfaceClass::Building
-            ) || contained
-                .is_none_or(|present| present[class.material_index() as usize]);
+            );
+            let in_data = base_class
+                || if class == SurfaceClass::RouteTrail {
+                    // Mapped trails can only come from a surface field. A
+                    // tray or fixture with no field must keep the old six
+                    // base slots.
+                    contained.is_some_and(|present| present[class.material_index() as usize])
+                } else {
+                    contained.is_none_or(|present| present[class.material_index() as usize])
+                };
             if !self.emits_class(class) || !in_data {
+                continue;
+            }
+            // Mapped trails start in the route filament. Keep one slot
+            // while their colors match; choosing a new trail color below
+            // gives the class its own slot without changing its geometry.
+            if class == SurfaceClass::RouteTrail
+                && self
+                    .class_color(class)
+                    .eq_ignore_ascii_case(&self.color_output.road_color)
+            {
+                palette.slots[class.material_index() as usize] =
+                    palette.slots[SurfaceClass::Road.material_index() as usize];
                 continue;
             }
             palette.slots[class.material_index() as usize] = Some(palette.colors.len() as u32);
@@ -640,6 +660,9 @@ impl GenerationSpec {
             SurfaceClass::Rail => self.uses_separate_rail(),
             SurfaceClass::Aerial => self.uses_separate_aerial(),
             SurfaceClass::Marker => self.uses_colored_markers(),
+            SurfaceClass::RouteTrail => {
+                self.color_output.enabled && self.color_output.roads_enabled
+            }
         }
     }
 
@@ -655,6 +678,11 @@ impl GenerationSpec {
             SurfaceClass::Rail => &self.color_output.rail_color,
             SurfaceClass::Aerial => &self.color_output.aerial_color,
             SurfaceClass::Marker => &self.marker_settings.color,
+            SurfaceClass::RouteTrail => self
+                .color_output
+                .route_trail_color
+                .as_deref()
+                .unwrap_or(&self.color_output.road_color),
         }
     }
 
@@ -1444,6 +1472,11 @@ pub struct ColorOutputSpec {
     pub water_color: String,
     pub road_color: String,
     pub building_color: String,
+    /// Color of paths and trails read from OpenStreetMap. `None` means use
+    /// `road_color`, which keeps setups saved before this field existed
+    /// looking the same even when they chose a custom route color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_trail_color: Option<String>,
     /// Color of imported hiker trails. Only emitted into artifacts when the
     /// spec actually carries trails, so the default never changes existing
     /// output.
@@ -1668,6 +1701,9 @@ impl Default for ColorOutputSpec {
             water_color: "#2F76B5".into(),
             road_color: "#D8A33C".into(),
             building_color: "#B8A890".into(),
+            // None follows road_color. This also preserves old specs that
+            // chose a custom route color before this field existed.
+            route_trail_color: None,
             // High-vis raspberry magenta: reads on every default terrain
             // color and stays clearly apart from the gold route color.
             trail_color: "#D6336C".into(),
@@ -1705,15 +1741,21 @@ impl Default for ColorOutputSpec {
 impl ColorOutputSpec {
     fn validate(&self) -> Result<()> {
         for (name, color) in [
-            ("forest", &self.forest_color),
-            ("rock", &self.rock_color),
-            ("snow", &self.snow_color),
-            ("water", &self.water_color),
-            ("road", &self.road_color),
-            ("building", &self.building_color),
-            ("trail", &self.trail_color),
-            ("rail", &self.rail_color),
-            ("aerialway", &self.aerial_color),
+            ("forest", self.forest_color.as_str()),
+            ("rock", self.rock_color.as_str()),
+            ("snow", self.snow_color.as_str()),
+            ("water", self.water_color.as_str()),
+            ("road", self.road_color.as_str()),
+            ("building", self.building_color.as_str()),
+            (
+                "mapped trail",
+                self.route_trail_color
+                    .as_deref()
+                    .unwrap_or(&self.road_color),
+            ),
+            ("imported trail", self.trail_color.as_str()),
+            ("rail", self.rail_color.as_str()),
+            ("aerialway", self.aerial_color.as_str()),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -1776,6 +1818,9 @@ pub enum SurfaceClass {
     Aerial,
     /// User-placed colored dots and highlighted buildings.
     Marker,
+    /// Paths and trails read from OpenStreetMap. Kept after every older
+    /// class so saved preview class indices remain stable.
+    RouteTrail,
 }
 
 impl SurfaceClass {
@@ -1786,7 +1831,7 @@ impl SurfaceClass {
     /// 3MF packs whichever of these classes a spec actually emits into
     /// consecutive slots, so a class that never appears costs nothing. See
     /// [`GenerationSpec::material_palette`].
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -1797,6 +1842,7 @@ impl SurfaceClass {
         Self::Rail,
         Self::Aerial,
         Self::Marker,
+        Self::RouteTrail,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -1811,6 +1857,7 @@ impl SurfaceClass {
             Self::Rail => 7,
             Self::Aerial => 8,
             Self::Marker => 9,
+            Self::RouteTrail => 10,
         }
     }
 }
@@ -2585,6 +2632,39 @@ mod tests {
         spec.color_output.aerial_enabled = false;
         spec.color_output.rail_enabled = false;
         assert_eq!(spec.material_palette(None).len(), 6);
+    }
+
+    #[test]
+    fn mapped_trails_follow_routes_until_given_their_own_color() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.road_color = "#123456".into();
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "trail").unwrap();
+        field.paint_polyline(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            spec.width_mm,
+            1.0,
+            SurfaceClass::RouteTrail,
+        );
+
+        let palette = spec.material_palette(Some(&field));
+        let slot = palette.slot(SurfaceClass::RouteTrail).unwrap() as usize;
+        assert_eq!(palette.colors()[slot], "#123456");
+        assert_eq!(
+            palette.slot(SurfaceClass::RouteTrail),
+            palette.slot(SurfaceClass::Road)
+        );
+        assert_eq!(palette.len(), 6);
+
+        spec.color_output.route_trail_color = Some("#654321".into());
+        let palette = spec.material_palette(Some(&field));
+        let slot = palette.slot(SurfaceClass::RouteTrail).unwrap() as usize;
+        assert_eq!(palette.colors()[slot], "#654321");
+        assert_ne!(
+            palette.slot(SurfaceClass::RouteTrail),
+            palette.slot(SurfaceClass::Road)
+        );
+        assert_eq!(palette.len(), 7);
     }
 
     /// The aerial style chain is total, including when the railway layer it

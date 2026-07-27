@@ -58,6 +58,7 @@ import { TerrainMap } from "./map";
 import { SettingsMenu } from "./settings-menu";
 import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
+import { ColorsPanel } from "./panels/colors-panel";
 import { ModelPanel } from "./panels/model-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
 import { MountingPanel } from "./panels/mounting-panel";
@@ -157,7 +158,13 @@ export function TerrainStudio() {
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
   const [activeSection, setActiveSection] = useState<
-    "model" | "surface" | "buildings" | "markers" | "mounting" | "output"
+    | "model"
+    | "surface"
+    | "colors"
+    | "buildings"
+    | "markers"
+    | "mounting"
+    | "output"
   >("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
     useState<MarkerKind | null>(null);
@@ -1870,6 +1877,7 @@ export function TerrainStudio() {
                 ["surface", "Surface"],
                 ["buildings", "Buildings"],
                 ["markers", "Markers"],
+                ["colors", "Colors"],
                 ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
@@ -1935,7 +1943,6 @@ export function TerrainStudio() {
             hidden={activeSection !== "buildings"}
             spec={spec}
             updateBuildings={updateBuildings}
-            updateColor={updateColor}
           />
 
           <MarkersPanel
@@ -1946,6 +1953,14 @@ export function TerrainStudio() {
             spec={spec}
             updateMarker={updateMarker}
             updateMarkerSettings={updateMarkerSettings}
+          />
+
+          <ColorsPanel
+            hidden={activeSection !== "colors"}
+            spec={spec}
+            updateColor={updateColor}
+            updateMarkerSettings={updateMarkerSettings}
+            updateTray={updateTray}
           />
 
           <ModelTypePanel

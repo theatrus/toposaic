@@ -136,6 +136,8 @@ export const initialSpec: GenerationSpec = {
     water_color: "#2F76B5",
     road_color: "#D8A33C",
     building_color: "#B8A890",
+    // Mapped paths and trails follow routes until the user splits them.
+    route_trail_color: "#D8A33C",
     // High-vis raspberry magenta, clearly apart from the gold route color.
     trail_color: "#D6336C",
     trail_width_mm: 0.7,
@@ -244,9 +246,18 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     ...(legacyThickness === undefined ? {} : { thickness_mm: legacyThickness }),
   } as GenerationSpec["wall_mount"] & { pocket_depth_mm?: number };
   delete wallMount.pocket_depth_mm;
+  const savedColorOutput = saved.color_output as
+    | Partial<GenerationSpec["color_output"]>
+    | undefined;
   const colorOutput = normalizeMappedWidthCap({
     ...initialSpec.color_output,
-    ...saved.color_output,
+    ...savedColorOutput,
+    // Old setups painted mapped trails as routes. Preserve a custom route
+    // color rather than replacing it with today's default.
+    route_trail_color:
+      savedColorOutput?.route_trail_color ??
+      savedColorOutput?.road_color ??
+      initialSpec.color_output.route_trail_color,
   });
   return {
     ...initialSpec,

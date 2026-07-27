@@ -13,29 +13,8 @@ export function SurfaceTerrainSection({
   return (
     <SurfaceSection
       name="Terrain appearance"
-      description="Set the land colors, patch size, and how mapped class borders follow the terrain."
+      description="Set patch size and how mapped class borders follow the terrain. Colors are together in the Colors tab."
     >
-      <div className="color-swatches">
-        {(
-          [
-            ["Forest", "forest_color"],
-            ["Rock", "rock_color"],
-            ["Snow", "snow_color"],
-            ["Water", "water_color"],
-            ["Route", "road_color"],
-          ] as const
-        ).map(([label, key]) => (
-          <label key={key}>
-            <input
-              type="color"
-              value={spec.color_output[key]}
-              onChange={(event) => updateColor(key, event.target.value)}
-            />
-            <span>{label}</span>
-            <code>{spec.color_output[key].toUpperCase()}</code>
-          </label>
-        ))}
-      </div>
       <RangeField
         label="Smallest color patch"
         value={spec.color_output.minimum_patch_mm}
