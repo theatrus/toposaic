@@ -677,10 +677,8 @@ mod tests {
 
     #[test]
     fn manual_map_labels_generate_from_elevation_without_surface_downloads() {
-        let output_dir = std::env::temp_dir().join(format!(
-            "toposaic-map-label-test-{}",
-            std::process::id()
-        ));
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-map-label-test-{}", std::process::id()));
         if output_dir.exists() {
             std::fs::remove_dir_all(&output_dir).unwrap();
         }
