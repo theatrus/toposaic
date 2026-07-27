@@ -1560,7 +1560,6 @@ mod tests {
                 wall_mount: WallMountSpec {
                     style,
                     target: WallMountTarget::Tray,
-                    depth_mm: 0.8,
                     pin_diameter_mm: 4.0,
                     ..WallMountSpec::default()
                 },
@@ -1578,11 +1577,10 @@ mod tests {
             for segment in &segments {
                 assert_watertight(segment);
                 assert!(segment.vertices.iter().any(|vertex| {
-                    (vertex[2] - spec.wall_mount.pocket_depth_mm).abs() < 0.000_01
+                    (vertex[2] - spec.wall_mount.pocket_depth_mm()).abs() < 0.000_01
                 }));
                 assert!(segment.vertices.iter().any(|vertex| {
-                    (vertex[2] - spec.wall_mount.pocket_depth_mm - spec.wall_mount.depth_mm).abs()
-                        < 0.000_01
+                    (vertex[2] - spec.wall_mount.embedded_depth_mm()).abs() < 0.000_01
                 }));
             }
         }

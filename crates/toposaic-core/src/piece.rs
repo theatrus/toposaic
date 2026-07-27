@@ -1325,7 +1325,6 @@ mod tests {
                 wall_mount: WallMountSpec {
                     style,
                     target: WallMountTarget::Terrain,
-                    depth_mm: 0.8,
                     pin_diameter_mm: 4.0,
                     ..WallMountSpec::default()
                 },
@@ -1333,14 +1332,11 @@ mod tests {
             };
             let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
             assert_watertight(&mesh);
-            assert!(
-                mesh.vertices.iter().any(|vertex| {
-                    (vertex[2] - spec.wall_mount.pocket_depth_mm).abs() < 0.000_01
-                })
-            );
             assert!(mesh.vertices.iter().any(|vertex| {
-                (vertex[2] - spec.wall_mount.pocket_depth_mm - spec.wall_mount.depth_mm).abs()
-                    < 0.000_01
+                (vertex[2] - spec.wall_mount.pocket_depth_mm()).abs() < 0.000_01
+            }));
+            assert!(mesh.vertices.iter().any(|vertex| {
+                (vertex[2] - spec.wall_mount.embedded_depth_mm()).abs() < 0.000_01
             }));
         }
     }
@@ -1368,7 +1364,7 @@ mod tests {
         }));
 
         let mut changed_wall_pocket = spec.clone();
-        changed_wall_pocket.wall_mount.pocket_depth_mm = 3.0;
+        changed_wall_pocket.wall_mount.thickness_mm = 9.0;
         changed_wall_pocket.wall_mount.wall_offset_mm = 8.0;
         let unchanged_retention = build_piece(&changed_wall_pocket, None, None, 0, 0).unwrap();
         assert_eq!(mesh.vertices, unchanged_retention.vertices);

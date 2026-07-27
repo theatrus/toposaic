@@ -19,7 +19,7 @@ import {
   maximumCleatWidth,
   maximumMountDepth,
   maximumRetentionHeight,
-  maximumWallPocketDepth,
+  maximumWallPlateThickness,
   wallMountTargetWidth,
   wallHardwareQuantity,
 } from "../app/terrain/mounting.ts";
@@ -194,7 +194,7 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     style: "none",
     target: "terrain",
     depth_mm: 0.8,
-    pocket_depth_mm: 0.4,
+    thickness_mm: 1.2,
     wall_offset_mm: 0.8,
     pin_diameter_mm: 4,
     pin_count: 1,
@@ -204,6 +204,20 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     fit_clearance_mm: 0.2,
     screw_hole_diameter_mm: 3.5,
   });
+});
+
+test("migrates an old wall pocket to full plate thickness", () => {
+  const oldSpec = structuredClone(initialSpec);
+  delete oldSpec.wall_mount.thickness_mm;
+  oldSpec.wall_mount.depth_mm = 1.2;
+  oldSpec.wall_mount.pocket_depth_mm = 0.6;
+  oldSpec.wall_mount.wall_offset_mm = 1;
+
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.wall_mount.thickness_mm, 1.6);
+  assert.equal(merged.wall_mount.depth_mm, 1.2);
+  assert.equal(merged.wall_mount.wall_offset_mm, 1);
+  assert.equal("pocket_depth_mm" in merged.wall_mount, false);
 });
 
 test("derives mounting limits and wall hardware counts from the full model", () => {
@@ -224,7 +238,7 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   puzzleGrid.solid_model = true;
   assert.equal(wallHardwareQuantity(puzzleGrid), 1);
   assert.ok(Math.abs(maximumMountDepth(puzzleGrid) - 1.6) < 1e-9);
-  assert.ok(Math.abs(maximumWallPocketDepth(puzzleGrid) - 1.2) < 1e-9);
+  assert.ok(Math.abs(maximumWallPlateThickness(puzzleGrid) - 2) < 1e-9);
   assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
 
   puzzleGrid.width_mm = 320;

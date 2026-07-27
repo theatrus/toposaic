@@ -4,7 +4,7 @@ import type { GenerationSpec } from "../contracts";
 import {
   maximumCleatWidth,
   maximumMountDepth,
-  maximumWallPocketDepth,
+  maximumWallPlateThickness,
   wallHardwareQuantity,
 } from "../mounting";
 import type { UpdateWallMount } from "./mounting-types";
@@ -19,14 +19,16 @@ export function WallMountControls({
 }) {
   const mountEnabled = spec.wall_mount.style !== "none";
   const maximumDepth = maximumMountDepth(spec);
-  const maximumPocketDepth = maximumWallPocketDepth(spec);
+  const maximumThickness = maximumWallPlateThickness(spec);
   const maximumWidth = maximumCleatWidth(spec);
   const hardwareQuantity = wallHardwareQuantity(spec);
   const backThickness =
     spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
-  const totalCutDepth =
-    spec.wall_mount.depth_mm + spec.wall_mount.pocket_depth_mm;
-  const depthViolation = mountEnabled && totalCutDepth > backThickness - 0.4;
+  const embeddedDepth =
+    spec.wall_mount.thickness_mm -
+    spec.wall_mount.wall_offset_mm +
+    spec.wall_mount.depth_mm;
+  const depthViolation = mountEnabled && embeddedDepth > backThickness - 0.4;
 
   useEffect(() => {
     if (
@@ -108,26 +110,32 @@ export function WallMountControls({
             onChange={(value) => updateWallMount("depth_mm", value)}
           />
           <RangeField
-            label="Wall-plate pocket depth"
-            value={spec.wall_mount.pocket_depth_mm}
+            label="Wall plate thickness"
+            value={spec.wall_mount.thickness_mm}
             unit=" mm"
-            min={0.4}
-            max={maximumPocketDepth}
+            min={spec.wall_mount.wall_offset_mm + 0.4}
+            max={Math.max(spec.wall_mount.wall_offset_mm + 0.4, maximumThickness)}
             step={0.2}
-            onChange={(value) =>
-              updateWallMount("pocket_depth_mm", value)
-            }
+            onChange={(value) => updateWallMount("thickness_mm", value)}
           />
           {depthViolation && (
             <p className="color-note" role="alert">
-              The {spec.wall_mount.pocket_depth_mm.toFixed(1)} mm plate pocket
-              plus {spec.wall_mount.depth_mm.toFixed(1)} mm engagement cut needs{" "}
-              {totalCutDepth.toFixed(1)} mm of the {backThickness.toFixed(1)} mm
-              minimum Z height. Raise the minimum piece height or display-base
-              floor, or reduce either depth. The generator will not add
-              thickness for you.
+              This mount needs {embeddedDepth.toFixed(1)} mm of the{" "}
+              {backThickness.toFixed(1)} mm minimum Z height. Raise the minimum
+              piece height or display-base floor, reduce the engagement depth
+              or plate thickness, or raise the wall offset. The generator will
+              not add thickness for you.
             </p>
           )}
+          <RangeField
+            label="Wall offset"
+            value={spec.wall_mount.wall_offset_mm}
+            unit=" mm"
+            min={0}
+            max={Math.min(10, spec.wall_mount.thickness_mm - 0.4)}
+            step={0.2}
+            onChange={(value) => updateWallMount("wall_offset_mm", value)}
+          />
           <RangeField
             label={spec.wall_mount.style === "french_cleat" ? "Cleat slot height" : "Pin diameter"}
             value={spec.wall_mount.pin_diameter_mm}
@@ -201,17 +209,6 @@ export function WallMountControls({
                 onChange={(value) => updateWallMount("fit_clearance_mm", value)}
               />
               <RangeField
-                label="Wall offset"
-                value={spec.wall_mount.wall_offset_mm}
-                unit=" mm"
-                min={0}
-                max={10}
-                step={0.2}
-                onChange={(value) =>
-                  updateWallMount("wall_offset_mm", value)
-                }
-              />
-              <RangeField
                 label="Screw-hole diameter"
                 value={spec.wall_mount.screw_hole_diameter_mm}
                 unit=" mm"
@@ -225,12 +222,13 @@ export function WallMountControls({
             </>
           )}
           <p className="color-note">
-            Each wall mount nests its screw plate in the rectangular back
-            pocket. Pocket depth sets how much plate is hidden; wall offset is
-            the finished gap for an uneven wall. The exported plate thickness
-            is their sum. Pin or cleat engagement depth is separate, and every
-            cut keeps at least 0.4 mm below the terrain or display-base face.
-            The pocket covers the full wall plate at entry and at lock; French
+            Engagement depth sets how far the pin or cleat enters the model for
+            rigidity. Wall plate thickness is the full plate from its wall face
+            to its model face. Wall offset is the finished gap for an uneven
+            wall. TopoSaic derives the hidden pocket from plate thickness minus
+            wall offset. Every cut keeps at least 0.4 mm below the terrain or
+            display-base face. The pocket covers the full wall plate at entry
+            and at lock; French
             cleat travel grows with slot height. French cleats and angled pins
             slide toward the map north edge to lock.
             {spec.wall_mount.export_hardware &&

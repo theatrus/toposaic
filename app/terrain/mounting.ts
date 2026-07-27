@@ -3,18 +3,20 @@ import type { GenerationSpec } from "./contracts";
 export function maximumMountDepth(spec: GenerationSpec) {
   const thickness =
     spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
-  return Math.max(
-    0.4,
-    Math.min(3, thickness - spec.wall_mount.pocket_depth_mm - 0.4),
-  );
+  const pocketDepth =
+    spec.wall_mount.thickness_mm - spec.wall_mount.wall_offset_mm;
+  return Math.max(0.4, Math.min(3, thickness - pocketDepth - 0.4));
 }
 
-export function maximumWallPocketDepth(spec: GenerationSpec) {
+export function maximumWallPlateThickness(spec: GenerationSpec) {
   const thickness =
     spec.wall_mount.target === "tray" ? spec.tray.floor_mm : spec.base_mm;
-  return Math.max(
-    0.4,
-    Math.min(3, thickness - spec.wall_mount.depth_mm - 0.4),
+  return Math.min(
+    13,
+    spec.wall_mount.wall_offset_mm +
+      thickness -
+      spec.wall_mount.depth_mm -
+      0.4,
   );
 }
 

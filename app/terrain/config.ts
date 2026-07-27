@@ -62,7 +62,7 @@ export const initialSpec: GenerationSpec = {
     style: "none",
     target: "terrain",
     depth_mm: 0.8,
-    pocket_depth_mm: 0.4,
+    thickness_mm: 1.2,
     wall_offset_mm: 0.8,
     pin_diameter_mm: 4,
     pin_count: 1,
@@ -135,6 +135,24 @@ export const initialSpec: GenerationSpec = {
 // Fill any field a saved spec is missing with the client default, so setups
 // saved before a field existed still recall cleanly.
 export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpec {
+  const savedWallMount = saved.wall_mount as
+    | (Partial<GenerationSpec["wall_mount"]> & {
+        depth_mm?: number;
+        pocket_depth_mm?: number;
+      })
+    | undefined;
+  const legacyThickness =
+    savedWallMount?.thickness_mm === undefined &&
+    savedWallMount?.pocket_depth_mm !== undefined
+      ? savedWallMount.pocket_depth_mm +
+        (savedWallMount.wall_offset_mm ?? initialSpec.wall_mount.wall_offset_mm)
+      : undefined;
+  const wallMount = {
+    ...initialSpec.wall_mount,
+    ...savedWallMount,
+    ...(legacyThickness === undefined ? {} : { thickness_mm: legacyThickness }),
+  } as GenerationSpec["wall_mount"] & { pocket_depth_mm?: number };
+  delete wallMount.pocket_depth_mm;
   return {
     ...initialSpec,
     ...saved,
@@ -150,7 +168,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       ...initialSpec.puzzle_retention,
       ...saved.puzzle_retention,
     },
-    wall_mount: { ...initialSpec.wall_mount, ...saved.wall_mount },
+    wall_mount: wallMount,
     color_output: { ...initialSpec.color_output, ...saved.color_output },
     trails: saved.trails ?? [],
   };

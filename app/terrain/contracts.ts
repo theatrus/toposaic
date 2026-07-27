@@ -66,7 +66,7 @@ export type GenerationSpec = {
     style: "none" | "straight_pin" | "angled_pin" | "french_cleat";
     target: "terrain" | "tray";
     depth_mm: number;
-    pocket_depth_mm: number;
+    thickness_mm: number;
     wall_offset_mm: number;
     pin_diameter_mm: number;
     pin_count: number;

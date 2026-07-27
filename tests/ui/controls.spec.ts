@@ -291,7 +291,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
   await expect(page.getByText("Pin engagement depth")).toBeVisible();
   await expect(
-    page.getByRole("slider", { name: "Wall-plate pocket depth" }),
+    page.getByRole("slider", { name: "Wall plate thickness" }),
   ).toBeVisible();
   await expect(
     page.getByRole("slider", { name: "Pin diameter", exact: true }),
@@ -303,9 +303,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
     page.getByRole("slider", { name: "Wall offset" }),
   ).toBeVisible();
   await wallMountStyle.selectOption("french_cleat");
-  await expect(
-    page.getByRole("slider", { name: "Cleat engagement depth" }),
-  ).toBeVisible();
+  await expect(page.getByText("Cleat engagement depth")).toBeVisible();
   await expect(page.getByText("Cleat slot height")).toBeVisible();
   await expect(page.getByText("Cleat width")).toBeVisible();
   await expect(

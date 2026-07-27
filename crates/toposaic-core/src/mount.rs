@@ -70,7 +70,12 @@ pub(crate) fn mount_bottom_polygons(
             mount_frame,
         );
     }
-    bottom_with_cavities(base_polygons, mount_region_index, &cavities, mount.depth_mm)
+    bottom_with_cavities(
+        base_polygons,
+        mount_region_index,
+        &cavities,
+        mount.engagement_depth_mm(),
+    )
 }
 
 pub(crate) fn retention_bottom(
@@ -178,8 +183,8 @@ fn bottom_with_wall_plate_pocket(
             .map(|receiver| ring(&receiver.opening))
             .collect(),
     );
-    let pocket_depth = mount.pocket_depth_mm;
-    let receiver_ceiling = pocket_depth + mount.depth_mm;
+    let pocket_depth = mount.pocket_depth_mm();
+    let receiver_ceiling = pocket_depth + mount.engagement_depth_mm();
 
     let mut mesh = MeshBuilder::default();
     add_horizontal_polygons(&mut mesh, &bottom, 0.0, SurfaceClass::Rock, true)?;
@@ -277,8 +282,12 @@ fn wall_mount_center(mount: &WallMountSpec, mount_frame: [f32; 4]) -> [f32; 2] {
 
 fn wall_mount_slide(mount: &WallMountSpec) -> f32 {
     let shift = match mount.style {
-        WallMountStyle::AngledPin => mount.depth_mm * ANGLED_PIN_DEGREES.to_radians().tan(),
-        WallMountStyle::FrenchCleat => mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan(),
+        WallMountStyle::AngledPin => {
+            mount.engagement_depth_mm() * ANGLED_PIN_DEGREES.to_radians().tan()
+        }
+        WallMountStyle::FrenchCleat => {
+            mount.engagement_depth_mm() * FRENCH_CLEAT_DEGREES.to_radians().tan()
+        }
         WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
     };
     match mount.style {
@@ -299,8 +308,12 @@ fn cavities_for_outline(
     let width = maximum_x - minimum_x;
     let [center_x, center_y] = wall_mount_center(mount, mount_frame);
     let shift = match mount.style {
-        WallMountStyle::AngledPin => mount.depth_mm * ANGLED_PIN_DEGREES.to_radians().tan(),
-        WallMountStyle::FrenchCleat => mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan(),
+        WallMountStyle::AngledPin => {
+            mount.engagement_depth_mm() * ANGLED_PIN_DEGREES.to_radians().tan()
+        }
+        WallMountStyle::FrenchCleat => {
+            mount.engagement_depth_mm() * FRENCH_CLEAT_DEGREES.to_radians().tan()
+        }
         WallMountStyle::None | WallMountStyle::StraightPin => 0.0,
     };
 
@@ -375,7 +388,7 @@ fn circle(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
 }
 
 fn wall_hardware_features(mount: &WallMountSpec) -> (f32, Vec<MountCavity>) {
-    let engagement = (mount.depth_mm - mount.fit_clearance_mm).max(0.2);
+    let engagement = (mount.engagement_depth_mm() - mount.fit_clearance_mm).max(0.2);
     let shift = match mount.style {
         WallMountStyle::AngledPin => engagement * ANGLED_PIN_DEGREES.to_radians().tan(),
         WallMountStyle::FrenchCleat => engagement * FRENCH_CLEAT_DEGREES.to_radians().tan(),
@@ -455,7 +468,7 @@ fn hardware_plate_and_screw_centers(
 }
 
 fn hardware_plate_thickness(mount: &WallMountSpec) -> f32 {
-    mount.pocket_depth_mm + mount.wall_offset_mm
+    mount.thickness_mm
 }
 
 /// Builds the wall-side half of the selected mount. The flat plate is both a
@@ -739,7 +752,7 @@ mod tests {
         let cavity = &cavities[0];
         let opening = bounds(&cavity.opening);
         let ceiling = bounds(&cavity.ceiling);
-        let shift = mount.depth_mm * FRENCH_CLEAT_DEGREES.to_radians().tan();
+        let shift = mount.engagement_depth_mm() * FRENCH_CLEAT_DEGREES.to_radians().tan();
 
         assert!((opening[3] - opening[1]) >= mount.pin_diameter_mm + FRENCH_CLEAT_MIN_SLIDE_MM);
         assert!(((ceiling[1] - opening[1]) - shift).abs() < 0.000_01);
@@ -777,11 +790,10 @@ mod tests {
     }
 
     #[test]
-    fn french_cleat_cuts_a_plate_pocket_and_keeps_offset_independent() {
+    fn french_cleat_derives_its_pocket_from_thickness_and_offset() {
         let mut mount = WallMountSpec {
             style: WallMountStyle::FrenchCleat,
-            depth_mm: 0.8,
-            pocket_depth_mm: 1.2,
+            thickness_mm: 1.7,
             wall_offset_mm: 0.5,
             ..WallMountSpec::default()
         };
@@ -792,14 +804,14 @@ mod tests {
             .map(|point| point[2])
             .fold(f32::NEG_INFINITY, f32::max);
 
-        mount.wall_offset_mm = 5.5;
+        mount.wall_offset_mm = 1.0;
         let offset_hardware = build_wall_hardware(&mount).unwrap();
         let offset_height = offset_hardware
             .vertices
             .iter()
             .map(|point| point[2])
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!((offset_height - close_height - 5.0).abs() < 0.000_01);
+        assert!((offset_height - close_height).abs() < 0.000_01);
 
         let outline = rectangle(20.0, 20.0, 20.0, 20.0);
         let pocket = wall_plate_pocket(&mount, [0.0, 0.0, 40.0, 40.0]);
@@ -817,9 +829,9 @@ mod tests {
             shallow_receiver
                 .vertices
                 .iter()
-                .any(|point| (point[2] - mount.pocket_depth_mm).abs() < 0.000_01)
+                .any(|point| (point[2] - mount.pocket_depth_mm()).abs() < 0.000_01)
         );
-        let receiver_ceiling = mount.pocket_depth_mm + mount.depth_mm;
+        let receiver_ceiling = mount.embedded_depth_mm();
         assert!(
             shallow_receiver
                 .vertices
@@ -827,7 +839,7 @@ mod tests {
                 .any(|point| (point[2] - receiver_ceiling).abs() < 0.000_01)
         );
 
-        mount.pocket_depth_mm = 1.8;
+        mount.thickness_mm = 3.5;
         let deep_receiver = mount_bottom(&outline, &mount, [0.0, 0.0, 40.0, 40.0])
             .unwrap()
             .finish("deep receiver");
@@ -835,7 +847,7 @@ mod tests {
             deep_receiver
                 .vertices
                 .iter()
-                .any(|point| (point[2] - 2.6).abs() < 0.000_01)
+                .any(|point| (point[2] - 3.3).abs() < 0.000_01)
         );
     }
 
