@@ -714,15 +714,25 @@ a {
 }
 
 .map-canvas {
-  cursor: grab;
   inset: 0;
   overflow: hidden;
   position: absolute;
   touch-action: none;
 }
 
-.map-canvas:active {
+.map-canvas.map-pan,
+.map-canvas.map-move {
+  cursor: grab;
+}
+
+.map-canvas.map-pan:active,
+.map-canvas.map-move:active {
   cursor: grabbing;
+}
+
+.map-canvas.map-select,
+.map-canvas.map-select:active {
+  cursor: crosshair;
 }
 
 .map-canvas.placing-marker,
@@ -777,6 +787,36 @@ a {
   color: var(--ink);
   font-size: 9px;
   font-weight: 760;
+  left: 50%;
+  padding: 3px 6px;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+
+.map-selection-draft {
+  background-color: rgba(216, 251, 114, 0.2);
+  background-image:
+    linear-gradient(90deg, rgba(216, 251, 114, 0.82) 1px, transparent 1px),
+    linear-gradient(rgba(216, 251, 114, 0.82) 1px, transparent 1px);
+  background-size:
+    calc(100% / var(--draft-columns)) 100%,
+    100% calc(100% / var(--draft-rows));
+  border: 2px solid var(--acid);
+  box-shadow:
+    0 0 0 1px rgba(20, 32, 29, 0.7),
+    inset 0 0 35px rgba(216, 251, 114, 0.16);
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
+}
+
+.map-selection-draft span {
+  background: var(--acid);
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 800;
   left: 50%;
   padding: 3px 6px;
   position: absolute;
@@ -912,27 +952,56 @@ a {
   white-space: nowrap;
 }
 
-.map-instruction {
-  background: rgba(20, 32, 29, 0.88);
-  bottom: 20px;
-  color: white;
-  font-size: 11px;
-  font-weight: 700;
-  left: 20px;
-  letter-spacing: 0.04em;
-  padding: 11px 14px;
+.map-mode-tools {
+  align-items: stretch;
+  display: flex;
+  left: 14px;
   pointer-events: none;
   position: absolute;
-  text-transform: uppercase;
-  z-index: 4;
+  top: 14px;
+  z-index: 6;
 }
 
-.map-instruction small {
-  color: rgba(255, 254, 248, 0.72);
-  display: block;
+.map-mode-tools button,
+.map-instruction {
+  background: rgba(255, 254, 248, 0.94);
+  border: 1px solid rgba(20, 32, 29, 0.25);
+  color: var(--ink);
   font-size: 9px;
-  font-weight: 700;
-  margin-top: 3px;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  min-height: 30px;
+  padding: 0 9px;
+  text-transform: uppercase;
+}
+
+.map-mode-tools button {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.map-mode-tools button + button,
+.map-mode-tools .map-instruction {
+  border-left: 0;
+}
+
+.map-mode-tools button[aria-pressed="true"] {
+  background: var(--moss);
+  color: white;
+}
+
+.map-mode-tools button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.map-instruction {
+  align-items: center;
+  color: rgba(20, 32, 29, 0.72);
+  display: flex;
+  font-weight: 720;
+  pointer-events: none;
+  text-transform: none;
 }
 
 .map-zoom {
@@ -2536,10 +2605,9 @@ fieldset.control-section .road-options {
   border: 1px solid var(--line);
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(100px, 1fr) minmax(110px, 0.8fr) minmax(
-      160px,
-      1.2fr
-    ) auto;
+  grid-template-columns:
+    minmax(100px, 1fr) minmax(110px, 0.8fr) minmax(160px, 1.2fr)
+    auto;
   padding: 7px;
 }
 
@@ -3308,6 +3376,24 @@ fieldset.control-section .road-options {
 @media (max-width: 560px) {
   .studio {
     padding: 0 14px 28px;
+  }
+
+  .map-mode-tools {
+    left: 8px;
+    top: 8px;
+  }
+
+  .map-mode-tools button {
+    padding: 0 7px;
+  }
+
+  .map-mode-tools .map-instruction {
+    display: none;
+  }
+
+  .map-zoom {
+    right: 8px;
+    top: 8px;
   }
 
   .topbar {
