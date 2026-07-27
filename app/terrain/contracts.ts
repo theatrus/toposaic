@@ -48,6 +48,8 @@ export type GenerationSpec = {
   center_lon: number;
   elevation_source: "mapzen" | "mapterhorn";
   ground_span_km: number;
+  /** Clockwise rotation of the model's top edge from true north. */
+  terrain_rotation_degrees: number;
   width_mm: number;
   rows: number;
   columns: number;

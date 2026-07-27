@@ -138,6 +138,10 @@ export function TerrainMap({
   const superTileColumns = Math.max(1, spec.adjacent_columns);
   const superTileRows = Math.max(1, spec.adjacent_rows);
   const superTileActive = superTileColumns > 1 || superTileRows > 1;
+  const terrainRotationDegrees = spec.terrain_rotation_degrees;
+  const terrainRotationRadians = (terrainRotationDegrees * Math.PI) / 180;
+  const rotationSine = Math.sin(terrainRotationRadians);
+  const rotationCosine = Math.cos(terrainRotationRadians);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -154,14 +158,18 @@ export function TerrainMap({
 
   const baseMetresPerPixel = metresPerPixelAtLatitude(spec.center_lat, zoom);
   const baseSelectionSize = (spec.ground_span_km * 1000) / baseMetresPerPixel;
+  const baseFootprintWidth = baseSelectionSize * superTileColumns;
+  const baseFootprintHeight = baseSelectionSize * superTileRows;
+  const rotatedFootprintWidth =
+    Math.abs(baseFootprintWidth * rotationCosine) +
+    Math.abs(baseFootprintHeight * rotationSine);
+  const rotatedFootprintHeight =
+    Math.abs(baseFootprintWidth * rotationSine) +
+    Math.abs(baseFootprintHeight * rotationCosine);
   const fitScale = Math.max(
     1,
-    size.width
-      ? (baseSelectionSize * superTileColumns) / (size.width * 0.88)
-      : 1,
-    size.height
-      ? (baseSelectionSize * superTileRows) / (size.height * 0.82)
-      : 1,
+    size.width ? rotatedFootprintWidth / (size.width * 0.88) : 1,
+    size.height ? rotatedFootprintHeight / (size.height * 0.82) : 1,
   );
   const fittedMapZoom = Math.max(
     MIN_MAP_ZOOM,
@@ -187,6 +195,7 @@ export function TerrainMap({
           superTileRows,
           superTileColumns,
           spec.super_tile_anchor,
+          terrainRotationDegrees,
         );
         const projected = projectToWorld(
           center.longitude,
@@ -212,6 +221,7 @@ export function TerrainMap({
     spec.center_lon,
     spec.ground_span_km,
     spec.super_tile_anchor,
+    terrainRotationDegrees,
     superTileColumns,
     superTileRows,
   ]);
@@ -437,11 +447,19 @@ export function TerrainMap({
       const anchorX =
         spec.super_tile_anchor === "center"
           ? nextDraft.left + nextDraft.width * 0.5
-          : nextDraft.left + nextDraft.cellSize * 0.5;
+          : nextDraft.left + nextDraft.width * 0.5 +
+            (-nextDraft.width * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationCosine -
+            (-nextDraft.height * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationSine;
       const anchorY =
         spec.super_tile_anchor === "center"
           ? nextDraft.top + nextDraft.height * 0.5
-          : nextDraft.top + nextDraft.cellSize * 0.5;
+          : nextDraft.top + nextDraft.height * 0.5 +
+            (-nextDraft.width * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationSine +
+            (-nextDraft.height * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationCosine;
       const nextAnchor = moveToWorld(
         viewWorldCenter.x + anchorX - size.width * 0.5,
         viewWorldCenter.y + anchorY - size.height * 0.5,
@@ -592,7 +610,11 @@ export function TerrainMap({
           ))}
         </div>
         <div
-          aria-label={`Super-tile map: ${superTileColumns} across by ${superTileRows} down, anchored at ${anchorDescription}`}
+          aria-label={`Super-tile map: ${superTileColumns} across by ${superTileRows} down, ${
+            terrainRotationDegrees === 0
+              ? ""
+              : `rotated ${terrainRotationDegrees} degrees, `
+          }anchored at ${anchorDescription}`}
           className="map-super-tile-grid"
           data-super-tile-columns={superTileColumns}
           data-super-tile-rows={superTileRows}
@@ -619,6 +641,7 @@ export function TerrainMap({
                   height: selectionSize,
                   left: cell.worldX - viewWorldCenter.x + size.width / 2,
                   top: cell.worldY - viewWorldCenter.y + size.height / 2,
+                  transform: `translate(-50%, -50%) rotate(${terrainRotationDegrees}deg)`,
                   width: selectionSize,
                 }}
               >
@@ -641,6 +664,7 @@ export function TerrainMap({
                 width: draft.width,
                 "--draft-columns": superTileColumns,
                 "--draft-rows": superTileRows,
+                transform: `rotate(${terrainRotationDegrees}deg)`,
               } as CSSProperties
             }
           >

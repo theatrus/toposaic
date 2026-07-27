@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::surface::SurfaceField;
+use crate::{geography::GeoTransform, surface::SurfaceField};
 
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const MAX_PUZZLE_TILE_COORDINATE: i32 = 1_000_000;
@@ -25,11 +25,6 @@ const MAX_TRAIL_POINTS: usize = 20_000;
 const MAX_TRAIL_NAME_CHARS: usize = 80;
 const MAX_MAP_MARKERS: usize = 50;
 const MAX_MARKER_NAME_CHARS: usize = 80;
-const KILOMETRES_PER_LATITUDE_DEGREE: f64 = 110.574;
-const KILOMETRES_PER_LONGITUDE_DEGREE: f64 = 111.32;
-const MINIMUM_LONGITUDE_SCALE: f64 = 20.0;
-const MAX_MODEL_LATITUDE: f64 = 85.0;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GenerationSpec {
@@ -37,6 +32,8 @@ pub struct GenerationSpec {
     pub center_lon: f64,
     pub elevation_source: ElevationSource,
     pub ground_span_km: f64,
+    /// Clockwise rotation of the model's top edge from true north.
+    pub terrain_rotation_degrees: f64,
     pub width_mm: f32,
     pub rows: u32,
     pub columns: u32,
@@ -97,6 +94,7 @@ impl Default for GenerationSpec {
             center_lon: -121.7603,
             elevation_source: ElevationSource::Mapzen,
             ground_span_km: 18.0,
+            terrain_rotation_degrees: 0.0,
             width_mm: 180.0,
             rows: 3,
             columns: 3,
@@ -147,6 +145,11 @@ impl GenerationSpec {
         }
         if !(0.25..=250.0).contains(&self.ground_span_km) {
             bail!("ground span must be between 0.25 and 250 km");
+        }
+        if !self.terrain_rotation_degrees.is_finite()
+            || !(-180.0..=180.0).contains(&self.terrain_rotation_degrees)
+        {
+            bail!("terrain rotation must be between -180 and 180 degrees");
         }
         if !(60.0..=500.0).contains(&self.width_mm) {
             bail!("model width must be between 60 and 500 mm");
@@ -355,19 +358,13 @@ impl GenerationSpec {
     /// The API uses this same helper for OSM data, so markers, trails, and
     /// fetched features cannot drift apart at high latitude or the date line.
     pub fn normalized_map_point(&self, latitude: f64, longitude: f64) -> [f32; 2] {
-        let half_latitude = self.ground_span_km / (2.0 * KILOMETRES_PER_LATITUDE_DEGREE);
-        let longitude_scale = (KILOMETRES_PER_LONGITUDE_DEGREE
-            * self.center_lat.to_radians().cos().abs())
-        .max(MINIMUM_LONGITUDE_SCALE);
-        let half_longitude = self.ground_span_km / (2.0 * longitude_scale);
-        let longitude =
-            self.center_lon + (longitude - self.center_lon + 180.0).rem_euclid(360.0) - 180.0;
-        let south = (self.center_lat - half_latitude).max(-MAX_MODEL_LATITUDE);
-        let north = (self.center_lat + half_latitude).min(MAX_MODEL_LATITUDE);
-        [
-            ((longitude - (self.center_lon - half_longitude)) / (2.0 * half_longitude)) as f32,
-            ((latitude - south) / (north - south)) as f32,
-        ]
+        GeoTransform::new(
+            self.center_lat,
+            self.center_lon,
+            self.ground_span_km,
+            self.terrain_rotation_degrees,
+        )
+        .normalized_point(latitude, longitude)
     }
 
     /// Whether the railway layer — `railway=*`: trains, trams, metros,
@@ -2148,6 +2145,10 @@ mod tests {
             "\"adjacent_interlocks\":false,\"outer_edge_interlocks\":false,",
         );
         let expected = expected.replace(
+            "\"ground_span_km\":18.0,",
+            "\"ground_span_km\":18.0,\"terrain_rotation_degrees\":0.0,",
+        );
+        let expected = expected.replace(
             "\"adjacent_tile_row\":0,",
             "\"adjacent_tile_row\":0,\"puzzle_seed\":0,\"puzzle_tile_column\":0,\"puzzle_tile_row\":0,",
         );
@@ -2165,6 +2166,7 @@ mod tests {
             "center_lon": -110.5,
             "elevation_source": "mapterhorn",
             "ground_span_km": 6.0,
+            "terrain_rotation_degrees": 27.5,
             "width_mm": 240.0,
             "rows": 5,
             "columns": 5,

@@ -476,6 +476,17 @@ export function ModelPanel({
         onChange={(value) => update("ground_span_km", value)}
       />
       <RangeField
+        label="Terrain rotation"
+        ariaLabel="Terrain rotation clockwise from north"
+        value={spec.terrain_rotation_degrees}
+        unit="°"
+        min={-180}
+        max={180}
+        step={0.1}
+        onChange={(value) => update("terrain_rotation_degrees", value)}
+        note="Clockwise from north. This rotates the sampled terrain and every geographic overlay before mesh generation."
+      />
+      <RangeField
         label="Print width"
         value={spec.width_mm}
         unit=" mm"

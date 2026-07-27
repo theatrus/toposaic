@@ -7,14 +7,18 @@ const MAX_MODEL_LATITUDE = 85;
 
 export type AdjacentDirection = "north" | "south" | "east" | "west";
 
+type GeographicFrame = Pick<
+  GenerationSpec,
+  "center_lat" | "center_lon" | "ground_span_km"
+> &
+  Partial<Pick<GenerationSpec, "terrain_rotation_degrees">>;
+
 export function normalizedMapPoint(
-  spec: Pick<
-    GenerationSpec,
-    "center_lat" | "center_lon" | "ground_span_km"
-  >,
+  spec: GeographicFrame,
   latitude: number,
   longitude: number,
 ) {
+  const rotation = canonicalRotation(spec.terrain_rotation_degrees ?? 0);
   const halfLatitude =
     spec.ground_span_km / (2 * KILOMETRES_PER_LATITUDE_DEGREE);
   const longitudeScale = Math.max(
@@ -35,6 +39,21 @@ export function normalizedMapPoint(
     MAX_MODEL_LATITUDE,
     spec.center_lat + halfLatitude,
   );
+  if (rotation !== 0) {
+    const worldEastKm =
+      (unwrappedLongitude - spec.center_lon) * longitudeScale;
+    const worldNorthKm =
+      (latitude - spec.center_lat) * KILOMETRES_PER_LATITUDE_DEGREE;
+    const angle = (rotation * Math.PI) / 180;
+    const sine = Math.sin(angle);
+    const cosine = Math.cos(angle);
+    const localEastKm = worldEastKm * cosine - worldNorthKm * sine;
+    const localNorthKm = worldEastKm * sine + worldNorthKm * cosine;
+    return {
+      u: localEastKm / spec.ground_span_km + 0.5,
+      v: localNorthKm / spec.ground_span_km + 0.5,
+    };
+  }
   return {
     u:
       (unwrappedLongitude - (spec.center_lon - halfLongitude)) /
@@ -68,13 +87,37 @@ function offsetCoordinates(
   };
 }
 
+function offsetRotatedCoordinates(
+  latitude: number,
+  longitude: number,
+  localNorthKm: number,
+  localEastKm: number,
+  rotationDegrees: number,
+) {
+  const angle = (canonicalRotation(rotationDegrees) * Math.PI) / 180;
+  const sine = Math.sin(angle);
+  const cosine = Math.cos(angle);
+  return offsetCoordinates(
+    latitude,
+    longitude,
+    -localEastKm * sine + localNorthKm * cosine,
+    localEastKm * cosine + localNorthKm * sine,
+  );
+}
+
+function canonicalRotation(rotationDegrees: number) {
+  const rotation = ((((rotationDegrees + 180) % 360) + 360) % 360) - 180;
+  return Math.abs(rotation) < Number.EPSILON ? 0 : rotation;
+}
+
 export function adjacentCenter(
   latitude: number,
   longitude: number,
   groundSpanKm: number,
   direction: AdjacentDirection,
+  rotationDegrees = 0,
 ) {
-  return offsetCoordinates(
+  return offsetRotatedCoordinates(
     latitude,
     longitude,
     direction === "north"
@@ -87,6 +130,7 @@ export function adjacentCenter(
       : direction === "west"
         ? -groundSpanKm
         : 0,
+    rotationDegrees,
   );
 }
 
@@ -99,13 +143,15 @@ export function superTileCenter(
   rows: number,
   columns: number,
   anchor: GenerationSpec["super_tile_anchor"],
+  rotationDegrees = 0,
 ) {
   const rowAnchor = anchor === "center" ? (rows - 1) / 2 : 0;
   const columnAnchor = anchor === "center" ? (columns - 1) / 2 : 0;
-  return offsetCoordinates(
+  return offsetRotatedCoordinates(
     latitude,
     longitude,
     -(row - rowAnchor) * groundSpanKm,
     (column - columnAnchor) * groundSpanKm,
+    rotationDegrees,
   );
 }

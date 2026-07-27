@@ -4,11 +4,9 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use toposaic_core::{
-    Artifact, GenerationSpec, HeightField, SuperTileAnchor, WallMountStyle, WallMountTarget,
-    generate_wall_mount_artifacts,
+    Artifact, GenerationSpec, GeoTransform, HeightField, SuperTileAnchor, WallMountStyle,
+    WallMountTarget, generate_wall_mount_artifacts,
 };
-
-use crate::geo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GridTileOutputPlan {
@@ -79,17 +77,21 @@ pub(crate) fn adjacent_tile_specs(spec: &GenerationSpec) -> Vec<GenerationSpec> 
         SuperTileAnchor::TopLeft => 0,
         SuperTileAnchor::Center => (spec.adjacent_columns as i32 - 1) / 2,
     };
+    let transform = GeoTransform::new(
+        spec.center_lat,
+        spec.center_lon,
+        spec.ground_span_km,
+        spec.terrain_rotation_degrees,
+    );
     (0..spec.adjacent_rows)
         .flat_map(|row| {
             (0..spec.adjacent_columns).map(move |column| {
                 let mut tile = spec.clone();
                 let row_offset = row as i32 - row_anchor;
                 let column_offset = column as i32 - column_anchor;
-                (tile.center_lat, tile.center_lon) = geo::offset_coordinates(
-                    spec.center_lat,
-                    spec.center_lon,
-                    -f64::from(row_offset) * spec.ground_span_km,
+                (tile.center_lat, tile.center_lon) = transform.coordinate_at_local_offset(
                     f64::from(column_offset) * spec.ground_span_km,
+                    -f64::from(row_offset) * spec.ground_span_km,
                 );
                 tile.adjacent_tile_column = column;
                 tile.adjacent_tile_row = row;
@@ -270,6 +272,39 @@ mod tests {
         assert!(
             ((top_left.center_lon + bottom_right.center_lon) / 2.0 - spec.center_lon).abs() < 1e-9
         );
+    }
+
+    #[test]
+    fn arbitrary_rotation_keeps_super_tile_centers_on_the_model_grid() {
+        let spec = GenerationSpec {
+            center_lat: 46.0,
+            center_lon: -122.0,
+            ground_span_km: 10.0,
+            terrain_rotation_degrees: 37.5,
+            adjacent_columns: 2,
+            adjacent_rows: 2,
+            ..GenerationSpec::default()
+        };
+        let transform = GeoTransform::new(
+            spec.center_lat,
+            spec.center_lon,
+            spec.ground_span_km,
+            spec.terrain_rotation_degrees,
+        );
+        let tiles = adjacent_tile_specs(&spec);
+        let normalized = tiles
+            .iter()
+            .map(|tile| transform.normalized_point(tile.center_lat, tile.center_lon))
+            .collect::<Vec<_>>();
+
+        for (point, expected) in
+            normalized
+                .iter()
+                .zip([[0.5, 0.5], [1.5, 0.5], [0.5, -0.5], [1.5, -0.5]])
+        {
+            assert!((point[0] - expected[0]).abs() < 0.000_01);
+            assert!((point[1] - expected[1]).abs() < 0.000_01);
+        }
     }
 
     #[test]

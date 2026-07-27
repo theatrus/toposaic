@@ -21,7 +21,7 @@ use tracing::warn;
 
 use crate::{
     cache,
-    geo::{GeoBounds, normalize_longitude},
+    geo::{GeoBounds, GeoTransform, normalize_longitude},
     http,
 };
 
@@ -262,7 +262,8 @@ pub fn fetch_surface_field(
         .min(height_field.samples_per_piece(spec) as u32)
         .max(16);
     let (width, height) = spec.sample_grid_dimensions(samples);
-    let bounds = bounds_for(spec);
+    let transform = transform_for(spec);
+    let bounds = transform.bounds();
     let mut classes = vec![SurfaceClass::Rock; width * height];
     let mut source = String::new();
 
@@ -270,10 +271,9 @@ pub fn fetch_surface_field(
         let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
         for row in 0..height {
             let v = row as f64 / (height - 1) as f64;
-            let latitude = bounds.south + (bounds.north - bounds.south) * v;
             for column in 0..width {
                 let u = column as f64 / (width - 1) as f64;
-                let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
+                let (latitude, longitude) = transform.coordinate_at_uv(u, v);
                 tiles
                     .entry(world_cover_tile(longitude, latitude))
                     .or_default()
@@ -374,13 +374,16 @@ pub fn fetch_surface_field(
             // has borders to bend. Wide views fall short, and there the
             // native window is not worth reading either.
             if field.class_border_smoothing_applies(WORLD_COVER_RESOLUTION_M, ground_span_m) {
-                let smoothed_native = match fetch_native_class_grid(
-                    bounds,
-                    width,
-                    height,
-                    &map_cache_dir.join("world-cover"),
-                ) {
-                    Ok(native) => {
+                let native = transform.is_north_up().then(|| {
+                    fetch_native_class_grid(
+                        bounds,
+                        width,
+                        height,
+                        &map_cache_dir.join("world-cover"),
+                    )
+                });
+                let smoothed_native = match native {
+                    Some(Ok(native)) => {
                         field.smooth_class_borders_with_native(
                             &native,
                             spec.color_output.borders.border_smoothing_range_cells,
@@ -388,11 +391,23 @@ pub fn fetch_surface_field(
                         );
                         true
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         warn!(
                             %error,
                             "native land-cover window unavailable; smoothing the recovered grid"
                         );
+                        field.smooth_class_borders(
+                            WORLD_COVER_RESOLUTION_M,
+                            ground_span_m,
+                            spec.color_output.borders.border_smoothing_range_cells,
+                            spec.color_output.borders.border_smoothing_nugget,
+                        );
+                        false
+                    }
+                    None => {
+                        // A rotated output grid does not share axes with the
+                        // source GeoTIFF lattice. Smooth the already rotated
+                        // sample grid instead of applying the wrong phase.
                         field.smooth_class_borders(
                             WORLD_COVER_RESOLUTION_M,
                             ground_span_m,
@@ -522,7 +537,7 @@ pub fn fetch_surface_field(
         }
     }
     if !spec.trails.is_empty() {
-        let painted = paint_imported_trails(spec, bounds, &mut field);
+        let painted = paint_imported_trails(spec, &mut field);
         append_source(
             &mut field.source,
             format!(
@@ -575,27 +590,14 @@ fn append_source(source: &mut String, addition: impl AsRef<str>) {
 /// unwrapping the longitude around the date line first. Every overlay —
 /// OpenStreetMap ways and imported trails alike — must share this mapping so
 /// their features land on the same spot of the model.
-fn normalized_map_point(
-    latitude: f64,
-    longitude: f64,
-    spec: &GenerationSpec,
-    bounds: GeoBounds,
-) -> [f32; 2] {
-    let longitude = unwrap_longitude(longitude, spec.center_lon);
-    [
-        ((longitude - bounds.west) / (bounds.east - bounds.west)) as f32,
-        ((latitude - bounds.south) / (bounds.north - bounds.south)) as f32,
-    ]
+fn normalized_map_point(latitude: f64, longitude: f64, transform: GeoTransform) -> [f32; 2] {
+    transform.normalized_point(latitude, longitude)
 }
 
-fn normalized_osm_points(
-    way: &OverpassWay,
-    spec: &GenerationSpec,
-    bounds: GeoBounds,
-) -> Vec<[f32; 2]> {
+fn normalized_osm_points(way: &OverpassWay, transform: GeoTransform) -> Vec<[f32; 2]> {
     way.geometry
         .iter()
-        .map(|point| normalized_map_point(point.lat, point.lon, spec, bounds))
+        .map(|point| normalized_map_point(point.lat, point.lon, transform))
         .collect()
 }
 
@@ -606,13 +608,14 @@ fn paint_water(
     field: &mut SurfaceField,
 ) -> Result<WaterCounts> {
     let water = fetch_osm_response(spec, cache_dir, "water", water_query(bounds))?;
+    let transform = transform_for(spec);
     let mut counts = WaterCounts::default();
     let mut lines = Vec::new();
     for way in water.elements {
         if is_water_area(&way.tags) {
             if way.geometry.len() >= 3 {
                 field.paint_surface_area(
-                    &normalized_osm_points(&way, spec, bounds),
+                    &normalized_osm_points(&way, transform),
                     SurfaceClass::Water,
                 );
                 counts.areas += 1;
@@ -626,7 +629,7 @@ fn paint_water(
             continue;
         };
         lines.push(WaterwayFeature {
-            points: normalized_osm_points(&way, spec, bounds),
+            points: normalized_osm_points(&way, transform),
             width_scale,
             major: is_major_waterway(&way.tags),
         });
@@ -693,8 +696,18 @@ fn waterway_print_width(spec: &GenerationSpec, feature: &WaterwayFeature) -> f32
     (spec.color_output.road_width_mm * feature.width_scale).max(0.6)
 }
 
+fn transform_for(spec: &GenerationSpec) -> GeoTransform {
+    GeoTransform::new(
+        spec.center_lat,
+        spec.center_lon,
+        spec.ground_span_km,
+        spec.terrain_rotation_degrees,
+    )
+}
+
+#[cfg(test)]
 fn bounds_for(spec: &GenerationSpec) -> GeoBounds {
-    GeoBounds::around(spec.center_lat, spec.center_lon, spec.ground_span_km)
+    transform_for(spec).bounds()
 }
 
 fn paint_roads_or_trails(
@@ -708,8 +721,7 @@ fn paint_roads_or_trails(
     let highway_filter = road_highway_filter(detail);
     let cache_prefix = road_cache_prefix(detail);
     let routes = fetch_osm_ways(spec, bounds, cache_dir, cache_prefix, highway_filter)?;
-    let (road_count, trail_count, bridge_count) =
-        paint_osm_ways(spec, height_field, bounds, field, routes);
+    let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, routes);
     if road_count + trail_count > 0 || detail == ResolvedRoadDetail::All {
         return Ok(RouteCounts {
             roads: road_count,
@@ -727,8 +739,7 @@ fn paint_roads_or_trails(
         "roads-v2-path-fallback",
         PATH_HIGHWAYS,
     )?;
-    let (road_count, trail_count, bridge_count) =
-        paint_osm_ways(spec, height_field, bounds, field, trails);
+    let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, trails);
     Ok(RouteCounts {
         roads: road_count,
         trails: trail_count,
@@ -742,10 +753,10 @@ fn paint_roads_or_trails(
 fn paint_osm_ways(
     spec: &GenerationSpec,
     height_field: &HeightField,
-    bounds: GeoBounds,
     field: &mut SurfaceField,
     response: OverpassResponse,
 ) -> (usize, usize, usize) {
+    let transform = transform_for(spec);
     let mut features = Vec::new();
     for way in response.elements {
         if way.geometry.len() < 2 || is_tunnel(&way.tags) {
@@ -754,7 +765,7 @@ fn paint_osm_ways(
         let Some(scale) = road_width_scale(&way.tags) else {
             continue;
         };
-        let points = normalized_osm_points(&way, spec, bounds);
+        let points = normalized_osm_points(&way, transform);
         let bridge_elevations_m = is_bridge(&way.tags).then(|| {
             let first = points[0];
             let last = points[points.len() - 1];
@@ -866,7 +877,7 @@ fn paint_rail_family(
     // A stable sort over two already-ascending lists merges them back into
     // one ascending list, which is the order a combined query returned.
     ways.sort_by_key(|(_, way)| way.id);
-    let counts = paint_rail_ways(spec, height_field, bounds, field, ways);
+    let counts = paint_rail_ways(spec, height_field, field, ways);
     for (index, layer) in drawn.iter_mut().enumerate() {
         if let Some(layer) = layer {
             *layer = counts[index];
@@ -909,10 +920,10 @@ fn rail_cache_prefix(kind: RailKind, lifecycle: RailLifecycle) -> String {
 fn paint_rail_ways(
     spec: &GenerationSpec,
     height_field: &HeightField,
-    bounds: GeoBounds,
     field: &mut SurfaceField,
     ways: Vec<(RailKind, OverpassWay)>,
 ) -> [RailCounts; 2] {
+    let transform = transform_for(spec);
     let styles = [spec.rail_line_style(), spec.aerial_line_style()];
     let lifecycle = spec.color_output.rail_lifecycle;
     let mut counts = [RailCounts::default(), RailCounts::default()];
@@ -936,7 +947,7 @@ fn paint_rail_ways(
             continue;
         };
         let style = styles[kind.index()];
-        let points = normalized_osm_points(&way, spec, bounds);
+        let points = normalized_osm_points(&way, transform);
         let line_width = rail_family_line_width_mm(spec, &way.tags, kind, style, scale, state);
         if is_bridge(&way.tags) {
             let first = points[0];
@@ -1317,18 +1328,15 @@ fn trail_clip_margins(spec: &GenerationSpec) -> [f32; 2] {
 /// wander far beyond the mapped area, and painting the whole track would
 /// resample kilometres of invisible line. Returns how many trails put at
 /// least one segment on the model.
-fn paint_imported_trails(
-    spec: &GenerationSpec,
-    bounds: GeoBounds,
-    field: &mut SurfaceField,
-) -> usize {
+fn paint_imported_trails(spec: &GenerationSpec, field: &mut SurfaceField) -> usize {
+    let transform = transform_for(spec);
     let mut painted = 0;
     let margins = trail_clip_margins(spec);
     for trail in &spec.trails {
         let normalized = trail
             .points
             .iter()
-            .map(|point| normalized_map_point(point[0], point[1], spec, bounds))
+            .map(|point| normalized_map_point(point[0], point[1], transform))
             .collect::<Vec<_>>();
         let mut on_model = false;
         for chain in clip_polyline_to_unit_box(&normalized, margins) {
@@ -1437,6 +1445,7 @@ fn paint_buildings(
     field: &mut SurfaceField,
 ) -> Result<usize> {
     let response = fetch_osm_response(spec, cache_dir, "buildings", building_query(bounds))?;
+    let transform = transform_for(spec);
     let building_markers = spec
         .markers
         .iter()
@@ -1446,7 +1455,7 @@ fn paint_buildings(
             (
                 index,
                 marker,
-                spec.normalized_map_point(marker.latitude, marker.longitude),
+                transform.normalized_point(marker.latitude, marker.longitude),
             )
         })
         .filter(|(_, _, point)| (0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1]))
@@ -1457,7 +1466,7 @@ fn paint_buildings(
         if building.geometry.len() < 3 {
             continue;
         }
-        let points = normalized_osm_points(&building, spec, bounds);
+        let points = normalized_osm_points(&building, transform);
         let mut highlighted = false;
         for (index, _, point) in &building_markers {
             if point_in_polygon(*point, &points) {
@@ -1663,9 +1672,15 @@ fn overpass_urls(configured_url: Option<&str>, preferred_endpoint: usize) -> Vec
 }
 
 fn osm_cache_path(spec: &GenerationSpec, cache_dir: &Path, cache_prefix: &str) -> PathBuf {
+    if spec.terrain_rotation_degrees.abs() < f64::EPSILON {
+        return cache_dir.join(format!(
+            "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
+            spec.center_lat, spec.center_lon, spec.ground_span_km,
+        ));
+    }
     cache_dir.join(format!(
-        "{cache_prefix}-{:.5}-{:.5}-{:.3}.json",
-        spec.center_lat, spec.center_lon, spec.ground_span_km,
+        "{cache_prefix}-{:.5}-{:.5}-{:.3}-r{:.3}.json",
+        spec.center_lat, spec.center_lon, spec.ground_span_km, spec.terrain_rotation_degrees,
     ))
 }
 
@@ -1780,10 +1795,6 @@ fn is_tunnel(tags: &HashMap<String, String>) -> bool {
 fn is_bridge(tags: &HashMap<String, String>) -> bool {
     tags.get("bridge")
         .is_some_and(|value| value != "no" && value != "false")
-}
-
-fn unwrap_longitude(longitude: f64, center: f64) -> f64 {
-    center + normalize_longitude(longitude - center)
 }
 
 /// Continuous WorldCover grid column of a longitude, on the global lattice
@@ -2467,7 +2478,6 @@ mod tests {
         let counts = paint_osm_ways(
             &spec,
             &height_field,
-            bounds,
             &mut paths,
             OverpassResponse {
                 elements: vec![crossing_way(bounds, &[("highway", "path")])],
@@ -2481,7 +2491,6 @@ mod tests {
         let counts = paint_osm_ways(
             &spec,
             &height_field,
-            bounds,
             &mut roads,
             OverpassResponse {
                 elements: vec![crossing_way(bounds, &[("highway", "residential")])],
@@ -2549,7 +2558,7 @@ mod tests {
             remark: None,
         };
         assert_eq!(
-            paint_osm_ways(&spec, &height_field, bounds, &mut surface, response,),
+            paint_osm_ways(&spec, &height_field, &mut surface, response,),
             (1, 0, 1)
         );
     }
@@ -2604,14 +2613,14 @@ mod tests {
 
     fn paint_layer_ways(
         spec: &GenerationSpec,
-        bounds: GeoBounds,
+        _bounds: GeoBounds,
         field: &mut SurfaceField,
         kind: RailKind,
         ways: Vec<OverpassWay>,
     ) -> RailCounts {
         let height_field = HeightField::new(2, 2, vec![100.0; 4], "rail").unwrap();
         let ways = ways.into_iter().map(|way| (kind, way)).collect();
-        paint_rail_ways(spec, &height_field, bounds, field, ways)[kind.index()]
+        paint_rail_ways(spec, &height_field, field, ways)[kind.index()]
     }
 
     fn test_bounds() -> GeoBounds {
@@ -3034,7 +3043,7 @@ mod tests {
             [10, 20, 30]
         );
         let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "rail").unwrap();
-        let counts = paint_rail_ways(&spec, &height_field, bounds, &mut field, ways);
+        let counts = paint_rail_ways(&spec, &height_field, &mut field, ways);
         // One pass, but the counts stay per layer.
         assert_eq!(counts[RailKind::Railway.index()].lines, 2);
         assert_eq!(counts[RailKind::Aerialway.index()].lines, 1);
@@ -3130,7 +3139,7 @@ mod tests {
         }];
         spec.color_output.trail_width_mm = 2.0;
         let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "trail").unwrap();
-        assert_eq!(paint_imported_trails(&spec, bounds, &mut field), 1);
+        assert_eq!(paint_imported_trails(&spec, &mut field), 1);
         // Vector overlays answer through sampling, not the raster.
         assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Trail);
         assert_eq!(field.class_at(0.1, 0.5), SurfaceClass::Trail);
@@ -3142,7 +3151,30 @@ mod tests {
             [center_latitude + 5.0, bounds.east + 2.0],
         ];
         let mut untouched = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "trail").unwrap();
-        assert_eq!(paint_imported_trails(&spec, bounds, &mut untouched), 0);
+        assert_eq!(paint_imported_trails(&spec, &mut untouched), 0);
+    }
+
+    #[test]
+    fn rotated_imported_trails_enter_the_fixed_model_frame() {
+        let mut spec = GenerationSpec {
+            center_lat: 0.0,
+            center_lon: 0.0,
+            ground_span_km: 10.0,
+            terrain_rotation_degrees: 90.0,
+            ..GenerationSpec::default()
+        };
+        // A true north-south GPX/KML line becomes horizontal in the model
+        // after a 90-degree clockwise terrain rotation.
+        spec.trails = vec![toposaic_core::TrailRoute {
+            name: "North-south".into(),
+            points: vec![[-0.02, 0.0], [0.02, 0.0]],
+        }];
+        spec.color_output.trail_width_mm = 1.0;
+        let mut field = SurfaceField::new(21, 21, vec![SurfaceClass::Rock; 441], "trail").unwrap();
+
+        assert_eq!(paint_imported_trails(&spec, &mut field), 1);
+        assert_eq!(field.class_at(0.3, 0.5), SurfaceClass::Trail);
+        assert_eq!(field.class_at(0.5, 0.3), SurfaceClass::Rock);
     }
 
     #[test]
@@ -3300,6 +3332,24 @@ mod tests {
     }
 
     #[test]
+    fn osm_cache_keys_separate_rotated_source_bounds() {
+        let north_up = GenerationSpec::default();
+        let mut rotated = north_up.clone();
+        rotated.terrain_rotation_degrees = 37.5;
+        let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
+
+        assert_ne!(
+            osm_cache_path(&north_up, Path::new("/cache"), prefix),
+            osm_cache_path(&rotated, Path::new("/cache"), prefix)
+        );
+        assert!(
+            osm_cache_path(&rotated, Path::new("/cache"), prefix)
+                .to_string_lossy()
+                .contains("r37.500")
+        );
+    }
+
+    #[test]
     fn falls_back_to_a_second_overpass_instance_unless_one_is_configured() {
         assert_eq!(
             overpass_urls(None, 0),
@@ -3344,11 +3394,5 @@ mod tests {
             12.0
         );
         assert_eq!(building_height_m(&HashMap::new()), 8.0);
-    }
-
-    #[test]
-    fn unwraps_longitudes_around_the_date_line() {
-        assert!((unwrap_longitude(-179.9, 179.9) - 180.1).abs() < 0.001);
-        assert!((unwrap_longitude(179.9, -179.9) + 180.1).abs() < 0.001);
     }
 }

@@ -846,6 +846,7 @@ export function TerrainStudio() {
         spec.center_lon,
         spec.ground_span_km,
         direction,
+        spec.terrain_rotation_degrees,
       );
       setGeneratedPreview(null);
       setElevationPreview(null);
@@ -875,6 +876,7 @@ export function TerrainStudio() {
       spec.elevation_m_per_mm,
       spec.ground_span_km,
       spec.relief_mm,
+      spec.terrain_rotation_degrees,
     ],
   );
 
@@ -889,6 +891,7 @@ export function TerrainStudio() {
         center_lon: spec.center_lon,
         elevation_source: spec.elevation_source,
         ground_span_km: spec.ground_span_km,
+        terrain_rotation_degrees: spec.terrain_rotation_degrees,
         width_mm: spec.width_mm,
         base_mm: spec.base_mm,
         relief_mm: spec.relief_mm,
@@ -935,6 +938,7 @@ export function TerrainStudio() {
     spec.elevation_source,
     spec.fine_dem_detail,
     spec.ground_span_km,
+    spec.terrain_rotation_degrees,
     spec.mesh_samples_across,
     spec.overlay_samples_per_piece,
     spec.overlay_samples_across,

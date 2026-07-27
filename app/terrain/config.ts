@@ -85,6 +85,7 @@ export const initialSpec: GenerationSpec = {
   center_lon: -121.7603,
   elevation_source: "mapzen",
   ground_span_km: 18,
+  terrain_rotation_degrees: 0,
   width_mm: 180,
   rows: 10,
   columns: 10,

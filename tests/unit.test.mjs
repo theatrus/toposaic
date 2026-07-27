@@ -29,7 +29,10 @@ import {
 } from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
-import { normalizedMapPoint } from "../app/terrain/geo.ts";
+import {
+  adjacentCenter,
+  normalizedMapPoint,
+} from "../app/terrain/geo.ts";
 
 test("maps vector markers into the model frame across the date line", () => {
   const center = normalizedMapPoint(
@@ -46,6 +49,24 @@ test("maps vector markers into the model frame across the date line", () => {
   );
   assert.ok(wrapped.u > 0.5 && wrapped.u < 1);
   assert.equal(wrapped.v, 0.5);
+});
+
+test("maps arbitrary terrain rotations into the fixed model frame", () => {
+  const rotation = 37.5;
+  const topCenter = adjacentCenter(0, 0, 5, "north", rotation);
+  const top = normalizedMapPoint(
+    {
+      center_lat: 0,
+      center_lon: 0,
+      ground_span_km: 10,
+      terrain_rotation_degrees: rotation,
+    },
+    topCenter.latitude,
+    topCenter.longitude,
+  );
+  assert.ok(Math.abs(top.u - 0.5) < 1e-12);
+  assert.ok(Math.abs(top.v - 1) < 1e-12);
+  assert.equal(mergeSpecDefaults({}).terrain_rotation_degrees, 0);
 });
 
 test("compares stable and prerelease app versions", () => {

@@ -11,11 +11,10 @@ use reqwest::{StatusCode, blocking::Client};
 use toposaic_core::{DespikeReport, ElevationSource, GenerationSpec, HeightField};
 use tracing::warn;
 
-use crate::{
-    cache,
-    geo::{GeoBounds, normalize_longitude},
-    http,
-};
+use crate::{cache, geo::GeoTransform, http};
+
+#[cfg(test)]
+use crate::geo::normalize_longitude;
 
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const SOURCE_SAMPLES_PER_MESH_INTERVAL: f64 = 2.0;
@@ -122,7 +121,12 @@ fn fetch_height_field_at_size(
     let client = elevation_client()?;
     let mut tiles = HashMap::new();
     let mut missing_tiles = HashSet::new();
-    let bounds = GeoBounds::around(spec.center_lat, spec.center_lon, spec.ground_span_km);
+    let transform = GeoTransform::new(
+        spec.center_lat,
+        spec.center_lon,
+        spec.ground_span_km,
+        spec.terrain_rotation_degrees,
+    );
     let mut values_m = Vec::with_capacity(sample_width * sample_height);
     let mut sampler = ElevationSampler {
         client: &client,
@@ -137,10 +141,9 @@ fn fetch_height_field_at_size(
 
     for row in 0..sample_height {
         let v = row as f64 / (sample_height - 1) as f64;
-        let latitude = bounds.south + (bounds.north - bounds.south) * v;
         for column in 0..sample_width {
             let u = column as f64 / (sample_width - 1) as f64;
-            let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
+            let (latitude, longitude) = transform.coordinate_at_uv(u, v);
             values_m.push(sampler.sample(requested_zoom, longitude, latitude)?);
         }
         on_progress((row + 1) as f32 / sample_height as f32)?;

@@ -43,7 +43,7 @@ pub(super) fn append_label_geometry(
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let center = [uv[0] * assembled_width, uv[1] * assembled_height];
         let label_style = marker.label_style();
-        let prepared = prepare_label(marker, center)?;
+        let prepared = prepare_label(marker, center, spec.terrain_rotation_degrees as f32)?;
         let local_text = prepared
             .text
             .translate(-f64::from(origin_x), -f64::from(origin_y));
@@ -113,7 +113,11 @@ pub(super) fn append_label_geometry(
     Ok(())
 }
 
-fn prepare_label(marker: &MapMarker, center: [f32; 2]) -> Result<PreparedLabel> {
+fn prepare_label(
+    marker: &MapMarker,
+    center: [f32; 2],
+    terrain_rotation_degrees: f32,
+) -> Result<PreparedLabel> {
     let text = marker.name.split_whitespace().collect::<Vec<_>>().join(" ");
     let label_style = marker.label_style();
     let fonts = embossing_fonts(label_style.label_font)?;
@@ -122,7 +126,7 @@ fn prepare_label(marker: &MapMarker, center: [f32; 2]) -> Result<PreparedLabel> 
     let text_width = metrics.width * scale;
     let origin_x = center[0] - text_width * 0.5 - metrics.minimum_x * scale;
     let baseline_y = center[1] - marker.label_height_mm * 0.5 - metrics.minimum_y * scale;
-    let angle = -marker.rotation_degrees.to_radians();
+    let angle = -(marker.rotation_degrees - terrain_rotation_degrees).to_radians();
     let contours = EmbossedLabel {
         text,
         font: label_style.label_font,
@@ -360,6 +364,18 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn geographic_label_rotation_enters_the_model_frame() {
+        let spec = label_spec(MarkerKind::SurfaceLabel, 0.0);
+        let north_up = prepare_label(&spec.markers[0], [50.0, 50.0], 0.0).unwrap();
+        let quarter_turn = prepare_label(&spec.markers[0], [50.0, 50.0], 90.0).unwrap();
+        let north_bounds = north_up.text.bounding_rect().unwrap();
+        let rotated_bounds = quarter_turn.text.bounding_rect().unwrap();
+
+        assert!(north_bounds.width() > north_bounds.height());
+        assert!(rotated_bounds.width() < rotated_bounds.height());
+    }
+
     fn material_bounds(mesh: &Mesh, material: SurfaceClass) -> [f32; 4] {
         mesh.triangles
             .iter()
@@ -467,6 +483,7 @@ mod tests {
         let prepared = prepare_label(
             &spec.markers[0],
             [uv[0] * spec.width_mm, uv[1] * spec.height_mm()],
+            spec.terrain_rotation_degrees as f32,
         )
         .unwrap();
         let expected_plaque_top = plaque_top_z(
