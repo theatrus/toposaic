@@ -105,10 +105,16 @@ export function WallMountControls({
           }
         >
           <option value="none">None</option>
-          <option value="straight_pin">Straight pin socket</option>
+          <option value="french_cleat">
+            French cleat receiver (recommended)
+          </option>
           <option value="angled_pin">Angled pin socket</option>
-          <option value="french_cleat">French cleat receiver</option>
+          <option value="straight_pin">Straight pin socket</option>
         </select>
+        <small>
+          French cleats spread the load across the full tile or display base
+          and include matching wall hardware and an alignment spacer.
+        </small>
       </label>
       {mountEnabled && (
         <>

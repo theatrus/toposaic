@@ -290,6 +290,18 @@ test("switches between the reflowed control panels", async ({ page }) => {
   });
   await expect(floorThickness).toHaveAttribute("max", "20");
   const wallMountStyle = page.getByLabel("Wall mount style");
+  await expect(wallMountStyle.locator("option")).toHaveText([
+    "None",
+    "French cleat receiver (recommended)",
+    "Angled pin socket",
+    "Straight pin socket",
+  ]);
+  await expect(
+    mountingControls.getByText(
+      "French cleats spread the load across the full tile or display base",
+      { exact: false },
+    ),
+  ).toBeVisible();
   await wallMountStyle.selectOption("angled_pin");
   await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
   await expect(page.getByText("Pin engagement depth")).toBeVisible();
