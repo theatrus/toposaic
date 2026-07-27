@@ -1875,9 +1875,9 @@ export function TerrainStudio() {
               [
                 ["model", "Model"],
                 ["surface", "Surface"],
-                ["colors", "Colors"],
                 ["buildings", "Buildings"],
                 ["markers", "Markers"],
+                ["colors", "Colors"],
                 ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
@@ -1939,14 +1939,6 @@ export function TerrainStudio() {
             updateColor={updateColor}
           />
 
-          <ColorsPanel
-            hidden={activeSection !== "colors"}
-            spec={spec}
-            updateColor={updateColor}
-            updateMarkerSettings={updateMarkerSettings}
-            updateTray={updateTray}
-          />
-
           <BuildingsPanel
             hidden={activeSection !== "buildings"}
             spec={spec}
@@ -1961,6 +1953,14 @@ export function TerrainStudio() {
             spec={spec}
             updateMarker={updateMarker}
             updateMarkerSettings={updateMarkerSettings}
+          />
+
+          <ColorsPanel
+            hidden={activeSection !== "colors"}
+            spec={spec}
+            updateColor={updateColor}
+            updateMarkerSettings={updateMarkerSettings}
+            updateTray={updateTray}
           />
 
           <ModelTypePanel

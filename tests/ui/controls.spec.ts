@@ -32,6 +32,15 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Shape your terrain" }),
   ).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveText([
+    "Model",
+    "Surface",
+    "Buildings",
+    "Markers",
+    "Colors",
+    "Mounting",
+    "Output",
+  ]);
   await expect(generate).toHaveAttribute("form", "terrain-controls");
   await expect(page.getByLabel("Find a place")).toBeVisible();
   const elevationSource = page.getByLabel("Elevation tiles");
