@@ -12,6 +12,8 @@ export type MarkerKind =
   | "surface_label"
   | "plaque_label";
 
+export type LabelFont = "atkinson_hyperlegible" | "noto_sans" | "b612_mono";
+
 export type MapMarker = {
   name: string;
   latitude: number;
@@ -20,6 +22,25 @@ export type MapMarker = {
   label_height_mm: number;
   /** Clockwise rotation on the north-up map. */
   rotation_degrees: number;
+  dot_style?: {
+    diameter_mm: number;
+  } | null;
+  flag_style?: {
+    hole_diameter_mm: number;
+    hole_depth_mm: number;
+    fit_clearance_mm: number;
+    label_font: LabelFont;
+    label_height_mm: number;
+    width_mm: number;
+    height_mm: number;
+    export_template: boolean;
+  } | null;
+  label_style?: {
+    label_font: LabelFont;
+    relief_mm: number;
+    plaque_padding_mm: number;
+    plaque_thickness_mm: number;
+  } | null;
 };
 
 export type GenerationSpec = {
@@ -65,18 +86,6 @@ export type GenerationSpec = {
   };
   marker_settings: {
     color: string;
-    dot_diameter_mm: number;
-    hole_diameter_mm: number;
-    hole_depth_mm: number;
-    flag_clearance_mm: number;
-    label_font: "atkinson_hyperlegible" | "noto_sans" | "b612_mono";
-    flag_label_height_mm: number;
-    flag_width_mm: number;
-    flag_height_mm: number;
-    map_label_relief_mm: number;
-    plaque_padding_mm: number;
-    plaque_thickness_mm: number;
-    export_flag_template: boolean;
   };
   tray: {
     enabled: boolean;
@@ -85,7 +94,7 @@ export type GenerationSpec = {
     tray_color: string;
     contour_color: string;
     label_color: string;
-    label_font: "atkinson_hyperlegible" | "noto_sans" | "b612_mono";
+    label_font: LabelFont;
     label_height_mm: number;
     label_position: "left" | "center" | "right";
     clearance_mm: number;

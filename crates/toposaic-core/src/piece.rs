@@ -36,13 +36,19 @@ const FLAG_EDGE_GAP_MM: f32 = 0.02;
 /// left over from boolean clipping and are dropped before shelling.
 const MINIMUM_OVERLAY_AREA_MM2: f64 = 0.000_01;
 
+struct FlagCavity {
+    indices: Vec<usize>,
+    ring: Vec<[f32; 2]>,
+    depth_mm: f32,
+}
+
 mod buildings;
 mod labels;
 mod overlays;
 
 use buildings::append_building_geometry;
 use labels::append_label_geometry;
-use overlays::append_road_geometry;
+use overlays::{append_dot_geometry, append_road_geometry};
 
 #[allow(clippy::too_many_arguments)]
 fn add_forest_boundary_points(
@@ -273,7 +279,7 @@ pub(crate) fn build_piece_with_height_range(
     let mut constraints = (0..outline.len())
         .map(|index| [index, (index + 1) % outline.len()])
         .collect::<Vec<_>>();
-    let mut flag_cavities = Vec::<(Vec<usize>, Vec<[f32; 2]>)>::new();
+    let mut flag_cavities = Vec::<FlagCavity>::new();
     for marker in spec.markers.iter().filter(|marker| marker.kind.is_flag()) {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let requested_center = [
@@ -289,7 +295,8 @@ pub(crate) fn build_piece_with_height_range(
         if flag_marker_owner(spec, uv)? != (row, column) {
             continue;
         }
-        let radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        let flag_style = marker.flag_style();
+        let radius = flag_style.hole_diameter_mm * 0.5;
         let center =
             fit_flag_cavity_center(requested_center, radius, &outline).with_context(|| {
                 format!("fit flag marker '{}' within its puzzle piece", marker.name)
@@ -312,7 +319,11 @@ pub(crate) fn build_piece_with_height_range(
                 .zip(indices.iter().cycle().skip(1))
                 .map(|(start, end)| [*start, *end]),
         );
-        flag_cavities.push((indices, ring));
+        flag_cavities.push(FlagCavity {
+            indices,
+            ring,
+            depth_mm: flag_style.hole_depth_mm,
+        });
     }
 
     let minimum_x = outline
@@ -376,8 +387,9 @@ pub(crate) fn build_piece_with_height_range(
             )
         })
         .collect::<HashMap<_, _>>();
-    for (indices, ring) in &mut flag_cavities {
-        *indices = ring
+    for cavity in &mut flag_cavities {
+        cavity.indices = cavity
+            .ring
             .iter()
             .map(|point| triangulation_indices[&triangulation_point_key(*point)])
             .collect();
@@ -423,7 +435,7 @@ pub(crate) fn build_piece_with_height_range(
         if !outline_index.contains(centroid)
             || flag_cavities
                 .iter()
-                .any(|(_, points)| point_in_polygon(centroid, points))
+                .any(|cavity| point_in_polygon(centroid, &cavity.ring))
         {
             continue;
         }
@@ -486,7 +498,12 @@ pub(crate) fn build_piece_with_height_range(
     // byte-for-byte reproducible across runs.
     let flag_edges = flag_cavities
         .iter()
-        .flat_map(|(ring, _)| ring.iter().zip(ring.iter().cycle().skip(1)))
+        .flat_map(|cavity| {
+            cavity
+                .indices
+                .iter()
+                .zip(cavity.indices.iter().cycle().skip(1))
+        })
         .map(|(start, end)| {
             let (start, end) = (*start as u32, *end as u32);
             if start < end {
@@ -528,13 +545,7 @@ pub(crate) fn build_piece_with_height_range(
         materials,
         quantization_collisions: Vec::new(),
     };
-    append_flag_cavities(
-        &mut mesh,
-        &flag_cavities,
-        top_count,
-        spec.marker_settings.hole_depth_mm,
-        !rebuilt_back,
-    );
+    append_flag_cavities(&mut mesh, &flag_cavities, top_count, !rebuilt_back);
     if mounted_back {
         let bottom = if spec.solid_model {
             mount_bottom(
@@ -589,6 +600,20 @@ pub(crate) fn build_piece_with_height_range(
             building_union.as_ref(),
         )?;
     }
+    if spec.uses_dot_markers() {
+        append_dot_geometry(
+            &mut mesh,
+            spec,
+            height_field,
+            height_range,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+            building_union.as_ref(),
+        )?;
+    }
     if spec.uses_map_labels() {
         append_label_geometry(
             &mut mesh,
@@ -608,12 +633,12 @@ pub(crate) fn build_piece_with_height_range(
 
 fn append_flag_cavities(
     mesh: &mut Mesh,
-    cavities: &[(Vec<usize>, Vec<[f32; 2]>)],
+    cavities: &[FlagCavity],
     top_count: usize,
-    depth_mm: f32,
     close_bottom: bool,
 ) {
-    for (ring, _) in cavities {
+    for cavity in cavities {
+        let ring = &cavity.indices;
         if ring.len() < 3 {
             continue;
         }
@@ -621,7 +646,7 @@ fn append_flag_cavities(
             .iter()
             .map(|index| mesh.vertices[*index][2])
             .fold(f32::INFINITY, f32::min)
-            - depth_mm;
+            - cavity.depth_mm;
         let floor_start = mesh.vertices.len() as u32;
         let floor_vertices = ring
             .iter()
@@ -1401,8 +1426,8 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::spec::{
-        MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle,
-        WallMountTarget,
+        FlagMarkerStyle, MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec,
+        WallMountStyle, WallMountTarget,
     };
 
     #[test]
@@ -1417,6 +1442,13 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: Some(FlagMarkerStyle {
+                    hole_diameter_mm: 3.6,
+                    hole_depth_mm: 1.2,
+                    ..FlagMarkerStyle::default()
+                }),
+                label_style: None,
             }],
             ..GenerationSpec::default()
         };
@@ -1428,6 +1460,22 @@ mod tests {
                 && (vertex[1] - spec.height_mm() * 0.5).abs() < 0.001
                 && vertex[2] > 0.4
                 && vertex[2] < spec.base_mm + spec.relief_mm
+        }));
+        let cavity_edge_vertices = mesh
+            .vertices
+            .iter()
+            .filter(|vertex| {
+                let radius =
+                    (vertex[0] - spec.width_mm * 0.5).hypot(vertex[1] - spec.height_mm() * 0.5);
+                (radius - 1.8).abs() < 0.001 && vertex[2] > 0.4
+            })
+            .collect::<Vec<_>>();
+        assert!(cavity_edge_vertices.iter().any(|top| {
+            cavity_edge_vertices.iter().any(|bottom| {
+                (top[0] - bottom[0]).abs() < 0.001
+                    && (top[1] - bottom[1]).abs() < 0.001
+                    && (top[2] - bottom[2] - 1.2).abs() < 0.001
+            })
         }));
     }
 
@@ -1450,6 +1498,9 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
             }],
             ..GenerationSpec::default()
         };
@@ -1464,10 +1515,10 @@ mod tests {
             uv[1] * spec.height_mm() - 5.0 * piece_height,
         ];
         let outline = local_piece_outline(&spec, 5, 6).unwrap();
-        let radius = spec.marker_settings.hole_diameter_mm * 0.5;
+        let radius = spec.markers[0].flag_style().hole_diameter_mm * 0.5;
         let fitted = fit_flag_cavity_center(requested, radius, &outline).unwrap();
         let shift = (fitted[0] - requested[0]).hypot(fitted[1] - requested[1]);
-        assert!(shift > 0.0 && shift < spec.marker_settings.hole_diameter_mm);
+        assert!(shift > 0.0 && shift < spec.markers[0].flag_style().hole_diameter_mm);
         assert!(
             flag_cavity_ring(fitted, radius)
                 .iter()

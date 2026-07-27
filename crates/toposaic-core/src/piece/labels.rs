@@ -42,7 +42,8 @@ pub(super) fn append_label_geometry(
     {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let center = [uv[0] * assembled_width, uv[1] * assembled_height];
-        let prepared = prepare_label(spec, marker, center)?;
+        let label_style = marker.label_style();
+        let prepared = prepare_label(marker, center)?;
         let local_text = prepared
             .text
             .translate(-f64::from(origin_x), -f64::from(origin_y));
@@ -70,6 +71,7 @@ pub(super) fn append_label_geometry(
                 &prepared.plaque,
                 assembled_width,
                 assembled_height,
+                label_style.plaque_thickness_mm,
             );
             let local_plaque = prepared
                 .plaque
@@ -90,7 +92,7 @@ pub(super) fn append_label_geometry(
                     mesh,
                     &text_area,
                     |_| plaque_top - OVERLAY_TERRAIN_EMBED_MM,
-                    |_| plaque_top + spec.marker_settings.map_label_relief_mm,
+                    |_| plaque_top + label_style.relief_mm,
                     None,
                     SurfaceClass::Snow,
                     "triangulate plaque label text",
@@ -101,7 +103,7 @@ pub(super) fn append_label_geometry(
                 mesh,
                 &text_area,
                 |point| terrain_z(point) - OVERLAY_TERRAIN_EMBED_MM,
-                |point| terrain_z(point) + spec.marker_settings.map_label_relief_mm,
+                |point| terrain_z(point) + label_style.relief_mm,
                 None,
                 SurfaceClass::Marker,
                 "triangulate surface label text",
@@ -111,13 +113,10 @@ pub(super) fn append_label_geometry(
     Ok(())
 }
 
-fn prepare_label(
-    spec: &GenerationSpec,
-    marker: &MapMarker,
-    center: [f32; 2],
-) -> Result<PreparedLabel> {
+fn prepare_label(marker: &MapMarker, center: [f32; 2]) -> Result<PreparedLabel> {
     let text = marker.name.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fonts = embossing_fonts(spec.marker_settings.label_font)?;
+    let label_style = marker.label_style();
+    let fonts = embossing_fonts(label_style.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
     let scale = marker.label_height_mm / metrics.height;
     let text_width = metrics.width * scale;
@@ -126,7 +125,7 @@ fn prepare_label(
     let angle = -marker.rotation_degrees.to_radians();
     let contours = EmbossedLabel {
         text,
-        font: spec.marker_settings.label_font,
+        font: label_style.label_font,
         origin_x,
         baseline_y,
         scale,
@@ -140,7 +139,7 @@ fn prepare_label(
             .collect()
     })
     .collect::<Vec<Vec<[f32; 2]>>>();
-    let padding = spec.marker_settings.plaque_padding_mm;
+    let padding = label_style.plaque_padding_mm;
     let half_width = text_width * 0.5 + padding;
     let half_height = marker.label_height_mm * 0.5 + padding;
     let plaque = polygon_from_points(
@@ -248,6 +247,7 @@ fn plaque_top_z(
     plaque: &Polygon<f64>,
     assembled_width: f32,
     assembled_height: f32,
+    plaque_thickness_mm: f32,
 ) -> f32 {
     let model = polygon_from_points(&[
         [0.0, 0.0],
@@ -294,7 +294,7 @@ fn plaque_top_z(
             }
         }
     }
-    maximum + spec.marker_settings.plaque_thickness_mm
+    maximum + plaque_thickness_mm
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -325,6 +325,7 @@ mod tests {
     use crate::heightfield::HeightField;
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
+    use crate::spec::MapLabelStyle;
 
     fn label_spec(kind: MarkerKind, rotation_degrees: f32) -> GenerationSpec {
         let defaults = GenerationSpec::default();
@@ -338,6 +339,9 @@ mod tests {
                 kind,
                 label_height_mm: 5.0,
                 rotation_degrees,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
             }],
             ..defaults
         }
@@ -446,6 +450,61 @@ mod tests {
     }
 
     #[test]
+    fn each_plaque_uses_its_own_relief_padding_and_base_height() {
+        let mut spec = label_spec(MarkerKind::PlaqueLabel, 0.0);
+        spec.markers[0].label_style = Some(MapLabelStyle {
+            label_font: crate::spec::LabelFont::AtkinsonHyperlegible,
+            relief_mm: 0.9,
+            plaque_padding_mm: 2.6,
+            plaque_thickness_mm: 1.7,
+        });
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let marker_bounds = material_bounds(&mesh, SurfaceClass::Marker);
+        assert!(marker_bounds[2] - marker_bounds[0] > 20.0);
+        let uv = spec.normalized_map_point(spec.markers[0].latitude, spec.markers[0].longitude);
+        let prepared = prepare_label(
+            &spec.markers[0],
+            [uv[0] * spec.width_mm, uv[1] * spec.height_mm()],
+        )
+        .unwrap();
+        let expected_plaque_top = plaque_top_z(
+            &spec,
+            None,
+            None,
+            &prepared.plaque,
+            spec.width_mm,
+            spec.height_mm(),
+            1.7,
+        );
+        let maximum_marker_z = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Marker)
+            .flat_map(|(triangle, _)| {
+                triangle
+                    .iter()
+                    .map(|index| mesh.vertices[*index as usize][2])
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        let maximum_text_z = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Snow)
+            .flat_map(|(triangle, _)| {
+                triangle
+                    .iter()
+                    .map(|index| mesh.vertices[*index as usize][2])
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((maximum_marker_z - expected_plaque_top).abs() < 0.01);
+        assert!((maximum_text_z - (expected_plaque_top + 0.9)).abs() < 0.01);
+    }
+
+    #[test]
     fn plaques_clip_into_watertight_parts_across_a_piece_seam() {
         let defaults = GenerationSpec::default();
         let spec = GenerationSpec {
@@ -461,6 +520,9 @@ mod tests {
                 kind: MarkerKind::PlaqueLabel,
                 label_height_mm: 5.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
             }],
             ..defaults
         };

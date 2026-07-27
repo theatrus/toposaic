@@ -29,6 +29,24 @@ import {
 } from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
+import { normalizedMapPoint } from "../app/terrain/geo.ts";
+
+test("maps vector markers into the model frame across the date line", () => {
+  const center = normalizedMapPoint(
+    { center_lat: 46.8523, center_lon: -121.7603, ground_span_km: 18 },
+    46.8523,
+    -121.7603,
+  );
+  assert.ok(Math.abs(center.u - 0.5) < 1e-12);
+  assert.ok(Math.abs(center.v - 0.5) < 1e-12);
+  const wrapped = normalizedMapPoint(
+    { center_lat: 0, center_lon: 179.99, ground_span_km: 18 },
+    0,
+    -179.99,
+  );
+  assert.ok(wrapped.u > 0.5 && wrapped.u < 1);
+  assert.equal(wrapped.v, 0.5);
+});
 
 test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.2.0", "0.1.9"), true);
@@ -72,36 +90,13 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
-test("old setups recall empty markers and current marker print settings", () => {
-  const merged = mergeSpecDefaults({ marker_settings: undefined, markers: undefined });
+test("marker settings keep only the shared material color", () => {
+  const merged = mergeSpecDefaults({
+    marker_settings: undefined,
+    markers: undefined,
+  });
   assert.deepEqual(merged.markers, []);
-  assert.equal(merged.marker_settings.color, "#E24A33");
-  assert.equal(merged.marker_settings.dot_diameter_mm, 3);
-  assert.equal(merged.marker_settings.hole_diameter_mm, 2.4);
-  assert.equal(
-    merged.marker_settings.label_font,
-    "atkinson_hyperlegible",
-  );
-  assert.equal(merged.marker_settings.flag_label_height_mm, 4);
-  assert.equal(merged.marker_settings.flag_width_mm, 30);
-  assert.equal(merged.marker_settings.flag_height_mm, 12);
-  assert.equal(merged.marker_settings.map_label_relief_mm, 0.4);
-  assert.equal(merged.marker_settings.plaque_padding_mm, 1.2);
-  assert.equal(merged.marker_settings.plaque_thickness_mm, 0.8);
-  assert.equal(merged.marker_settings.export_flag_template, true);
-
-  const oldMarker = mergeSpecDefaults({
-    markers: [
-      {
-        kind: "dot",
-        latitude: 46.8,
-        longitude: -121.7,
-        name: "Old point",
-      },
-    ],
-  }).markers[0];
-  assert.equal(oldMarker.label_height_mm, 4);
-  assert.equal(oldMarker.rotation_degrees, 0);
+  assert.deepEqual(merged.marker_settings, { color: "#E24A33" });
 });
 
 test("defaults close-view line scaling on and recalls old setups", () => {
@@ -273,7 +268,15 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.deepEqual(merged.trails, []);
   // Setups saved with trails keep them.
   const withTrail = mergeSpecDefaults({
-    trails: [{ name: "Loop", points: [[46.8, -121.7], [46.9, -121.6]] }],
+    trails: [
+      {
+        name: "Loop",
+        points: [
+          [46.8, -121.7],
+          [46.9, -121.6],
+        ],
+      },
+    ],
   });
   assert.equal(withTrail.trails.length, 1);
   assert.equal(withTrail.trails[0].name, "Loop");
@@ -437,10 +440,7 @@ test("matches the backend's per-piece round-up in the assembled label", () => {
   };
   assert.equal(assembledMeshSamples(ultra), 2050);
   // A solid model is a single piece, so nothing rounds.
-  assert.equal(
-    assembledMeshSamples({ ...ultra, solid_model: true }),
-    2048,
-  );
+  assert.equal(assembledMeshSamples({ ...ultra, solid_model: true }), 2048);
   // Even totals divide cleanly and stay put.
   assert.equal(assembledMeshSamples(initialSpec), 640);
 });
@@ -455,7 +455,15 @@ test("counts trails alone toward the overlay sampling like the backend", () => {
     overlay_samples_across: 1024,
     color_output: { ...initialSpec.color_output, enabled: false },
     buildings: { ...initialSpec.buildings, enabled: false },
-    trails: [{ name: "Loop", points: [[46.8, -121.7], [46.9, -121.6]] }],
+    trails: [
+      {
+        name: "Loop",
+        points: [
+          [46.8, -121.7],
+          [46.9, -121.6],
+        ],
+      },
+    ],
   };
   // 1024 across 10 pieces rounds up to 103 per piece, 1030 assembled.
   assert.equal(effectiveMeshSamples(trailsOnly), 103);

@@ -25,9 +25,10 @@ pub use project::{
 };
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
-    ElevationSource, GenerationSpec, LabelFont, LineScaleSpec, LineStyle, MapMarker, MarkerKind,
-    MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail,
-    SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute,
-    TrayLabelFont, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    DotMarkerStyle, ElevationSource, FlagMarkerStyle, GenerationSpec, LabelFont, LineScaleSpec,
+    LineStyle, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
+    RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
+    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
+    TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

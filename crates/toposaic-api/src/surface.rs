@@ -531,13 +531,6 @@ pub fn fetch_surface_field(
             ),
         );
     }
-    let marker_dots = paint_marker_dots(spec, &mut field);
-    if marker_dots > 0 {
-        append_source(
-            &mut field.source,
-            format!("map markers: {marker_dots} colored dots drawn on the terrain"),
-        );
-    }
     if spec.buildings.enabled || spec.uses_building_markers() {
         match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(count) => append_source(
@@ -1495,33 +1488,6 @@ fn paint_buildings(
     Ok(painted)
 }
 
-fn paint_marker_dots(spec: &GenerationSpec, field: &mut SurfaceField) -> usize {
-    let radius_mm = spec.marker_settings.dot_diameter_mm * 0.5;
-    let mut painted = 0;
-    for marker in spec
-        .markers
-        .iter()
-        .filter(|marker| marker.kind == MarkerKind::Dot)
-    {
-        let center = spec.normalized_map_point(marker.latitude, marker.longitude);
-        if !(0.0..=1.0).contains(&center[0]) || !(0.0..=1.0).contains(&center[1]) {
-            continue;
-        }
-        let points = (0..32)
-            .map(|index| {
-                let angle = index as f32 / 32.0 * std::f32::consts::TAU;
-                [
-                    center[0] + angle.cos() * radius_mm / spec.width_mm,
-                    center[1] + angle.sin() * radius_mm / spec.height_mm(),
-                ]
-            })
-            .collect::<Vec<_>>();
-        field.paint_surface_area(&points, SurfaceClass::Marker);
-        painted += 1;
-    }
-    painted
-}
-
 fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
     let mut inside = false;
     for (start, end) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
@@ -2215,7 +2181,6 @@ fn world_cover_tile(longitude: f64, latitude: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toposaic_core::MapMarker;
 
     #[test]
     fn resolves_world_cover_tile_names() {
@@ -2231,24 +2196,6 @@ mod tests {
         assert_eq!(classify_world_cover(80), SurfaceClass::Water);
         assert_eq!(classify_world_cover(60), SurfaceClass::Rock);
         assert_eq!(classify_world_cover(30), SurfaceClass::Rock);
-    }
-
-    #[test]
-    fn dot_markers_paint_the_marker_material_at_their_map_position() {
-        let mut spec = GenerationSpec::default();
-        spec.markers.push(MapMarker {
-            name: "Centre".into(),
-            latitude: spec.center_lat,
-            longitude: spec.center_lon,
-            kind: MarkerKind::Dot,
-            label_height_mm: 4.0,
-            rotation_degrees: 0.0,
-        });
-        let mut field =
-            SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "marker test").unwrap();
-
-        assert_eq!(paint_marker_dots(&spec, &mut field), 1);
-        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Marker);
     }
 
     #[test]

@@ -10,6 +10,7 @@ import {
   ACESFilmicToneMapping,
   BoxGeometry,
   BufferGeometry,
+  CircleGeometry,
   Color,
   DirectionalLight,
   DoubleSide,
@@ -39,11 +40,13 @@ import {
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
+import { normalizedMapPoint } from "./geo";
 
 // The terrain color the mesh renders when color output is off but trails
 // or buildings still force color materials. The legend must show the same
 // value, not the palette rock color.
 const NEUTRAL_TERRAIN_COLOR = "#74846B";
+const DOT_OVERLAY_HEIGHT_MM = 0.2;
 
 // Palette keys in SurfaceClass::ALL order, so the index a preview reports
 // is the index into this list. See crates/toposaic-core/src/spec.rs.
@@ -164,16 +167,14 @@ function puzzleGridPoint(spec: PuzzleGridSpec, row: number, column: number) {
       ? 0
       : column === spec.columns
         ? spec.width_mm
-        : column * pieceWidth +
-          (edgeNoise(seed, 0n) - 0.5) * pieceWidth * 0.18;
+        : column * pieceWidth + (edgeNoise(seed, 0n) - 0.5) * pieceWidth * 0.18;
   const modelHeight = (spec.width_mm * spec.rows) / spec.columns;
   const y =
     row === 0
       ? 0
       : row === spec.rows
         ? modelHeight
-        : row * pieceHeight +
-          (edgeNoise(seed, 1n) - 0.5) * pieceHeight * 0.18;
+        : row * pieceHeight + (edgeNoise(seed, 1n) - 0.5) * pieceHeight * 0.18;
   return { x, y };
 }
 
@@ -223,10 +224,7 @@ function jigsawEdge(t: number, pattern: EdgePattern) {
   } else if (t < 0.5) {
     point = cubicBezier(
       headLeft,
-      [
-        headLeft[0],
-        headLeft[1] + (1 - headLeft[1]) * quarterCircle,
-      ],
+      [headLeft[0], headLeft[1] + (1 - headLeft[1]) * quarterCircle],
       [pattern.center - radius * quarterCircle, 1],
       [pattern.center, 1],
       (t - 0.42) / 0.08,
@@ -235,10 +233,7 @@ function jigsawEdge(t: number, pattern: EdgePattern) {
     point = cubicBezier(
       [pattern.center, 1],
       [pattern.center + radius * quarterCircle, 1],
-      [
-        headRight[0],
-        headRight[1] + (1 - headRight[1]) * quarterCircle,
-      ],
+      [headRight[0], headRight[1] + (1 - headRight[1]) * quarterCircle],
       headRight,
       (t - 0.5) / 0.08,
     );
@@ -323,6 +318,8 @@ export function ReliefPreview({
     base_mm,
     center_lat,
     center_lon,
+    ground_span_km,
+    markers,
     rows,
     columns,
     solid_model,
@@ -346,12 +343,12 @@ export function ReliefPreview({
     aerial_color,
   } = spec.color_output;
   const markerColor = spec.marker_settings.color;
-  const coloredMarkersPresent = spec.markers.some(
+  const coloredMarkersPresent = markers.some(
     (marker) => !isFlagMarker(marker.kind),
   );
   const buildingsEnabled =
     spec.buildings.enabled ||
-    spec.markers.some((marker) => marker.kind === "building");
+    markers.some((marker) => marker.kind === "building");
   const trailsPresent = spec.trails.length > 0;
   // Which class each rail-family layer's lines actually land in, resolved
   // the way the backend resolves it. A layer only earns its own legend
@@ -413,8 +410,7 @@ export function ReliefPreview({
               Math.sin((u * 9.2 + seedA) * 1.2) * 0.19 +
               Math.cos((v * 7.1 - seedB) * 1.4) * 0.14;
             const folds =
-              Math.abs(Math.sin((u * 3.8 + v * 5.6 + seedB) * Math.PI)) *
-              0.17;
+              Math.abs(Math.sin((u * 3.8 + v * 5.6 + seedB) * Math.PI)) * 0.17;
             const dx = u - (0.54 + seedB * 0.05);
             const dy = v - (0.48 + seedA * 0.05);
             const peak = Math.exp(-(dx * dx * 5.5 + dy * dy * 7)) * 0.63;
@@ -455,8 +451,7 @@ export function ReliefPreview({
       water: preview?.surface_palette?.water ?? water_color,
       road: preview?.surface_palette?.road ?? road_color,
       building: preview?.surface_palette?.building ?? building_color,
-      route_trail:
-        preview?.surface_palette?.route_trail ?? route_trail_color,
+      route_trail: preview?.surface_palette?.route_trail ?? route_trail_color,
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
       aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
@@ -469,7 +464,8 @@ export function ReliefPreview({
       // its filament slots, the preview does not — so this lookup must
       // keep that order exactly. Rail (7) and Aerial (8) only ever arrive
       // when their layer is drawn in its own color.
-      const key = surfaceClass === undefined ? undefined : CLASS_KEYS[surfaceClass];
+      const key =
+        surfaceClass === undefined ? undefined : CLASS_KEYS[surfaceClass];
       // With color output off the mesh shows neutral terrain, not rock.
       if (key === undefined || (key === "rock" && !colorOutputEnabled)) {
         return colorOutputEnabled ? palette.rock : NEUTRAL_TERRAIN_COLOR;
@@ -498,11 +494,7 @@ export function ReliefPreview({
         spanY;
       return new Vector3(-slopeX, 1, -slopeY).normalize();
     };
-    const addVertex = (
-      x: number,
-      y: number,
-      color: Color,
-    ) => {
+    const addVertex = (x: number, y: number, color: Color) => {
       const u = x / Math.max(1, sampleWidth - 1);
       const v = y / Math.max(1, sampleHeight - 1);
       positions.push(
@@ -556,6 +548,52 @@ export function ReliefPreview({
     const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
     scene.add(terrainMesh);
 
+    const pointOnTerrain = (u: number, v: number) =>
+      new Vector3(
+        previewWorldX(u),
+        heightAt(u, v) * heightScale + 0.0025,
+        v - 0.5,
+      );
+
+    const dotMarkers = markers.filter((candidate) => candidate.kind === "dot");
+    canvas.dataset.vectorDotCount = String(dotMarkers.length);
+    for (const marker of dotMarkers) {
+      const { u, v } = normalizedMapPoint(
+        { center_lat, center_lon, ground_span_km },
+        marker.latitude,
+        marker.longitude,
+      );
+      if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+      const deltaU = 1 / Math.max(2, sampleWidth - 1);
+      const deltaV = 1 / Math.max(2, sampleHeight - 1);
+      const westU = Math.max(0, u - deltaU);
+      const eastU = Math.min(1, u + deltaU);
+      const southV = Math.max(0, v - deltaV);
+      const northV = Math.min(1, v + deltaV);
+      const slopeX =
+        ((heightAt(eastU, v) - heightAt(westU, v)) * heightScale) /
+        (previewWorldX(eastU) - previewWorldX(westU));
+      const slopeZ =
+        ((heightAt(u, northV) - heightAt(u, southV)) * heightScale) /
+        (northV - southV);
+      const normal = new Vector3(-slopeX, 1, -slopeZ).normalize();
+      const dotDiameterMm = marker.dot_style?.diameter_mm ?? 3;
+      const geometry = new CircleGeometry(dotDiameterMm / (2 * width_mm), 64);
+      geometry.rotateX(-Math.PI / 2);
+      const material = new MeshStandardMaterial({
+        color: markerColor,
+        metalness: 0,
+        roughness: 0.76,
+        side: DoubleSide,
+      });
+      const dot = new Mesh(geometry, material);
+      dot.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), normal);
+      dot.position
+        .copy(pointOnTerrain(u, v))
+        .addScaledVector(normal, DOT_OVERLAY_HEIGHT_MM / width_mm);
+      scene.add(dot);
+    }
+
     const baseGeometry = new BoxGeometry(1, baseDepth, 1);
     const baseMaterial = new MeshStandardMaterial({
       color: new Color(palette.rock).multiplyScalar(0.68),
@@ -571,12 +609,6 @@ export function ReliefPreview({
       opacity: 0.72,
       transparent: true,
     });
-    const pointOnTerrain = (u: number, v: number) =>
-      new Vector3(
-        previewWorldX(u),
-        heightAt(u, v) * heightScale + 0.0025,
-        v - 0.5,
-      );
     const perimeter = [
       ...Array.from({ length: sampleWidth }, (_, x) =>
         pointOnTerrain(x / Math.max(1, sampleWidth - 1), 0),
@@ -585,10 +617,7 @@ export function ReliefPreview({
         pointOnTerrain(1, (y + 1) / Math.max(1, sampleHeight - 1)),
       ),
       ...Array.from({ length: sampleWidth - 1 }, (_, x) =>
-        pointOnTerrain(
-          (sampleWidth - 2 - x) / Math.max(1, sampleWidth - 1),
-          1,
-        ),
+        pointOnTerrain((sampleWidth - 2 - x) / Math.max(1, sampleWidth - 1), 1),
       ),
       ...Array.from({ length: sampleHeight - 2 }, (_, y) =>
         pointOnTerrain(
@@ -599,10 +628,7 @@ export function ReliefPreview({
     ];
     perimeter.push(perimeter[0].clone());
     scene.add(
-      new Line(
-        new BufferGeometry().setFromPoints(perimeter),
-        lineMaterial,
-      ),
+      new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
     );
 
     const gridSpec = {
@@ -645,17 +671,11 @@ export function ReliefPreview({
               puzzleTabDepth,
             );
             points.push(
-              pointOnTerrain(
-                edgePoint.x / width_mm,
-                edgePoint.y / modelHeight,
-              ),
+              pointOnTerrain(edgePoint.x / width_mm, edgePoint.y / modelHeight),
             );
           }
           scene.add(
-            new Line(
-              new BufferGeometry().setFromPoints(points),
-              lineMaterial,
-            ),
+            new Line(new BufferGeometry().setFromPoints(points), lineMaterial),
           );
         }
       }
@@ -686,17 +706,11 @@ export function ReliefPreview({
               puzzleTabDepth,
             );
             points.push(
-              pointOnTerrain(
-                edgePoint.x / width_mm,
-                edgePoint.y / modelHeight,
-              ),
+              pointOnTerrain(edgePoint.x / width_mm, edgePoint.y / modelHeight),
             );
           }
           scene.add(
-            new Line(
-              new BufferGeometry().setFromPoints(points),
-              lineMaterial,
-            ),
+            new Line(new BufferGeometry().setFromPoints(points), lineMaterial),
           );
         }
       }
@@ -712,11 +726,7 @@ export function ReliefPreview({
 
     const camera = new PerspectiveCamera(36, 1, 0.01, 20);
     const cameraScale = Math.max(1, heightScale * 1.5);
-    const defaultTarget: [number, number, number] = [
-      0,
-      heightScale * 0.35,
-      0,
-    ];
+    const defaultTarget: [number, number, number] = [0, heightScale * 0.35, 0];
     const savedView = resetViewRef.current ? null : viewRef.current;
     if (savedView) {
       camera.position.fromArray(savedView.position);
@@ -758,8 +768,7 @@ export function ReliefPreview({
       render();
     };
     const onViewChange = () => {
-      const positionDelta =
-        camera.position.distanceToSquared(initialPosition);
+      const positionDelta = camera.position.distanceToSquared(initialPosition);
       const targetDelta = controls.target.distanceToSquared(initialTarget);
       const cameraMoved = positionDelta > 1e-12 || targetDelta > 1e-12;
       if (cameraMoved) {
@@ -806,6 +815,7 @@ export function ReliefPreview({
     base_mm,
     center_lat,
     center_lon,
+    ground_span_km,
     rows,
     columns,
     solid_model,
@@ -829,6 +839,7 @@ export function ReliefPreview({
     rail_color,
     aerial_color,
     markerColor,
+    markers,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -891,8 +902,9 @@ export function ReliefPreview({
         </button>
       </div>
       {(spec.color_output.enabled ||
-        spec.buildings.enabled ||
-        trailsPresent) && (
+        buildingsEnabled ||
+        trailsPresent ||
+        coloredMarkersPresent) && (
         <div className="color-legend" aria-label="Surface color legend">
           {(
             [
@@ -909,35 +921,34 @@ export function ReliefPreview({
               ["Marker", "marker", spec.marker_settings.color],
             ] as const
           )
-            .filter(
-              ([, key]) => {
-                if (key === "trail") {
-                  return trailsPresent;
-                }
-                if (key === "route_trail") {
-                  return spec.color_output.enabled && spec.color_output.roads_enabled;
-                }
-                if (key === "marker") {
-                  return coloredMarkersPresent;
-                }
-                if (!spec.color_output.enabled) {
-                  return (
-                    key === "rock" ||
-                    (key === "building" && buildingsEnabled)
-                  );
-                }
-                // Every color the model shows carries exactly one name, so
-                // each line entry asks whether its class is drawn at all —
-                // by its own layer or by one borrowing it — rather than
-                // whether its own toggle happens to be on.
+            .filter(([, key]) => {
+              if (key === "trail") {
+                return trailsPresent;
+              }
+              if (key === "route_trail") {
                 return (
-                  (key !== "road" || roadClassDrawn) &&
-                  (key !== "building" || buildingsEnabled) &&
-                  (key !== "rail" || railClassDrawn) &&
-                  (key !== "aerialway" || aerialClassDrawn)
+                  spec.color_output.enabled && spec.color_output.roads_enabled
                 );
-              },
-            )
+              }
+              if (key === "marker") {
+                return coloredMarkersPresent;
+              }
+              if (!spec.color_output.enabled) {
+                return (
+                  key === "rock" || (key === "building" && buildingsEnabled)
+                );
+              }
+              // Every color the model shows carries exactly one name, so
+              // each line entry asks whether its class is drawn at all —
+              // by its own layer or by one borrowing it — rather than
+              // whether its own toggle happens to be on.
+              return (
+                (key !== "road" || roadClassDrawn) &&
+                (key !== "building" || buildingsEnabled) &&
+                (key !== "rail" || railClassDrawn) &&
+                (key !== "aerialway" || aerialClassDrawn)
+              );
+            })
             .map(([label, key, color]) => (
               <span key={key}>
                 <i

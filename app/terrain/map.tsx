@@ -11,8 +11,13 @@ import {
   useState,
 } from "react";
 
-import type { GenerationSpec, MarkerKind } from "./contracts";
-import { isMapLabel, MAX_GROUND_SPAN_KM, MIN_GROUND_SPAN_KM } from "./config";
+import type { GenerationSpec } from "./contracts";
+import {
+  DEFAULT_MAP_LABEL_STYLE,
+  isMapLabel,
+  MAX_GROUND_SPAN_KM,
+  MIN_GROUND_SPAN_KM,
+} from "./config";
 import { superTileCenter } from "./geo";
 
 const TILE_SIZE = 256;
@@ -31,15 +36,13 @@ function projectToWorld(longitude: number, latitude: number, zoom: number) {
   const sine = Math.sin((clampedLatitude * Math.PI) / 180);
   return {
     x: ((longitude + 180) / 360) * scale,
-    y:
-      (0.5 - Math.log((1 + sine) / (1 - sine)) / (4 * Math.PI)) *
-      scale,
+    y: (0.5 - Math.log((1 + sine) / (1 - sine)) / (4 * Math.PI)) * scale,
   };
 }
 
 function unprojectFromWorld(x: number, y: number, zoom: number) {
   const scale = TILE_SIZE * 2 ** zoom;
-  const longitude = ((((x / scale) * 360) % 360) + 360) % 360 - 180;
+  const longitude = (((((x / scale) * 360) % 360) + 360) % 360) - 180;
   const mercatorY = Math.PI * (1 - (2 * y) / scale);
   const latitude = (Math.atan(Math.sinh(mercatorY)) * 180) / Math.PI;
   return {
@@ -53,14 +56,14 @@ function unprojectFromWorld(x: number, y: number, zoom: number) {
 
 export function TerrainMap({
   spec,
-  markerPlacementKind,
-  onAddMarker,
+  markerPlacementMode,
+  onPlaceMarker,
   onCenterChange,
   onGroundSpanChange,
 }: {
   spec: GenerationSpec;
-  markerPlacementKind: MarkerKind | null;
-  onAddMarker: (longitude: number, latitude: number) => void;
+  markerPlacementMode: "place" | "move" | null;
+  onPlaceMarker: (longitude: number, latitude: number) => void;
   onCenterChange: (longitude: number, latitude: number) => void;
   onGroundSpanChange: (groundSpanKm: number) => void;
 }) {
@@ -97,8 +100,7 @@ export function TerrainMap({
     (156543.03392 *
       Math.max(0.1, Math.cos((spec.center_lat * Math.PI) / 180))) /
     2 ** zoom;
-  const baseSelectionSize =
-    (spec.ground_span_km * 1000) / baseMetresPerPixel;
+  const baseSelectionSize = (spec.ground_span_km * 1000) / baseMetresPerPixel;
   const fitScale = Math.max(
     1,
     size.width
@@ -217,9 +219,7 @@ export function TerrainMap({
         const stride = Math.max(1, Math.ceil(trail.points.length / 400));
         const points = [];
         for (let index = 0; index < trail.points.length; index += stride) {
-          points.push(
-            toScreen(trail.points[index][0], trail.points[index][1]),
-          );
+          points.push(toScreen(trail.points[index][0], trail.points[index][1]));
         }
         const last = trail.points[trail.points.length - 1];
         const lastScreen = toScreen(last[0], last[1]);
@@ -266,17 +266,11 @@ export function TerrainMap({
     ? spec.ground_span_km.toFixed(0)
     : spec.ground_span_km.toFixed(2).replace(/0$/, "");
   const anchorRow =
-    spec.super_tile_anchor === "center"
-      ? Math.floor(superTileRows / 2)
-      : 0;
+    spec.super_tile_anchor === "center" ? Math.floor(superTileRows / 2) : 0;
   const anchorColumn =
-    spec.super_tile_anchor === "center"
-      ? Math.floor(superTileColumns / 2)
-      : 0;
+    spec.super_tile_anchor === "center" ? Math.floor(superTileColumns / 2) : 0;
   const anchorDescription =
-    spec.super_tile_anchor === "center"
-      ? "center tile"
-      : "top-left tile";
+    spec.super_tile_anchor === "center" ? "center tile" : "top-left tile";
 
   const moveToWorld = useCallback(
     (worldX: number, worldY: number) =>
@@ -298,7 +292,7 @@ export function TerrainMap({
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (markerPlacementKind) return;
+    if (markerPlacementMode) return;
     const next = moveToWorld(
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
@@ -310,7 +304,7 @@ export function TerrainMap({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    if (markerPlacementKind) {
+    if (markerPlacementMode) {
       if (
         Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <=
         6
@@ -320,7 +314,7 @@ export function TerrainMap({
           viewWorldCenter.x + event.clientX - bounds.left - size.width / 2,
           viewWorldCenter.y + event.clientY - bounds.top - size.height / 2,
         );
-        onAddMarker(point.longitude, point.latitude);
+        onPlaceMarker(point.longitude, point.latitude);
       }
       return;
     }
@@ -405,7 +399,7 @@ export function TerrainMap({
     <div className="map-shell">
       <div
         ref={containerRef}
-        className={`map-canvas${markerPlacementKind ? " placing-marker" : ""}`}
+        className={`map-canvas${markerPlacementMode ? " placing-marker" : ""}`}
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
         aria-label="Terrain map. Drag to choose a place, use the mouse wheel to zoom, or focus the map and pan with the arrow keys."
         onKeyDown={keyDown}
@@ -459,10 +453,8 @@ export function TerrainMap({
                 role="img"
                 style={{
                   height: selectionSize,
-                  left:
-                    cell.worldX - viewWorldCenter.x + size.width / 2,
-                  top:
-                    cell.worldY - viewWorldCenter.y + size.height / 2,
+                  left: cell.worldX - viewWorldCenter.x + size.width / 2,
+                  top: cell.worldY - viewWorldCenter.y + size.height / 2,
                   width: selectionSize,
                 }}
               >
@@ -501,15 +493,20 @@ export function TerrainMap({
         {markerPositions.length > 0 && (
           <div aria-hidden="true" className="map-markers">
             {markerPositions.map((marker) => (
+              // Convert print dimensions to the current map scale. Keep only a
+              // small legibility floor so text-size changes and map-only zoom
+              // remain visible in the preview.
               <span
                 className={`map-marker ${marker.kind}`}
                 key={`${marker.latitude}:${marker.longitude}:${marker.index}`}
-                style={{
-                  left: marker.x,
-                  top: marker.y,
-                  "--marker-color": spec.marker_settings.color,
-                  "--marker-rotation": `${marker.rotation_degrees}deg`,
-                } as CSSProperties}
+                style={
+                  {
+                    left: marker.x,
+                    top: marker.y,
+                    "--marker-color": spec.marker_settings.color,
+                    "--marker-rotation": `${marker.rotation_degrees}deg`,
+                  } as CSSProperties
+                }
                 title={marker.name}
               >
                 {marker.kind === "flag_label" && (
@@ -518,16 +515,19 @@ export function TerrainMap({
                 {isMapLabel(marker.kind) && (
                   <span
                     className="map-feature-label-text"
+                    data-label-height-mm={marker.label_height_mm}
                     style={{
                       fontSize: Math.max(
-                        8,
-                        (marker.label_height_mm / spec.width_mm) * selectionSize,
+                        3,
+                        (marker.label_height_mm / spec.width_mm) *
+                          selectionSize,
                       ),
                       padding:
                         marker.kind === "plaque_label"
                           ? Math.max(
                               2,
-                              (spec.marker_settings.plaque_padding_mm /
+                              ((marker.label_style?.plaque_padding_mm ??
+                                DEFAULT_MAP_LABEL_STYLE.plaque_padding_mm) /
                                 spec.width_mm) *
                                 selectionSize,
                             )
@@ -588,14 +588,16 @@ export function TerrainMap({
       <div className="map-instruction">
         {tilesLoaded ? (
           <>
-            {markerPlacementKind
-              ? "Click the map to place the marker"
+            {markerPlacementMode
+              ? markerPlacementMode === "move"
+                ? "Click the map to move the marker"
+                : "Click the map to place the marker"
               : superTileActive
-              ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
-              : "Drag the map to choose a place"}
+                ? `Super-tile mode · ${superTileColumns} × ${superTileRows} · current tile is ${anchorDescription}`
+                : "Drag the map to choose a place"}
             <small>
-              {zoomLinked ? "Linked zoom" : "Map-only zoom"} · Scroll to zoom
-              · Arrow keys pan · Shift for bigger steps
+              {zoomLinked ? "Linked zoom" : "Map-only zoom"} · Scroll to zoom ·
+              Arrow keys pan · Shift for bigger steps
             </small>
           </>
         ) : (

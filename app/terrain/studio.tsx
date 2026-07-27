@@ -27,10 +27,14 @@ import {
 import { IS_TAURI, terrainApi } from "./api";
 import { ExternalLink } from "./external-link";
 import {
+  DEFAULT_DOT_MARKER_STYLE,
+  DEFAULT_FLAG_MARKER_STYLE,
+  DEFAULT_MAP_LABEL_STYLE,
   MAX_ASSEMBLED_SAMPLES,
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
   initialSpec,
+  isMapLabel,
   markerNeedsSurfaceData,
   limitPlaceName,
   mergeSpecDefaults,
@@ -173,11 +177,22 @@ export function TerrainStudio() {
     useState<GenerationControlTab>("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
     useState<MarkerKind | null>(null);
+  const [movingMarkerIndex, setMovingMarkerIndex] = useState<number | null>(
+    null,
+  );
+  const showSection = useCallback((section: GenerationControlTab) => {
+    setActiveSection(section);
+    if (section === "markers") return;
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex(null);
+  }, []);
   const [job, setJob] = useState<Job | null>(null);
-  const [generatedPreview, setGeneratedPreview] =
-    useState<PreviewData | null>(null);
-  const [elevationPreview, setElevationPreview] =
-    useState<PreviewData | null>(null);
+  const [generatedPreview, setGeneratedPreview] = useState<PreviewData | null>(
+    null,
+  );
+  const [elevationPreview, setElevationPreview] = useState<PreviewData | null>(
+    null,
+  );
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
@@ -405,7 +420,10 @@ export function TerrainStudio() {
   );
 
   const update = useCallback(
-    <Key extends keyof GenerationSpec>(key: Key, value: GenerationSpec[Key]) => {
+    <Key extends keyof GenerationSpec>(
+      key: Key,
+      value: GenerationSpec[Key],
+    ) => {
       setGeneratedPreview(null);
       setSpec((current) => {
         if (key !== "base_mm") return { ...current, [key]: value };
@@ -413,13 +431,21 @@ export function TerrainStudio() {
         return {
           ...current,
           [key]: value,
-          marker_settings: {
-            ...current.marker_settings,
-            hole_depth_mm: Math.min(
-              current.marker_settings.hole_depth_mm,
-              Math.max(0.6, baseMm - 0.4),
-            ),
-          },
+          markers: current.markers.map((marker) =>
+            marker.kind === "flag_hole" || marker.kind === "flag_label"
+              ? {
+                  ...marker,
+                  flag_style: {
+                    ...(marker.flag_style ?? DEFAULT_FLAG_MARKER_STYLE),
+                    hole_depth_mm: Math.min(
+                      (marker.flag_style ?? DEFAULT_FLAG_MARKER_STYLE)
+                        .hole_depth_mm,
+                      Math.max(0.6, baseMm - 0.4),
+                    ),
+                  },
+                }
+              : marker,
+          ),
         };
       });
     },
@@ -517,27 +543,28 @@ export function TerrainStudio() {
       value: GenerationSpec["marker_settings"][Key],
     ) => {
       setGeneratedPreview(null);
-      setSpec((current) => {
-        const markerSettings = { ...current.marker_settings, [key]: value };
-        if (key === "hole_diameter_mm") {
-          markerSettings.flag_clearance_mm = Math.min(
-            markerSettings.flag_clearance_mm,
-            Math.max(0.1, (value as number) - 0.9),
-          );
-        }
-        if (key === "flag_height_mm") {
-          markerSettings.flag_label_height_mm = Math.min(
-            markerSettings.flag_label_height_mm,
-            Math.max(1.5, (value as number) - 2),
-          );
-        }
-        return { ...current, marker_settings: markerSettings };
-      });
+      setSpec((current) => ({
+        ...current,
+        marker_settings: { ...current.marker_settings, [key]: value },
+      }));
     },
     [],
   );
-  const addMarker = useCallback(
+  const placeMarker = useCallback(
     (longitude: number, latitude: number) => {
+      if (movingMarkerIndex !== null) {
+        setGeneratedPreview(null);
+        setSpec((current) => ({
+          ...current,
+          markers: current.markers.map((marker, index) =>
+            index === movingMarkerIndex
+              ? { ...marker, longitude, latitude }
+              : marker,
+          ),
+        }));
+        setMovingMarkerIndex(null);
+        return;
+      }
       if (!markerPlacementKind) return;
       setGeneratedPreview(null);
       setSpec((current) => {
@@ -560,13 +587,6 @@ export function TerrainStudio() {
             markerPlacementKind === "building"
               ? { ...current.buildings, enabled: true }
               : current.buildings,
-          marker_settings: {
-            ...current.marker_settings,
-            hole_depth_mm: Math.min(
-              current.marker_settings.hole_depth_mm,
-              Math.max(0.6, current.base_mm - 0.4),
-            ),
-          },
           markers: [
             ...current.markers,
             {
@@ -576,14 +596,42 @@ export function TerrainStudio() {
               name: `${label} ${number}`,
               label_height_mm: 4,
               rotation_degrees: 0,
+              ...(markerPlacementKind === "dot"
+                ? { dot_style: { ...DEFAULT_DOT_MARKER_STYLE } }
+                : {}),
+              ...(markerPlacementKind === "flag_hole" ||
+              markerPlacementKind === "flag_label"
+                ? {
+                    flag_style: {
+                      ...DEFAULT_FLAG_MARKER_STYLE,
+                      hole_depth_mm: Math.min(
+                        DEFAULT_FLAG_MARKER_STYLE.hole_depth_mm,
+                        Math.max(0.6, current.base_mm - 0.4),
+                      ),
+                    },
+                  }
+                : {}),
+              ...(isMapLabel(markerPlacementKind)
+                ? {
+                    label_style: { ...DEFAULT_MAP_LABEL_STYLE },
+                  }
+                : {}),
             },
           ].slice(0, 50),
         };
       });
       setMarkerPlacementKind(null);
     },
-    [markerPlacementKind],
+    [markerPlacementKind, movingMarkerIndex],
   );
+  const chooseMarkerPlacementKind = useCallback((kind: MarkerKind | null) => {
+    setMovingMarkerIndex(null);
+    setMarkerPlacementKind(kind);
+  }, []);
+  const moveMarker = useCallback((index: number) => {
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex((current) => (current === index ? null : index));
+  }, []);
   const updateMarker = useCallback(
     (index: number, patch: Partial<GenerationSpec["markers"][number]>) => {
       setGeneratedPreview(null);
@@ -593,15 +641,39 @@ export function TerrainStudio() {
           patch.kind === "building"
             ? { ...current.buildings, enabled: true }
             : current.buildings,
-        markers: current.markers.map((marker, position) =>
-          position === index ? { ...marker, ...patch } : marker,
-        ),
+        markers: current.markers.map((marker, position) => {
+          if (position !== index) return marker;
+          const next = { ...marker, ...patch };
+          if (next.kind === "dot" && !next.dot_style) {
+            next.dot_style = { ...DEFAULT_DOT_MARKER_STYLE };
+          }
+          if (
+            (next.kind === "flag_hole" || next.kind === "flag_label") &&
+            !next.flag_style
+          ) {
+            next.flag_style = {
+              ...DEFAULT_FLAG_MARKER_STYLE,
+              hole_depth_mm: Math.min(
+                DEFAULT_FLAG_MARKER_STYLE.hole_depth_mm,
+                Math.max(0.6, current.base_mm - 0.4),
+              ),
+            };
+          }
+          if (isMapLabel(next.kind) && !next.label_style) {
+            next.label_style = { ...DEFAULT_MAP_LABEL_STYLE };
+          }
+          return next;
+        }),
       }));
     },
     [],
   );
   const removeMarker = useCallback((index: number) => {
     setGeneratedPreview(null);
+    setMovingMarkerIndex((current) => {
+      if (current === null || current < index) return current;
+      return current === index ? null : current - 1;
+    });
     setSpec((current) => ({
       ...current,
       markers: current.markers.filter((_, position) => position !== index),
@@ -709,7 +781,9 @@ export function TerrainStudio() {
       sampled?.minimum_elevation_m === undefined ||
       sampled.maximum_elevation_m === undefined
     ) {
-      setAdjacentMessage("Wait for the elevation sample, then lock the height frame.");
+      setAdjacentMessage(
+        "Wait for the elevation sample, then lock the height frame.",
+      );
       return false;
     }
     const { datum, metresPerMm } = deriveHeightFrame(
@@ -1103,6 +1177,8 @@ export function TerrainStudio() {
     // Merge over the client defaults so setups saved before a field existed
     // still get a value, then drop stale generated output like a place change.
     setSpec(mergeSpecDefaults(setup.spec));
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex(null);
     setGeneratedPreview(null);
     setAdjacentMessage(null);
     setSetupStatus(`Recalled “${setup.name}”.`);
@@ -1221,10 +1297,7 @@ export function TerrainStudio() {
     const controller = new AbortController();
     const timer = window.setInterval(async () => {
       try {
-        const nextJob = await terrainApi.getJob(
-          polledJobId,
-          controller.signal,
-        );
+        const nextJob = await terrainApi.getJob(polledJobId, controller.signal);
         if (nextJob.id !== polledJobId) return;
         // Fetch the finished preview before setJob: updating the job tears
         // this effect down and aborts the controller, which would cancel a
@@ -1265,9 +1338,9 @@ export function TerrainStudio() {
     setGeneratedPreview(null);
     try {
       setJob(await terrainApi.createJob(spec));
-      setActiveSection("output");
+      showSection("output");
     } catch (error) {
-      setActiveSection("output");
+      showSection("output");
       setMessage(
         error instanceof TypeError
           ? "Start the local Rust generator, then try again."
@@ -1281,7 +1354,7 @@ export function TerrainStudio() {
   };
 
   const cancelGeneration = async () => {
-    setActiveSection("output");
+    showSection("output");
     setMessage(null);
     if (!job || !["queued", "running"].includes(job.status)) return;
 
@@ -1420,7 +1493,12 @@ export function TerrainStudio() {
       ...(hasSurface
         ? [{ key: "surface", label: "Map details", start: 40, end: 65 }]
         : []),
-      { key: "geometry", label: "Geometry", start: hasSurface ? 65 : 40, end: 99 },
+      {
+        key: "geometry",
+        label: "Geometry",
+        start: hasSurface ? 65 : 40,
+        end: 99,
+      },
       { key: "files", label: "Print files", start: 99, end: 100 },
     ];
     return stages.map((stage) => {
@@ -1438,7 +1516,13 @@ export function TerrainStudio() {
       );
       return {
         ...stage,
-        state: done ? "done" : stopped ? "stopped" : active ? "active" : "pending",
+        state: done
+          ? "done"
+          : stopped
+            ? "stopped"
+            : active
+              ? "active"
+              : "pending",
         detail: done
           ? stage.key === "files"
             ? "Ready"
@@ -1451,7 +1535,7 @@ export function TerrainStudio() {
               ? job.status === "canceled"
                 ? "Canceled"
                 : "Failed"
-            : "Next",
+              : "Next",
       };
     });
   }, [job]);
@@ -1459,8 +1543,7 @@ export function TerrainStudio() {
   const preview = generatedPreview ?? elevationPreview;
   const heightFrameLocked =
     spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
-  const heightFrameCompatible =
-    preview?.height_frame_compatible !== false;
+  const heightFrameCompatible = preview?.height_frame_compatible !== false;
   const superTileGridSizes =
     spec.super_tile_anchor === "center"
       ? ADJACENT_GRID_SIZES.filter((value) => value % 2 === 1)
@@ -1547,8 +1630,7 @@ export function TerrainStudio() {
                         const renaming =
                           setupNameMode?.kind === "rename" &&
                           setupNameMode.id === setup.id;
-                        const confirming =
-                          confirmingSetupDeleteId === setup.id;
+                        const confirming = confirmingSetupDeleteId === setup.id;
                         return (
                           <li className="setup-row" key={setup.id} role="none">
                             {renaming ? (
@@ -1729,9 +1811,7 @@ export function TerrainStudio() {
                   >
                     {updateBusy ? "Working…" : "Install"}
                   </button>
-                  <ExternalLink
-                    href={availableUpdate.url || RELEASES_URL}
-                  >
+                  <ExternalLink href={availableUpdate.url || RELEASES_URL}>
                     Notes
                   </ExternalLink>
                 </>
@@ -1807,8 +1887,14 @@ export function TerrainStudio() {
         >
           <TerrainMap
             spec={spec}
-            markerPlacementKind={markerPlacementKind}
-            onAddMarker={addMarker}
+            markerPlacementMode={
+              movingMarkerIndex !== null
+                ? "move"
+                : markerPlacementKind
+                  ? "place"
+                  : null
+            }
+            onPlaceMarker={placeMarker}
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
@@ -1910,7 +1996,7 @@ export function TerrainStudio() {
                 role="tab"
                 aria-selected={activeSection === key}
                 className={activeSection === key ? "active" : ""}
-                onClick={() => setActiveSection(key)}
+                onClick={() => showSection(key)}
               >
                 {label}
                 {key === "output" && job && (
@@ -1934,18 +2020,13 @@ export function TerrainStudio() {
                     <button
                       type="button"
                       onClick={() =>
-                        setActiveSection(
-                          generationFailure.control_tab ?? "output",
-                        )
+                        showSection(generationFailure.control_tab ?? "output")
                       }
                     >
                       Open {CONTROL_TAB_LABELS[generationFailure.control_tab]}
                     </button>
                   )}
-                <button
-                  type="button"
-                  onClick={() => setActiveSection("output")}
-                >
+                <button type="button" onClick={() => showSection("output")}>
                   Technical details
                 </button>
               </div>
@@ -1991,12 +2072,13 @@ export function TerrainStudio() {
 
           <MarkersPanel
             hidden={activeSection !== "markers"}
+            movingMarkerIndex={movingMarkerIndex}
+            moveMarker={moveMarker}
             placementKind={markerPlacementKind}
             removeMarker={removeMarker}
-            setPlacementKind={setMarkerPlacementKind}
+            setPlacementKind={chooseMarkerPlacementKind}
             spec={spec}
             updateMarker={updateMarker}
-            updateMarkerSettings={updateMarkerSettings}
           />
 
           <ColorsPanel

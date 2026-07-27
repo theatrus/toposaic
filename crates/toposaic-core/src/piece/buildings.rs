@@ -97,7 +97,7 @@ pub(super) fn append_building_geometry(
                 point[1] * assembled_height - origin_y,
             ];
             let radius =
-                spec.marker_settings.hole_diameter_mm * 0.5 + super::OVERLAY_SEPARATION_MM as f32;
+                marker.flag_style().hole_diameter_mm * 0.5 + super::OVERLAY_SEPARATION_MM as f32;
             (0..32)
                 .map(|index| {
                     let angle = index as f32 / 32.0 * std::f32::consts::TAU;
@@ -849,6 +849,9 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
             }],
             ..defaults
         };
