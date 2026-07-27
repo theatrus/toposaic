@@ -89,7 +89,7 @@ test("keeps the mapped-width cap above active route and railway floors", () => {
 test("defaults railways on in their own color and recalls old setups", () => {
   // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
   assert.equal(initialSpec.color_output.rail_enabled, true);
-  assert.equal(initialSpec.color_output.rail_color, "#4A5568");
+  assert.equal(initialSpec.color_output.rail_color, "#C43D3D");
   assert.equal(initialSpec.color_output.rail_width_mm, 0.7);
   // Picked out in their own color, which is the point of drawing them. The
   // slot is only spent where the mapped data holds railways.
@@ -104,7 +104,7 @@ test("defaults railways on in their own color and recalls old setups", () => {
   const merged = mergeSpecDefaults({ color_output: oldColorOutput });
   assert.equal(merged.color_output.rail_enabled, true);
   assert.equal(merged.color_output.rail_style, "separate");
-  assert.equal(merged.color_output.rail_color, "#4A5568");
+  assert.equal(merged.color_output.rail_color, "#C43D3D");
   // A setup that folded railways into the roads keeps that choice.
   const mergedRail = mergeSpecDefaults({
     color_output: {

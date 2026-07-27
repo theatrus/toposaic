@@ -117,8 +117,8 @@ export const initialSpec: GenerationSpec = {
     // ColorOutputSpec in crates/toposaic-core/src/spec.rs — change both
     // together.
     rail_enabled: true,
-    // Slate blue-grey: steel against the gold roads and raspberry trails.
-    rail_color: "#4A5568",
+    // Clear red against the gold roads and raspberry trails.
+    rail_color: "#C43D3D",
     rail_width_mm: 0.7,
     // Picked out in their own color, which is the point of drawing them.
     // The 3MF packs its palette from the mapped data, so the slot costs

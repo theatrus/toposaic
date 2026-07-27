@@ -97,7 +97,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Railway minimum width/);
   assert.match(html, /Aerial lift color/);
   assert.match(html, /Aerial lift print width/);
-  assert.match(html, /#4A5568/i);
+  assert.match(html, /#C43D3D/i);
   assert.match(html, /#6C4CB6/i);
   // A layer in its own color only spends a filament where the mapped data
   // actually holds those features.
