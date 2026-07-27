@@ -24,8 +24,8 @@ pub use project::{
 };
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
-    ElevationSource, GenerationSpec, LineStyle, PuzzleRetentionSpec, RailLifecycle, RailStyle,
-    ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
+    ElevationSource, GenerationSpec, LineScaleSpec, LineStyle, PuzzleRetentionSpec, RailLifecycle,
+    RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
     SurfaceClass, ThreeMfStyle, TrailRoute, TraySpec, WallMountSpec, WallMountStyle,
     WallMountTarget,
 };

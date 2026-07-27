@@ -145,8 +145,23 @@ test("switches between the reflowed control panels", async ({ page }) => {
     .toBeCloseTo(3.2 / 300, 4);
 
   await page.getByRole("tab", { name: "Surface" }).click();
-  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  const surfaceColors = page.getByRole("group", { name: "Surface settings" });
   await expect(surfaceColors).toBeVisible();
+  await expect(
+    surfaceColors.getByRole("group", { name: "Terrain appearance" }),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByRole("group", { name: "Water" }),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByRole("group", { name: "Roads and bridges" }),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByRole("group", { name: "Railways and lifts" }),
+  ).toBeVisible();
+  await expect(
+    surfaceColors.getByRole("group", { name: "Imported trails" }),
+  ).toBeVisible();
   await expect(page.getByLabel("Find a place")).toBeHidden();
   const floatingBridge = surfaceColors.getByRole("radio", {
     name: "Floating",
@@ -164,6 +179,22 @@ test("switches between the reflowed control panels", async ({ page }) => {
       "At 2 km, automatic mode includes all streets, paths, and trails.",
     ),
   ).toBeVisible();
+  const closeViewScaling = surfaceColors.getByRole("checkbox", {
+    name: "Scale roads and railways at close views",
+  });
+  const closeViewBoost = surfaceColors.getByRole("slider", {
+    name: "Close-view line boost",
+  });
+  await expect(closeViewScaling).toBeChecked();
+  await expect(closeViewBoost).toHaveValue("2");
+  await expect(
+    surfaceColors.getByText(/use 2.00× at 2 km/),
+  ).toBeVisible();
+  await closeViewBoost.fill("2.5");
+  await expect(closeViewBoost).toHaveValue("2.5");
+  await closeViewScaling.uncheck();
+  await expect(closeViewBoost).toBeHidden();
+  await closeViewScaling.check();
   await routeDetail.selectOption("streets");
   await expect(routeDetail).toHaveValue("streets");
   await expect(
@@ -413,7 +444,7 @@ test("switches railways on apart from roads and submits them", async ({
 
   await page.goto("/");
   await page.getByRole("tab", { name: "Surface" }).click();
-  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  const surfaceColors = page.getByRole("group", { name: "Surface settings" });
   const railways = surfaceColors.getByRole("checkbox", {
     name: "Render railways",
   });
@@ -439,7 +470,7 @@ test("switches railways on apart from roads and submits them", async ({
   ).toBeVisible();
   // The slot is only spent where the mapped data holds railways.
   await expect(
-    surfaceColors.getByText(/a layer with nothing to draw costs nothing/),
+    surfaceColors.getByText(/uses a filament slot only where the map has a/),
   ).toBeVisible();
 
   // Switching the layer off takes its style, color, width, and legend
@@ -501,6 +532,8 @@ test("switches railways on apart from roads and submits them", async ({
   expect(colorOutput.rail_style).toBe("separate");
   expect(colorOutput.rail_color).toBe("#2b3440");
   expect(colorOutput.rail_width_mm).toBe(1.2);
+  expect(colorOutput.scale_line_widths_by_span).toBe(true);
+  expect(colorOutput.close_view_width_multiplier).toBe(2);
 
   // The chosen settings survive a trip away from the tab.
   await page.getByRole("tab", { name: "Surface" }).click();
@@ -542,7 +575,7 @@ test("draws aerial lifts apart from railways and names every color", async ({
 
   await page.goto("/");
   await page.getByRole("tab", { name: "Surface" }).click();
-  const surfaceColors = page.getByRole("group", { name: "Surface colors" });
+  const surfaceColors = page.getByRole("group", { name: "Surface settings" });
   const railways = surfaceColors.getByRole("checkbox", {
     name: "Render railways",
   });
@@ -574,7 +607,7 @@ test("draws aerial lifts apart from railways and names every color", async ({
     surfaceColors.getByText(/Funiculars run on the ground/),
   ).toBeVisible();
   await expect(
-    surfaceColors.getByText(/only in areas that really have lifts/),
+    surfaceColors.getByText(/slot only where mapped lifts exist/),
   ).toBeVisible();
 
   // Folded into the railways, lifts follow them wherever they go: into the
@@ -620,7 +653,7 @@ test("draws aerial lifts apart from railways and names every color", async ({
   await expect(railLegend).toBeHidden();
   await expect(routeLegend).toBeVisible();
   await expect(
-    surfaceColors.getByText(/nothing for lifts to follow/),
+    surfaceColors.getByText(/Railways are off, so lifts use the road color/),
   ).toBeVisible();
   await railways.check();
   await liftStyle.selectOption("separate");

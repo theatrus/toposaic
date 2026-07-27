@@ -3,6 +3,24 @@ import type { GenerationSpec } from "./contracts";
 // Client default for both sample totals; also stands in when a spec carries
 // an explicit null ("backend picks"), so label math never divides by zero.
 export const DEFAULT_SAMPLES_ACROSS = 640;
+export const LINE_SCALE_CLOSE_SPAN_KM = 2;
+export const LINE_SCALE_WIDE_SPAN_KM = 18;
+
+export function closeViewLineScale(
+  spanKm: number,
+  enabled: boolean,
+  multiplier: number,
+) {
+  if (!enabled) return 1;
+  const span = Math.min(
+    LINE_SCALE_WIDE_SPAN_KM,
+    Math.max(LINE_SCALE_CLOSE_SPAN_KM, spanKm),
+  );
+  const progress =
+    Math.log(LINE_SCALE_WIDE_SPAN_KM / span) /
+    Math.log(LINE_SCALE_WIDE_SPAN_KM / LINE_SCALE_CLOSE_SPAN_KM);
+  return 1 + (multiplier - 1) * progress;
+}
 
 export const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
@@ -117,6 +135,8 @@ export const initialSpec: GenerationSpec = {
     aerial_style: "separate",
     road_detail: "automatic",
     adaptive_road_widths: true,
+    scale_line_widths_by_span: true,
+    close_view_width_multiplier: 2,
     osm_water_enabled: true,
     waterway_coverage_percent: 12,
     road_width_mm: 0.7,

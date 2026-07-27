@@ -111,6 +111,8 @@ export type GenerationSpec = {
     aerial_style: "separate" | "with_rail" | "with_roads";
     road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
+    scale_line_widths_by_span: boolean;
+    close_view_width_multiplier: number;
     osm_water_enabled: boolean;
     waterway_coverage_percent: number;
     road_width_mm: number;

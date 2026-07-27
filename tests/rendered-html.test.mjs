@@ -101,15 +101,15 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /#6C4CB6/i);
   // A layer in its own color only spends a filament where the mapped data
   // actually holds those features.
-  assert.match(html, /a layer with nothing to draw costs\s+nothing/);
-  assert.match(html, /only in areas that really have lifts/);
+  assert.match(html, /uses a filament slot only where the map has a\s+railway/);
+  assert.match(html, /slot only where mapped lifts exist/);
   // One lifecycle setting serves both layers, and renders with them.
   assert.match(html, /Railway and lift history/);
   assert.match(html, /In service only/);
-  assert.match(html, /track and cables still in place/);
-  assert.match(html, /rails lifted, formation visible/);
+  assert.match(html, /track and cables remain/);
+  assert.match(html, /formation visible/);
   assert.match(html, /<option value="operational" selected="">/);
-  assert.match(html, /One setting for both layers above/);
+  assert.match(html, /Razed, dismantled, demolished/);
   assert.match(html, /OpenStreetMap waterways/);
   assert.match(html, /Maximum waterway coverage/);
   assert.match(html, /major waterways only/);
@@ -118,7 +118,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Blocky · raw 10 m cells/);
   // Smoothing is the default, and it gates itself by scale.
   assert.match(html, /<option value="smooth" selected="">/);
-  assert.match(html, /It engages on its own at close\s+views/);
+  assert.match(html, /It starts at close views/);
   assert.match(html, /3MF style/);
   assert.match(html, /Color project · filament colors and purge settings/);
   assert.match(html, /Painted colors · no embedded presets/);
@@ -131,19 +131,19 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Border bend range/);
   assert.match(html, /Border noise damping/);
   assert.match(html, /Keep forest off steep rock/);
-  assert.match(html, /demotes forest to rock above the slope limit/);
+  assert.match(html, /Demotes forest to rock above the slope limit/);
   assert.match(html, /Forest slope limit/);
   // The demotion target renders with the slope gate, which defaults on.
   assert.match(html, /Steep forest becomes/);
   assert.match(html, /Snow above the snowline/);
   assert.match(html, /Keep snow off sheer faces/);
-  assert.match(html, /demotes snow\s+to rock above the slope limit/);
+  assert.match(html, /Demotes snow to rock above the slope limit/);
   // The snow slope limit renders with its own gate, which defaults on.
   assert.match(html, /Snow slope limit/);
   assert.match(html, /Imported trails/);
   assert.match(html, /Import GPX or KML files/);
   assert.match(html, /aria-label="Import trail files"/);
-  assert.match(html, /saved setups and exported setup files carry\s+them/);
+  assert.match(html, /Saved setups carry them/);
   // Trail color and width controls only render once a trail is imported.
   assert.doesNotMatch(html, /Trail print width/);
   assert.doesNotMatch(html, /Trail color/);
@@ -151,7 +151,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Automatic for map span/);
   assert.match(html, /Streets, paths, and trails/);
   assert.match(html, /Thin dense road networks/);
-  assert.match(html, /does not remove road classes/);
+  assert.match(html, /keeps all chosen road classes/);
   assert.match(html, /Mesh detail/);
   assert.match(html, /Standard/);
   assert.match(html, /Ultra/);
@@ -159,10 +159,8 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Bridge structure/);
   assert.match(html, /Floating bridge thickness/);
   assert.match(html, /Fully supported/);
-  assert.match(
-    html,
-    /Tagged bridges can use thick floating decks or solid support/,
-  );
+  assert.match(html, /Uses a thick deck between the abutments/);
+  assert.match(html, /Fills from the deck down to the mapped ground or water/);
   // The default building color appears only in the gated swatch.
   assert.doesNotMatch(html, /#B8A890/i);
   assert.match(html, /class="setup-menu-button"/);

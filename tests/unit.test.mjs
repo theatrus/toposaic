@@ -43,6 +43,17 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("defaults close-view line scaling on and recalls old setups", () => {
+  assert.equal(initialSpec.color_output.scale_line_widths_by_span, true);
+  assert.equal(initialSpec.color_output.close_view_width_multiplier, 2);
+  const oldColorOutput = { ...initialSpec.color_output };
+  delete oldColorOutput.scale_line_widths_by_span;
+  delete oldColorOutput.close_view_width_multiplier;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.scale_line_widths_by_span, true);
+  assert.equal(merged.color_output.close_view_width_multiplier, 2);
+});
+
 test("defaults railways on in their own color and recalls old setups", () => {
   // Mirrors ColorOutputSpec::default in crates/toposaic-core/src/spec.rs.
   assert.equal(initialSpec.color_output.rail_enabled, true);

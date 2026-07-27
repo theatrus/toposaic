@@ -767,7 +767,10 @@ fn paint_osm_ways(
         1.0
     };
     for feature in &features {
-        let line_width = (spec.color_output.road_width_mm * feature.width_scale * density_scale)
+        let line_width = (spec.color_output.road_width_mm
+            * feature.width_scale
+            * road_close_view_scale(spec, feature.width_scale)
+            * density_scale)
             .max(MINIMUM_LINE_WIDTH_MM);
         if let Some(elevations_m) = feature.bridge_elevations_m {
             field.paint_bridge_polyline(&feature.points, spec.width_mm, line_width, elevations_m);
@@ -923,7 +926,8 @@ fn paint_rail_ways(
         let style = styles[kind.index()];
         let points = normalized_osm_points(&way, spec, bounds);
         let line_width =
-            (style.width_mm * scale * lifecycle_width_scale(state)).max(MINIMUM_LINE_WIDTH_MM);
+            (style.width_mm * scale * lifecycle_width_scale(state) * spec.close_view_line_scale())
+                .max(MINIMUM_LINE_WIDTH_MM);
         if is_bridge(&way.tags) {
             let first = points[0];
             let last = points[points.len() - 1];
@@ -1141,11 +1145,18 @@ fn route_density_scale(spec: &GenerationSpec, features: &[RouteFeature]) -> f32 
                 .sum::<f32>()
                 * spec.color_output.road_width_mm
                 * feature.width_scale
+                * road_close_view_scale(spec, feature.width_scale)
         })
         .sum::<f32>();
     let model_area = spec.width_mm * spec.height_mm();
     let estimated_coverage = printed_length / model_area.max(f32::EPSILON);
     (0.06 / estimated_coverage.max(0.06)).clamp(0.35, 1.0)
+}
+
+/// Major roads get the full close-view boost. Smaller road classes get a
+/// smaller share, so local streets gain detail without filling an urban map.
+fn road_close_view_scale(spec: &GenerationSpec, road_class_scale: f32) -> f32 {
+    1.0 + (spec.close_view_line_scale() - 1.0) * road_class_scale.clamp(0.0, 1.0)
 }
 
 /// How far outside the model square a trail keeps painting, per axis, in
@@ -2129,6 +2140,22 @@ mod tests {
     }
 
     #[test]
+    fn close_views_boost_major_roads_more_than_local_lines() {
+        let mut spec = GenerationSpec {
+            ground_span_km: 2.0,
+            ..GenerationSpec::default()
+        };
+        assert_eq!(road_close_view_scale(&spec, 1.4), 2.0);
+        assert_eq!(road_close_view_scale(&spec, 1.0), 2.0);
+        assert!(road_close_view_scale(&spec, 0.56) < 2.0);
+        assert!(road_close_view_scale(&spec, 0.38) < road_close_view_scale(&spec, 0.56));
+
+        spec.ground_span_km = 18.0;
+        assert_eq!(road_close_view_scale(&spec, 1.4), 1.0);
+        assert_eq!(road_close_view_scale(&spec, 0.38), 1.0);
+    }
+
+    #[test]
     fn thins_dense_road_networks_but_not_sparse_routes() {
         let spec = GenerationSpec {
             width_mm: 100.0,
@@ -2915,6 +2942,8 @@ mod tests {
         let mut second = first.clone();
         second.color_output.road_width_mm = 0.4;
         second.color_output.adaptive_road_widths = false;
+        second.color_output.line_scaling.scale_line_widths_by_span = false;
+        second.color_output.line_scaling.close_view_width_multiplier = 2.8;
         second.color_output.osm_water_enabled = false;
         second.color_output.waterway_coverage_percent = 3.0;
         let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);

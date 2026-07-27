@@ -5,6 +5,8 @@ use crate::surface::SurfaceField;
 
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
+const LINE_SCALE_WIDE_SPAN_KM: f64 = 18.0;
+const LINE_SCALE_CLOSE_SPAN_KM: f64 = 2.0;
 const MAX_TERRAIN_SAMPLES_PER_PIECE: u32 = 160;
 const MAX_OVERLAY_SAMPLES_PER_PIECE: u32 = 192;
 const MIN_ASSEMBLED_SAMPLES: u32 = 256;
@@ -300,6 +302,22 @@ impl GenerationSpec {
             class: SurfaceClass::Road,
             width_mm: self.color_output.road_width_mm,
         }
+    }
+
+    /// Width multiplier for mapped roads, railways, and aerial lifts at the
+    /// current ground span. The logarithmic fade matches how map zoom feels:
+    /// each halving of the span adds an equal share of the close-view boost.
+    pub fn close_view_line_scale(&self) -> f32 {
+        let settings = &self.color_output.line_scaling;
+        if !settings.scale_line_widths_by_span {
+            return 1.0;
+        }
+        let span = self
+            .ground_span_km
+            .clamp(LINE_SCALE_CLOSE_SPAN_KM, LINE_SCALE_WIDE_SPAN_KM);
+        let progress = (LINE_SCALE_WIDE_SPAN_KM / span).ln()
+            / (LINE_SCALE_WIDE_SPAN_KM / LINE_SCALE_CLOSE_SPAN_KM).ln();
+        1.0 + (settings.close_view_width_multiplier - 1.0) * progress as f32
     }
 
     /// Whether drawn railways get their own class, color, and filament slot.
@@ -1242,6 +1260,10 @@ pub struct ColorOutputSpec {
     pub roads_enabled: bool,
     pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
+    /// Map-span-aware width scaling for roads, railways, and aerial lifts.
+    /// Flattened to keep saved setup files compatible and easy to read.
+    #[serde(flatten)]
+    pub line_scaling: LineScaleSpec,
     pub osm_water_enabled: bool,
     pub waterway_coverage_percent: f32,
     pub road_width_mm: f32,
@@ -1256,6 +1278,34 @@ pub struct ColorOutputSpec {
     /// Steep-slope reclassification gates. Flattened like `borders`.
     #[serde(flatten)]
     pub slope_gates: SlopeGateSpec,
+}
+
+/// Controls how mapped transport lines change width as the view closes in.
+///
+/// Serialized flat inside [`ColorOutputSpec`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LineScaleSpec {
+    pub scale_line_widths_by_span: bool,
+    pub close_view_width_multiplier: f32,
+}
+
+impl Default for LineScaleSpec {
+    fn default() -> Self {
+        Self {
+            scale_line_widths_by_span: true,
+            close_view_width_multiplier: 2.0,
+        }
+    }
+}
+
+impl LineScaleSpec {
+    fn validate(&self) -> Result<()> {
+        if !(1.0..=3.0).contains(&self.close_view_width_multiplier) {
+            bail!("close-view line width multiplier must be between 1 and 3");
+        }
+        Ok(())
+    }
 }
 
 /// How land-cover class borders are drawn and smoothed.
@@ -1405,6 +1455,7 @@ impl Default for ColorOutputSpec {
             roads_enabled: true,
             road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
+            line_scaling: LineScaleSpec::default(),
             osm_water_enabled: true,
             waterway_coverage_percent: 12.0,
             road_width_mm: 0.7,
@@ -1461,6 +1512,7 @@ impl ColorOutputSpec {
         }
         self.slope_gates.validate()?;
         self.borders.validate()?;
+        self.line_scaling.validate()?;
         Ok(())
     }
 }
@@ -1638,7 +1690,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1740,6 +1792,8 @@ mod tests {
                 "roads_enabled": false,
                 "road_detail": "streets",
                 "adaptive_road_widths": false,
+                "scale_line_widths_by_span": false,
+                "close_view_width_multiplier": 2.5,
                 "osm_water_enabled": false,
                 "waterway_coverage_percent": 25.0,
                 "road_width_mm": 1.0,
@@ -2409,6 +2463,26 @@ mod tests {
             RoadDetail::Streets.resolve(40.0),
             ResolvedRoadDetail::Streets
         );
+    }
+
+    #[test]
+    fn close_view_line_scale_fades_with_map_span_and_validates() {
+        let mut spec = GenerationSpec::default();
+        assert_eq!(spec.close_view_line_scale(), 1.0);
+
+        spec.ground_span_km = 2.0;
+        assert_eq!(spec.close_view_line_scale(), 2.0);
+        spec.ground_span_km = 0.25;
+        assert_eq!(spec.close_view_line_scale(), 2.0);
+        spec.ground_span_km = 6.0;
+        assert!((1.0..2.0).contains(&spec.close_view_line_scale()));
+
+        spec.color_output.line_scaling.scale_line_widths_by_span = false;
+        assert_eq!(spec.close_view_line_scale(), 1.0);
+        spec.color_output.line_scaling.close_view_width_multiplier = 3.1;
+        assert!(spec.validate().is_err());
+        spec.color_output.line_scaling.close_view_width_multiplier = 1.0;
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
