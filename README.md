@@ -35,17 +35,24 @@ builds.
 the preview updates with the final terrain and mapped surface classes. The
 workspace dividers can give the map, preview, or controls more room.*
 
-### Generated puzzle pieces in Bambu Studio
+### Generated output in Bambu Studio
 
 | Mount Rainier | Matterhorn | Grand Canyon |
 | --- | --- | --- |
 | ![Mount Rainier color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-rainier-pieces.jpg) | ![Matterhorn color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-matterhorn-pieces.jpg) | ![Grand Canyon color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-grand-canyon-pieces.jpg) |
 
+#### Shibuya Station
+
+| Full area | Angled detail |
+| --- | --- |
+| ![Solid color terrain model of the Shibuya Station area seen from above in Bambu Studio](docs/images/toposaic-bambu-shibuya-station.jpg) | ![Angled view of the Shibuya Station terrain model in Bambu Studio, showing dense buildings, roads, rail lines, and water](docs/images/toposaic-bambu-shibuya-station-detail.jpg) |
+
 These are Bambu Studio captures of real color 3MF output, not mock or
-AI-generated terrain. Each uses an 18 km ground span, a 180 mm model, a 4×4
-puzzle layout, and the 384-sample Draft mesh. TopoSaic sampled Mapzen elevation
-tiles, then applied ESA WorldCover and OpenStreetMap surface data before it
-exported the 16 print pieces.
+AI-generated terrain. Mount Rainier, the Matterhorn, and the Grand Canyon use
+an 18 km ground span, a 180 mm model, a 4×4 puzzle layout, and the 384-sample
+Draft mesh. The two Shibuya Station views show solid output with dense
+buildings, roads, rail lines, and water. TopoSaic built all four places from
+real elevation, ESA WorldCover, and OpenStreetMap data.
 
 The top bar holds one saved-setups control, labeled with the recalled setup's
 name. Open it to see every saved setup on its own row: click a name to recall
