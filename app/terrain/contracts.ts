@@ -48,6 +48,8 @@ export type GenerationSpec = {
     tray_color: string;
     contour_color: string;
     label_color: string;
+    label_height_mm: number;
+    label_position: "left" | "center" | "right";
     clearance_mm: number;
     rim_width_mm: number;
     floor_mm: number;

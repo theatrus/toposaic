@@ -44,7 +44,38 @@ export function DisplayBaseControls({
               value={spec.place_name}
               onChange={(event) => update("place_name", event.target.value)}
             />
-            <small>The tray adds the coordinates after this name.</small>
+            <small>
+              The tray adds the coordinates after this name. Letter case and
+              Japanese text are preserved.
+            </small>
+          </label>
+          <RangeField
+            label="Label height"
+            value={spec.tray.label_height_mm}
+            unit=" mm"
+            min={1.5}
+            max={10}
+            step={0.1}
+            onChange={(value) => updateTray("label_height_mm", value)}
+            note="Long labels shrink to fit the front lip."
+          />
+          <label className="tray-label-position-field">
+            <span>Label position</span>
+            <select
+              aria-label="Label position"
+              value={spec.tray.label_position}
+              onChange={(event) =>
+                updateTray(
+                  "label_position",
+                  event.target.value as GenerationSpec["tray"]["label_position"],
+                )
+              }
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+            <small>Place the full name and coordinate line on the lip.</small>
           </label>
           <div className="color-swatches">
             {(

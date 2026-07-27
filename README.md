@@ -137,10 +137,11 @@ An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,
 and longitude in smooth vector letterforms. Controls set the tray clearance,
-rim, floor, line count, and three print colors; contour lines can also be
-left out for a simpler tray. The bundled Atkinson
-Hyperlegible font keeps the label shape the same on every OS and remains under
-its included SIL Open Font License.
+rim, floor, line count, text height, text position, and three print colors;
+contour lines can also be left out for a simpler tray. Bundled Atkinson
+Hyperlegible and Noto Sans CJK fonts keep labels stable on every OS, preserve
+case, and support Japanese as well as Latin, Cyrillic, and Vietnamese text.
+Both fonts remain under their included SIL Open Font licenses.
 
 Tray-retention controls add a fitted pin beneath each puzzle piece, or each
 section of a solid model, so a completed puzzle stays in an upright tray. Pin
@@ -566,6 +567,7 @@ credits recorded in their manifest or place those credits near the work. See
 ## License
 
 TopoSaic source code and documentation are licensed under the
-[Apache License 2.0](LICENSE). Third-party software, the bundled font, and map
-data keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-and [assets/fonts/OFL.txt](assets/fonts/OFL.txt).
+[Apache License 2.0](LICENSE). Third-party software, the bundled fonts, and map
+data keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+the [Atkinson Hyperlegible license](assets/fonts/OFL.txt), and the
+[Noto Sans CJK license](assets/fonts/OFL-NotoSansCJK.txt).

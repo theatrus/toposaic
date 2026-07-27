@@ -1,4 +1,9 @@
-# Bundled tray font
+# Bundled tray fonts
+
+`NotoSansJP-Regular.otf` comes from the
+[Noto CJK project](https://github.com/notofonts/noto-cjk).
+It provides Japanese, Latin, Cyrillic, and Vietnamese tray labels. See
+`OFL-NotoSansCJK.txt` for its SIL Open Font License.
 
 `AtkinsonHyperlegible-Regular.ttf` comes from the
 [Google Fonts copy of Atkinson Hyperlegible](https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegible).
