@@ -175,7 +175,7 @@ export function ColorsPanel({
 
       <ColorGroup
         title="Terrain and land cover"
-        description="Mapped surface classes and routes. Sides and bottoms use rock."
+        description="Mapped surface classes. Sides and bottoms use rock."
       >
         <HexColorField
           label="Forest"
@@ -197,21 +197,16 @@ export function ColorsPanel({
           value={spec.color_output.water_color}
           onChange={(value) => updateColor("water_color", value)}
         />
+      </ColorGroup>
+
+      <ColorGroup
+        title="Roads and transport"
+        description="Mapped routes, imported paths, railways, and aerial lifts."
+      >
         <HexColorField
           label="Route"
           value={spec.color_output.road_color}
           onChange={(value) => updateColor("road_color", value)}
-        />
-      </ColorGroup>
-
-      <ColorGroup
-        title="Mapped details"
-        description="Buildings, imported paths, transport lines, and placed markers."
-      >
-        <HexColorField
-          label="Building"
-          value={spec.color_output.building_color}
-          onChange={(value) => updateColor("building_color", value)}
         />
         <HexColorField
           label="Imported trail"
@@ -227,6 +222,17 @@ export function ColorsPanel({
           label="Aerial lift"
           value={spec.color_output.aerial_color}
           onChange={(value) => updateColor("aerial_color", value)}
+        />
+      </ColorGroup>
+
+      <ColorGroup
+        title="Structures and markers"
+        description="Mapped buildings and markers placed on the map."
+      >
+        <HexColorField
+          label="Building"
+          value={spec.color_output.building_color}
+          onChange={(value) => updateColor("building_color", value)}
         />
         <HexColorField
           label="Map marker"

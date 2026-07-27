@@ -2042,6 +2042,12 @@ fieldset.control-section .road-options {
   border-color: #b85f50;
 }
 
+@media (min-width: 1500px) {
+  .palette-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 .color-swatches {
   display: grid;
   gap: 7px;
