@@ -35,17 +35,17 @@ builds.
 the preview updates with the final terrain and mapped surface classes. The
 workspace dividers can give the map, preview, or controls more room.*
 
-### Generated terrain examples
+### Generated puzzle pieces in Bambu Studio
 
 | Mount Rainier | Matterhorn | Grand Canyon |
 | --- | --- | --- |
-| ![Generated 4×4 Mount Rainier terrain puzzle with forest, rock, snow, water, and mapped routes](docs/images/toposaic-generated-rainier.jpg) | ![Generated 4×4 Matterhorn terrain puzzle with alpine rock, snow, water, forest, and aerial lifts](docs/images/toposaic-generated-matterhorn.jpg) | ![Generated 4×4 Grand Canyon terrain puzzle with rock, forest, water, and mapped routes](docs/images/toposaic-generated-grand-canyon.jpg) |
+| ![Mount Rainier color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-rainier-pieces.jpg) | ![Matterhorn color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-matterhorn-pieces.jpg) | ![Grand Canyon color terrain puzzle separated into 16 pieces in Bambu Studio](docs/images/toposaic-bambu-grand-canyon-pieces.jpg) |
 
-These are app captures from real generated `preview.json` output, not mock or
+These are Bambu Studio captures of real color 3MF output, not mock or
 AI-generated terrain. Each uses an 18 km ground span, a 180 mm model, a 4×4
 puzzle layout, and the 384-sample Draft mesh. TopoSaic sampled Mapzen elevation
 tiles, then applied ESA WorldCover and OpenStreetMap surface data before it
-updated the preview.
+exported the 16 print pieces.
 
 The top bar holds one saved-setups control, labeled with the recalled setup's
 name. Open it to see every saved setup on its own row: click a name to recall
