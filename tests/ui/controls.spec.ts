@@ -1022,7 +1022,7 @@ test("locks a height frame and maps a super-tile grid", async ({
     await page.getByLabel("Longitude").inputValue(),
   );
   await page
-    .getByRole("group", { name: "Super-tile mode" })
+    .getByRole("group", { name: "Map position" })
     .getByRole("button", { name: /east/i })
     .click();
 
