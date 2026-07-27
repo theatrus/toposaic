@@ -209,10 +209,6 @@ pub fn generate_marker_artifacts(
     if !spec.uses_flag_holes() || !spec.marker_settings.export_flag_template {
         return Ok(Vec::new());
     }
-    let flag = build_flag_template(&spec.marker_settings)?;
-    let stl_path = output_dir.join("marker-flag-template.stl");
-    write_binary_stl(&flag, &stl_path)?;
-    let three_mf_path = output_dir.join("marker-flag-template.3mf");
     let mut flag_spec = spec.clone();
     flag_spec.color_output.enabled = false;
     flag_spec.buildings.enabled = false;
@@ -223,15 +219,79 @@ pub fn generate_marker_artifacts(
             latitude: flag_spec.center_lat,
             longitude: flag_spec.center_lon,
             kind: MarkerKind::Dot,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
         });
     }
-    let mut writer = ThreeMfWriter::new(&flag_spec, None, &three_mf_path)?;
-    writer.write_mesh(&flag)?;
+    let mut artifacts = Vec::new();
+    if spec
+        .markers
+        .iter()
+        .any(|marker| marker.kind == MarkerKind::FlagHole)
+    {
+        let blank = build_flag_template(&spec.marker_settings, None)?;
+        artifacts.extend(write_flag_artifacts(
+            &flag_spec,
+            output_dir,
+            "marker-flag-template",
+            &blank,
+        )?);
+    }
+    for (index, marker) in spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == MarkerKind::FlagLabel)
+        .enumerate()
+    {
+        let flag = build_flag_template(&spec.marker_settings, Some(marker.name.trim()))?;
+        let stem = format!(
+            "marker-flag-{:02}-{}",
+            index + 1,
+            artifact_slug(&marker.name)
+        );
+        artifacts.extend(write_flag_artifacts(&flag_spec, output_dir, &stem, &flag)?);
+    }
+    Ok(artifacts)
+}
+
+fn write_flag_artifacts(
+    spec: &GenerationSpec,
+    output_dir: &Path,
+    stem: &str,
+    flag: &Mesh,
+) -> Result<Vec<Artifact>> {
+    let stl_path = output_dir.join(format!("{stem}.stl"));
+    write_binary_stl(flag, &stl_path)?;
+    let three_mf_path = output_dir.join(format!("{stem}.3mf"));
+    let mut writer = ThreeMfWriter::new(spec, None, &three_mf_path)?;
+    writer.write_mesh(flag)?;
     writer.finish()?;
     Ok(vec![
         file_artifact(&stl_path, "model/stl")?,
         file_artifact(&three_mf_path, "model/3mf")?,
     ])
+}
+
+fn artifact_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    if slug.is_empty() {
+        "label".into()
+    } else {
+        slug.truncate(40);
+        slug.trim_end_matches('-').to_string()
+    }
 }
 
 fn generate_project_inner(
@@ -253,7 +313,7 @@ fn generate_project_inner(
     if spec.uses_trails() && surface_field.is_none() {
         bail!("imported trails require surface data to draw on");
     }
-    if spec.uses_colored_markers() && surface_field.is_none() {
+    if spec.uses_surface_markers() && surface_field.is_none() {
         bail!("colored map markers require surface data to draw on");
     }
     fs::create_dir_all(output_dir)
@@ -568,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn flag_hole_jobs_export_a_customizable_flag_blank() {
+    fn flag_jobs_export_blank_and_named_prints() {
         let output_dir =
             std::env::temp_dir().join(format!("toposaic-marker-flag-test-{}", std::process::id()));
         if output_dir.exists() {
@@ -577,16 +637,33 @@ mod tests {
         let spec = GenerationSpec {
             solid_model: true,
             samples_per_piece: 24,
-            markers: vec![crate::spec::MapMarker {
-                name: "Home".into(),
-                latitude: 46.8523,
-                longitude: -121.7603,
-                kind: crate::spec::MarkerKind::FlagHole,
-            }],
+            markers: vec![
+                crate::spec::MapMarker {
+                    name: "Blank".into(),
+                    latitude: 46.8523,
+                    longitude: -121.7603,
+                    kind: crate::spec::MarkerKind::FlagHole,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 0.0,
+                },
+                crate::spec::MapMarker {
+                    name: "Mount Fuji 富士山".into(),
+                    latitude: 46.8523,
+                    longitude: -121.7503,
+                    kind: crate::spec::MarkerKind::FlagLabel,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 0.0,
+                },
+            ],
             ..GenerationSpec::default()
         };
         let manifest = generate_project(&spec, &output_dir).unwrap();
-        for name in ["marker-flag-template.stl", "marker-flag-template.3mf"] {
+        for name in [
+            "marker-flag-template.stl",
+            "marker-flag-template.3mf",
+            "marker-flag-01-mount-fuji.stl",
+            "marker-flag-01-mount-fuji.3mf",
+        ] {
             assert!(output_dir.join(name).is_file());
             assert!(
                 manifest
@@ -595,6 +672,35 @@ mod tests {
                     .any(|artifact| artifact.name == name)
             );
         }
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn manual_map_labels_generate_from_elevation_without_surface_downloads() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-map-label-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let defaults = GenerationSpec::default();
+        let spec = GenerationSpec {
+            solid_model: true,
+            samples_per_piece: 24,
+            markers: vec![crate::spec::MapMarker {
+                name: "Mirror Lake".into(),
+                latitude: defaults.center_lat,
+                longitude: defaults.center_lon,
+                kind: crate::spec::MarkerKind::PlaqueLabel,
+                label_height_mm: 4.0,
+                rotation_degrees: 25.0,
+            }],
+            ..defaults
+        };
+        let height = HeightField::new(5, 5, vec![100.0; 25], "test").unwrap();
+        let manifest = generate_project_with_height_field(&spec, &height, &output_dir).unwrap();
+        assert!(manifest.surface_source.is_none());
+        assert!(output_dir.join("terrain-solid.stl").is_file());
+        assert!(output_dir.join("terrain-solid.3mf").is_file());
         std::fs::remove_dir_all(output_dir).unwrap();
     }
 

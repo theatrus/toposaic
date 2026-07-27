@@ -4,13 +4,22 @@ export type TrailRoute = {
   points: [number, number][];
 };
 
-export type MarkerKind = "building" | "dot" | "flag_hole";
+export type MarkerKind =
+  | "building"
+  | "dot"
+  | "flag_hole"
+  | "flag_label"
+  | "surface_label"
+  | "plaque_label";
 
 export type MapMarker = {
   name: string;
   latitude: number;
   longitude: number;
   kind: MarkerKind;
+  label_height_mm: number;
+  /** Clockwise rotation on the north-up map. */
+  rotation_degrees: number;
 };
 
 export type GenerationSpec = {
@@ -60,6 +69,13 @@ export type GenerationSpec = {
     hole_diameter_mm: number;
     hole_depth_mm: number;
     flag_clearance_mm: number;
+    label_font: "atkinson_hyperlegible" | "noto_sans" | "b612_mono";
+    flag_label_height_mm: number;
+    flag_width_mm: number;
+    flag_height_mm: number;
+    map_label_relief_mm: number;
+    plaque_padding_mm: number;
+    plaque_thickness_mm: number;
     export_flag_template: boolean;
   };
   tray: {

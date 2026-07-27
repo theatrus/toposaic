@@ -11,6 +11,7 @@ import {
   formatBytes,
   groundMeshSpacing,
   initialSpec,
+  limitMarkerName,
   limitPlaceName,
   mergeSpecDefaults,
   minimumMappedWidthCap,
@@ -43,6 +44,12 @@ test("limits place names by Unicode characters without splitting a pair", () => 
   assert.equal(limited.includes("�"), false);
 });
 
+test("limits marker label names by Unicode characters", () => {
+  const limited = limitMarkerName(`${"川".repeat(79)}𠮷余`);
+  assert.equal(Array.from(limited).length, 80);
+  assert.equal(limited.endsWith("𠮷"), true);
+});
+
 test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(initialSpec.color_output.threemf_style, "project");
   // Setups saved before the field existed recall with the same default, so
@@ -59,7 +66,30 @@ test("old setups recall empty markers and current marker print settings", () => 
   assert.equal(merged.marker_settings.color, "#E24A33");
   assert.equal(merged.marker_settings.dot_diameter_mm, 3);
   assert.equal(merged.marker_settings.hole_diameter_mm, 2.4);
+  assert.equal(
+    merged.marker_settings.label_font,
+    "atkinson_hyperlegible",
+  );
+  assert.equal(merged.marker_settings.flag_label_height_mm, 4);
+  assert.equal(merged.marker_settings.flag_width_mm, 30);
+  assert.equal(merged.marker_settings.flag_height_mm, 12);
+  assert.equal(merged.marker_settings.map_label_relief_mm, 0.4);
+  assert.equal(merged.marker_settings.plaque_padding_mm, 1.2);
+  assert.equal(merged.marker_settings.plaque_thickness_mm, 0.8);
   assert.equal(merged.marker_settings.export_flag_template, true);
+
+  const oldMarker = mergeSpecDefaults({
+    markers: [
+      {
+        kind: "dot",
+        latitude: 46.8,
+        longitude: -121.7,
+        name: "Old point",
+      },
+    ],
+  }).markers[0];
+  assert.equal(oldMarker.label_height_mm, 4);
+  assert.equal(oldMarker.rotation_degrees, 0);
 });
 
 test("defaults close-view line scaling on and recalls old setups", () => {

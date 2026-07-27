@@ -31,6 +31,7 @@ import {
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
   initialSpec,
+  markerNeedsSurfaceData,
   limitPlaceName,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
@@ -520,6 +521,12 @@ export function TerrainStudio() {
             Math.max(0.1, (value as number) - 0.9),
           );
         }
+        if (key === "flag_height_mm") {
+          markerSettings.flag_label_height_mm = Math.min(
+            markerSettings.flag_label_height_mm,
+            Math.max(1.5, (value as number) - 2),
+          );
+        }
         return { ...current, marker_settings: markerSettings };
       });
     },
@@ -536,7 +543,13 @@ export function TerrainStudio() {
             ? "Building"
             : markerPlacementKind === "dot"
               ? "Point"
-              : "Flag";
+              : markerPlacementKind === "flag_label"
+                ? "Flag label"
+                : markerPlacementKind === "surface_label"
+                  ? "Surface label"
+                  : markerPlacementKind === "plaque_label"
+                    ? "Plaque label"
+                    : "Flag";
         return {
           ...current,
           buildings:
@@ -557,6 +570,8 @@ export function TerrainStudio() {
               latitude,
               longitude,
               name: `${label} ${number}`,
+              label_height_mm: 4,
+              rotation_degrees: 0,
             },
           ].slice(0, 50),
         };
@@ -1356,7 +1371,7 @@ export function TerrainStudio() {
       (job.spec.color_output.enabled ||
         job.spec.buildings.enabled ||
         job.spec.trails.length > 0 ||
-        job.spec.markers.some((marker) => marker.kind !== "flag_hole"))
+        job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind)))
     ) {
       // The backend runs the surface phase for trail-only jobs too.
       if (
@@ -1392,7 +1407,7 @@ export function TerrainStudio() {
       job.spec.color_output.enabled ||
       job.spec.buildings.enabled ||
       job.spec.trails.length > 0 ||
-      job.spec.markers.some((marker) => marker.kind !== "flag_hole");
+      job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind));
     const stages = [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
       ...(hasSurface

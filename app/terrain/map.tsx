@@ -12,7 +12,7 @@ import {
 } from "react";
 
 import type { GenerationSpec, MarkerKind } from "./contracts";
-import { MAX_GROUND_SPAN_KM, MIN_GROUND_SPAN_KM } from "./config";
+import { isMapLabel, MAX_GROUND_SPAN_KM, MIN_GROUND_SPAN_KM } from "./config";
 import { superTileCenter } from "./geo";
 
 const TILE_SIZE = 256;
@@ -508,9 +508,36 @@ export function TerrainMap({
                   left: marker.x,
                   top: marker.y,
                   "--marker-color": spec.marker_settings.color,
+                  "--marker-rotation": `${marker.rotation_degrees}deg`,
                 } as CSSProperties}
                 title={marker.name}
-              />
+              >
+                {marker.kind === "flag_label" && (
+                  <span className="map-marker-name">{marker.name}</span>
+                )}
+                {isMapLabel(marker.kind) && (
+                  <span
+                    className="map-feature-label-text"
+                    style={{
+                      fontSize: Math.max(
+                        8,
+                        (marker.label_height_mm / spec.width_mm) * selectionSize,
+                      ),
+                      padding:
+                        marker.kind === "plaque_label"
+                          ? Math.max(
+                              2,
+                              (spec.marker_settings.plaque_padding_mm /
+                                spec.width_mm) *
+                                selectionSize,
+                            )
+                          : 0,
+                    }}
+                  >
+                    {marker.name}
+                  </span>
+                )}
+              </span>
             ))}
           </div>
         )}

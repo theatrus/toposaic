@@ -9,7 +9,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 use crate::mesh::{
     MeshBuilder, distance_squared, point_in_polygon, point_line_distance, triangulate_constraints,
 };
-use crate::spec::{SurfaceClass, TrayLabelFont};
+use crate::spec::{LabelFont, SurfaceClass};
 
 const CLEAR_SANS_FONT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -43,18 +43,18 @@ impl EmbossingFonts {
     }
 }
 
-pub(crate) fn embossing_fonts(font: TrayLabelFont) -> Result<EmbossingFonts> {
+pub(crate) fn embossing_fonts(font: LabelFont) -> Result<EmbossingFonts> {
     let primary_bytes = match font {
-        TrayLabelFont::AtkinsonHyperlegible => CLEAR_SANS_FONT,
-        TrayLabelFont::NotoSans => NOTO_SANS_FONT,
-        TrayLabelFont::B612Mono => TECHNICAL_MONO_FONT,
+        LabelFont::AtkinsonHyperlegible => CLEAR_SANS_FONT,
+        LabelFont::NotoSans => NOTO_SANS_FONT,
+        LabelFont::B612Mono => TECHNICAL_MONO_FONT,
     };
     let primary = Face::parse(primary_bytes, 0)
-        .map_err(|error| anyhow!("parse bundled tray font: {error:?}"))?;
-    let fallback = (font != TrayLabelFont::NotoSans)
+        .map_err(|error| anyhow!("parse bundled label font: {error:?}"))?;
+    let fallback = (font != LabelFont::NotoSans)
         .then(|| Face::parse(NOTO_SANS_FONT, 0))
         .transpose()
-        .map_err(|error| anyhow!("parse bundled Japanese tray font: {error:?}"))?;
+        .map_err(|error| anyhow!("parse bundled Japanese label font: {error:?}"))?;
     Ok(EmbossingFonts { primary, fallback })
 }
 
@@ -104,11 +104,11 @@ pub(crate) fn text_metrics(fonts: &EmbossingFonts, text: &str) -> Result<TextMet
             .collect::<Vec<_>>()
             .join(", ");
         return Err(anyhow!(
-            "the bundled tray font cannot render {characters}; use a place name written with supported Japanese, Latin, Cyrillic, or Vietnamese characters"
+            "the bundled label font cannot render {characters}; use text written with supported Japanese, Latin, Cyrillic, or Vietnamese characters"
         ));
     }
     if !minimum_y.is_finite() || !maximum_y.is_finite() {
-        return Err(anyhow!("tray label contains no printable characters"));
+        return Err(anyhow!("label contains no printable characters"));
     }
 
     Ok(TextMetrics {
@@ -119,7 +119,7 @@ pub(crate) fn text_metrics(fonts: &EmbossingFonts, text: &str) -> Result<TextMet
     })
 }
 
-pub(crate) fn validate_embossing_text(text: &str, font: TrayLabelFont) -> Result<()> {
+pub(crate) fn validate_embossing_text(text: &str, font: LabelFont) -> Result<()> {
     let fonts = embossing_fonts(font)?;
     text_metrics(&fonts, text).map(|_| ())
 }
@@ -128,23 +128,24 @@ pub(crate) fn validate_embossing_text(text: &str, font: TrayLabelFont) -> Result
 #[derive(Debug)]
 pub(crate) struct EmbossedLabel {
     pub(crate) text: String,
-    pub(crate) font: TrayLabelFont,
+    pub(crate) font: LabelFont,
     pub(crate) origin_x: f32,
     pub(crate) baseline_y: f32,
     pub(crate) scale: f32,
 }
 
 impl EmbossedLabel {
-    pub(crate) fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
+    pub(crate) fn contours(&self) -> Result<Vec<Vec<[f32; 2]>>> {
         let fonts = embossing_fonts(self.font)?;
         let mut pen_x = 0.0;
+        let mut all_contours = Vec::new();
         for character in self.text.chars() {
             let (face, glyph_id) = fonts
                 .glyph(character)
-                .ok_or_else(|| anyhow!("tray font has no glyph for {character:?}"))?;
+                .ok_or_else(|| anyhow!("label font has no glyph for {character:?}"))?;
             let advance = face
                 .glyph_hor_advance(glyph_id)
-                .ok_or_else(|| anyhow!("tray font has no advance for {character:?}"))?
+                .ok_or_else(|| anyhow!("label font has no advance for {character:?}"))?
                 as f32;
             let units = 1_000.0 / f32::from(face.units_per_em());
             let mut outline = GlyphOutline::default();
@@ -165,16 +166,21 @@ impl EmbossedLabel {
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
-                add_extruded_contours(
-                    mesh,
-                    &contours,
-                    rim_z - 0.02,
-                    rim_z + 0.56,
-                    SurfaceClass::Snow,
-                )?;
+                all_contours.extend(contours);
             }
             pen_x += advance * units;
         }
+        Ok(all_contours)
+    }
+
+    pub(crate) fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
+        add_extruded_contours(
+            mesh,
+            &self.contours()?,
+            rim_z - 0.02,
+            rim_z + 0.56,
+            SurfaceClass::Snow,
+        )?;
         Ok(())
     }
 }
@@ -314,8 +320,7 @@ fn add_extruded_contours(
         return Ok(());
     }
 
-    let triangulation =
-        triangulate_constraints(points, constraints, "triangulate vector tray label")?;
+    let triangulation = triangulate_constraints(points, constraints, "triangulate vector label")?;
     for face in triangulation.inner_faces() {
         let positions = face.vertices().map(|vertex| vertex.position());
         let centroid = [

@@ -34,9 +34,11 @@ const OVERLAY_SEPARATION_MM: f64 = 0.005;
 const MINIMUM_OVERLAY_AREA_MM2: f64 = 0.000_01;
 
 mod buildings;
+mod labels;
 mod overlays;
 
 use buildings::append_building_geometry;
+use labels::append_label_geometry;
 use overlays::append_road_geometry;
 
 #[allow(clippy::too_many_arguments)]
@@ -269,11 +271,7 @@ pub(crate) fn build_piece_with_height_range(
         .map(|index| [index, (index + 1) % outline.len()])
         .collect::<Vec<_>>();
     let mut flag_cavities = Vec::<(Vec<usize>, Vec<[f32; 2]>)>::new();
-    for marker in spec
-        .markers
-        .iter()
-        .filter(|marker| marker.kind == crate::spec::MarkerKind::FlagHole)
-    {
+    for marker in spec.markers.iter().filter(|marker| marker.kind.is_flag()) {
         let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
         let center = [
             uv[0] * assembled_width - origin_x,
@@ -584,6 +582,19 @@ pub(crate) fn build_piece_with_height_range(
             assembled_width,
             assembled_height,
             building_union.as_ref(),
+        )?;
+    }
+    if spec.uses_map_labels() {
+        append_label_geometry(
+            &mut mesh,
+            spec,
+            height_field,
+            height_range,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
         )?;
     }
     weld_export_mesh(&mut mesh);
@@ -1317,6 +1328,8 @@ mod tests {
                 latitude: 46.8523,
                 longitude: -121.7603,
                 kind: MarkerKind::FlagHole,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
             }],
             ..GenerationSpec::default()
         };

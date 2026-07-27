@@ -674,6 +674,8 @@ mod tests {
             latitude: 46.85,
             longitude: -121.76,
             kind: crate::spec::MarkerKind::Dot,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
         }];
         let slot = spec
             .material_palette(None)
@@ -962,6 +964,8 @@ mod tests {
             latitude: 46.85,
             longitude: -121.76,
             kind: crate::spec::MarkerKind::Dot,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
         }];
 
         // Every base class in the raster, every overlay class as vectors,

@@ -42,15 +42,46 @@ test("places map markers and submits their print modes", async ({ page }) => {
 
   await controls.getByRole("button", { name: "Color dot" }).click();
   await map.click({ position: { x: 260, y: 180 } });
-  await controls.getByRole("button", { name: "Flag hole" }).click();
+  await controls.getByRole("button", { name: "Blank flag" }).click();
   await map.click({ position: { x: 300, y: 210 } });
+  await controls.getByRole("button", { name: "Named flag" }).click();
+  await map.click({ position: { x: 180, y: 100 } });
+  await controls.getByLabel("Marker 4 name").fill("富士山 Mount Fuji");
+  await expect(page.locator(".map-marker-name")).toHaveText("富士山 Mount Fuji");
+  await controls.getByRole("button", { name: "Surface label" }).click();
+  await map.click({ position: { x: 340, y: 120 } });
+  await controls.getByLabel("Marker 5 name").fill("North Fork");
+  await controls.getByLabel("Marker 5 text height").fill("5.5");
+  await controls.getByLabel("Marker 5 rotation").fill("35");
+  await controls.getByRole("button", { name: "Raised plaque" }).click();
+  await map.click({ position: { x: 380, y: 80 } });
+  await controls.getByLabel("Marker 6 name").fill("Mirror Lake");
+  await controls.getByLabel("Marker 6 rotation").fill("-20");
 
-  await expect(page.locator(".map-marker")).toHaveCount(3);
+  await expect(page.locator(".map-marker")).toHaveCount(6);
   await expect(page.locator(".map-marker.dot")).toHaveCount(1);
   await expect(page.locator(".map-marker.flag_hole")).toHaveCount(1);
+  await expect(page.locator(".map-marker.flag_label")).toHaveCount(1);
+  await expect(page.locator(".map-marker.surface_label")).toHaveText(
+    "North Fork",
+  );
+  await expect(page.locator(".map-marker.surface_label")).toHaveAttribute(
+    "style",
+    /--marker-rotation: 35deg/,
+  );
+  await expect(page.locator(".map-marker.plaque_label")).toHaveText(
+    "Mirror Lake",
+  );
+  await expect(controls.getByLabel("Label font")).toHaveValue(
+    "atkinson_hyperlegible",
+  );
+  await controls.getByLabel("Label font").selectOption("noto_sans");
+  await controls.getByRole("slider", { name: "Flag width" }).fill("42");
+  await controls.getByRole("slider", { name: "Flag height" }).fill("14");
+  await controls.getByRole("slider", { name: "Flag label height" }).fill("5");
   await expect(
     controls.getByRole("checkbox", {
-      name: "Export a printable flag blank with flag-hole jobs",
+      name: "Export printable blank and named flags",
     }),
   ).toBeChecked();
 
@@ -60,22 +91,48 @@ test("places map markers and submits their print modes", async ({ page }) => {
   ).toHaveValue("#E24A33");
 
   await page.getByRole("button", { name: /^Generate/ }).click();
-  await expect.poll(() => (jobSpec.markers as unknown[] | undefined)?.length).toBe(3);
+  await expect.poll(() => (jobSpec.markers as unknown[] | undefined)?.length).toBe(6);
   const markers = jobSpec.markers as Array<{
     name: string;
     kind: string;
     latitude: number;
     longitude: number;
+    label_height_mm: number;
+    rotation_degrees: number;
   }>;
   expect(markers.map((marker) => marker.kind)).toEqual([
     "building",
     "dot",
     "flag_hole",
+    "flag_label",
+    "surface_label",
+    "plaque_label",
   ]);
   expect(markers[0].name).toBe("Home");
   expect(markers[0].latitude).toBe(46.900001);
   expect(markers.every((marker) => Number.isFinite(marker.latitude))).toBe(true);
   expect(markers.every((marker) => Number.isFinite(marker.longitude))).toBe(true);
+  expect(markers[3].name).toBe("富士山 Mount Fuji");
+  expect(markers[4]).toMatchObject({
+    name: "North Fork",
+    label_height_mm: 5.5,
+    rotation_degrees: 35,
+  });
+  expect(markers[5]).toMatchObject({
+    name: "Mirror Lake",
+    rotation_degrees: -20,
+  });
   expect((jobSpec.buildings as { enabled: boolean }).enabled).toBe(true);
-  expect((jobSpec.marker_settings as { hole_diameter_mm: number }).hole_diameter_mm).toBe(2.4);
+  const markerSettings = jobSpec.marker_settings as {
+    flag_height_mm: number;
+    label_font: string;
+    flag_label_height_mm: number;
+    flag_width_mm: number;
+    hole_diameter_mm: number;
+  };
+  expect(markerSettings.hole_diameter_mm).toBe(2.4);
+  expect(markerSettings.label_font).toBe("noto_sans");
+  expect(markerSettings.flag_label_height_mm).toBe(5);
+  expect(markerSettings.flag_width_mm).toBe(42);
+  expect(markerSettings.flag_height_mm).toBe(14);
 });
