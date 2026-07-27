@@ -93,7 +93,7 @@ pub(crate) async fn create_job(
         } else {
             let failure = match result {
                 Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error.to_string()),
+                Ok(Err(error)) => Some(format_job_error(&error)),
                 Err(payload) => Some(panic_message(payload)),
             };
             if let Some(failure) = failure {
@@ -166,6 +166,10 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     } else {
         "mesh generation panicked".into()
     }
+}
+
+fn format_job_error(error: &anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 pub(crate) async fn get_job(
@@ -604,6 +608,15 @@ mod tests {
         assert_eq!(
             panic_message(Box::new("triangulation failed")),
             "mesh generation panicked: triangulation failed"
+        );
+    }
+
+    #[test]
+    fn job_errors_keep_their_context_chain() {
+        let error = anyhow::anyhow!("socket crosses a puzzle seam").context("build piece 6, 7");
+        assert_eq!(
+            format_job_error(&error),
+            "build piece 6, 7: socket crosses a puzzle seam"
         );
     }
 
