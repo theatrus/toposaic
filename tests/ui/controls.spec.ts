@@ -473,7 +473,7 @@ test("switches railways on apart from roads and submits them", async ({
   // there from the start.
   await expect(railways).toBeChecked();
   await expect(railStyle).toHaveValue("separate");
-  await expect(railColor).toHaveValue("#4a5568");
+  await expect(railColor).toHaveValue("#c43d3d");
   await expect(railWidth).toHaveValue("0.7");
   await expect(railLegend).toBeVisible();
   await expect(
@@ -502,7 +502,7 @@ test("switches railways on apart from roads and submits them", async ({
   await expect(railLegend).toBeHidden();
 
   await railStyle.selectOption("separate");
-  await expect(railColor).toHaveValue("#4a5568");
+  await expect(railColor).toHaveValue("#c43d3d");
   await railColor.fill("#2b3440");
   await railWidth.fill("1.2");
   await expect(railWidth).toHaveValue("1.2");
