@@ -1940,6 +1940,64 @@ fieldset.control-section .road-options {
   text-transform: none;
 }
 
+.font-select-field {
+  align-self: start;
+  color: var(--muted);
+  display: grid;
+  font-size: 10px;
+  font-weight: 660;
+  gap: 7px;
+  min-width: 0;
+}
+
+.font-select-control {
+  display: block;
+  min-width: 0;
+  position: relative;
+}
+
+.font-select-control::after {
+  border-bottom: 1.5px solid var(--ink);
+  border-right: 1.5px solid var(--ink);
+  content: "";
+  height: 6px;
+  pointer-events: none;
+  position: absolute;
+  right: 11px;
+  top: calc(50% - 5px);
+  transform: rotate(45deg);
+  width: 6px;
+}
+
+.font-select-field select {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  display: block;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 520;
+  min-width: 0;
+  overflow: hidden;
+  padding: 9px 32px 9px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.font-select-field select:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+
+.font-select-field small {
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
 .range-field {
   display: block;
   margin: 19px 0;
@@ -2450,7 +2508,7 @@ fieldset.control-section .road-options {
   display: grid;
   gap: 6px;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
 }
 
 .marker-label-fields label {

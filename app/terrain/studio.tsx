@@ -31,6 +31,7 @@ import {
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
   initialSpec,
+  isMapLabel,
   markerNeedsSurfaceData,
   limitPlaceName,
   mergeSpecDefaults,
@@ -576,6 +577,17 @@ export function TerrainStudio() {
               name: `${label} ${number}`,
               label_height_mm: 4,
               rotation_degrees: 0,
+              ...(isMapLabel(markerPlacementKind)
+                ? {
+                    label_style: {
+                      relief_mm: current.marker_settings.map_label_relief_mm,
+                      plaque_padding_mm:
+                        current.marker_settings.plaque_padding_mm,
+                      plaque_thickness_mm:
+                        current.marker_settings.plaque_thickness_mm,
+                    },
+                  }
+                : {}),
             },
           ].slice(0, 50),
         };

@@ -221,6 +221,7 @@ pub fn generate_marker_artifacts(
             kind: MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            label_style: None,
         });
     }
     let mut artifacts = Vec::new();
@@ -645,6 +646,7 @@ mod tests {
                     kind: crate::spec::MarkerKind::FlagHole,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    label_style: None,
                 },
                 crate::spec::MapMarker {
                     name: "Mount Fuji 富士山".into(),
@@ -653,6 +655,7 @@ mod tests {
                     kind: crate::spec::MarkerKind::FlagLabel,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    label_style: None,
                 },
             ],
             ..GenerationSpec::default()
@@ -693,6 +696,7 @@ mod tests {
                 kind: crate::spec::MarkerKind::PlaqueLabel,
                 label_height_mm: 4.0,
                 rotation_degrees: 25.0,
+                label_style: None,
             }],
             ..defaults
         };

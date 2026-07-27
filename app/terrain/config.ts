@@ -313,6 +313,24 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       ...marker,
       label_height_mm: marker.label_height_mm ?? 4,
       rotation_degrees: marker.rotation_degrees ?? 0,
+      ...(isMapLabel(marker.kind)
+        ? {
+            label_style: {
+              relief_mm:
+                marker.label_style?.relief_mm ??
+                saved.marker_settings?.map_label_relief_mm ??
+                initialSpec.marker_settings.map_label_relief_mm,
+              plaque_padding_mm:
+                marker.label_style?.plaque_padding_mm ??
+                saved.marker_settings?.plaque_padding_mm ??
+                initialSpec.marker_settings.plaque_padding_mm,
+              plaque_thickness_mm:
+                marker.label_style?.plaque_thickness_mm ??
+                saved.marker_settings?.plaque_thickness_mm ??
+                initialSpec.marker_settings.plaque_thickness_mm,
+            },
+          }
+        : {}),
     })),
   };
 }

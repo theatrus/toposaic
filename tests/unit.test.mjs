@@ -102,6 +102,31 @@ test("old setups recall empty markers and current marker print settings", () => 
   }).markers[0];
   assert.equal(oldMarker.label_height_mm, 4);
   assert.equal(oldMarker.rotation_degrees, 0);
+  assert.equal(oldMarker.label_style, undefined);
+
+  const customLegacyStyle = mergeSpecDefaults({
+    marker_settings: {
+      ...initialSpec.marker_settings,
+      map_label_relief_mm: 0.8,
+      plaque_padding_mm: 2.2,
+      plaque_thickness_mm: 1.4,
+    },
+    markers: [
+      {
+        kind: "plaque_label",
+        latitude: 46.8,
+        longitude: -121.7,
+        name: "Old plaque",
+        label_height_mm: 5,
+        rotation_degrees: 0,
+      },
+    ],
+  }).markers[0];
+  assert.deepEqual(customLegacyStyle.label_style, {
+    relief_mm: 0.8,
+    plaque_padding_mm: 2.2,
+    plaque_thickness_mm: 1.4,
+  });
 });
 
 test("defaults close-view line scaling on and recalls old setups", () => {

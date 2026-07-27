@@ -1,5 +1,6 @@
 import type { GenerationSpec, MarkerKind } from "../contracts";
 import { isFlagMarker, isMapLabel, limitMarkerName } from "../config";
+import { LabelFontSelect } from "./label-font-select";
 import { RangeField } from "./range-field";
 
 const kindLabel: Record<MarkerKind, string> = {
@@ -10,6 +11,23 @@ const kindLabel: Record<MarkerKind, string> = {
   surface_label: "Surface label",
   plaque_label: "Raised plaque",
 };
+
+type MapLabelStyle = NonNullable<
+  GenerationSpec["markers"][number]["label_style"]
+>;
+
+function resolvedLabelStyle(
+  marker: GenerationSpec["markers"][number],
+  defaults: GenerationSpec["marker_settings"],
+): MapLabelStyle {
+  return (
+    marker.label_style ?? {
+      relief_mm: defaults.map_label_relief_mm,
+      plaque_padding_mm: defaults.plaque_padding_mm,
+      plaque_thickness_mm: defaults.plaque_thickness_mm,
+    }
+  );
+}
 
 function MarkerCoordinateInput({
   label,
@@ -81,9 +99,6 @@ export function MarkersPanel({
   const showMapLabelControls =
     (placementKind !== null && isMapLabel(placementKind)) ||
     spec.markers.some((marker) => isMapLabel(marker.kind));
-  const showPlaqueControls =
-    placementKind === "plaque_label" ||
-    spec.markers.some((marker) => marker.kind === "plaque_label");
   const showTextControls =
     placementKind === "flag_label" ||
     showMapLabelControls ||
@@ -200,6 +215,97 @@ export function MarkersPanel({
                     />
                     <small>° clockwise</small>
                   </label>
+                  <label>
+                    <span>Relief</span>
+                    <input
+                      aria-label={`Marker ${index + 1} relief`}
+                      max={1.2}
+                      min={0.2}
+                      onChange={(event) => {
+                        const value = event.target.valueAsNumber;
+                        if (Number.isFinite(value)) {
+                          updateMarker(index, {
+                            label_style: {
+                              ...resolvedLabelStyle(
+                                marker,
+                                spec.marker_settings,
+                              ),
+                              relief_mm: value,
+                            },
+                          });
+                        }
+                      }}
+                      step={0.1}
+                      type="number"
+                      value={
+                        resolvedLabelStyle(marker, spec.marker_settings)
+                          .relief_mm
+                      }
+                    />
+                    <small>mm raised</small>
+                  </label>
+                  {marker.kind === "plaque_label" && (
+                    <>
+                      <label>
+                        <span>Padding</span>
+                        <input
+                          aria-label={`Marker ${index + 1} plaque padding`}
+                          max={5}
+                          min={0.5}
+                          onChange={(event) => {
+                            const value = event.target.valueAsNumber;
+                            if (Number.isFinite(value)) {
+                              updateMarker(index, {
+                                label_style: {
+                                  ...resolvedLabelStyle(
+                                    marker,
+                                    spec.marker_settings,
+                                  ),
+                                  plaque_padding_mm: value,
+                                },
+                              });
+                            }
+                          }}
+                          step={0.1}
+                          type="number"
+                          value={
+                            resolvedLabelStyle(marker, spec.marker_settings)
+                              .plaque_padding_mm
+                          }
+                        />
+                        <small>mm</small>
+                      </label>
+                      <label>
+                        <span>Base height</span>
+                        <input
+                          aria-label={`Marker ${index + 1} plaque base height`}
+                          max={3}
+                          min={0.4}
+                          onChange={(event) => {
+                            const value = event.target.valueAsNumber;
+                            if (Number.isFinite(value)) {
+                              updateMarker(index, {
+                                label_style: {
+                                  ...resolvedLabelStyle(
+                                    marker,
+                                    spec.marker_settings,
+                                  ),
+                                  plaque_thickness_mm: value,
+                                },
+                              });
+                            }
+                          }}
+                          step={0.1}
+                          type="number"
+                          value={
+                            resolvedLabelStyle(marker, spec.marker_settings)
+                              .plaque_thickness_mm
+                          }
+                        />
+                        <small>mm above terrain</small>
+                      </label>
+                    </>
+                  )}
                 </div>
               )}
               <div className="marker-coordinates">
@@ -240,24 +346,10 @@ export function MarkersPanel({
         value={spec.marker_settings.dot_diameter_mm}
       />
       {showTextControls && (
-        <label className="marker-flag-font-field">
-          <span>Label font</span>
-          <select
-            aria-label="Label font"
-            onChange={(event) =>
-              updateMarkerSettings(
-                "label_font",
-                event.target
-                  .value as GenerationSpec["marker_settings"]["label_font"],
-              )
-            }
-            value={spec.marker_settings.label_font}
-          >
-            <option value="atkinson_hyperlegible">Atkinson Hyperlegible</option>
-            <option value="noto_sans">Noto Sans</option>
-            <option value="b612_mono">B612 Mono</option>
-          </select>
-        </label>
+        <LabelFontSelect
+          onChange={(font) => updateMarkerSettings("label_font", font)}
+          value={spec.marker_settings.label_font}
+        />
       )}
       {showFlagControls && (
         <>
@@ -350,47 +442,6 @@ export function MarkersPanel({
             />
             Export printable blank and named flags
           </label>
-        </>
-      )}
-      {showMapLabelControls && (
-        <RangeField
-          label="Map label relief"
-          max={1.2}
-          min={0.2}
-          note="Height above the terrain or plaque."
-          onChange={(value) =>
-            updateMarkerSettings("map_label_relief_mm", value)
-          }
-          step={0.1}
-          unit="mm"
-          value={spec.marker_settings.map_label_relief_mm}
-        />
-      )}
-      {showPlaqueControls && (
-        <>
-          <RangeField
-            label="Plaque padding"
-            max={5}
-            min={0.5}
-            onChange={(value) =>
-              updateMarkerSettings("plaque_padding_mm", value)
-            }
-            step={0.1}
-            unit="mm"
-            value={spec.marker_settings.plaque_padding_mm}
-          />
-          <RangeField
-            label="Plaque thickness"
-            max={3}
-            min={0.4}
-            note="Added above the highest terrain under the plaque."
-            onChange={(value) =>
-              updateMarkerSettings("plaque_thickness_mm", value)
-            }
-            step={0.1}
-            unit="mm"
-            value={spec.marker_settings.plaque_thickness_mm}
-          />
         </>
       )}
     </fieldset>

@@ -2243,6 +2243,7 @@ mod tests {
             kind: MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            label_style: None,
         });
         let mut field =
             SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "marker test").unwrap();

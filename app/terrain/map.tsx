@@ -527,7 +527,8 @@ export function TerrainMap({
                         marker.kind === "plaque_label"
                           ? Math.max(
                               2,
-                              (spec.marker_settings.plaque_padding_mm /
+                              ((marker.label_style?.plaque_padding_mm ??
+                                spec.marker_settings.plaque_padding_mm) /
                                 spec.width_mm) *
                                 selectionSize,
                             )

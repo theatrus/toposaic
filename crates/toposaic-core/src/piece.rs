@@ -1417,6 +1417,7 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                label_style: None,
             }],
             ..GenerationSpec::default()
         };
@@ -1450,6 +1451,7 @@ mod tests {
                 kind: MarkerKind::FlagHole,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                label_style: None,
             }],
             ..GenerationSpec::default()
         };

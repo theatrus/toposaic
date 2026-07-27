@@ -53,10 +53,14 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await controls.getByLabel("Marker 5 name").fill("North Fork");
   await controls.getByLabel("Marker 5 text height").fill("5.5");
   await controls.getByLabel("Marker 5 rotation").fill("35");
+  await controls.getByLabel("Marker 5 relief").fill("0.7");
   await controls.getByRole("button", { name: "Raised plaque" }).click();
   await map.click({ position: { x: 380, y: 80 } });
   await controls.getByLabel("Marker 6 name").fill("Mirror Lake");
   await controls.getByLabel("Marker 6 rotation").fill("-20");
+  await controls.getByLabel("Marker 6 relief").fill("1");
+  await controls.getByLabel("Marker 6 plaque padding").fill("2.5");
+  await controls.getByLabel("Marker 6 plaque base height").fill("1.4");
 
   await expect(page.locator(".map-marker")).toHaveCount(6);
   await expect(page.locator(".map-marker.dot")).toHaveCount(1);
@@ -99,6 +103,11 @@ test("places map markers and submits their print modes", async ({ page }) => {
     longitude: number;
     label_height_mm: number;
     rotation_degrees: number;
+    label_style: {
+      relief_mm: number;
+      plaque_padding_mm: number;
+      plaque_thickness_mm: number;
+    };
   }>;
   expect(markers.map((marker) => marker.kind)).toEqual([
     "building",
@@ -117,10 +126,16 @@ test("places map markers and submits their print modes", async ({ page }) => {
     name: "North Fork",
     label_height_mm: 5.5,
     rotation_degrees: 35,
+    label_style: { relief_mm: 0.7 },
   });
   expect(markers[5]).toMatchObject({
     name: "Mirror Lake",
     rotation_degrees: -20,
+    label_style: {
+      relief_mm: 1,
+      plaque_padding_mm: 2.5,
+      plaque_thickness_mm: 1.4,
+    },
   });
   expect((jobSpec.buildings as { enabled: boolean }).enabled).toBe(true);
   const markerSettings = jobSpec.marker_settings as {

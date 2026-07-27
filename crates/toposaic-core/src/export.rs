@@ -676,6 +676,7 @@ mod tests {
             kind: crate::spec::MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            label_style: None,
         }];
         let slot = spec
             .material_palette(None)
@@ -937,6 +938,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vector_labels_keep_the_marker_filament_without_marker_pixels() {
+        let mut spec = fixture_spec(ThreeMfStyle::Project);
+        spec.markers.push(crate::spec::MapMarker {
+            name: "North Fork".into(),
+            latitude: spec.center_lat,
+            longitude: spec.center_lon,
+            kind: crate::spec::MarkerKind::SurfaceLabel,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
+            label_style: None,
+        });
+        let field = field_with(&[]);
+        let palette = spec.material_palette(Some(&field));
+        assert_eq!(palette.slot(SurfaceClass::Marker), Some(6));
+
+        let mut meshes = fixture_meshes();
+        meshes[0].materials[0] = SurfaceClass::Marker;
+        let model = model_xml(&write_spec_meshes(&spec, &meshes, Some(&field)));
+        assert!(model.contains("paint_color=\"4C\""));
+    }
+
     /// The property the refusal check depends on: the palette covers every
     /// class a mesh built from the field can paint. Proved end to end —
     /// real pieces built from a field carrying every class, written through
@@ -966,6 +989,7 @@ mod tests {
             kind: crate::spec::MarkerKind::Dot,
             label_height_mm: 4.0,
             rotation_degrees: 0.0,
+            label_style: None,
         }];
 
         // Every base class in the raster, every overlay class as vectors,

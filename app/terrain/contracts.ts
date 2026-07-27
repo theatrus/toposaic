@@ -20,6 +20,11 @@ export type MapMarker = {
   label_height_mm: number;
   /** Clockwise rotation on the north-up map. */
   rotation_degrees: number;
+  label_style?: {
+    relief_mm: number;
+    plaque_padding_mm: number;
+    plaque_thickness_mm: number;
+  } | null;
 };
 
 export type GenerationSpec = {

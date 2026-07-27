@@ -629,9 +629,10 @@ impl GenerationSpec {
         let contained = surface.map(SurfaceField::contained_classes);
         let mut palette = MaterialPalette::default();
         for class in SurfaceClass::ALL {
-            // Only the optional layers consult the data; see above for why
-            // the base six are unconditional.
-            let base_class = matches!(
+            // Only data-backed optional layers consult the field. Vector map
+            // labels build straight into the mesh, so Marker must stay even
+            // when the downloaded field contains no marker pixels.
+            let mesh_class = matches!(
                 class,
                 SurfaceClass::Rock
                     | SurfaceClass::Forest
@@ -639,8 +640,8 @@ impl GenerationSpec {
                     | SurfaceClass::Water
                     | SurfaceClass::Road
                     | SurfaceClass::Building
-            );
-            let in_data = base_class
+            ) || (class == SurfaceClass::Marker && self.uses_map_labels());
+            let in_data = mesh_class
                 || if class == SurfaceClass::RouteTrail {
                     // Mapped trails can only come from a surface field. A
                     // tray or fixture with no field must keep the old six
@@ -834,6 +835,17 @@ pub struct MapMarker {
     /// Clockwise rotation on the north-up map.
     #[serde(default)]
     pub rotation_degrees: f32,
+    /// Per-label print dimensions. Older setups omit this and keep using the
+    /// shared marker defaults so their output does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_style: Option<MapLabelStyle>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MapLabelStyle {
+    pub relief_mm: f32,
+    pub plaque_padding_mm: f32,
+    pub plaque_thickness_mm: f32,
 }
 
 fn default_map_label_height_mm() -> f32 {
@@ -861,7 +873,28 @@ impl MapMarker {
         {
             bail!("map label rotation must be between -180 and 180 degrees");
         }
+        if self.kind.is_map_label()
+            && let Some(style) = self.label_style
+        {
+            if !(0.2..=1.2).contains(&style.relief_mm) {
+                bail!("map label relief must be between 0.2 and 1.2 mm");
+            }
+            if !(0.5..=5.0).contains(&style.plaque_padding_mm) {
+                bail!("map label plaque padding must be between 0.5 and 5 mm");
+            }
+            if !(0.4..=3.0).contains(&style.plaque_thickness_mm) {
+                bail!("map label plaque thickness must be between 0.4 and 3 mm");
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn label_style(&self, defaults: &MarkerSpec) -> MapLabelStyle {
+        self.label_style.unwrap_or(MapLabelStyle {
+            relief_mm: defaults.map_label_relief_mm,
+            plaque_padding_mm: defaults.plaque_padding_mm,
+            plaque_thickness_mm: defaults.plaque_thickness_mm,
+        })
     }
 }
 
@@ -2321,6 +2354,7 @@ mod tests {
                 kind: MarkerKind::Dot,
                 label_height_mm: 4.0,
                 rotation_degrees: 0.0,
+                label_style: None,
             }],
             ..GenerationSpec::default()
         };
@@ -2378,6 +2412,7 @@ mod tests {
                     kind: MarkerKind::FlagHole,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    label_style: None,
                 },
                 MapMarker {
                     name: "Second".into(),
@@ -2386,6 +2421,7 @@ mod tests {
                     kind: MarkerKind::FlagLabel,
                     label_height_mm: 4.0,
                     rotation_degrees: 0.0,
+                    label_style: None,
                 },
             ],
             ..GenerationSpec::default()

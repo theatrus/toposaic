@@ -401,6 +401,8 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await placeName.fill("富士山 Mount Fuji");
   await expect(placeName).toHaveValue("富士山 Mount Fuji");
   const labelFont = page.getByLabel("Label font");
+  await expect(labelFont).toHaveCSS("font-size", "11px");
+  await expect(labelFont).toHaveCSS("appearance", "none");
   await expect(labelFont).toHaveValue("atkinson_hyperlegible");
   await expect(labelFont.locator("option")).toHaveText([
     "Atkinson Hyperlegible",
