@@ -28,7 +28,7 @@ const MAX_MAP_ZOOM = 17;
 const KEYBOARD_PAN_SHARE = 0.1;
 const KEYBOARD_PAN_SHARE_SHIFT = 0.5;
 
-type MapInteractionMode = "pan" | "select";
+type MapInteractionMode = "pan" | "move" | "select";
 
 type SelectionDraft = {
   left: number;
@@ -340,15 +340,16 @@ export function TerrainMap({
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     const bounds = event.currentTarget.getBoundingClientRect();
+    const mode = markerPlacementMode ? "marker" : interactionMode;
     dragRef.current = {
       pointerId: event.pointerId,
-      mode: markerPlacementMode ? "marker" : interactionMode,
+      mode,
       startX: event.clientX,
       startY: event.clientY,
       localStartX: event.clientX - bounds.left,
       localStartY: event.clientY - bounds.top,
-      worldX: viewWorldCenter.x,
-      worldY: viewWorldCenter.y,
+      worldX: mode === "move" ? anchorWorld.x : viewWorldCenter.x,
+      worldY: mode === "move" ? anchorWorld.y : viewWorldCenter.y,
     };
   };
 
@@ -374,7 +375,11 @@ export function TerrainMap({
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
     );
-    setViewCenter(next);
+    if (drag.mode === "move") {
+      onCenterChange(next.longitude, next.latitude);
+    } else {
+      setViewCenter(next);
+    }
   };
 
   const pointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -450,7 +455,11 @@ export function TerrainMap({
       drag.worldX - (event.clientX - drag.startX),
       drag.worldY - (event.clientY - drag.startY),
     );
-    setViewCenter(next);
+    if (drag.mode === "move") {
+      onCenterChange(next.longitude, next.latitude);
+    } else {
+      setViewCenter(next);
+    }
   };
 
   const keyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -470,7 +479,9 @@ export function TerrainMap({
     const share = event.shiftKey
       ? KEYBOARD_PAN_SHARE_SHIFT
       : KEYBOARD_PAN_SHARE;
-    const viewPosition = moveToWorld(viewWorldCenter.x, viewWorldCenter.y);
+    const keyboardOrigin =
+      interactionMode === "move" ? anchorWorld : viewWorldCenter;
+    const viewPosition = moveToWorld(keyboardOrigin.x, keyboardOrigin.y);
     const viewMetresPerPixel = metresPerPixelAtLatitude(
       viewPosition.latitude,
       mapZoom,
@@ -480,10 +491,14 @@ export function TerrainMap({
     // moveToWorld runs the same unproject as drags, so latitude clamps to
     // the Mercator range and longitude wraps at the antimeridian.
     const next = moveToWorld(
-      viewWorldCenter.x + east * panPixels,
-      viewWorldCenter.y - north * panPixels,
+      keyboardOrigin.x + east * panPixels,
+      keyboardOrigin.y - north * panPixels,
     );
-    setViewCenter(next);
+    if (interactionMode === "move") {
+      onCenterChange(next.longitude, next.latitude);
+    } else {
+      setViewCenter(next);
+    }
   };
 
   const changeZoom = useCallback(
@@ -549,7 +564,7 @@ export function TerrainMap({
         data-view-latitude={displayedViewCenter.latitude.toFixed(8)}
         data-view-longitude={displayedViewCenter.longitude.toFixed(8)}
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-        aria-label="Terrain map. Pan the map or draw a terrain area. Use the mouse wheel to zoom or focus the map and pan with the arrow keys."
+        aria-label="Terrain map. Pan the map, move the terrain area, or draw a new area. Use the mouse wheel to zoom or focus the map and pan with the arrow keys."
         onKeyDown={keyDown}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
@@ -560,7 +575,7 @@ export function TerrainMap({
         }}
         role="application"
         tabIndex={0}
-        title="Drag to pan or draw · Scroll to zoom · Arrow keys pan"
+        title="Pan, move, or draw · Scroll to zoom · Arrow keys pan"
       >
         <div className="map-tiles" aria-hidden="true">
           {tiles.map((tile) => (
@@ -730,6 +745,18 @@ export function TerrainMap({
           Pan
         </button>
         <button
+          aria-label="Move terrain area with map"
+          aria-pressed={interactionMode === "move"}
+          onClick={() => {
+            setDraft(null);
+            setViewCenter(null);
+            setInteractionMode("move");
+          }}
+          type="button"
+        >
+          Move area
+        </button>
+        <button
           aria-label="Draw terrain area"
           aria-pressed={interactionMode === "select"}
           onClick={() => setInteractionMode("select")}
@@ -753,6 +780,8 @@ export function TerrainMap({
                 : "Click the map to place the marker"
               : interactionMode === "pan"
                 ? "Drag to pan"
+                : interactionMode === "move"
+                  ? "Drag to move area"
                 : superTileActive
                   ? `Drag ${superTileColumns} × ${superTileRows} area`
                   : "Drag a terrain area"

@@ -61,6 +61,58 @@ test("pans the map without moving the terrain area", async ({ page }) => {
   expect(await page.evaluate(() => window.scrollX + window.scrollY)).toBe(0);
 });
 
+test("moves the terrain area with the legacy fixed-rectangle pan", async ({
+  page,
+}) => {
+  await mockSetupsService(page, []);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const map = page.locator(".map-canvas");
+  const selection = page.locator(".map-selection.current");
+  const latitude = page.getByLabel("Latitude");
+  const longitude = page.getByLabel("Longitude");
+  await page.getByRole("button", { name: "Move terrain area with map" }).click();
+  await expect(map).toHaveAttribute("data-interaction-mode", "move");
+  await expect(page.locator(".map-instruction")).toHaveText(
+    "Drag to move area",
+  );
+
+  const mapBounds = await map.boundingBox();
+  const initialSelectionBounds = await selection.boundingBox();
+  expect(mapBounds).not.toBeNull();
+  expect(initialSelectionBounds).not.toBeNull();
+  if (!mapBounds || !initialSelectionBounds) return;
+  const initialLatitude = await latitude.inputValue();
+  const initialLongitude = await longitude.inputValue();
+
+  await page.mouse.move(
+    mapBounds.x + mapBounds.width * 0.5,
+    mapBounds.y + mapBounds.height * 0.5,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    mapBounds.x + mapBounds.width * 0.5 + 80,
+    mapBounds.y + mapBounds.height * 0.5 + 35,
+    { steps: 5 },
+  );
+  await page.mouse.up();
+
+  await expect(latitude).not.toHaveValue(initialLatitude);
+  await expect(longitude).not.toHaveValue(initialLongitude);
+  const movedSelectionBounds = await selection.boundingBox();
+  expect(movedSelectionBounds).not.toBeNull();
+  expect(movedSelectionBounds!.x).toBeCloseTo(initialSelectionBounds.x, 0);
+  expect(movedSelectionBounds!.y).toBeCloseTo(initialSelectionBounds.y, 0);
+
+  const afterDragLatitude = Number(await latitude.inputValue());
+  await map.focus();
+  await page.keyboard.press("ArrowUp");
+  await expect
+    .poll(async () => Number(await latitude.inputValue()))
+    .toBeGreaterThan(afterDragLatitude);
+});
+
 test("pans independently and draws a new terrain area", async ({ page }) => {
   await mockSetupsService(page, []);
   await page.setViewportSize({ width: 1440, height: 900 });

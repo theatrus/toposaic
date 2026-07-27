@@ -720,11 +720,13 @@ a {
   touch-action: none;
 }
 
-.map-canvas.map-pan {
+.map-canvas.map-pan,
+.map-canvas.map-move {
   cursor: grab;
 }
 
-.map-canvas.map-pan:active {
+.map-canvas.map-pan:active,
+.map-canvas.map-move:active {
   cursor: grabbing;
 }
 
@@ -954,6 +956,7 @@ a {
   align-items: stretch;
   display: flex;
   left: 14px;
+  pointer-events: none;
   position: absolute;
   top: 14px;
   z-index: 6;
@@ -974,6 +977,7 @@ a {
 
 .map-mode-tools button {
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .map-mode-tools button + button,
