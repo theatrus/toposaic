@@ -237,6 +237,19 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   assert.equal(withTrail.trails[0].name, "Loop");
 });
 
+test("old setups gain a stable puzzle identity without changing their old cuts", () => {
+  const oldSpec = { ...initialSpec };
+  delete oldSpec.puzzle_seed;
+  delete oldSpec.puzzle_tile_column;
+  delete oldSpec.puzzle_tile_row;
+  delete oldSpec.outer_edge_interlocks;
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.puzzle_seed, 0);
+  assert.equal(merged.puzzle_tile_column, 0);
+  assert.equal(merged.puzzle_tile_row, 0);
+  assert.equal(merged.outer_edge_interlocks, false);
+});
+
 test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {
   const oldSpec = structuredClone(initialSpec);
   delete oldSpec.tray.contours_enabled;

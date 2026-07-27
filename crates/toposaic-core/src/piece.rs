@@ -1170,7 +1170,11 @@ fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
         };
         return [x, y];
     }
-    let seed = ((row as u64) << 32) | column as u64;
+    let global_row = i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(row);
+    let global_column =
+        i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(column);
+    let grid_key = ((global_row as u32 as u64) << 32) | global_column as u32 as u64;
+    let seed = grid_key ^ (spec.puzzle_seed as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93);
     let x = if column == 0 {
         0.0
     } else if column == spec.columns {
@@ -1195,14 +1199,29 @@ fn puzzle_edge_sign(
     line: u32,
     line_count: u32,
 ) -> f32 {
-    if let Some((global_segment, global_line, global_line_count)) =
-        adjacent_edge_key(spec, orientation, segment, line, line_count)
-    {
-        edge_sign(orientation, global_segment, global_line, global_line_count)
-    } else if spec.puzzle_tabs {
-        edge_sign(orientation, segment, line, line_count)
+    let tile_edge = line == 0 || line == line_count;
+    let inside_super_tile = tile_edge && super_tile_edge_has_neighbor(spec, orientation, line);
+    let enabled = if !tile_edge {
+        spec.puzzle_tabs
+    } else if inside_super_tile {
+        spec.adjacent_interlocks
     } else {
-        0.0
+        spec.outer_edge_interlocks
+    };
+    if !enabled {
+        return 0.0;
+    }
+    let (global_segment, global_line) = global_edge_key(spec, orientation, segment, line);
+    edge_sign(spec.puzzle_seed, orientation, global_segment, global_line)
+}
+
+fn super_tile_edge_has_neighbor(spec: &GenerationSpec, orientation: u64, line: u32) -> bool {
+    if orientation == 0 {
+        (line == 0 && spec.adjacent_tile_row > 0)
+            || (line == spec.rows && spec.adjacent_tile_row + 1 < spec.adjacent_rows)
+    } else {
+        (line == 0 && spec.adjacent_tile_column > 0)
+            || (line == spec.columns && spec.adjacent_tile_column + 1 < spec.adjacent_columns)
     }
 }
 
@@ -1212,55 +1231,21 @@ fn piece_edge_pattern(
     segment: u32,
     line: u32,
 ) -> EdgePattern {
-    adjacent_edge_key(
-        spec,
-        orientation,
-        segment,
-        line,
-        if orientation == 0 {
-            spec.rows
-        } else {
-            spec.columns
-        },
-    )
-    .map(|(global_segment, global_line, _)| {
-        shared_edge_pattern(orientation, global_line, global_segment)
-    })
-    .unwrap_or_else(|| shared_edge_pattern(orientation, line, segment))
+    let (global_segment, global_line) = global_edge_key(spec, orientation, segment, line);
+    shared_edge_pattern(spec.puzzle_seed, orientation, global_line, global_segment)
 }
 
-fn adjacent_edge_key(
-    spec: &GenerationSpec,
-    orientation: u64,
-    segment: u32,
-    line: u32,
-    line_count: u32,
-) -> Option<(u32, u32, u32)> {
-    if !spec.adjacent_interlocks || (line != 0 && line != line_count) {
-        return None;
-    }
+fn global_edge_key(spec: &GenerationSpec, orientation: u64, segment: u32, line: u32) -> (i64, i64) {
     if orientation == 0 {
-        let global_line = if line == 0 {
-            spec.adjacent_tile_row + 1
-        } else {
-            spec.adjacent_tile_row
-        };
-        Some((
-            spec.adjacent_tile_column * spec.columns + segment,
-            global_line,
-            spec.adjacent_rows,
-        ))
+        (
+            i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(segment),
+            i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(line),
+        )
     } else {
-        let global_line = if line == 0 {
-            spec.adjacent_tile_column
-        } else {
-            spec.adjacent_tile_column + 1
-        };
-        Some((
-            spec.adjacent_tile_row * spec.rows + segment,
-            global_line,
-            spec.adjacent_columns,
-        ))
+        (
+            i64::from(spec.puzzle_tile_row) * i64::from(spec.rows) + i64::from(segment),
+            i64::from(spec.puzzle_tile_column) * i64::from(spec.columns) + i64::from(line),
+        )
     }
 }
 
@@ -1393,25 +1378,29 @@ mod tests {
     #[test]
     fn optional_adjacent_tile_edges_interlock_without_warping_the_grid() {
         let left_spec = GenerationSpec {
-            solid_model: true,
             adjacent_columns: 2,
             adjacent_rows: 1,
             adjacent_interlocks: true,
             adjacent_tile_column: 0,
+            puzzle_seed: 0x1234_5678,
+            puzzle_tile_column: -3,
+            puzzle_tile_row: 5,
             ..GenerationSpec::default()
         };
         let right_spec = GenerationSpec {
             adjacent_tile_column: 1,
+            puzzle_tile_column: left_spec.puzzle_tile_column + 1,
             ..left_spec.clone()
         };
-        let left = solid_outline(&left_spec, 96).unwrap();
-        let right = solid_outline(&right_spec, 96)
+        let row = 1;
+        let left = piece_outline(&left_spec, row, left_spec.columns - 1, true).unwrap();
+        let right = piece_outline(&right_spec, row, 0, true)
             .unwrap()
             .into_iter()
             .map(|point| [point[0] + left_spec.width_mm, point[1]])
             .collect::<Vec<_>>();
 
-        let edge_samples = left.len() / 4;
+        let edge_samples = left_spec.samples_per_piece as usize;
         let left_shared = left[edge_samples..edge_samples * 2]
             .iter()
             .collect::<Vec<_>>();
@@ -1430,18 +1419,35 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(distance < 0.001);
         }
+        let outer_plain = piece_outline(&left_spec, 0, 0, true).unwrap();
         assert!(
-            left.iter()
-                .filter(|point| point[1] < 0.001)
-                .all(|point| point[1].abs() < 0.001)
+            outer_plain[..edge_samples]
+                .iter()
+                .all(|point| point[1].abs() < 0.0001)
         );
-
-        let plain = solid_outline(
+        let outer_notched = piece_outline(
+            &GenerationSpec {
+                outer_edge_interlocks: true,
+                ..left_spec.clone()
+            },
+            0,
+            0,
+            true,
+        )
+        .unwrap();
+        assert!(
+            outer_notched[..edge_samples]
+                .iter()
+                .any(|point| point[1].abs() > left_spec.height_mm() * 0.01)
+        );
+        let plain = piece_outline(
             &GenerationSpec {
                 adjacent_interlocks: false,
                 ..left_spec
             },
-            96,
+            row,
+            right_spec.columns - 1,
+            true,
         )
         .unwrap();
         assert!(

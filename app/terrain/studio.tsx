@@ -34,6 +34,7 @@ import {
   limitPlaceName,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
+  randomPuzzleSeed,
 } from "./config";
 import type {
   Artifact,
@@ -137,6 +138,7 @@ function oddSuperTileSize(value: number) {
 
 export function TerrainStudio() {
   const [spec, setSpec] = useState(initialSpec);
+  const seededInitialSetup = useRef(false);
   const [appVersion, setAppVersion] = useState(APP_VERSION);
   const [availableUpdate, setAvailableUpdate] =
     useState<AvailableUpdate | null>(null);
@@ -202,6 +204,14 @@ export function TerrainStudio() {
   // "__first" focuses the first enabled item; a setup id focuses that row.
   const setupFocusRef = useRef<string | null>(null);
   const skipSetupNameBlurRef = useRef(false);
+
+  useEffect(() => {
+    if (seededInitialSetup.current) return;
+    seededInitialSetup.current = true;
+    // Browser entropy gives each new setup its own saved seed. The mesh code
+    // uses only fixed integer math after this point.
+    setSpec((current) => ({ ...current, puzzle_seed: randomPuzzleSeed() }));
+  }, []);
 
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -745,6 +755,12 @@ export function TerrainStudio() {
         center_lon: Number(next.longitude.toFixed(5)),
         elevation_datum_m: datum,
         elevation_m_per_mm: metresPerMm,
+        puzzle_tile_column:
+          current.puzzle_tile_column +
+          (direction === "east" ? 1 : direction === "west" ? -1 : 0),
+        puzzle_tile_row:
+          current.puzzle_tile_row +
+          (direction === "south" ? 1 : direction === "north" ? -1 : 0),
       }));
       setAdjacentMessage(
         `Moved ${direction} by one tile. The shared height frame stays locked.`,

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::surface::SurfaceField;
 
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
+const MAX_PUZZLE_TILE_COORDINATE: i32 = 1_000_000;
 const AUTO_DETAIL_REFERENCE_SPAN_KM: f64 = 18.0;
 const LINE_SCALE_WIDE_SPAN_KM: f64 = 18.0;
 const LINE_SCALE_CLOSE_SPAN_KM: f64 = 2.0;
@@ -47,8 +48,16 @@ pub struct GenerationSpec {
     pub adjacent_rows: u32,
     pub super_tile_anchor: SuperTileAnchor,
     pub adjacent_interlocks: bool,
+    pub outer_edge_interlocks: bool,
     pub adjacent_tile_column: u32,
     pub adjacent_tile_row: u32,
+    /// Stable input for all puzzle edge choices. Keep this with the setup so
+    /// later runs can reproduce the same cuts.
+    pub puzzle_seed: u32,
+    /// Signed position in the unbounded puzzle grid. These coordinates let
+    /// separate jobs agree on the edge between them.
+    pub puzzle_tile_column: i32,
+    pub puzzle_tile_row: i32,
     pub clearance_mm: f32,
     pub samples_per_piece: u32,
     pub overlay_samples_per_piece: u32,
@@ -98,8 +107,12 @@ impl Default for GenerationSpec {
             adjacent_rows: 1,
             super_tile_anchor: SuperTileAnchor::TopLeft,
             adjacent_interlocks: false,
+            outer_edge_interlocks: false,
             adjacent_tile_column: 0,
             adjacent_tile_row: 0,
+            puzzle_seed: 0,
+            puzzle_tile_column: 0,
+            puzzle_tile_row: 0,
             clearance_mm: 0.14,
             samples_per_piece: 64,
             overlay_samples_per_piece: 112,
@@ -169,6 +182,13 @@ impl GenerationSpec {
             || self.adjacent_tile_row >= self.adjacent_rows
         {
             bail!("super-tile position must be inside its grid");
+        }
+        if self.puzzle_tile_column.unsigned_abs() > MAX_PUZZLE_TILE_COORDINATE as u32
+            || self.puzzle_tile_row.unsigned_abs() > MAX_PUZZLE_TILE_COORDINATE as u32
+        {
+            bail!(
+                "puzzle tile row and column must each be between -{MAX_PUZZLE_TILE_COORDINATE} and {MAX_PUZZLE_TILE_COORDINATE}"
+            );
         }
         if self.super_tile_anchor == SuperTileAnchor::Center
             && (self.adjacent_columns.is_multiple_of(2) || self.adjacent_rows.is_multiple_of(2))
@@ -1913,6 +1933,14 @@ mod tests {
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\",\"dot_diameter_mm\":3.0,\"hole_diameter_mm\":2.4,\"hole_depth_mm\":2.0,\"flag_clearance_mm\":0.2,\"export_flag_template\":true},",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
+        let expected = expected.replace(
+            "\"adjacent_interlocks\":false,",
+            "\"adjacent_interlocks\":false,\"outer_edge_interlocks\":false,",
+        );
+        let expected = expected.replace(
+            "\"adjacent_tile_row\":0,",
+            "\"adjacent_tile_row\":0,\"puzzle_seed\":0,\"puzzle_tile_column\":0,\"puzzle_tile_row\":0,",
+        );
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1938,8 +1966,12 @@ mod tests {
             "adjacent_rows": 3,
             "super_tile_anchor": "center",
             "adjacent_interlocks": true,
+            "outer_edge_interlocks": true,
             "adjacent_tile_column": 1,
             "adjacent_tile_row": 2,
+            "puzzle_seed": 305419896,
+            "puzzle_tile_column": -4,
+            "puzzle_tile_row": 7,
             "clearance_mm": 0.25,
             "samples_per_piece": 96,
             "overlay_samples_per_piece": 128,

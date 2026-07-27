@@ -12,8 +12,14 @@ pub(crate) struct EdgePattern {
     skew: f32,
 }
 
-pub(crate) fn shared_edge_pattern(orientation: u64, line: u32, segment: u32) -> EdgePattern {
-    let seed = orientation.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+pub(crate) fn shared_edge_pattern(
+    puzzle_seed: u32,
+    orientation: u64,
+    line: i64,
+    segment: i64,
+) -> EdgePattern {
+    let seed = (puzzle_seed as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93)
+        ^ orientation.wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ (line as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
         ^ (segment as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
     EdgePattern {
@@ -25,6 +31,8 @@ pub(crate) fn shared_edge_pattern(orientation: u64, line: u32, segment: u32) -> 
 }
 
 pub(crate) fn edge_noise(seed: u64, lane: u64) -> f32 {
+    // This is the SplitMix64 finalizer with fixed wrapping arithmetic. Keep
+    // the constants and shifts unchanged: saved seeds rely on exact output.
     let mut value = seed ^ lane.wrapping_mul(0xD6E8_FEB8_6659_FD93);
     value ^= value >> 30;
     value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -34,15 +42,12 @@ pub(crate) fn edge_noise(seed: u64, lane: u64) -> f32 {
     ((value >> 40) as u32) as f32 / 16_777_215.0
 }
 
-pub(crate) fn edge_sign(orientation: u64, segment: u32, line: u32, line_count: u32) -> f32 {
-    if line == 0 || line == line_count {
-        0.0
-    } else {
-        let seed = orientation.wrapping_mul(0xA24B_AED4_963E_E407)
-            ^ (line as u64).wrapping_mul(0x9FB2_1C65_1E98_DF25)
-            ^ (segment as u64).wrapping_mul(0xC13F_A9A9_02A6_328F);
-        if edge_noise(seed, 7) < 0.5 { -1.0 } else { 1.0 }
-    }
+pub(crate) fn edge_sign(puzzle_seed: u32, orientation: u64, segment: i64, line: i64) -> f32 {
+    let seed = (puzzle_seed as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93)
+        ^ orientation.wrapping_mul(0xA24B_AED4_963E_E407)
+        ^ (line as u64).wrapping_mul(0x9FB2_1C65_1E98_DF25)
+        ^ (segment as u64).wrapping_mul(0xC13F_A9A9_02A6_328F);
+    if edge_noise(seed, 7) < 0.5 { -1.0 } else { 1.0 }
 }
 
 pub(crate) fn puzzle_edge_point(
@@ -173,7 +178,7 @@ mod tests {
 
     #[test]
     fn jigsaw_edge_has_overhanging_round_head() {
-        let pattern = shared_edge_pattern(0, 1, 0);
+        let pattern = shared_edge_pattern(0, 0, 1, 0);
         assert_eq!(jigsaw_edge(0.1, pattern)[1], 0.0);
         assert!(jigsaw_edge(0.5, pattern)[1] > 0.99);
         assert!(jigsaw_edge(0.42, pattern)[0] < jigsaw_edge(0.34, pattern)[0] - 0.03);
@@ -184,10 +189,39 @@ mod tests {
 
     #[test]
     fn edge_patterns_vary_between_segments() {
-        let first = shared_edge_pattern(0, 1, 0);
-        let second = shared_edge_pattern(0, 1, 1);
+        let first = shared_edge_pattern(0, 0, 1, 0);
+        let second = shared_edge_pattern(0, 0, 1, 1);
         assert!((first.center - second.center).abs() > 0.001);
         assert!((first.depth_scale - second.depth_scale).abs() > 0.001);
         assert!((first.skew - second.skew).abs() > 0.001);
+    }
+
+    #[test]
+    fn saved_seed_changes_and_repeats_edge_pattern() {
+        let first = shared_edge_pattern(4_294_967_291, 1, -7, 12);
+        let repeated = shared_edge_pattern(4_294_967_291, 1, -7, 12);
+        let other = shared_edge_pattern(4_294_967_290, 1, -7, 12);
+        assert_eq!(
+            (
+                first.center.to_bits(),
+                first.radius_along.to_bits(),
+                first.depth_scale.to_bits(),
+                first.skew.to_bits(),
+                edge_sign(4_294_967_291, 1, 12, -7).to_bits(),
+            ),
+            (
+                1_056_250_051,
+                1_041_081_123,
+                1_066_040_012,
+                3_129_899_840,
+                3_212_836_864
+            ),
+        );
+        assert_eq!(first.center.to_bits(), repeated.center.to_bits());
+        assert_eq!(
+            first.radius_along.to_bits(),
+            repeated.radius_along.to_bits()
+        );
+        assert_ne!(first.center.to_bits(), other.center.to_bits());
     }
 }

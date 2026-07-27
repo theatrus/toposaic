@@ -29,8 +29,12 @@ export type GenerationSpec = {
   adjacent_rows: number;
   super_tile_anchor: "top_left" | "center";
   adjacent_interlocks: boolean;
+  outer_edge_interlocks: boolean;
   adjacent_tile_column: number;
   adjacent_tile_row: number;
+  puzzle_seed: number;
+  puzzle_tile_column: number;
+  puzzle_tile_row: number;
   clearance_mm: number;
   samples_per_piece: number;
   overlay_samples_per_piece: number;

@@ -5,6 +5,7 @@ import {
   assembledMeshSamples,
   formatGroundSpacing,
   groundMeshSpacing,
+  randomPuzzleSeed,
 } from "../config";
 import type { GenerationSpec, PlaceResult } from "../contracts";
 import type { AdjacentDirection } from "../geo";
@@ -234,6 +235,66 @@ export function ModelPanel({
               </label>
             </div>
           </div>
+          <div className="coordinate-row" aria-label="Puzzle identity">
+            <label>
+              Puzzle seed
+              <input
+                type="number"
+                min="0"
+                max="4294967295"
+                step="1"
+                value={spec.puzzle_seed}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isInteger(value) && value >= 0 && value <= 4_294_967_295) {
+                    update("puzzle_seed", value);
+                  }
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => update("puzzle_seed", randomPuzzleSeed())}
+            >
+              New seed
+            </button>
+            <label>
+              Tile column
+              <input
+                type="number"
+                min="-1000000"
+                max="1000000"
+                step="1"
+                value={spec.puzzle_tile_column}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isInteger(value) && Math.abs(value) <= 1_000_000) {
+                    update("puzzle_tile_column", value);
+                  }
+                }}
+              />
+            </label>
+            <label>
+              Tile row
+              <input
+                type="number"
+                min="-1000000"
+                max="1000000"
+                step="1"
+                value={spec.puzzle_tile_row}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isInteger(value) && Math.abs(value) <= 1_000_000) {
+                    update("puzzle_tile_row", value);
+                  }
+                }}
+              />
+            </label>
+          </div>
+          <p className="place-search-note">
+            The saved seed and tile coordinates fix every edge. Keep the piece
+            grid size too when adding matching tiles later.
+          </p>
           <div
             className="super-tile-anchor"
             role="radiogroup"
@@ -260,16 +321,28 @@ export function ModelPanel({
             </label>
           </div>
           {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
-            <label className="adjacent-interlock-toggle">
-              <input
-                type="checkbox"
-                checked={spec.adjacent_interlocks}
-                onChange={(event) =>
-                  update("adjacent_interlocks", event.target.checked)
-                }
-              />
-              Interlock super-tile and tray edges
-            </label>
+            <>
+              <label className="adjacent-interlock-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.adjacent_interlocks}
+                  onChange={(event) =>
+                    update("adjacent_interlocks", event.target.checked)
+                  }
+                />
+                Interlock super-tile and tray joins
+              </label>
+              <label className="adjacent-interlock-toggle">
+                <input
+                  type="checkbox"
+                  checked={spec.outer_edge_interlocks}
+                  onChange={(event) =>
+                    update("outer_edge_interlocks", event.target.checked)
+                  }
+                />
+                Add notches to outer super-tile edges
+              </label>
+            </>
           )}
           <p
             className={`height-frame-status${

@@ -15,6 +15,12 @@ export function limitPlaceName(value: string) {
     : value;
 }
 
+export function randomPuzzleSeed() {
+  const value = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(value);
+  return value[0] || 1;
+}
+
 export function closeViewLineScale(
   spanKm: number,
   enabled: boolean,
@@ -47,8 +53,12 @@ export const initialSpec: GenerationSpec = {
   adjacent_rows: 1,
   super_tile_anchor: "top_left",
   adjacent_interlocks: false,
+  outer_edge_interlocks: false,
   adjacent_tile_column: 0,
   adjacent_tile_row: 0,
+  puzzle_seed: 0,
+  puzzle_tile_column: 0,
+  puzzle_tile_row: 0,
   clearance_mm: 0.14,
   samples_per_piece: 64,
   overlay_samples_per_piece: 112,
