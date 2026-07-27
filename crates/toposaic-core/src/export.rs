@@ -86,14 +86,14 @@ const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
 // stores its extruder number n as a nibble stream: n = 1 or 2 fits one
 // nibble, hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates
 // at 0xC and an extension nibble carries n - 3, written before the marker —
-// "0C", "1C", "2C", "3C", "4C", "5C", and "6C" for extruder 9.
+// "0C", "1C", "2C", "3C", "4C", "5C", "6C", and "7C" through extruder 10.
 // Keep the standard 3MF color properties too, for consumers that support
 // them.
 //
 // The index here is the archive's DENSE filament slot, not the surface
 // class: extruder number = slot + 1. A spec that emits six classes only ever
 // reaches "3C" whichever six they are.
-const ORCA_PAINT_CODES: [&str; 9] = ["4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C"];
+const ORCA_PAINT_CODES: [&str; 10] = ["4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C"];
 const _: () = assert!(
     ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
     "every surface class needs a face-paint code"
@@ -667,6 +667,12 @@ mod tests {
             name: "Loop".into(),
             points: vec![[46.8, -121.8], [46.9, -121.7]],
         }];
+        spec.markers = vec![crate::spec::MapMarker {
+            name: "Point".into(),
+            latitude: 46.85,
+            longitude: -121.76,
+            kind: crate::spec::MarkerKind::Dot,
+        }];
         let slot = spec
             .material_palette(None)
             .slot(SurfaceClass::Rail)
@@ -948,6 +954,12 @@ mod tests {
             name: "Loop".into(),
             points: vec![[46.8, -121.8], [46.9, -121.7]],
         }];
+        spec.markers = vec![crate::spec::MapMarker {
+            name: "Point".into(),
+            latitude: 46.85,
+            longitude: -121.76,
+            kind: crate::spec::MarkerKind::Dot,
+        }];
 
         // Every base class in the raster, every overlay class as vectors,
         // and a building footprint.
@@ -973,6 +985,10 @@ mod tests {
         field.paint_polyline(&[[0.05, 0.6], [0.95, 0.6]], 60.0, 0.8, SurfaceClass::Rail);
         field.paint_polyline(&[[0.05, 0.8], [0.95, 0.8]], 60.0, 0.8, SurfaceClass::Aerial);
         field.paint_building(&[[0.4, 0.05], [0.6, 0.05], [0.6, 0.12], [0.4, 0.12]], 12.0);
+        field.paint_surface_area(
+            &[[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]],
+            SurfaceClass::Marker,
+        );
 
         let contained = field.contained_classes();
         assert!(

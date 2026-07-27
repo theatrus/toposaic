@@ -51,6 +51,7 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, />Model</);
   assert.match(html, />Surface</);
   assert.match(html, />Buildings</);
+  assert.match(html, />Markers</);
   assert.match(html, />Mounting</);
   assert.match(html, />Output</);
   assert.match(html, /id="terrain-controls"/);

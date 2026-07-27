@@ -53,6 +53,15 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("old setups recall empty markers and current marker print settings", () => {
+  const merged = mergeSpecDefaults({ marker_settings: undefined, markers: undefined });
+  assert.deepEqual(merged.markers, []);
+  assert.equal(merged.marker_settings.color, "#E24A33");
+  assert.equal(merged.marker_settings.dot_diameter_mm, 3);
+  assert.equal(merged.marker_settings.hole_diameter_mm, 2.4);
+  assert.equal(merged.marker_settings.export_flag_template, true);
+});
+
 test("defaults close-view line scaling on and recalls old setups", () => {
   assert.equal(initialSpec.color_output.scale_line_widths_by_span, true);
   assert.equal(initialSpec.color_output.close_view_width_multiplier, 2);

@@ -22,6 +22,12 @@ const DETAIL_SAMPLE_STEP: u32 = 8;
 const MAX_TRAILS: usize = 20;
 const MAX_TRAIL_POINTS: usize = 20_000;
 const MAX_TRAIL_NAME_CHARS: usize = 80;
+const MAX_MAP_MARKERS: usize = 50;
+const MAX_MARKER_NAME_CHARS: usize = 80;
+const KILOMETRES_PER_LATITUDE_DEGREE: f64 = 110.574;
+const KILOMETRES_PER_LONGITUDE_DEGREE: f64 = 111.32;
+const MINIMUM_LONGITUDE_SCALE: f64 = 20.0;
+const MAX_MODEL_LATITUDE: f64 = 85.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -63,11 +69,15 @@ pub struct GenerationSpec {
     pub puzzle_retention: PuzzleRetentionSpec,
     pub wall_mount: WallMountSpec,
     pub buildings: BuildingSpec,
+    pub marker_settings: MarkerSpec,
     pub color_output: ColorOutputSpec,
     /// Imported hiker trails (GPX/KML routes) drawn on the model in the
     /// dedicated trail color. Empty for every spec saved before the field
     /// existed, so old projects regenerate byte-identically.
     pub trails: Vec<TrailRoute>,
+    /// User-placed points that mark a building, paint a dot, or cut a flag
+    /// socket. Empty for setups saved before map markers existed.
+    pub markers: Vec<MapMarker>,
 }
 
 impl Default for GenerationSpec {
@@ -105,8 +115,10 @@ impl Default for GenerationSpec {
             puzzle_retention: PuzzleRetentionSpec::default(),
             wall_mount: WallMountSpec::default(),
             buildings: BuildingSpec::default(),
+            marker_settings: MarkerSpec::default(),
             color_output: ColorOutputSpec::default(),
             trails: Vec::new(),
+            markers: Vec::new(),
         }
     }
 }
@@ -226,6 +238,13 @@ impl GenerationSpec {
         for trail in &self.trails {
             trail.validate()?;
         }
+        self.marker_settings.validate(self)?;
+        if self.markers.len() > MAX_MAP_MARKERS {
+            bail!("map marker count must be at most {MAX_MAP_MARKERS}");
+        }
+        for marker in &self.markers {
+            marker.validate()?;
+        }
         Ok(())
     }
 
@@ -235,6 +254,47 @@ impl GenerationSpec {
     /// byte-identical artifacts to builds that predate trails.
     pub fn uses_trails(&self) -> bool {
         !self.trails.is_empty()
+    }
+
+    pub fn uses_markers(&self) -> bool {
+        !self.markers.is_empty()
+    }
+
+    pub fn uses_colored_markers(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| marker.kind != MarkerKind::FlagHole)
+    }
+
+    pub fn uses_building_markers(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| marker.kind == MarkerKind::Building)
+    }
+
+    pub fn uses_flag_holes(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| marker.kind == MarkerKind::FlagHole)
+    }
+
+    /// Maps a geographic point into this tile's normalized model square.
+    /// The API uses this same helper for OSM data, so markers, trails, and
+    /// fetched features cannot drift apart at high latitude or the date line.
+    pub fn normalized_map_point(&self, latitude: f64, longitude: f64) -> [f32; 2] {
+        let half_latitude = self.ground_span_km / (2.0 * KILOMETRES_PER_LATITUDE_DEGREE);
+        let longitude_scale = (KILOMETRES_PER_LONGITUDE_DEGREE
+            * self.center_lat.to_radians().cos().abs())
+        .max(MINIMUM_LONGITUDE_SCALE);
+        let half_longitude = self.ground_span_km / (2.0 * longitude_scale);
+        let longitude =
+            self.center_lon + (longitude - self.center_lon + 180.0).rem_euclid(360.0) - 180.0;
+        let south = (self.center_lat - half_latitude).max(-MAX_MODEL_LATITUDE);
+        let north = (self.center_lat + half_latitude).min(MAX_MODEL_LATITUDE);
+        [
+            ((longitude - (self.center_lon - half_longitude)) / (2.0 * half_longitude)) as f32,
+            ((latitude - south) / (north - south)) as f32,
+        ]
     }
 
     /// Whether the railway layer — `railway=*`: trains, trams, metros,
@@ -448,7 +508,10 @@ impl GenerationSpec {
     }
 
     pub(crate) fn uses_color_materials(&self) -> bool {
-        self.color_output.enabled || self.buildings.enabled || self.uses_trails()
+        self.color_output.enabled
+            || self.buildings.enabled
+            || self.uses_trails()
+            || self.uses_colored_markers()
     }
 
     /// The filament palette of one archive: every surface class it can
@@ -531,6 +594,7 @@ impl GenerationSpec {
             SurfaceClass::Trail => self.uses_trails(),
             SurfaceClass::Rail => self.uses_separate_rail(),
             SurfaceClass::Aerial => self.uses_separate_aerial(),
+            SurfaceClass::Marker => self.uses_colored_markers(),
         }
     }
 
@@ -545,6 +609,7 @@ impl GenerationSpec {
             SurfaceClass::Trail => &self.color_output.trail_color,
             SurfaceClass::Rail => &self.color_output.rail_color,
             SurfaceClass::Aerial => &self.color_output.aerial_color,
+            SurfaceClass::Marker => &self.marker_settings.color,
         }
     }
 
@@ -636,6 +701,91 @@ impl TrailRoute {
             if !(-180.0..=180.0).contains(&longitude) {
                 bail!("trail longitudes must be between -180 and 180 degrees");
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerKind {
+    Building,
+    Dot,
+    FlagHole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapMarker {
+    pub name: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub kind: MarkerKind,
+}
+
+impl MapMarker {
+    fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() || self.name.chars().count() > MAX_MARKER_NAME_CHARS {
+            bail!("marker names must contain between 1 and {MAX_MARKER_NAME_CHARS} characters");
+        }
+        if self.name.chars().any(char::is_control) {
+            bail!("marker names cannot contain control characters");
+        }
+        if !self.latitude.is_finite() || !(-90.0..=90.0).contains(&self.latitude) {
+            bail!("marker latitudes must be between -90 and 90 degrees");
+        }
+        if !self.longitude.is_finite() || !(-180.0..=180.0).contains(&self.longitude) {
+            bail!("marker longitudes must be between -180 and 180 degrees");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerSpec {
+    pub color: String,
+    pub dot_diameter_mm: f32,
+    pub hole_diameter_mm: f32,
+    pub hole_depth_mm: f32,
+    pub flag_clearance_mm: f32,
+    pub export_flag_template: bool,
+}
+
+impl Default for MarkerSpec {
+    fn default() -> Self {
+        Self {
+            color: "#E24A33".into(),
+            dot_diameter_mm: 3.0,
+            hole_diameter_mm: 2.4,
+            hole_depth_mm: 2.0,
+            flag_clearance_mm: 0.2,
+            export_flag_template: true,
+        }
+    }
+}
+
+impl MarkerSpec {
+    fn validate(&self, spec: &GenerationSpec) -> Result<()> {
+        if !valid_hex_color(&self.color) {
+            bail!("marker color must be a #RRGGBB value");
+        }
+        if !(1.0..=10.0).contains(&self.dot_diameter_mm) {
+            bail!("marker dot diameter must be between 1 and 10 mm");
+        }
+        if !(1.2..=6.0).contains(&self.hole_diameter_mm) {
+            bail!("marker flag-hole diameter must be between 1.2 and 6 mm");
+        }
+        if !(0.6..=6.0).contains(&self.hole_depth_mm) {
+            bail!("marker flag-hole depth must be between 0.6 and 6 mm");
+        }
+        if !(0.1..=0.6).contains(&self.flag_clearance_mm) {
+            bail!("marker flag clearance must be between 0.1 and 0.6 mm");
+        }
+        if self.flag_clearance_mm >= self.hole_diameter_mm - 0.4 {
+            bail!("marker flag clearance leaves no printable flag post");
+        }
+        if spec.uses_flag_holes() && self.hole_depth_mm > spec.base_mm - 0.4 {
+            bail!("marker flag holes must leave at least 0.4 mm of terrain base");
         }
         Ok(())
     }
@@ -1579,6 +1729,8 @@ pub enum SurfaceClass {
     /// Aerialways drawn in their own color. The class only ever appears when
     /// `aerial_style` is `separate`.
     Aerial,
+    /// User-placed colored dots and highlighted buildings.
+    Marker,
 }
 
 impl SurfaceClass {
@@ -1589,7 +1741,7 @@ impl SurfaceClass {
     /// 3MF packs whichever of these classes a spec actually emits into
     /// consecutive slots, so a class that never appears costs nothing. See
     /// [`GenerationSpec::material_palette`].
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -1599,6 +1751,7 @@ impl SurfaceClass {
         Self::Trail,
         Self::Rail,
         Self::Aerial,
+        Self::Marker,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -1612,6 +1765,7 @@ impl SurfaceClass {
             Self::Trail => 6,
             Self::Rail => 7,
             Self::Aerial => 8,
+            Self::Marker => 9,
         }
     }
 }
@@ -1729,6 +1883,11 @@ mod tests {
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
         let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = expected.replace(
+            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
+            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\",\"dot_diameter_mm\":3.0,\"hole_diameter_mm\":2.4,\"hole_depth_mm\":2.0,\"flag_clearance_mm\":0.2,\"export_flag_template\":true},",
+        );
+        let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1810,6 +1969,14 @@ mod tests {
                 "wide_edge_screws": false
             },
             "buildings": { "enabled": true, "z_scale": 2.0 },
+            "marker_settings": {
+                "color": "#E24A33",
+                "dot_diameter_mm": 4.0,
+                "hole_diameter_mm": 3.0,
+                "hole_depth_mm": 2.0,
+                "flag_clearance_mm": 0.25,
+                "export_flag_template": true
+            },
             "color_output": {
                 "enabled": true,
                 "threemf_style": "painted",
@@ -1856,6 +2023,14 @@ mod tests {
                 {
                     "name": "Loop",
                     "points": [[44.5, -110.5], [44.6, -110.25]]
+                }
+            ],
+            "markers": [
+                {
+                    "name": "Old Faithful",
+                    "latitude": 44.5,
+                    "longitude": -110.5,
+                    "kind": "dot"
                 }
             ]
         }"##,
@@ -1931,6 +2106,31 @@ mod tests {
         spec.color_output.trail_color = "magenta".into();
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("trail color"));
+    }
+
+    #[test]
+    fn map_markers_validate_and_share_the_model_coordinate_frame() {
+        let mut spec = GenerationSpec {
+            markers: vec![MapMarker {
+                name: "Home".into(),
+                latitude: 46.8523,
+                longitude: -121.7603,
+                kind: MarkerKind::Dot,
+            }],
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+        assert!(spec.uses_colored_markers());
+        let center = spec.normalized_map_point(46.8523, -121.7603);
+        assert!((center[0] - 0.5).abs() < 0.000_001);
+        assert!((center[1] - 0.5).abs() < 0.000_001);
+
+        spec.markers[0].kind = MarkerKind::FlagHole;
+        spec.marker_settings.hole_depth_mm = spec.base_mm;
+        assert!(spec.validate().is_err());
+        spec.marker_settings.hole_depth_mm = 2.0;
+        spec.markers[0].latitude = 91.0;
+        assert!(spec.validate().is_err());
     }
 
     #[test]

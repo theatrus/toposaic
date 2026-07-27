@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::export::{ThreeMfWriter, write_binary_stl};
 use crate::heightfield::{HeightField, height_range_for_spec, validate_height_frame};
+use crate::marker::build_flag_template;
 use crate::mesh::Mesh;
 use crate::mount::{build_wall_alignment_spacer, build_wall_hardware};
 use crate::piece::build_piece_with_height_range;
 use crate::preview::{build_preview, preview_sample_count};
-use crate::spec::{GenerationSpec, WallMountStyle};
+use crate::spec::{GenerationSpec, MapMarker, MarkerKind, WallMountStyle};
 use crate::surface::SurfaceField;
 use crate::tray::build_tray_segments;
 
@@ -200,6 +201,38 @@ pub fn generate_wall_mount_artifacts(
     Ok(artifacts)
 }
 
+pub fn generate_marker_artifacts(
+    spec: &GenerationSpec,
+    output_dir: &Path,
+) -> Result<Vec<Artifact>> {
+    if !spec.uses_flag_holes() || !spec.marker_settings.export_flag_template {
+        return Ok(Vec::new());
+    }
+    let flag = build_flag_template(&spec.marker_settings)?;
+    let stl_path = output_dir.join("marker-flag-template.stl");
+    write_binary_stl(&flag, &stl_path)?;
+    let three_mf_path = output_dir.join("marker-flag-template.3mf");
+    let mut flag_spec = spec.clone();
+    flag_spec.color_output.enabled = false;
+    flag_spec.buildings.enabled = false;
+    flag_spec.trails.clear();
+    if !flag_spec.uses_colored_markers() {
+        flag_spec.markers.push(MapMarker {
+            name: "Flag template".into(),
+            latitude: flag_spec.center_lat,
+            longitude: flag_spec.center_lon,
+            kind: MarkerKind::Dot,
+        });
+    }
+    let mut writer = ThreeMfWriter::new(&flag_spec, None, &three_mf_path)?;
+    writer.write_mesh(&flag)?;
+    writer.finish()?;
+    Ok(vec![
+        file_artifact(&stl_path, "model/stl")?,
+        file_artifact(&three_mf_path, "model/3mf")?,
+    ])
+}
+
 fn generate_project_inner(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
@@ -218,6 +251,9 @@ fn generate_project_inner(
     }
     if spec.uses_trails() && surface_field.is_none() {
         bail!("imported trails require surface data to draw on");
+    }
+    if spec.uses_colored_markers() && surface_field.is_none() {
+        bail!("colored map markers require surface data to draw on");
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
@@ -348,6 +384,7 @@ fn generate_project_inner(
     }
     ensure_generation_active(is_cancelled)?;
     artifacts.extend(generate_wall_mount_artifacts(spec, output_dir)?);
+    artifacts.extend(generate_marker_artifacts(spec, output_dir)?);
     on_progress(0.95)?;
 
     ensure_generation_active(is_cancelled)?;
@@ -518,6 +555,37 @@ mod tests {
             "wall-mount-alignment-spacer.stl",
             "wall-mount-alignment-spacer.3mf",
         ] {
+            assert!(output_dir.join(name).is_file());
+            assert!(
+                manifest
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.name == name)
+            );
+        }
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn flag_hole_jobs_export_a_customizable_flag_blank() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-marker-flag-test-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            solid_model: true,
+            samples_per_piece: 24,
+            markers: vec![crate::spec::MapMarker {
+                name: "Home".into(),
+                latitude: 46.8523,
+                longitude: -121.7603,
+                kind: crate::spec::MarkerKind::FlagHole,
+            }],
+            ..GenerationSpec::default()
+        };
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+        for name in ["marker-flag-template.stl", "marker-flag-template.3mf"] {
             assert!(output_dir.join(name).is_file());
             assert!(
                 manifest

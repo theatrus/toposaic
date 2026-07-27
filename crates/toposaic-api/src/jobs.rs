@@ -22,8 +22,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, GenerationSpec, artifact_path, generate_project_with_fields_cancellable,
-    generate_tray_artifacts,
+    Artifact, GenerationSpec, artifact_path, generate_marker_artifacts,
+    generate_project_with_fields_cancellable, generate_tray_artifacts,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -309,7 +309,10 @@ fn run_job(
         "generation phase complete"
     );
     update_job(state, id, "running", 40, &[], None)?;
-    let surface_field = if spec.color_output.enabled || spec.buildings.enabled || spec.uses_trails()
+    let surface_field = if spec.color_output.enabled
+        || spec.buildings.enabled
+        || spec.uses_trails()
+        || spec.uses_colored_markers()
     {
         update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
@@ -431,6 +434,7 @@ fn run_adjacent_grid_job(
         let surface_field = if tile_spec.color_output.enabled
             || tile_spec.buildings.enabled
             || tile_spec.uses_trails()
+            || tile_spec.uses_colored_markers()
         {
             Some(surface::fetch_surface_field(
                 tile_spec,
@@ -538,6 +542,7 @@ fn run_adjacent_grid_job(
     ensure_job_active(cancellation)?;
     let wall_hardware_names =
         publish_grid_wall_hardware(&output_plan, spec, &output_dir, &mut artifacts)?;
+    artifacts.extend(generate_marker_artifacts(spec, &output_dir)?);
 
     let manifest_name = "manifest.json";
     let manifest_path = output_dir.join(manifest_name);

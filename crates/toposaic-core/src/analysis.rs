@@ -136,6 +136,7 @@ fn triangle_feature(mesh: &Mesh, triangle_index: usize) -> String {
         SurfaceClass::Trail => format!("trail-shell {orientation}"),
         SurfaceClass::Rail => format!("rail-shell {orientation}"),
         SurfaceClass::Aerial => format!("aerialway-shell {orientation}"),
+        SurfaceClass::Marker => format!("marker {orientation}"),
         _ => {
             let zeroes = corners
                 .iter()

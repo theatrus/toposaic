@@ -76,7 +76,7 @@ pub(crate) struct VectorSurfaceLine {
 #[derive(Debug, Clone)]
 pub(crate) struct VectorSurfaceArea {
     pub(crate) points: Vec<[f32; 2]>,
-    class: Option<SurfaceClass>,
+    pub(crate) class: Option<SurfaceClass>,
     pub(crate) building_height_m: f32,
 }
 
@@ -691,12 +691,21 @@ impl SurfaceField {
     }
 
     pub fn paint_building(&mut self, points: &[[f32; 2]], height_m: f32) {
+        self.paint_building_with_class(points, height_m, SurfaceClass::Building);
+    }
+
+    pub fn paint_building_with_class(
+        &mut self,
+        points: &[[f32; 2]],
+        height_m: f32,
+        class: SurfaceClass,
+    ) {
         if points.len() < 3 || !height_m.is_finite() || height_m <= 0.0 {
             return;
         }
         let area = VectorSurfaceArea {
             points: points.to_vec(),
-            class: None,
+            class: (class != SurfaceClass::Building).then_some(class),
             building_height_m: height_m,
         };
         let area_index = self.vector_areas.len();

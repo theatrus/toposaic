@@ -64,6 +64,14 @@ export const initialSpec: GenerationSpec = {
     enabled: false,
     z_scale: 5,
   },
+  marker_settings: {
+    color: "#E24A33",
+    dot_diameter_mm: 3,
+    hole_diameter_mm: 2.4,
+    hole_depth_mm: 2,
+    flag_clearance_mm: 0.2,
+    export_flag_template: true,
+  },
   tray: {
     enabled: true,
     individual_tiles: false,
@@ -167,6 +175,7 @@ export const initialSpec: GenerationSpec = {
     snow_slope_limit_degrees: 65,
   },
   trails: [],
+  markers: [],
 };
 
 export function minimumMappedWidthCap(
@@ -239,6 +248,10 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     overlay_samples_across:
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
+    marker_settings: {
+      ...initialSpec.marker_settings,
+      ...saved.marker_settings,
+    },
     tray: { ...initialSpec.tray, ...saved.tray },
     puzzle_retention: {
       ...initialSpec.puzzle_retention,
@@ -247,6 +260,7 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
     wall_mount: wallMount,
     color_output: colorOutput,
     trails: saved.trails ?? [],
+    markers: saved.markers ?? [],
   };
 }
 

@@ -56,6 +56,7 @@ const CLASS_KEYS = [
   "trail",
   "rail",
   "aerialway",
+  "marker",
 ] as const;
 
 function cubicBezier(
@@ -323,7 +324,13 @@ export function ReliefPreview({
     rail_color,
     aerial_color,
   } = spec.color_output;
-  const buildingsEnabled = spec.buildings.enabled;
+  const markerColor = spec.marker_settings.color;
+  const coloredMarkersPresent = spec.markers.some(
+    (marker) => marker.kind !== "flag_hole",
+  );
+  const buildingsEnabled =
+    spec.buildings.enabled ||
+    spec.markers.some((marker) => marker.kind === "building");
   const trailsPresent = spec.trails.length > 0;
   // Which class each rail-family layer's lines actually land in, resolved
   // the way the backend resolves it. A layer only earns its own legend
@@ -430,6 +437,7 @@ export function ReliefPreview({
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
       aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
+      marker: preview?.surface_palette?.marker ?? markerColor,
     };
     const classColor = (surfaceClass?: number) => {
       // Preview classes are raw SurfaceClass material indices, in the
@@ -486,7 +494,10 @@ export function ReliefPreview({
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
         const surfaceClass =
-          colorOutputEnabled || buildingsEnabled || trailsPresent
+          colorOutputEnabled ||
+          buildingsEnabled ||
+          trailsPresent ||
+          coloredMarkersPresent
             ? preview?.surface_classes?.[y * sampleWidth + x]
             : undefined;
         const color = new Color(classColor(surfaceClass));
@@ -758,6 +769,7 @@ export function ReliefPreview({
     colorOutputEnabled,
     buildingsEnabled,
     trailsPresent,
+    coloredMarkersPresent,
     rock_color,
     forest_color,
     snow_color,
@@ -767,6 +779,7 @@ export function ReliefPreview({
     trail_color,
     rail_color,
     aerial_color,
+    markerColor,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -843,6 +856,7 @@ export function ReliefPreview({
               ["Trail", "trail", spec.color_output.trail_color],
               ["Rail", "rail", spec.color_output.rail_color],
               ["Aerial", "aerialway", spec.color_output.aerial_color],
+              ["Marker", "marker", spec.marker_settings.color],
             ] as const
           )
             .filter(
@@ -850,10 +864,13 @@ export function ReliefPreview({
                 if (key === "trail") {
                   return trailsPresent;
                 }
+                if (key === "marker") {
+                  return coloredMarkersPresent;
+                }
                 if (!spec.color_output.enabled) {
                   return (
                     key === "rock" ||
-                    (key === "building" && spec.buildings.enabled)
+                    (key === "building" && buildingsEnabled)
                   );
                 }
                 // Every color the model shows carries exactly one name, so
@@ -862,7 +879,7 @@ export function ReliefPreview({
                 // whether its own toggle happens to be on.
                 return (
                   (key !== "road" || roadClassDrawn) &&
-                  (key !== "building" || spec.buildings.enabled) &&
+                  (key !== "building" || buildingsEnabled) &&
                   (key !== "rail" || railClassDrawn) &&
                   (key !== "aerialway" || aerialClassDrawn)
                 );
