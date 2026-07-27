@@ -171,9 +171,19 @@ test("shows a failed generation outside the output tab", async ({ page }) => {
         json: {
           id: jobId,
           status: "failed",
-          progress: 68,
+          progress: 82,
           artifacts: [],
-          error: "The minimum piece height is too thin for this wall mount.",
+          error:
+            "build piece 6, 7: fit flag marker 'Flag 1' within its puzzle piece: this puzzle piece is too small for the flag socket",
+          failure: {
+            title: "Flag socket did not fit piece 6,7",
+            message:
+              "Reduce the flag-hole diameter or move the flag farther from a puzzle seam, then generate again.",
+            technical_detail:
+              "build piece 6, 7: fit flag marker 'Flag 1' within its puzzle piece: this puzzle piece is too small for the flag socket",
+            control_tab: "markers",
+            piece: { row: 6, column: 7 },
+          },
           spec: jobSpec,
         },
       });
@@ -187,20 +197,26 @@ test("shows a failed generation outside the output tab", async ({ page }) => {
   await page.getByRole("tab", { name: "Model" }).click();
 
   const error = page.getByRole("alert");
+  await expect(error).toContainText("Flag socket did not fit piece 6,7", {
+    timeout: 15_000,
+  });
   await expect(error).toContainText(
-    "The minimum piece height is too thin for this wall mount.",
-    { timeout: 15_000 },
+    "Reduce the flag-hole diameter or move the flag farther from a puzzle seam",
   );
-  await error.getByRole("button", { name: "View output" }).click();
+  await error.getByRole("button", { name: "Open Markers" }).click();
+  await expect(page.getByRole("tab", { name: "Markers" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await error.getByRole("button", { name: "Technical details" }).click();
   await expect(page.getByRole("tab", { name: "Output" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(
-    page
-      .locator(".job-card")
-      .getByText("The minimum piece height is too thin for this wall mount."),
-  ).toBeVisible();
+  const jobCard = page.locator(".job-card");
+  await expect(jobCard).toContainText("Affected piece: row 6, column 7");
+  await jobCard.getByText("Technical details").click();
+  await expect(jobCard.getByText(/fit flag marker 'Flag 1'/)).toBeVisible();
 });
 
 test("keeps direct artifact downloads in the web app", async ({ page }) => {

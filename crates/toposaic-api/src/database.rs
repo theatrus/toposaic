@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use toposaic_core::Artifact;
 
-use crate::{AppState, Job, SavedSetup};
+use crate::{AppState, Job, SavedSetup, jobs::classify_job_error};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     connection.execute_batch(
@@ -243,6 +243,8 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     let updated_at: String = row.get(4)?;
     let spec_json: String = row.get(5)?;
     let artifacts_json: String = row.get(6)?;
+    let error: Option<String> = row.get(7)?;
+    let failure = error.as_deref().map(classify_job_error);
     Ok(Job {
         id: row.get(0)?,
         status: row.get(1)?,
@@ -251,7 +253,8 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         updated_at: updated_at.parse().map_err(sql_conversion_error)?,
         spec: serde_json::from_str(&spec_json).map_err(sql_conversion_error)?,
         artifacts: serde_json::from_str(&artifacts_json).map_err(sql_conversion_error)?,
-        error: row.get(7)?,
+        error,
+        failure,
     })
 }
 

@@ -212,12 +212,33 @@ export type ArtifactFeedback = {
   state: "saving" | "saved" | "sent";
 };
 
+export type GenerationControlTab =
+  | "model"
+  | "surface"
+  | "buildings"
+  | "markers"
+  | "colors"
+  | "mounting"
+  | "output";
+
+export type GenerationFailure = {
+  title: string;
+  message: string;
+  technical_detail: string;
+  control_tab?: GenerationControlTab;
+  piece?: {
+    row: number;
+    column: number;
+  };
+};
+
 export type Job = {
   id: string;
   status: "queued" | "running" | "complete" | "failed" | "canceled";
   progress: number;
   artifacts: Artifact[];
   error?: string | null;
+  failure?: GenerationFailure | null;
   spec: GenerationSpec;
 };
 

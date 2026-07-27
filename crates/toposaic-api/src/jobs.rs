@@ -49,6 +49,35 @@ pub(crate) struct Job {
     pub(crate) spec: GenerationSpec,
     pub(crate) artifacts: Vec<Artifact>,
     pub(crate) error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure: Option<JobFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct JobFailure {
+    pub(crate) title: String,
+    pub(crate) message: String,
+    pub(crate) technical_detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) control_tab: Option<JobControlTab>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) piece: Option<JobPiece>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum JobControlTab {
+    Model,
+    Surface,
+    Markers,
+    Mounting,
+    Output,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct JobPiece {
+    pub(crate) row: u32,
+    pub(crate) column: u32,
 }
 
 pub(crate) async fn create_job(
@@ -69,6 +98,7 @@ pub(crate) async fn create_job(
         spec: spec.clone(),
         artifacts: Vec::new(),
         error: None,
+        failure: None,
     };
     insert_job(&state, &job).map_err(internal_error)?;
 
@@ -170,6 +200,112 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 fn format_job_error(error: &anyhow::Error) -> String {
     format!("{error:#}")
+}
+
+pub(crate) fn classify_job_error(error: &str) -> JobFailure {
+    let lower = error.to_ascii_lowercase();
+    let piece = parse_piece_context(error);
+    let technical_detail = error.to_owned();
+
+    if lower.contains("flag marker") || lower.contains("flag socket") {
+        return JobFailure {
+            title: piece
+                .map(|piece| format!("Flag socket did not fit piece {},{}", piece.row, piece.column))
+                .unwrap_or_else(|| "Flag socket did not fit".into()),
+            message: "Reduce the flag-hole diameter or move the flag farther from a puzzle seam, then generate again.".into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Markers),
+            piece,
+        };
+    }
+    if lower.contains("wall mount")
+        || lower.contains("wall plate")
+        || lower.contains("cleat")
+        || lower.contains("mount pocket")
+    {
+        return JobFailure {
+            title: piece
+                .map(|piece| {
+                    format!(
+                        "Wall mount did not fit piece {},{}",
+                        piece.row, piece.column
+                    )
+                })
+                .unwrap_or_else(|| "Wall mount did not fit".into()),
+            message:
+                "Increase the minimum piece height or reduce the mount depth, then generate again."
+                    .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Mounting),
+            piece,
+        };
+    }
+    if lower.contains("openstreetmap") || lower.contains("overpass") {
+        return JobFailure {
+            title: "OpenStreetMap did not return the requested map details".into(),
+            message:
+                "Try again. TopoSaic will reuse cached inputs and can try another Overpass server."
+                    .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Surface),
+            piece,
+        };
+    }
+    if lower.contains("elevation") || lower.contains("mapzen") || lower.contains("mapterhorn") {
+        return JobFailure {
+            title: "Elevation data could not be loaded".into(),
+            message: "Try again or choose another elevation source in Model.".into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Model),
+            piece,
+        };
+    }
+    if let Some(piece) = piece {
+        let conflicting_edge = lower.contains("conflicting edge");
+        return JobFailure {
+            title: format!("Could not build puzzle piece {},{}", piece.row, piece.column),
+            message: if conflicting_edge {
+                "Try another puzzle seed or lower the mesh detail, then generate again."
+            } else {
+                "TopoSaic could not finish this piece. The technical details name the geometry step that failed."
+            }
+            .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Model),
+            piece: Some(piece),
+        };
+    }
+    if lower.contains("write")
+        || lower.contains("output directory")
+        || lower.contains("3mf")
+        || lower.contains("stl")
+    {
+        return JobFailure {
+            title: "Print files could not be written".into(),
+            message: "Check free disk space and the destination folder, then generate again."
+                .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Output),
+            piece: None,
+        };
+    }
+    JobFailure {
+        title: "Generation failed".into(),
+        message: "TopoSaic stopped before it could finish the model. Open the technical details when reporting this error.".into(),
+        technical_detail,
+        control_tab: None,
+        piece: None,
+    }
+}
+
+fn parse_piece_context(error: &str) -> Option<JobPiece> {
+    let context = error.split("build piece ").nth(1)?;
+    let coordinates = context.split(':').next()?.trim();
+    let (row, column) = coordinates.split_once(',')?;
+    Some(JobPiece {
+        row: row.trim().parse().ok()?,
+        column: column.trim().parse().ok()?,
+    })
 }
 
 pub(crate) async fn get_job(
@@ -621,6 +757,38 @@ mod tests {
     }
 
     #[test]
+    fn piece_failures_identify_the_piece_control_and_recovery() {
+        let failure = classify_job_error(
+            "build piece 6, 7: fit flag marker 'Flag 1' within its puzzle piece: this puzzle piece is too small for the flag socket",
+        );
+        assert_eq!(failure.title, "Flag socket did not fit piece 6,7");
+        assert_eq!(failure.control_tab, Some(JobControlTab::Markers));
+        assert_eq!(failure.piece, Some(JobPiece { row: 6, column: 7 }));
+        assert!(failure.message.contains("flag-hole diameter"));
+        assert!(failure.technical_detail.contains("Flag 1"));
+
+        let failure = classify_job_error(
+            "build piece 2, 3: triangulate terrain outline: Conflicting edge encountered",
+        );
+        assert_eq!(failure.title, "Could not build puzzle piece 2,3");
+        assert_eq!(failure.control_tab, Some(JobControlTab::Model));
+        assert!(failure.message.contains("puzzle seed"));
+    }
+
+    #[test]
+    fn download_failures_point_to_the_matching_control() {
+        let failure = classify_job_error(
+            "OpenStreetMap Overpass rejected the water request: server timed out",
+        );
+        assert_eq!(failure.control_tab, Some(JobControlTab::Surface));
+        assert!(failure.title.contains("OpenStreetMap"));
+
+        let failure = classify_job_error("Mapterhorn elevation tile returned HTTP 503");
+        assert_eq!(failure.control_tab, Some(JobControlTab::Model));
+        assert!(failure.title.contains("Elevation"));
+    }
+
+    #[test]
     fn artifact_downloads_require_uuid_job_directories() {
         assert_eq!(
             canonical_uuid("395481ef-0e39-4d94-9d94-2c39fea86000").as_deref(),
@@ -642,6 +810,7 @@ mod tests {
             spec: GenerationSpec::default(),
             artifacts,
             error: None,
+            failure: None,
         };
         insert_job(state, &job).unwrap();
         job
@@ -828,6 +997,7 @@ mod tests {
             spec: GenerationSpec::default(),
             artifacts: Vec::new(),
             error: None,
+            failure: None,
         };
         insert_job(&state, &job).unwrap();
 

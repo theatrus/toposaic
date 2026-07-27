@@ -1,9 +1,16 @@
 import { IS_TAURI } from "../api";
-import type { Artifact, ArtifactFeedback, GenerationSpec, Job } from "../contracts";
+import type {
+  Artifact,
+  ArtifactFeedback,
+  GenerationFailure,
+  GenerationSpec,
+  Job,
+} from "../contracts";
 import { ArtifactDownloads } from "../downloads";
 
 export function OutputPanel({
   artifactFeedback,
+  failure,
   generationStages,
   hidden,
   job,
@@ -15,6 +22,7 @@ export function OutputPanel({
   updateColor,
 }: {
   artifactFeedback: ArtifactFeedback | null;
+  failure: GenerationFailure | null;
   generationStages: Array<{
     key: string;
     label: string;
@@ -136,6 +144,20 @@ export function OutputPanel({
             <span className="status-dot" />
             <strong>{message ?? statusLabel}</strong>
           </div>
+          {job?.status === "failed" && failure && (
+            <div className="generation-failure-detail">
+              <p>{failure.message}</p>
+              {failure.piece && (
+                <p>
+                  Affected piece: row {failure.piece.row}, column {failure.piece.column}
+                </p>
+              )}
+              <details>
+                <summary>Technical details</summary>
+                <code>{failure.technical_detail}</code>
+              </details>
+            </div>
+          )}
           {job && (
             <ol
               className="job-steps"

@@ -1241,6 +1241,24 @@ a {
   background: #c45f4d;
 }
 
+.generation-error-copy {
+  display: grid;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.generation-error-copy span {
+  color: #694d46;
+}
+
+.generation-error-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .generation-error-banner button {
   background: transparent;
   border: 0;
@@ -2728,6 +2746,42 @@ fieldset.control-section .road-options {
 
 .job-card.canceled .status-dot {
   background: #858d89;
+}
+
+.generation-failure-detail {
+  background: #f8eeeb;
+  border: 1px solid #d5a095;
+  color: #694d46;
+  display: grid;
+  font-size: 11px;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.generation-failure-detail p {
+  margin: 0;
+}
+
+.generation-failure-detail details {
+  border-top: 1px solid #dfb9b0;
+  padding-top: 7px;
+}
+
+.generation-failure-detail summary {
+  color: var(--moss);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.generation-failure-detail code {
+  display: block;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .job-steps {

@@ -28,6 +28,7 @@ import {
   wallHardwareQuantity,
 } from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
+import { describeJobFailure } from "../app/terrain/generation-failure.ts";
 
 test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.2.0", "0.1.9"), true);
@@ -35,6 +36,17 @@ test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.1.0", "0.1.0-beta.2"), true);
   assert.equal(isVersionNewer("v0.1.0-beta.2", "0.1.0"), false);
   assert.equal(isVersionNewer("not-a-version", "0.1.0"), false);
+});
+
+test("keeps old job errors readable when structured failure data is absent", () => {
+  const failure = describeJobFailure({
+    status: "failed",
+    error: "build piece 6, 7: triangulate terrain outline",
+  });
+  assert.equal(failure.title, "Could not build puzzle piece 6,7");
+  assert.equal(failure.control_tab, "model");
+  assert.deepEqual(failure.piece, { row: 6, column: 7 });
+  assert.match(failure.technical_detail, /triangulate terrain outline/);
 });
 
 test("limits place names by Unicode characters without splitting a pair", () => {
