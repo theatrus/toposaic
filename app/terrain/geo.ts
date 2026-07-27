@@ -7,6 +7,42 @@ const MAX_MODEL_LATITUDE = 85;
 
 export type AdjacentDirection = "north" | "south" | "east" | "west";
 
+export function normalizedMapPoint(
+  spec: Pick<
+    GenerationSpec,
+    "center_lat" | "center_lon" | "ground_span_km"
+  >,
+  latitude: number,
+  longitude: number,
+) {
+  const halfLatitude =
+    spec.ground_span_km / (2 * KILOMETRES_PER_LATITUDE_DEGREE);
+  const longitudeScale = Math.max(
+    MINIMUM_LONGITUDE_SCALE,
+    KILOMETRES_PER_LONGITUDE_DEGREE *
+      Math.abs(Math.cos((spec.center_lat * Math.PI) / 180)),
+  );
+  const halfLongitude = spec.ground_span_km / (2 * longitudeScale);
+  const unwrappedLongitude =
+    spec.center_lon +
+    ((((longitude - spec.center_lon + 180) % 360) + 360) % 360) -
+    180;
+  const south = Math.max(
+    -MAX_MODEL_LATITUDE,
+    spec.center_lat - halfLatitude,
+  );
+  const north = Math.min(
+    MAX_MODEL_LATITUDE,
+    spec.center_lat + halfLatitude,
+  );
+  return {
+    u:
+      (unwrappedLongitude - (spec.center_lon - halfLongitude)) /
+      (2 * halfLongitude),
+    v: (latitude - south) / (north - south),
+  };
+}
+
 function offsetCoordinates(
   latitude: number,
   longitude: number,

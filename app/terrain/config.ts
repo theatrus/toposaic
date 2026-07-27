@@ -33,7 +33,7 @@ export function isMapLabel(kind: MarkerKind) {
 }
 
 export function markerNeedsSurfaceData(kind: MarkerKind) {
-  return kind === "building" || kind === "dot";
+  return kind === "building";
 }
 
 export function randomPuzzleSeed() {

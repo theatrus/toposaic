@@ -452,7 +452,7 @@ fn run_job(
     let surface_field = if spec.color_output.enabled
         || spec.buildings.enabled
         || spec.uses_trails()
-        || spec.uses_surface_markers()
+        || spec.uses_building_markers()
     {
         update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
@@ -574,7 +574,7 @@ fn run_adjacent_grid_job(
         let surface_field = if tile_spec.color_output.enabled
             || tile_spec.buildings.enabled
             || tile_spec.uses_trails()
-            || tile_spec.uses_surface_markers()
+            || tile_spec.uses_building_markers()
         {
             Some(surface::fetch_surface_field(
                 tile_spec,

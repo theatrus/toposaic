@@ -960,6 +960,26 @@ mod tests {
         assert!(model.contains("paint_color=\"4C\""));
     }
 
+    #[test]
+    fn vector_dots_keep_the_marker_filament_without_marker_pixels() {
+        let mut spec = fixture_spec(ThreeMfStyle::Project);
+        spec.markers.push(crate::spec::MapMarker {
+            name: "Trailhead".into(),
+            latitude: spec.center_lat,
+            longitude: spec.center_lon,
+            kind: crate::spec::MarkerKind::Dot,
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
+            label_style: None,
+        });
+        let field = field_with(&[]);
+        assert_eq!(
+            spec.material_palette(Some(&field))
+                .slot(SurfaceClass::Marker),
+            Some(6)
+        );
+    }
+
     /// The property the refusal check depends on: the palette covers every
     /// class a mesh built from the field can paint. Proved end to end —
     /// real pieces built from a field carrying every class, written through

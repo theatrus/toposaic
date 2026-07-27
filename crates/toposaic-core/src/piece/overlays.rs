@@ -1,11 +1,11 @@
-//! Overlay shells: road and bridge-deck ribbons, imported trails, railways,
-//! and the generic footprint-to-shell machinery they share.
+//! Overlay shells: marker dots, road and bridge-deck ribbons, imported
+//! trails, railways, and the generic footprint-to-shell machinery they share.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use geo::{
-    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Point, Polygon, Simplify,
+    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Polygon, Simplify,
     unary_union,
 };
 use rayon::prelude::*;
@@ -24,6 +24,113 @@ use super::{
     bounds_overlap, multi_polygon_bounds, repair_classification_pinches, sanitize_footprint_group,
     simplify_closed_ring, terrain_z_at,
 };
+
+/// One common 0.2 mm print layer keeps marker dots distinct from the terrain
+/// without turning them into pegs.
+const DOT_OVERLAY_HEIGHT_MM: f32 = 0.2;
+const MARKER_CIRCLE_SEGMENTS: usize = 64;
+
+fn marker_circle(center: [f32; 2], radius: f32) -> Polygon<f64> {
+    let points = (0..MARKER_CIRCLE_SEGMENTS)
+        .map(|index| {
+            let angle = index as f32 / MARKER_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+            [
+                center[0] + angle.cos() * radius,
+                center[1] + angle.sin() * radius,
+            ]
+        })
+        .collect::<Vec<_>>();
+    geo_polygon(&points)
+}
+
+/// Builds smooth terrain-following discs for dot markers. Dots are vector
+/// shells rather than surface-grid paint, so their roundness no longer
+/// depends on DEM or overlay sample spacing.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_dot_geometry(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    piece_outline: &[[f32; 2]],
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+    building_union: Option<&MultiPolygon<f64>>,
+) -> Result<()> {
+    let piece_polygon = geo_polygon(piece_outline);
+    let radius = spec.marker_settings.dot_diameter_mm * 0.5;
+    let footprints = spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind == MarkerKind::Dot)
+        .map(|marker| {
+            let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
+            marker_circle(
+                [
+                    uv[0] * assembled_width - origin_x,
+                    uv[1] * assembled_height - origin_y,
+                ],
+                radius,
+            )
+            .intersection(&piece_polygon)
+        })
+        .collect::<Vec<_>>();
+    let mut dot_area = unary_union(footprints.iter());
+    if let Some(buildings) = building_union.filter(|union| !union.0.is_empty()) {
+        let buffered = buildings
+            .0
+            .iter()
+            .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
+            .collect::<Vec<_>>();
+        dot_area = dot_area.difference(&unary_union(buffered.iter()));
+    }
+    let flag_areas = spec
+        .markers
+        .iter()
+        .filter(|marker| marker.kind.is_flag())
+        .map(|marker| {
+            let uv = spec.normalized_map_point(marker.latitude, marker.longitude);
+            marker_circle(
+                [
+                    uv[0] * assembled_width - origin_x,
+                    uv[1] * assembled_height - origin_y,
+                ],
+                spec.marker_settings.hole_diameter_mm * 0.5 + OVERLAY_SEPARATION_MM as f32,
+            )
+            .intersection(&piece_polygon)
+        })
+        .collect::<Vec<_>>();
+    if !flag_areas.is_empty() {
+        dot_area = dot_area.difference(&unary_union(flag_areas.iter()));
+    }
+    let dot_area = sanitize_footprint_group(dot_area, true);
+    let surface_z = |point: [f32; 2]| {
+        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+        terrain_z_at(spec, height_field, height_range, u, v)
+    };
+    let shells = dot_area
+        .0
+        .par_iter()
+        .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+        .map(|polygon| {
+            build_polygon_shell(
+                polygon,
+                |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
+                |point| surface_z(point) + DOT_OVERLAY_HEIGHT_MM,
+                None,
+                SurfaceClass::Marker,
+                "triangulate vector marker dot",
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for shell in shells {
+        mesh.append_isolated(shell);
+    }
+    Ok(())
+}
 
 /// Builds the road, trail, and railway shells of one piece.
 ///
@@ -146,11 +253,14 @@ pub(super) fn append_road_geometry(
                 }
             }) + OVERLAY_SEPARATION_MM;
             let point = spec.normalized_map_point(marker.latitude, marker.longitude);
-            let center = Point::new(
-                f64::from(point[0] * assembled_width - origin_x),
-                f64::from(point[1] * assembled_height - origin_y),
-            );
-            let clipped = center.buffer(radius).intersection(&piece_polygon);
+            let clipped = marker_circle(
+                [
+                    point[0] * assembled_width - origin_x,
+                    point[1] * assembled_height - origin_y,
+                ],
+                radius as f32,
+            )
+            .intersection(&piece_polygon);
             (!clipped.0.is_empty()).then_some(clipped)
         })
         .collect::<Vec<_>>();
@@ -909,6 +1019,59 @@ mod tests {
     use crate::piece::build_piece;
     use crate::preview::build_preview;
     use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
+
+    #[test]
+    fn dot_markers_are_smooth_vector_overlays_without_surface_data() {
+        let defaults = GenerationSpec::default();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            solid_model: true,
+            samples_per_piece: 16,
+            markers: vec![MapMarker {
+                name: "Centre".into(),
+                latitude: defaults.center_lat,
+                longitude: defaults.center_lon,
+                kind: MarkerKind::Dot,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
+                label_style: None,
+            }],
+            ..defaults
+        };
+
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let mesh = build_piece(&spec, Some(&height_field), None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let marker_vertices = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Marker)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        assert!(marker_vertices.len() >= MARKER_CIRCLE_SEGMENTS * 6);
+        let minimum_x = marker_vertices
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_x = marker_vertices
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let minimum_z = marker_vertices
+            .iter()
+            .map(|point| point[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = marker_vertices
+            .iter()
+            .map(|point| point[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((minimum_x - 28.5).abs() < 0.001);
+        assert!((maximum_x - 31.5).abs() < 0.001);
+        assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
+        assert!((maximum_z - (spec.base_mm + DOT_OVERLAY_HEIGHT_MM)).abs() < 0.001);
+    }
 
     #[test]
     fn roads_use_smooth_vector_ribbons_one_layer_above_terrain() {

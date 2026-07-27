@@ -314,8 +314,8 @@ fn generate_project_inner(
     if spec.uses_trails() && surface_field.is_none() {
         bail!("imported trails require surface data to draw on");
     }
-    if spec.uses_surface_markers() && surface_field.is_none() {
-        bail!("colored map markers require surface data to draw on");
+    if spec.uses_building_markers() && surface_field.is_none() {
+        bail!("building markers require OpenStreetMap building data");
     }
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_map_labels_generate_from_elevation_without_surface_downloads() {
+    fn vector_markers_generate_from_elevation_without_surface_downloads() {
         let output_dir =
             std::env::temp_dir().join(format!("toposaic-map-label-test-{}", std::process::id()));
         if output_dir.exists() {
@@ -689,15 +689,26 @@ mod tests {
         let spec = GenerationSpec {
             solid_model: true,
             samples_per_piece: 24,
-            markers: vec![crate::spec::MapMarker {
-                name: "Mirror Lake".into(),
-                latitude: defaults.center_lat,
-                longitude: defaults.center_lon,
-                kind: crate::spec::MarkerKind::PlaqueLabel,
-                label_height_mm: 4.0,
-                rotation_degrees: 25.0,
-                label_style: None,
-            }],
+            markers: vec![
+                crate::spec::MapMarker {
+                    name: "Mirror Lake".into(),
+                    latitude: defaults.center_lat,
+                    longitude: defaults.center_lon,
+                    kind: crate::spec::MarkerKind::PlaqueLabel,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 25.0,
+                    label_style: None,
+                },
+                crate::spec::MapMarker {
+                    name: "Trailhead".into(),
+                    latitude: defaults.center_lat,
+                    longitude: defaults.center_lon + 0.01,
+                    kind: crate::spec::MarkerKind::Dot,
+                    label_height_mm: 4.0,
+                    rotation_degrees: 0.0,
+                    label_style: None,
+                },
+            ],
             ..defaults
         };
         let height = HeightField::new(5, 5, vec![100.0; 25], "test").unwrap();

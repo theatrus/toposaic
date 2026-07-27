@@ -42,7 +42,7 @@ mod overlays;
 
 use buildings::append_building_geometry;
 use labels::append_label_geometry;
-use overlays::append_road_geometry;
+use overlays::{append_dot_geometry, append_road_geometry};
 
 #[allow(clippy::too_many_arguments)]
 fn add_forest_boundary_points(
@@ -579,6 +579,20 @@ pub(crate) fn build_piece_with_height_range(
             &mut mesh,
             spec,
             field,
+            height_field,
+            height_range,
+            &outline,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+            building_union.as_ref(),
+        )?;
+    }
+    if spec.uses_dot_markers() {
+        append_dot_geometry(
+            &mut mesh,
+            spec,
             height_field,
             height_range,
             &outline,

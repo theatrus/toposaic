@@ -318,12 +318,10 @@ impl GenerationSpec {
         self.markers.iter().any(|marker| !marker.kind.is_flag())
     }
 
-    /// Markers painted into the downloaded surface field. Vector map labels
-    /// build from elevation alone and must not trigger a land-cover fetch.
-    pub fn uses_surface_markers(&self) -> bool {
+    pub fn uses_dot_markers(&self) -> bool {
         self.markers
             .iter()
-            .any(|marker| matches!(marker.kind, MarkerKind::Building | MarkerKind::Dot))
+            .any(|marker| marker.kind == MarkerKind::Dot)
     }
 
     pub fn uses_building_markers(&self) -> bool {
@@ -629,9 +627,9 @@ impl GenerationSpec {
         let contained = surface.map(SurfaceField::contained_classes);
         let mut palette = MaterialPalette::default();
         for class in SurfaceClass::ALL {
-            // Only data-backed optional layers consult the field. Vector map
-            // labels build straight into the mesh, so Marker must stay even
-            // when the downloaded field contains no marker pixels.
+            // Only data-backed optional layers consult the field. Dots and
+            // map labels build straight into the mesh, so Marker must stay
+            // even when the downloaded field contains no marker pixels.
             let mesh_class = matches!(
                 class,
                 SurfaceClass::Rock
@@ -640,7 +638,8 @@ impl GenerationSpec {
                     | SurfaceClass::Water
                     | SurfaceClass::Road
                     | SurfaceClass::Building
-            ) || (class == SurfaceClass::Marker && self.uses_map_labels());
+            ) || (class == SurfaceClass::Marker
+                && (self.uses_dot_markers() || self.uses_map_labels()));
             let in_data = mesh_class
                 || if class == SurfaceClass::RouteTrail {
                     // Mapped trails can only come from a surface field. A
@@ -2360,6 +2359,8 @@ mod tests {
         };
         assert!(spec.validate().is_ok());
         assert!(spec.uses_colored_markers());
+        assert!(spec.uses_dot_markers());
+        assert!(!spec.uses_building_markers());
         let center = spec.normalized_map_point(46.8523, -121.7603);
         assert!((center[0] - 0.5).abs() < 0.000_001);
         assert!((center[1] - 0.5).abs() < 0.000_001);

@@ -141,12 +141,13 @@ export function MarkersPanel({
           ? `Click the map to move ${spec.markers[movingMarkerIndex]?.name ?? "the marker"}.`
           : placementKind
           ? `Click the map to place a ${kindLabel[placementKind].toLowerCase()}.`
-          : "Building markers color a footprint. Dots print flush. Flags can stay blank or use an editable name. Surface labels follow the terrain; plaques make a flat raised base."}
+          : "Building markers color a footprint. Dots print as smooth one-layer overlays. Flags can stay blank or use an editable name. Surface labels follow the terrain; plaques make a flat raised base."}
       </p>
       {showFlagControls && (
         <p className="color-note">
-          A flag socket that crosses a puzzle seam shifts only far enough to
-          fit inside its owning piece.
+          Round flag sockets let flags rotate after insertion. A socket that
+          crosses a puzzle seam shifts only far enough to fit inside its
+          owning piece.
         </p>
       )}
 

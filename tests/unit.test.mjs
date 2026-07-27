@@ -29,6 +29,24 @@ import {
 } from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
+import { normalizedMapPoint } from "../app/terrain/geo.ts";
+
+test("maps vector markers into the model frame across the date line", () => {
+  const center = normalizedMapPoint(
+    { center_lat: 46.8523, center_lon: -121.7603, ground_span_km: 18 },
+    46.8523,
+    -121.7603,
+  );
+  assert.ok(Math.abs(center.u - 0.5) < 1e-12);
+  assert.ok(Math.abs(center.v - 0.5) < 1e-12);
+  const wrapped = normalizedMapPoint(
+    { center_lat: 0, center_lon: 179.99, ground_span_km: 18 },
+    0,
+    -179.99,
+  );
+  assert.ok(wrapped.u > 0.5 && wrapped.u < 1);
+  assert.equal(wrapped.v, 0.5);
+});
 
 test("compares stable and prerelease app versions", () => {
   assert.equal(isVersionNewer("v0.2.0", "0.1.9"), true);

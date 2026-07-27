@@ -64,6 +64,9 @@ test("places map markers and submits their print modes", async ({ page }) => {
 
   await expect(page.locator(".map-marker")).toHaveCount(6);
   await expect(page.locator(".map-marker.dot")).toHaveCount(1);
+  await expect(
+    page.getByLabel("Interactive 3D terrain preview"),
+  ).toHaveAttribute("data-vector-dot-count", "1");
   await expect(page.locator(".map-marker.flag_hole")).toHaveCount(1);
   await expect(page.locator(".map-marker.flag_label")).toHaveCount(1);
   await expect(page.locator(".map-marker.surface_label")).toHaveText(

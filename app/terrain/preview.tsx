@@ -10,6 +10,7 @@ import {
   ACESFilmicToneMapping,
   BoxGeometry,
   BufferGeometry,
+  CircleGeometry,
   Color,
   DirectionalLight,
   DoubleSide,
@@ -39,11 +40,13 @@ import {
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
+import { normalizedMapPoint } from "./geo";
 
 // The terrain color the mesh renders when color output is off but trails
 // or buildings still force color materials. The legend must show the same
 // value, not the palette rock color.
 const NEUTRAL_TERRAIN_COLOR = "#74846B";
+const DOT_OVERLAY_HEIGHT_MM = 0.2;
 
 // Palette keys in SurfaceClass::ALL order, so the index a preview reports
 // is the index into this list. See crates/toposaic-core/src/spec.rs.
@@ -323,6 +326,8 @@ export function ReliefPreview({
     base_mm,
     center_lat,
     center_lon,
+    ground_span_km,
+    markers,
     rows,
     columns,
     solid_model,
@@ -346,12 +351,13 @@ export function ReliefPreview({
     aerial_color,
   } = spec.color_output;
   const markerColor = spec.marker_settings.color;
-  const coloredMarkersPresent = spec.markers.some(
+  const dotDiameterMm = spec.marker_settings.dot_diameter_mm;
+  const coloredMarkersPresent = markers.some(
     (marker) => !isFlagMarker(marker.kind),
   );
   const buildingsEnabled =
     spec.buildings.enabled ||
-    spec.markers.some((marker) => marker.kind === "building");
+    markers.some((marker) => marker.kind === "building");
   const trailsPresent = spec.trails.length > 0;
   // Which class each rail-family layer's lines actually land in, resolved
   // the way the backend resolves it. A layer only earns its own legend
@@ -556,6 +562,56 @@ export function ReliefPreview({
     const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
     scene.add(terrainMesh);
 
+    const pointOnTerrain = (u: number, v: number) =>
+      new Vector3(
+        previewWorldX(u),
+        heightAt(u, v) * heightScale + 0.0025,
+        v - 0.5,
+      );
+
+    const dotMarkers = markers.filter(
+      (candidate) => candidate.kind === "dot",
+    );
+    canvas.dataset.vectorDotCount = String(dotMarkers.length);
+    for (const marker of dotMarkers) {
+      const { u, v } = normalizedMapPoint(
+        { center_lat, center_lon, ground_span_km },
+        marker.latitude,
+        marker.longitude,
+      );
+      if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+      const deltaU = 1 / Math.max(2, sampleWidth - 1);
+      const deltaV = 1 / Math.max(2, sampleHeight - 1);
+      const westU = Math.max(0, u - deltaU);
+      const eastU = Math.min(1, u + deltaU);
+      const southV = Math.max(0, v - deltaV);
+      const northV = Math.min(1, v + deltaV);
+      const slopeX =
+        ((heightAt(eastU, v) - heightAt(westU, v)) * heightScale) /
+        (previewWorldX(eastU) - previewWorldX(westU));
+      const slopeZ =
+        ((heightAt(u, northV) - heightAt(u, southV)) * heightScale) /
+        (northV - southV);
+      const normal = new Vector3(-slopeX, 1, -slopeZ).normalize();
+      const geometry = new CircleGeometry(
+        dotDiameterMm / (2 * width_mm),
+        64,
+      );
+      geometry.rotateX(-Math.PI / 2);
+      const material = new MeshStandardMaterial({
+        color: markerColor,
+        metalness: 0,
+        roughness: 0.76,
+        side: DoubleSide,
+      });
+      const dot = new Mesh(geometry, material);
+      dot.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), normal);
+      dot.position
+        .copy(pointOnTerrain(u, v))
+        .addScaledVector(normal, DOT_OVERLAY_HEIGHT_MM / width_mm);
+      scene.add(dot);
+    }
+
     const baseGeometry = new BoxGeometry(1, baseDepth, 1);
     const baseMaterial = new MeshStandardMaterial({
       color: new Color(palette.rock).multiplyScalar(0.68),
@@ -571,12 +627,6 @@ export function ReliefPreview({
       opacity: 0.72,
       transparent: true,
     });
-    const pointOnTerrain = (u: number, v: number) =>
-      new Vector3(
-        previewWorldX(u),
-        heightAt(u, v) * heightScale + 0.0025,
-        v - 0.5,
-      );
     const perimeter = [
       ...Array.from({ length: sampleWidth }, (_, x) =>
         pointOnTerrain(x / Math.max(1, sampleWidth - 1), 0),
@@ -806,6 +856,7 @@ export function ReliefPreview({
     base_mm,
     center_lat,
     center_lon,
+    ground_span_km,
     rows,
     columns,
     solid_model,
@@ -829,6 +880,8 @@ export function ReliefPreview({
     rail_color,
     aerial_color,
     markerColor,
+    dotDiameterMm,
+    markers,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -891,8 +944,9 @@ export function ReliefPreview({
         </button>
       </div>
       {(spec.color_output.enabled ||
-        spec.buildings.enabled ||
-        trailsPresent) && (
+        buildingsEnabled ||
+        trailsPresent ||
+        coloredMarkersPresent) && (
         <div className="color-legend" aria-label="Surface color legend">
           {(
             [
