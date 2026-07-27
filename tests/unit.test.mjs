@@ -194,7 +194,7 @@ test("recalls old setups with tray contours, retention, and wall hardware defaul
     style: "none",
     target: "terrain",
     vertical_position_ratio: 0.28,
-    depth_mm: 0.8,
+    depth_mm: 1.6,
     thickness_mm: 1.2,
     wall_offset_mm: 0.8,
     pin_diameter_mm: 4,
@@ -241,9 +241,9 @@ test("derives mounting limits and wall hardware counts from the full model", () 
   puzzleGrid.wall_mount.target = "terrain";
   puzzleGrid.solid_model = true;
   assert.equal(wallHardwareQuantity(puzzleGrid), 1);
-  assert.ok(Math.abs(maximumMountDepth(puzzleGrid) - 1.6) < 1e-9);
+  assert.ok(Math.abs(maximumMountDepth(puzzleGrid) - 2.4) < 1e-9);
   assert.ok(Math.abs(maximumWallPlateThickness(puzzleGrid) - 2) < 1e-9);
-  assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
+  assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 2.6) < 1e-9);
 
   puzzleGrid.width_mm = 320;
   assert.equal(wallMountTargetWidth(puzzleGrid), 320);

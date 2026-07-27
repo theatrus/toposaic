@@ -1166,6 +1166,7 @@ mod tests {
     fn screw_head_clearance_cuts_local_relief_to_the_deeper_requested_ceiling() {
         let mount = WallMountSpec {
             style: WallMountStyle::FrenchCleat,
+            depth_mm: 0.8,
             screw_head_clearance_mm: 1.4,
             ..WallMountSpec::default()
         };
@@ -1333,7 +1334,7 @@ mod tests {
             deep_receiver
                 .vertices
                 .iter()
-                .any(|point| (point[2] - 3.3).abs() < 0.000_01)
+                .any(|point| (point[2] - mount.embedded_depth_mm()).abs() < 0.000_01)
         );
     }
 
