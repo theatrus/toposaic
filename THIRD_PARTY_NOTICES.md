@@ -14,6 +14,10 @@ complete license is in `assets/fonts/OFL-NotoSansCJK.txt`.
 Institute of America, Inc. It is distributed under the SIL Open Font License,
 Version 1.1. The complete license is in `assets/fonts/OFL.txt`.
 
+`assets/fonts/B612Mono-Bold.ttf` is Copyright 2012 The B612 Project Authors.
+It is distributed under the SIL Open Font License, Version 1.1. The complete
+license is in `assets/fonts/OFL-B612Mono.txt`.
+
 ## Software dependencies
 
 Rust and Node packages keep their own licenses. Their package metadata and

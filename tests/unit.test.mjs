@@ -231,12 +231,14 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
 test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {
   const oldSpec = structuredClone(initialSpec);
   delete oldSpec.tray.contours_enabled;
+  delete oldSpec.tray.label_font;
   delete oldSpec.tray.label_height_mm;
   delete oldSpec.tray.label_position;
   delete oldSpec.puzzle_retention;
   delete oldSpec.wall_mount;
   const merged = mergeSpecDefaults(oldSpec);
   assert.equal(merged.tray.contours_enabled, true);
+  assert.equal(merged.tray.label_font, "atkinson_hyperlegible");
   assert.equal(merged.tray.label_height_mm, 4);
   assert.equal(merged.tray.label_position, "center");
   assert.deepEqual(merged.puzzle_retention, {

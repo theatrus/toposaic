@@ -9,41 +9,53 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 use crate::mesh::{
     MeshBuilder, distance_squared, point_in_polygon, point_line_distance, triangulate_constraints,
 };
-use crate::spec::SurfaceClass;
+use crate::spec::{SurfaceClass, TrayLabelFont};
 
-const LATIN_FONT: &[u8] = include_bytes!(concat!(
+const CLEAR_SANS_FONT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/AtkinsonHyperlegible-Regular.ttf"
 ));
-const CJK_FONT: &[u8] = include_bytes!(concat!(
+const NOTO_SANS_FONT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/NotoSansJP-Regular.otf"
 ));
+const TECHNICAL_MONO_FONT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/B612Mono-Bold.ttf"
+));
 
 pub(crate) struct EmbossingFonts {
-    latin: Face<'static>,
-    cjk: Face<'static>,
+    primary: Face<'static>,
+    fallback: Option<Face<'static>>,
 }
 
 impl EmbossingFonts {
     fn glyph(&self, character: char) -> Option<(&Face<'static>, GlyphId)> {
-        self.latin
+        self.primary
             .glyph_index(character)
-            .map(|glyph_id| (&self.latin, glyph_id))
+            .map(|glyph_id| (&self.primary, glyph_id))
             .or_else(|| {
-                self.cjk
+                let fallback = self.fallback.as_ref()?;
+                fallback
                     .glyph_index(character)
-                    .map(|glyph_id| (&self.cjk, glyph_id))
+                    .map(|glyph_id| (fallback, glyph_id))
             })
     }
 }
 
-pub(crate) fn embossing_fonts() -> Result<EmbossingFonts> {
-    let latin = Face::parse(LATIN_FONT, 0)
-        .map_err(|error| anyhow!("parse bundled Latin tray font: {error:?}"))?;
-    let cjk = Face::parse(CJK_FONT, 0)
+pub(crate) fn embossing_fonts(font: TrayLabelFont) -> Result<EmbossingFonts> {
+    let primary_bytes = match font {
+        TrayLabelFont::AtkinsonHyperlegible => CLEAR_SANS_FONT,
+        TrayLabelFont::NotoSans => NOTO_SANS_FONT,
+        TrayLabelFont::B612Mono => TECHNICAL_MONO_FONT,
+    };
+    let primary = Face::parse(primary_bytes, 0)
+        .map_err(|error| anyhow!("parse bundled tray font: {error:?}"))?;
+    let fallback = (font != TrayLabelFont::NotoSans)
+        .then(|| Face::parse(NOTO_SANS_FONT, 0))
+        .transpose()
         .map_err(|error| anyhow!("parse bundled Japanese tray font: {error:?}"))?;
-    Ok(EmbossingFonts { latin, cjk })
+    Ok(EmbossingFonts { primary, fallback })
 }
 
 pub(crate) struct TextMetrics {
@@ -107,8 +119,8 @@ pub(crate) fn text_metrics(fonts: &EmbossingFonts, text: &str) -> Result<TextMet
     })
 }
 
-pub(crate) fn validate_embossing_text(text: &str) -> Result<()> {
-    let fonts = embossing_fonts()?;
+pub(crate) fn validate_embossing_text(text: &str, font: TrayLabelFont) -> Result<()> {
+    let fonts = embossing_fonts(font)?;
     text_metrics(&fonts, text).map(|_| ())
 }
 
@@ -116,6 +128,7 @@ pub(crate) fn validate_embossing_text(text: &str) -> Result<()> {
 #[derive(Debug)]
 pub(crate) struct EmbossedLabel {
     pub(crate) text: String,
+    pub(crate) font: TrayLabelFont,
     pub(crate) origin_x: f32,
     pub(crate) baseline_y: f32,
     pub(crate) scale: f32,
@@ -123,7 +136,7 @@ pub(crate) struct EmbossedLabel {
 
 impl EmbossedLabel {
     pub(crate) fn add_embossed_shapes(&self, mesh: &mut MeshBuilder, rim_z: f32) -> Result<()> {
-        let fonts = embossing_fonts()?;
+        let fonts = embossing_fonts(self.font)?;
         let mut pen_x = 0.0;
         for character in self.text.chars() {
             let (face, glyph_id) = fonts

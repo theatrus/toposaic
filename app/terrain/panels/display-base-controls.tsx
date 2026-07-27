@@ -51,6 +51,26 @@ export function DisplayBaseControls({
               name. Letter case and Japanese text are preserved.
             </small>
           </label>
+          <label className="tray-label-font-field">
+            <span>Label font</span>
+            <select
+              aria-label="Label font"
+              value={spec.tray.label_font}
+              onChange={(event) =>
+                updateTray(
+                  "label_font",
+                  event.target.value as GenerationSpec["tray"]["label_font"],
+                )
+              }
+            >
+              <option value="atkinson_hyperlegible">
+                Atkinson Hyperlegible
+              </option>
+              <option value="noto_sans">Noto Sans</option>
+              <option value="b612_mono">B612 Mono</option>
+            </select>
+            <small>Bundled fonts keep the result the same on every OS.</small>
+          </label>
           <RangeField
             label="Label height"
             value={spec.tray.label_height_mm}

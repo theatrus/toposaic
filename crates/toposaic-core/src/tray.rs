@@ -1422,7 +1422,7 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<Embos
     let latitude = coordinate_label(spec.center_lat, 'N', 'S');
     let longitude = coordinate_label(spec.center_lon, 'E', 'W');
     let text = format!("{place}  {latitude} {longitude}");
-    let fonts = embossing_fonts()?;
+    let fonts = embossing_fonts(spec.tray.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
     let horizontal_margin = 2.0_f32.min(width * 0.1);
     let vertical_margin = 0.8_f32.min(lip_depth * 0.15);
@@ -1440,6 +1440,7 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<Embos
     };
     Ok(EmbossedLabel {
         text,
+        font: spec.tray.label_font,
         origin_x: left - metrics.minimum_x * scale,
         baseline_y: (lip_depth - text_height) * 0.5 - metrics.minimum_y * scale,
         scale,
@@ -1462,7 +1463,8 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
     use crate::spec::{
-        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+        PuzzleRetentionSpec, TrayLabelFont, TraySpec, WallMountSpec, WallMountStyle,
+        WallMountTarget,
     };
 
     #[test]
@@ -1842,6 +1844,7 @@ mod tests {
     fn tray_label_uses_smooth_vector_curves() {
         let label = EmbossedLabel {
             text: "O".into(),
+            font: TrayLabelFont::AtkinsonHyperlegible,
             origin_x: 1.0,
             baseline_y: 1.0,
             scale: 0.005,
@@ -1902,21 +1905,37 @@ mod tests {
     }
 
     #[test]
-    fn tray_label_embosses_cyrillic_and_vietnamese() {
-        let spec = GenerationSpec {
-            place_name: "Hạ Long Москва".into(),
-            tray: TraySpec {
-                label_height_mm: 3.0,
-                ..TraySpec::default()
-            },
-            ..GenerationSpec::default()
-        };
-        let label = tray_label(&spec, 180.0, 10.0).unwrap();
-        assert!(label.text.starts_with("Hạ Long Москва  "));
+    fn tray_label_fonts_emboss_multilingual_watertight_text() {
+        let mut widths = Vec::new();
+        for font in [
+            TrayLabelFont::AtkinsonHyperlegible,
+            TrayLabelFont::NotoSans,
+            TrayLabelFont::B612Mono,
+        ] {
+            let spec = GenerationSpec {
+                place_name: "Hạ Long Москва 富士山".into(),
+                tray: TraySpec {
+                    label_font: font,
+                    label_height_mm: 3.0,
+                    ..TraySpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            let label = tray_label(&spec, 180.0, 10.0).unwrap();
+            assert_eq!(label.font, font);
+            assert!(label.text.starts_with("Hạ Long Москва 富士山  "));
 
-        let mut builder = MeshBuilder::default();
-        label.add_embossed_shapes(&mut builder, 3.0).unwrap();
-        assert_watertight(&builder.finish("multilingual-vector-label"));
+            let metrics = text_metrics(&embossing_fonts(font).unwrap(), "TopoSaic 123").unwrap();
+            widths.push(metrics.width);
+            let mut builder = MeshBuilder::default();
+            label.add_embossed_shapes(&mut builder, 3.0).unwrap();
+            assert_watertight(&builder.finish("multilingual-vector-label"));
+        }
+        assert!(
+            widths
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() > 1.0)
+        );
     }
 
     #[test]

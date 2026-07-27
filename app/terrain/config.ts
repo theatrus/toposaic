@@ -71,6 +71,7 @@ export const initialSpec: GenerationSpec = {
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",
+    label_font: "atkinson_hyperlegible",
     label_height_mm: 4,
     label_position: "center",
     clearance_mm: 0.6,

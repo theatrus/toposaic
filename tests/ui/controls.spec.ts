@@ -320,6 +320,15 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(placeName).toHaveValue(fullUnicodeName);
   await placeName.fill("富士山 Mount Fuji");
   await expect(placeName).toHaveValue("富士山 Mount Fuji");
+  const labelFont = page.getByLabel("Label font");
+  await expect(labelFont).toHaveValue("atkinson_hyperlegible");
+  await expect(labelFont.locator("option")).toHaveText([
+    "Atkinson Hyperlegible",
+    "Noto Sans",
+    "B612 Mono",
+  ]);
+  await labelFont.selectOption("b612_mono");
+  await expect(labelFont).toHaveValue("b612_mono");
   const labelHeight = page.getByRole("slider", { name: "Label height" });
   await expect(labelHeight).toHaveValue("4");
   await labelHeight.fill("5.5");
