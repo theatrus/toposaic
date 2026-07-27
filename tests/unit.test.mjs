@@ -15,6 +15,14 @@ import {
   railLineClass,
   terrainSamplesAcross,
 } from "../app/terrain/config.ts";
+import {
+  maximumCleatWidth,
+  maximumMountDepth,
+  maximumRetentionHeight,
+  maximumWallPlateThickness,
+  wallMountTargetWidth,
+  wallHardwareQuantity,
+} from "../app/terrain/mounting.ts";
 import { isVersionNewer } from "../app/updates/version.ts";
 
 test("compares stable and prerelease app versions", () => {
@@ -167,6 +175,90 @@ test("defaults imported trails to none and recalls old setups cleanly", () => {
   });
   assert.equal(withTrail.trails.length, 1);
   assert.equal(withTrail.trails[0].name, "Loop");
+});
+
+test("recalls old setups with tray contours, retention, and wall hardware defaults", () => {
+  const oldSpec = structuredClone(initialSpec);
+  delete oldSpec.tray.contours_enabled;
+  delete oldSpec.puzzle_retention;
+  delete oldSpec.wall_mount;
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.tray.contours_enabled, true);
+  assert.deepEqual(merged.puzzle_retention, {
+    enabled: false,
+    pin_diameter_mm: 3,
+    pin_height_mm: 1,
+    clearance_mm: 0.2,
+  });
+  assert.deepEqual(merged.wall_mount, {
+    style: "none",
+    target: "terrain",
+    vertical_position_ratio: 0.28,
+    depth_mm: 0.8,
+    thickness_mm: 1.2,
+    wall_offset_mm: 0.8,
+    pin_diameter_mm: 4,
+    pin_count: 1,
+    pin_spacing_mm: 32,
+    cleat_width_mm: 12,
+    export_hardware: true,
+    fit_clearance_mm: 0.2,
+    screw_hole_diameter_mm: 3.5,
+    screw_countersink_depth_mm: 0.8,
+    screw_head_clearance_mm: 0.4,
+    wide_edge_screws: true,
+  });
+});
+
+test("migrates an old wall pocket to full plate thickness", () => {
+  const oldSpec = structuredClone(initialSpec);
+  delete oldSpec.wall_mount.thickness_mm;
+  oldSpec.wall_mount.depth_mm = 1.2;
+  oldSpec.wall_mount.pocket_depth_mm = 0.6;
+  oldSpec.wall_mount.wall_offset_mm = 1;
+
+  const merged = mergeSpecDefaults(oldSpec);
+  assert.equal(merged.wall_mount.thickness_mm, 1.6);
+  assert.equal(merged.wall_mount.depth_mm, 1.2);
+  assert.equal(merged.wall_mount.wall_offset_mm, 1);
+  assert.equal("pocket_depth_mm" in merged.wall_mount, false);
+});
+
+test("derives mounting limits and wall hardware counts from the full model", () => {
+  const puzzleGrid = structuredClone(initialSpec);
+  puzzleGrid.adjacent_columns = 3;
+  puzzleGrid.adjacent_rows = 2;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
+
+  puzzleGrid.wall_mount.target = "tray";
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
+  puzzleGrid.adjacent_columns = 1;
+  puzzleGrid.adjacent_rows = 1;
+  puzzleGrid.tray.segment_columns = 2;
+  puzzleGrid.tray.segment_rows = 3;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 6);
+
+  puzzleGrid.wall_mount.target = "terrain";
+  puzzleGrid.solid_model = true;
+  assert.equal(wallHardwareQuantity(puzzleGrid), 1);
+  assert.ok(Math.abs(maximumMountDepth(puzzleGrid) - 1.6) < 1e-9);
+  assert.ok(Math.abs(maximumWallPlateThickness(puzzleGrid) - 2) < 1e-9);
+  assert.ok(Math.abs(maximumRetentionHeight(puzzleGrid) - 1.8) < 1e-9);
+
+  puzzleGrid.width_mm = 320;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  assert.equal(maximumCleatWidth(puzzleGrid), 316);
+  puzzleGrid.solid_model = false;
+  puzzleGrid.columns = 4;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  assert.equal(maximumCleatWidth(puzzleGrid), 316);
+
+  puzzleGrid.wall_mount.target = "tray";
+  puzzleGrid.tray.segment_columns = 1;
+  puzzleGrid.tray.segment_rows = 2;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 320);
+  puzzleGrid.tray.segment_columns = 2;
+  assert.equal(wallMountTargetWidth(puzzleGrid), 160);
 });
 
 test("coalesces explicit null sample counts to the client defaults", () => {

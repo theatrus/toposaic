@@ -266,12 +266,81 @@ test("switches between the reflowed control panels", async ({ page }) => {
       .getByText("Building", { exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("tab", { name: "Tray" }).click();
-  const trayControls = page.getByRole("group", {
-    name: "Shallow terrain tray",
+  await page.getByRole("tab", { name: "Mounting" }).click();
+  const mountingControls = page.getByRole("group", {
+    name: "Mounting and display base",
   });
-  await expect(trayControls).toBeVisible();
+  await expect(mountingControls).toBeVisible();
   await expect(page.getByLabel("Place name")).toHaveValue("Mount Rainier");
+  const retention = page.getByRole("checkbox", {
+    name: "Pin puzzle into tray",
+  });
+  await expect(retention).not.toBeChecked();
+  await retention.check();
+  await expect(page.getByText("Retention pin diameter")).toBeVisible();
+  await expect(page.getByText("Retention pin height")).toBeVisible();
+  const trayContours = page.getByRole("checkbox", {
+    name: "Draw contour lines on tray",
+  });
+  await expect(trayContours).toBeChecked();
+  await trayContours.uncheck();
+  await expect(page.getByText("Contour line count")).toBeHidden();
+  const floorThickness = page.getByRole("slider", {
+    name: "Floor thickness",
+  });
+  await expect(floorThickness).toHaveAttribute("max", "20");
+  await floorThickness.press("Home");
+  const wallMountStyle = page.getByLabel("Wall mount style");
+  await wallMountStyle.selectOption("angled_pin");
+  await expect(page.getByLabel("Wall mount target")).toHaveValue("tray");
+  await expect(page.getByText("Pin engagement depth")).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Wall plate thickness" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Pin diameter", exact: true }),
+  ).toBeVisible();
+  const exportWallHardware = page.getByRole("checkbox", {
+    name: "Export matching wall hardware",
+  });
+  await expect(exportWallHardware).toBeChecked();
+  await expect(
+    page.getByRole("slider", { name: "Wall offset" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("slider", { name: "Mount position from top" }),
+  ).toHaveValue("28");
+  await expect(
+    page.getByRole("slider", { name: "Screw countersink depth" }),
+  ).toHaveValue("0.8");
+  await expect(
+    page.getByRole("slider", { name: "Screw-head pocket clearance" }),
+  ).toHaveValue("0.4");
+  await expect(
+    page.getByRole("slider", { name: "Pocket and hardware fit clearance" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "Add edge screw holes on wide mounts" }),
+  ).toBeChecked();
+  await exportWallHardware.uncheck();
+  await expect(
+    page.getByRole("slider", { name: "Screw-head pocket clearance" }),
+  ).toBeVisible();
+  await exportWallHardware.check();
+  await wallMountStyle.selectOption("french_cleat");
+  await expect(page.getByText("Cleat engagement depth")).toBeVisible();
+  await expect(page.getByText("Cleat slot height")).toBeVisible();
+  await expect(page.getByText("Cleat width")).toBeVisible();
+  await expect(
+    page.getByText("display-base floor is too thin", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("alignment jig uses the same holes", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("flat alignment spacer", { exact: false })).toBeVisible();
+  await mountingControls.getByRole("checkbox").first().uncheck();
+  await expect(retention).not.toBeChecked();
+  await expect(page.getByLabel("Wall mount target")).toHaveValue("terrain");
 
   await page.getByRole("tab", { name: "Output" }).click();
   await expect(page.getByText("No generation job yet.")).toBeVisible();
@@ -762,6 +831,7 @@ test("locks a height frame and maps a super-tile grid", async ({
   const minimumHeight = page.getByRole("slider", {
     name: "Minimum piece height",
   });
+  await expect(minimumHeight).toHaveAttribute("max", "20");
   await expect(minimumHeight).toHaveValue("2.4");
   await minimumHeight.fill("5");
   await expect(minimumHeight).toHaveValue("5");
@@ -864,13 +934,22 @@ test("locks a height frame and maps a super-tile grid", async ({
   await tileInterlocks.check();
   await expect(tileInterlocks).toBeChecked();
 
-  await page.getByRole("tab", { name: "Tray" }).click();
+  await page.getByRole("tab", { name: "Mounting" }).click();
   const separateTrays = page.getByRole("checkbox", {
     name: /Separate framed trays/,
   });
   await expect(separateTrays).toBeVisible();
   await separateTrays.check();
   await expect(separateTrays).toBeChecked();
+  const wallMountStyle = page.getByLabel("Wall mount style");
+  await wallMountStyle.selectOption("straight_pin");
+  await expect(
+    page.getByText(/Print 63 copies of the wall-side hardware/),
+  ).toBeVisible();
+  await page.getByLabel("Wall mount target").selectOption("tray");
+  await expect(
+    page.getByText(/Print 63 copies of the wall-side hardware/),
+  ).toBeVisible();
 });
 
 test("rotates, zooms, and resets the interactive 3D preview", async ({

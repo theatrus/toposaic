@@ -15,13 +15,14 @@ use crate::heightfield::{HeightField, normalized_height};
 use crate::mesh::{
     Mesh, MeshBuilder, distance_squared, quantize_export_coordinate, triangulate_constraints,
 };
+use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{BridgeStructure, GenerationSpec, SurfaceClass};
 use crate::surface::{ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_line_progress};
 
 use super::{
     MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM, OVERLAY_TERRAIN_EMBED_MM, SurfaceField,
-    bounds_overlap, geo_polygon, multi_polygon_bounds, repair_classification_pinches,
-    sanitize_footprint_group, simplify_closed_ring, terrain_z_at,
+    bounds_overlap, multi_polygon_bounds, repair_classification_pinches, sanitize_footprint_group,
+    simplify_closed_ring, terrain_z_at,
 };
 
 /// Builds the road, trail, and railway shells of one piece.

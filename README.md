@@ -100,9 +100,47 @@ An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,
 and longitude in smooth vector letterforms. Controls set the tray clearance,
-rim, floor, line count, and three print colors. The bundled Atkinson
+rim, floor, line count, and three print colors; contour lines can also be
+left out for a simpler tray. The bundled Atkinson
 Hyperlegible font keeps the label shape the same on every OS and remains under
 its included SIL Open Font License.
+
+Tray-retention controls add a fitted pin beneath each puzzle piece, or each
+section of a solid model, so a completed puzzle stays in an upright tray. Pin
+diameter, height, and fit clearance are adjustable. Split trays move pins away
+from their joins and give each solid-model section its own mating socket.
+
+Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
+French-cleat receiver into the flat back. Every wall mount also cuts a visible
+rectangular pocket swept over the wall plate's full entry-to-lock travel.
+French-cleat travel grows with slot height. Terrain targets put that pocket in
+one full-tile layout across the assembled puzzle or solid model; each puzzle
+piece receives only the part of the shared cut that crosses it. Display-base
+targets put the layout in the base. Puzzle-retention pins stay per piece and
+never add wall pockets to the terrain. The French-cleat receiver has a lower
+entry box: set it over the wall cleat, then slide it toward map north to lock.
+Cleats can span up to 400 mm when the full terrain tile or base leaves a 2 mm
+side wall.
+
+Each job can also export matching wall hardware as STL and 3MF: a peg or male
+cleat on an integral screw plate. Controls set the mount position from the top,
+pin count and spacing, cleat width and height, engagement depth, wall plate
+thickness, fit clearance, wall offset, and screw-hole diameter. The default
+position sits 28 percent down from the north edge and can move from one-sixth
+to five-sixths of the model height. A separate depth control prints a 90-degree
+screw countersink; zero keeps a plain through-hole. Screw-head pocket clearance
+cuts local relief behind each head through the full entry-to-lock sweep without
+changing wall offset or deepening the whole plate pocket. Wide mounts can add
+one screw near each end when the target has room. The wall hardware, receiver,
+and alignment jig use the same screw layout. Engagement depth sets how far the
+pin or cleat enters the model. Wall offset sets the finished gap for an uneven
+wall; TopoSaic derives the hidden pocket from the full plate thickness minus
+that offset. It reports when the chosen minimum piece height or base floor is
+too thin and gives the required height. It never raises that height itself.
+French-cleat jobs also include a thin
+alignment spacer with matching screw pilots. Print one per mounted output and
+place the frames edge-to-edge to align terrain tiles, split bases, or a full
+super-tile panel before removing the frames and installing the cleats.
 
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with a straight outer edge and no puzzle seams. It keeps the full source

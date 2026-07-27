@@ -28,6 +28,8 @@ src-tauri ------------------------------------+
 ## Start here
 
 - Change the main controls in `app/terrain/studio.tsx`.
+- Change display-base, retention, or wall-mount controls in
+  `app/terrain/panels/mounting-panel.tsx`.
 - Change the interactive map in `app/terrain/map.tsx`.
 - Change the 3D view in `app/terrain/preview.tsx`.
 - Change browser-to-service calls in `app/terrain/api.ts`.
@@ -43,7 +45,7 @@ src-tauri ------------------------------------+
 
 | Change | Put it here |
 | --- | --- |
-| Puzzle, tray, mesh, or 3MF logic | `crates/toposaic-core` |
+| Puzzle, display base, mount, mesh, or 3MF logic | `crates/toposaic-core` |
 | Elevation, OpenStreetMap, cache, job, or download logic | `crates/toposaic-api` |
 | Terrain request and response types used by React | `app/terrain/contracts.ts` |
 | UI defaults and quality calculations | `app/terrain/config.ts` |
@@ -53,6 +55,7 @@ src-tauri ------------------------------------+
 | 3D terrain preview | `app/terrain/preview.tsx` |
 | Artifact download controls | `app/terrain/downloads.tsx` |
 | Shared studio controls | `app/terrain/studio.tsx` |
+| Display-base and mount controls | `app/terrain/panels/mounting-panel.tsx` |
 | Update checks and install flow | `app/updates` |
 | SQLite schema and job storage | `crates/toposaic-api/src/database.rs` |
 | Place search and its cache | `crates/toposaic-api/src/geocoding.rs` |
@@ -74,6 +77,10 @@ configuration without making ownership clearer.
 - Use `crates/toposaic-api/src/http.rs` for outbound HTTP clients and local API
   origin checks.
 - Use `app/terrain/api.ts` for API paths, JSON parsing, and service errors.
+- Use `crates/toposaic-core/src/planar_mesh.rs` for flat polygon caps shared by
+  display-base and mount geometry.
+- Use `crates/toposaic-core/src/mount_layout.rs` for matching retention pin and
+  socket placement.
 - Validate each `GenerationSpec` at the API edge before fetching data or making
   geometry.
 - Keep downloaded source data in the OS cache path. Keep job output and SQLite

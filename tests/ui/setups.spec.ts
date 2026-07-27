@@ -54,6 +54,42 @@ test("lists saved setups and recalls one over the generated preview", async ({
   ).toHaveAttribute("aria-current", "true");
 });
 
+test("repairs a recalled wall plate below its shown minimum", async ({
+  page,
+}) => {
+  await mockSetupsService(page, [
+    {
+      id: "setup-old-wall-mount",
+      name: "Old wall mount",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-02T00:00:00Z",
+      spec: {
+        base_mm: 10,
+        wall_mount: {
+          style: "straight_pin",
+          target: "terrain",
+          thickness_mm: 1.2,
+          wall_offset_mm: 4,
+        },
+      },
+    },
+  ]);
+  await page.goto("/");
+
+  await page.locator(".setup-menu-button").click();
+  await page
+    .getByRole("menu", { name: "Saved setups" })
+    .getByRole("menuitem", { name: "Old wall mount", exact: true })
+    .click();
+  await page.getByRole("tab", { name: "Mounting" }).click();
+
+  const wallPlateThickness = page.getByRole("slider", {
+    name: "Wall plate thickness",
+  });
+  await expect(wallPlateThickness).toHaveAttribute("min", "4.4");
+  await expect(wallPlateThickness).toHaveValue("4.4");
+});
+
 test("saves the current spec under a typed name and overwrites it", async ({
   page,
 }) => {

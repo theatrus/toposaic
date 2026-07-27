@@ -399,7 +399,7 @@ export function ModelPanel({
         value={spec.base_mm}
         unit=" mm"
         min={1}
-        max={12}
+        max={20}
         step={0.2}
         onChange={(value) => update("base_mm", value)}
       />

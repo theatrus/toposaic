@@ -58,6 +58,8 @@ pub struct GenerationSpec {
     pub puzzle_tabs: bool,
     pub place_name: String,
     pub tray: TraySpec,
+    pub puzzle_retention: PuzzleRetentionSpec,
+    pub wall_mount: WallMountSpec,
     pub buildings: BuildingSpec,
     pub color_output: ColorOutputSpec,
     /// Imported hiker trails (GPX/KML routes) drawn on the model in the
@@ -98,6 +100,8 @@ impl Default for GenerationSpec {
             puzzle_tabs: true,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
+            puzzle_retention: PuzzleRetentionSpec::default(),
+            wall_mount: WallMountSpec::default(),
             buildings: BuildingSpec::default(),
             color_output: ColorOutputSpec::default(),
             trails: Vec::new(),
@@ -122,8 +126,8 @@ impl GenerationSpec {
         if !(2..=16).contains(&self.rows) || !(2..=16).contains(&self.columns) {
             bail!("piece rows and columns must each be between 2 and 16");
         }
-        if !(1.0..=12.0).contains(&self.base_mm) {
-            bail!("base depth must be between 1 and 12 mm");
+        if !(1.0..=20.0).contains(&self.base_mm) {
+            bail!("minimum piece height must be between 1 and 20 mm");
         }
         if !(1.0..=80.0).contains(&self.relief_mm) {
             bail!("relief must be between 1 and 80 mm");
@@ -189,6 +193,26 @@ impl GenerationSpec {
             bail!("place label cannot contain control characters");
         }
         self.tray.validate()?;
+        self.puzzle_retention
+            .validate(self.base_mm, self.tray.enabled)?;
+        let wall_mount_target = self.wall_mount_target_size();
+        self.wall_mount
+            .validate(self.base_mm, self.tray.floor_mm, wall_mount_target[0])?;
+        if self.wall_mount.style != WallMountStyle::None {
+            crate::mount::validate_wall_mount_frame(
+                &self.wall_mount,
+                wall_mount_target[0],
+                wall_mount_target[1],
+            )?;
+        }
+        if self.wall_mount.cuts_tray() && !self.tray.enabled {
+            bail!("tray wall mounting needs an enabled tray");
+        }
+        if self.puzzle_retention.active(self.tray.enabled) && self.wall_mount.cuts_terrain() {
+            bail!(
+                "puzzle retention cannot share the terrain back with wall mounting; mount the tray instead"
+            );
+        }
         self.buildings.validate()?;
         self.color_output.validate()?;
         if self.trails.len() > MAX_TRAILS {
@@ -293,6 +317,34 @@ impl GenerationSpec {
 
     pub fn height_mm(&self) -> f32 {
         self.width_mm * self.rows as f32 / self.columns as f32
+    }
+
+    pub(crate) fn wall_mount_target_size(&self) -> [f32; 2] {
+        if self.wall_mount.target == WallMountTarget::Terrain {
+            return [self.width_mm, self.height_mm()];
+        }
+
+        let extra = (self.tray.clearance_mm + self.tray.rim_width_mm) * 2.0;
+        let tile_size = [self.width_mm + extra, self.height_mm() + extra];
+        if self.adjacent_columns > 1 || self.adjacent_rows > 1 {
+            if self.tray.individual_tiles {
+                tile_size
+            } else if self.tray.segment_columns > 1 || self.tray.segment_rows > 1 {
+                [
+                    self.width_mm / self.tray.segment_columns as f32,
+                    self.height_mm() / self.tray.segment_rows as f32,
+                ]
+            } else {
+                [self.width_mm, self.height_mm()]
+            }
+        } else if self.tray.segment_columns > 1 || self.tray.segment_rows > 1 {
+            [
+                self.width_mm / self.tray.segment_columns as f32,
+                self.height_mm() / self.tray.segment_rows as f32,
+            ]
+        } else {
+            tile_size
+        }
     }
 
     pub fn effective_samples_per_piece(&self) -> u32 {
@@ -613,6 +665,7 @@ impl BuildingSpec {
 pub struct TraySpec {
     pub enabled: bool,
     pub individual_tiles: bool,
+    pub contours_enabled: bool,
     pub tray_color: String,
     pub contour_color: String,
     pub label_color: String,
@@ -630,6 +683,7 @@ impl Default for TraySpec {
         Self {
             enabled: false,
             individual_tiles: false,
+            contours_enabled: true,
             tray_color: "#252822".into(),
             contour_color: "#E7E4D8".into(),
             label_color: "#F4F3EC".into(),
@@ -641,6 +695,230 @@ impl Default for TraySpec {
             segment_columns: 1,
             segment_rows: 1,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallMountStyle {
+    #[default]
+    None,
+    StraightPin,
+    AngledPin,
+    FrenchCleat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallMountTarget {
+    #[default]
+    Terrain,
+    Tray,
+}
+
+/// Mating pins in the tray floor and blind sockets in the terrain back.
+///
+/// The printed pin diameter is the nominal size. `clearance_mm` widens the
+/// matching socket and deepens it by the same amount, so the peg never holds
+/// the terrain above the tray floor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PuzzleRetentionSpec {
+    pub enabled: bool,
+    pub pin_diameter_mm: f32,
+    pub pin_height_mm: f32,
+    pub clearance_mm: f32,
+}
+
+impl Default for PuzzleRetentionSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pin_diameter_mm: 3.0,
+            pin_height_mm: 1.0,
+            clearance_mm: 0.2,
+        }
+    }
+}
+
+impl PuzzleRetentionSpec {
+    pub(crate) fn active(&self, tray_enabled: bool) -> bool {
+        self.enabled && tray_enabled
+    }
+
+    pub(crate) fn socket_depth_mm(&self) -> f32 {
+        self.pin_height_mm + self.clearance_mm
+    }
+
+    pub(crate) fn socket_diameter_mm(&self) -> f32 {
+        self.pin_diameter_mm + self.clearance_mm
+    }
+
+    fn validate(&self, base_mm: f32, tray_enabled: bool) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !tray_enabled {
+            bail!("puzzle retention needs an enabled tray");
+        }
+        if !(2.0..=8.0).contains(&self.pin_diameter_mm) {
+            bail!("tray-retention pin diameter must be between 2 and 8 mm");
+        }
+        if !(0.4..=3.0).contains(&self.pin_height_mm) {
+            bail!("tray-retention pin height must be between 0.4 and 3 mm");
+        }
+        if !(0.1..=0.6).contains(&self.clearance_mm) {
+            bail!("tray-retention fit clearance must be between 0.1 and 0.6 mm");
+        }
+        if self.socket_depth_mm() > base_mm - 0.4 {
+            bail!("tray-retention socket must leave at least 0.4 mm of terrain base");
+        }
+        Ok(())
+    }
+}
+
+/// Blind mounting cuts in the flat back of the terrain or tray.
+///
+/// Keeping the feature in one top-level spec makes the two mounting targets
+/// exclusive. A saved setup cannot ask for two overlapping sets of cuts by
+/// accident, and old setups deserialize to `None` through `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WallMountSpec {
+    pub style: WallMountStyle,
+    pub target: WallMountTarget,
+    pub vertical_position_ratio: f32,
+    pub depth_mm: f32,
+    pub thickness_mm: f32,
+    pub wall_offset_mm: f32,
+    pub pin_diameter_mm: f32,
+    pub pin_count: u32,
+    pub pin_spacing_mm: f32,
+    pub cleat_width_mm: f32,
+    pub export_hardware: bool,
+    pub fit_clearance_mm: f32,
+    pub screw_hole_diameter_mm: f32,
+    pub screw_countersink_depth_mm: f32,
+    pub screw_head_clearance_mm: f32,
+    pub wide_edge_screws: bool,
+}
+
+impl Default for WallMountSpec {
+    fn default() -> Self {
+        Self {
+            style: WallMountStyle::None,
+            target: WallMountTarget::Terrain,
+            vertical_position_ratio: 0.28,
+            depth_mm: 0.8,
+            thickness_mm: 1.2,
+            wall_offset_mm: 0.8,
+            pin_diameter_mm: 4.0,
+            pin_count: 1,
+            pin_spacing_mm: 32.0,
+            cleat_width_mm: 12.0,
+            export_hardware: true,
+            fit_clearance_mm: 0.2,
+            screw_hole_diameter_mm: 3.5,
+            screw_countersink_depth_mm: 0.8,
+            screw_head_clearance_mm: 0.4,
+            wide_edge_screws: true,
+        }
+    }
+}
+
+impl WallMountSpec {
+    pub(crate) fn embedded_depth_mm(&self) -> f32 {
+        self.pocket_depth_mm() + self.engagement_depth_mm().max(self.screw_head_clearance_mm)
+    }
+
+    pub(crate) fn pocket_depth_mm(&self) -> f32 {
+        self.thickness_mm - self.wall_offset_mm
+    }
+
+    pub(crate) fn engagement_depth_mm(&self) -> f32 {
+        self.depth_mm
+    }
+
+    pub(crate) fn cuts_terrain(&self) -> bool {
+        self.style != WallMountStyle::None && self.target == WallMountTarget::Terrain
+    }
+
+    pub(crate) fn cuts_tray(&self) -> bool {
+        self.style != WallMountStyle::None && self.target == WallMountTarget::Tray
+    }
+
+    fn validate(&self, base_mm: f32, tray_floor_mm: f32, target_width_mm: f32) -> Result<()> {
+        if self.style == WallMountStyle::None {
+            return Ok(());
+        }
+        if !((1.0 / 6.0)..=(5.0 / 6.0)).contains(&self.vertical_position_ratio) {
+            bail!("wall-mount position must be between one-sixth and five-sixths from the top");
+        }
+        if !(0.0..=10.0).contains(&self.wall_offset_mm) {
+            bail!("wall offset must be between 0 and 10 mm");
+        }
+        if !(0.4..=3.0).contains(&self.depth_mm) {
+            bail!("wall-mount engagement depth must be between 0.4 and 3 mm");
+        }
+        if !(0.4..=13.0).contains(&self.thickness_mm) {
+            bail!("wall-plate thickness must be between 0.4 and 13 mm");
+        }
+        if self.pocket_depth_mm() + 0.000_01 < 0.4 {
+            bail!("wall-plate thickness must be at least 0.4 mm greater than its wall offset");
+        }
+        if !(2.0..=10.0).contains(&self.pin_diameter_mm) {
+            bail!("wall-mount pin diameter must be between 2 and 10 mm");
+        }
+        if !(1..=2).contains(&self.pin_count) {
+            bail!("wall-mount pin count must be one or two");
+        }
+        if !(12.0..=100.0).contains(&self.pin_spacing_mm) {
+            bail!("wall-mount pin spacing must be between 12 and 100 mm");
+        }
+        if !(8.0..=400.0).contains(&self.cleat_width_mm) {
+            bail!("wall-mount cleat width must be between 8 and 400 mm");
+        }
+        if self.style == WallMountStyle::FrenchCleat && self.cleat_width_mm > target_width_mm - 4.0
+        {
+            bail!(
+                "wall-mount cleat must leave at least 2 mm on each side of its piece, solid, or tray section"
+            );
+        }
+        if !(0.1..=0.8).contains(&self.fit_clearance_mm)
+            || self.fit_clearance_mm >= self.pin_diameter_mm - 0.8
+        {
+            bail!(
+                "wall-mount hardware clearance must be between 0.1 and 0.8 mm and leave a printable pin"
+            );
+        }
+        if !(2.0..=6.0).contains(&self.screw_hole_diameter_mm) {
+            bail!("wall-mount screw-hole diameter must be between 2 and 6 mm");
+        }
+        if !(0.0..=3.0).contains(&self.screw_countersink_depth_mm) {
+            bail!("wall-mount screw countersink depth must be between 0 and 3 mm");
+        }
+        if self.screw_countersink_depth_mm > self.thickness_mm - 0.4 + 0.000_01 {
+            bail!("wall-mount screw countersink must leave at least 0.4 mm of straight screw bore");
+        }
+        if !(0.0..=3.0).contains(&self.screw_head_clearance_mm) {
+            bail!("wall-mount screw-head pocket clearance must be between 0 and 3 mm");
+        }
+        let available = match self.target {
+            WallMountTarget::Terrain => base_mm,
+            WallMountTarget::Tray => tray_floor_mm,
+        };
+        let total_cut_depth = self.embedded_depth_mm();
+        if total_cut_depth > available - 0.4 + 0.000_01 {
+            let target = match self.target {
+                WallMountTarget::Terrain => "minimum piece height",
+                WallMountTarget::Tray => "display-base floor",
+            };
+            bail!(
+                "the chosen {target} is too thin for this wall mount; raise it to at least {:.1} mm or reduce the mount cut depth",
+                total_cut_depth + 0.4
+            );
+        }
+        Ok(())
     }
 }
 
@@ -661,8 +939,8 @@ impl TraySpec {
         if !(5.0..=16.0).contains(&self.rim_width_mm) {
             bail!("tray rim width must be between 5 and 16 mm");
         }
-        if !(1.0..=4.0).contains(&self.floor_mm) {
-            bail!("tray floor must be between 1 and 4 mm");
+        if !(1.0..=20.0).contains(&self.floor_mm) {
+            bail!("display-base floor thickness must be between 1 and 20 mm");
         }
         if !(2.0..=8.0).contains(&self.rim_height_mm) {
             bail!("tray rim height must be between 2 and 8 mm");
@@ -1360,7 +1638,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":2.4,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":1.6,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":0.8,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#4A5568","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
     }
@@ -1402,6 +1680,7 @@ mod tests {
             "tray": {
                 "enabled": true,
                 "individual_tiles": true,
+                "contours_enabled": false,
                 "tray_color": "#111111",
                 "contour_color": "#222222",
                 "label_color": "#333333",
@@ -1412,6 +1691,30 @@ mod tests {
                 "contour_count": 24,
                 "segment_columns": 2,
                 "segment_rows": 3
+            },
+            "puzzle_retention": {
+                "enabled": false,
+                "pin_diameter_mm": 3.0,
+                "pin_height_mm": 1.0,
+                "clearance_mm": 0.25
+            },
+            "wall_mount": {
+                "style": "angled_pin",
+                "target": "tray",
+                "vertical_position_ratio": 0.5,
+                "depth_mm": 1.0,
+                "thickness_mm": 2.0,
+                "wall_offset_mm": 1.5,
+                "pin_diameter_mm": 5.0,
+                "pin_count": 2,
+                "pin_spacing_mm": 32.0,
+                "cleat_width_mm": 24.0,
+                "export_hardware": true,
+                "fit_clearance_mm": 0.25,
+                "screw_hole_diameter_mm": 3.5,
+                "screw_countersink_depth_mm": 0.75,
+                "screw_head_clearance_mm": 0.5,
+                "wide_edge_screws": false
             },
             "buildings": { "enabled": true, "z_scale": 2.0 },
             "color_output": {
@@ -1532,6 +1835,192 @@ mod tests {
         spec.color_output.trail_color = "magenta".into();
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("trail color"));
+    }
+
+    #[test]
+    fn wall_mounts_default_off_and_preserve_a_printable_skin() {
+        let old: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "tray": { "enabled": true }
+        }))
+        .unwrap();
+        assert!(old.tray.contours_enabled);
+        assert!(!old.puzzle_retention.enabled);
+        assert_eq!(old.wall_mount.style, WallMountStyle::None);
+        assert!(old.wall_mount.export_hardware);
+        assert_eq!(old.wall_mount.vertical_position_ratio, 0.28);
+        assert_eq!(old.wall_mount.screw_countersink_depth_mm, 0.8);
+        assert_eq!(old.wall_mount.screw_head_clearance_mm, 0.4);
+        assert!(old.wall_mount.wide_edge_screws);
+
+        let mut misplaced = GenerationSpec::default();
+        misplaced.wall_mount.style = WallMountStyle::StraightPin;
+        misplaced.wall_mount.vertical_position_ratio = 0.1;
+        assert!(
+            misplaced
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("between one-sixth and five-sixths")
+        );
+
+        let mut spec = GenerationSpec::default();
+        spec.wall_mount.style = WallMountStyle::AngledPin;
+        spec.wall_mount.target = WallMountTarget::Terrain;
+        spec.wall_mount.thickness_mm =
+            spec.wall_mount.wall_offset_mm + spec.base_mm - spec.wall_mount.depth_mm - 0.4;
+        assert!(spec.validate().is_ok());
+        let minimum_height = spec.base_mm;
+        spec.wall_mount.thickness_mm += 0.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("minimum piece height is too thin")
+        );
+        assert_eq!(spec.base_mm, minimum_height);
+
+        spec.wall_mount.target = WallMountTarget::Tray;
+        spec.tray.enabled = true;
+        spec.wall_mount.thickness_mm =
+            spec.wall_mount.wall_offset_mm + spec.tray.floor_mm - spec.wall_mount.depth_mm - 0.4;
+        assert!(spec.validate().is_ok());
+        let floor_height = spec.tray.floor_mm;
+        spec.wall_mount.thickness_mm += 0.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("display-base floor is too thin")
+        );
+        assert_eq!(spec.tray.floor_mm, floor_height);
+
+        spec.wall_mount.target = WallMountTarget::Terrain;
+        spec.wall_mount.thickness_mm = 1.2;
+        spec.wall_mount.wall_offset_mm = 0.8;
+        spec.wall_mount.depth_mm = 0.8;
+        spec.wall_mount.screw_countersink_depth_mm = 0.81;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("straight screw bore")
+        );
+        spec.wall_mount.screw_countersink_depth_mm = 0.8;
+        spec.wall_mount.screw_head_clearance_mm = spec.base_mm;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("minimum piece height is too thin")
+        );
+    }
+
+    #[test]
+    fn thick_terrain_backs_and_tray_floors_have_a_usable_range() {
+        let mut spec = GenerationSpec {
+            base_mm: 20.0,
+            tray: TraySpec {
+                floor_mm: 20.0,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.base_mm = 20.01;
+        assert!(spec.validate().unwrap_err().to_string().contains("20 mm"));
+        spec.base_mm = 20.0;
+        spec.tray.floor_mm = 20.01;
+        assert!(spec.validate().unwrap_err().to_string().contains("20 mm"));
+    }
+
+    #[test]
+    fn french_cleats_can_span_large_targets_but_keep_side_walls() {
+        let mut spec = GenerationSpec {
+            width_mm: 320.0,
+            solid_model: true,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                cleat_width_mm: 300.0,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.solid_model = false;
+        spec.rows = 4;
+        spec.columns = 16;
+        spec.wall_mount.cleat_width_mm = 316.0;
+        assert!(spec.validate().is_ok());
+        spec.wall_mount.cleat_width_mm = 316.01;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("2 mm on each side")
+        );
+    }
+
+    #[test]
+    fn wall_mount_preflight_checks_the_full_tile_in_both_axes() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 16,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                target: WallMountTarget::Terrain,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("full terrain tile or display base"));
+
+        spec.rows = 16;
+        spec.columns = 2;
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn tray_retention_requires_a_tray_and_keeps_wall_mounting_separate() {
+        let mut spec = GenerationSpec::default();
+        spec.puzzle_retention.enabled = true;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("needs an enabled tray")
+        );
+
+        spec.tray.enabled = true;
+        assert!(spec.validate().is_ok());
+        spec.wall_mount.style = WallMountStyle::StraightPin;
+        spec.wall_mount.target = WallMountTarget::Terrain;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("mount the tray instead")
+        );
+        spec.wall_mount.target = WallMountTarget::Tray;
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn tray_wall_mounts_require_a_tray() {
+        let mut spec = GenerationSpec::default();
+        spec.wall_mount.style = WallMountStyle::StraightPin;
+        spec.wall_mount.target = WallMountTarget::Tray;
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("needs an enabled tray")
+        );
+        spec.tray.enabled = true;
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

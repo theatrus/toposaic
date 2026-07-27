@@ -33,8 +33,8 @@ use crate::{
     database::{find_job, insert_job, mark_job_canceled, recent_jobs, update_job},
     elevation,
     grid::{
-        adjacent_tile_specs, copy_grid_artifact, local_artifact, mosaic_tray_spec,
-        stitch_height_fields,
+        AdjacentGridOutputPlan, adjacent_tile_specs, copy_grid_artifact, local_artifact,
+        mosaic_tray_spec, publish_grid_wall_hardware, stitch_height_fields,
     },
     internal_error, surface,
 };
@@ -369,7 +369,9 @@ fn run_adjacent_grid_job(
 ) -> Result<()> {
     let job_started = Instant::now();
     let mut tiles = adjacent_tile_specs(spec);
+    let output_plan = AdjacentGridOutputPlan::new(spec);
     let tile_count = tiles.len();
+    debug_assert_eq!(tile_count, output_plan.tiles.len());
     ensure_job_active(cancellation)?;
     update_job(state, id, "running", 8, &[], None)?;
 
@@ -416,11 +418,16 @@ fn run_adjacent_grid_job(
     let mut mosaic_tray_names = Vec::new();
     let mesh_progress = AtomicI64::new(40);
 
-    for (index, (tile_spec, height_field)) in tiles.iter().zip(height_fields.iter()).enumerate() {
+    for (index, ((tile_spec, height_field), tile_output)) in tiles
+        .iter()
+        .zip(height_fields.iter())
+        .zip(&output_plan.tiles)
+        .enumerate()
+    {
         ensure_job_active(cancellation)?;
-        let row = index as u32 / spec.adjacent_columns;
-        let column = index as u32 % spec.adjacent_columns;
-        let tile_dir = output_dir.join(format!(".tile-{}-{}", row + 1, column + 1));
+        let row = tile_output.row;
+        let column = tile_output.column;
+        let tile_dir = output_dir.join(&tile_output.temporary_directory);
         let surface_field = if tile_spec.color_output.enabled
             || tile_spec.buildings.enabled
             || tile_spec.uses_trails()
@@ -433,13 +440,7 @@ fn run_adjacent_grid_job(
         } else {
             None
         };
-        let mut terrain_spec = tile_spec.clone();
-        if !spec.tray.individual_tiles {
-            terrain_spec.tray.enabled = false;
-        } else {
-            terrain_spec.tray.segment_columns = 1;
-            terrain_spec.tray.segment_rows = 1;
-        }
+        let terrain_spec = output_plan.terrain_spec(tile_spec);
         let manifest = generate_project_with_fields_cancellable(
             &terrain_spec,
             height_field,
@@ -458,16 +459,11 @@ fn run_adjacent_grid_job(
             },
         )?;
 
-        let terrain_source = if tile_spec.solid_model {
-            "terrain-solid.3mf"
-        } else {
-            "toposaic.3mf"
-        };
-        let terrain_name = format!("terrain-r{:02}-c{:02}.3mf", row + 1, column + 1);
+        let terrain_name = &tile_output.terrain_name;
         copy_grid_artifact(
-            &tile_dir.join(terrain_source),
-            &output_dir.join(&terrain_name),
-            &terrain_name,
+            &tile_dir.join(tile_output.terrain_source),
+            &output_dir.join(terrain_name),
+            terrain_name,
             "model/3mf",
             &mut artifacts,
         )?;
@@ -514,7 +510,7 @@ fn run_adjacent_grid_job(
             .with_context(|| format!("remove temporary tile directory {}", tile_dir.display()))?;
     }
 
-    if spec.tray.enabled && !spec.tray.individual_tiles {
+    if output_plan.mosaic_tray {
         ensure_job_active(cancellation)?;
         update_job(state, id, "running", 90, &[], None)?;
         let mosaic_height =
@@ -539,6 +535,10 @@ fn run_adjacent_grid_job(
             .with_context(|| format!("remove temporary tray directory {}", tray_dir.display()))?;
     }
 
+    ensure_job_active(cancellation)?;
+    let wall_hardware_names =
+        publish_grid_wall_hardware(&output_plan, spec, &output_dir, &mut artifacts)?;
+
     let manifest_name = "manifest.json";
     let manifest_path = output_dir.join(manifest_name);
     fs::write(
@@ -553,6 +553,7 @@ fn run_adjacent_grid_job(
             },
             "tiles": tile_manifest,
             "mosaic_trays": mosaic_tray_names,
+            "wall_hardware": wall_hardware_names,
         }))?,
     )?;
     artifacts.push(local_artifact(

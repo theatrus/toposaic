@@ -40,6 +40,7 @@ export const initialSpec: GenerationSpec = {
   tray: {
     enabled: true,
     individual_tiles: false,
+    contours_enabled: true,
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",
@@ -50,6 +51,30 @@ export const initialSpec: GenerationSpec = {
     contour_count: 18,
     segment_columns: 1,
     segment_rows: 1,
+  },
+  puzzle_retention: {
+    enabled: false,
+    pin_diameter_mm: 3,
+    pin_height_mm: 1,
+    clearance_mm: 0.2,
+  },
+  wall_mount: {
+    style: "none",
+    target: "terrain",
+    vertical_position_ratio: 0.28,
+    depth_mm: 0.8,
+    thickness_mm: 1.2,
+    wall_offset_mm: 0.8,
+    pin_diameter_mm: 4,
+    pin_count: 1,
+    pin_spacing_mm: 32,
+    cleat_width_mm: 12,
+    export_hardware: true,
+    fit_clearance_mm: 0.2,
+    screw_hole_diameter_mm: 3.5,
+    screw_countersink_depth_mm: 0.8,
+    screw_head_clearance_mm: 0.4,
+    wide_edge_screws: true,
   },
   color_output: {
     enabled: true,
@@ -114,6 +139,24 @@ export const initialSpec: GenerationSpec = {
 // Fill any field a saved spec is missing with the client default, so setups
 // saved before a field existed still recall cleanly.
 export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpec {
+  const savedWallMount = saved.wall_mount as
+    | (Partial<GenerationSpec["wall_mount"]> & {
+        depth_mm?: number;
+        pocket_depth_mm?: number;
+      })
+    | undefined;
+  const legacyThickness =
+    savedWallMount?.thickness_mm === undefined &&
+    savedWallMount?.pocket_depth_mm !== undefined
+      ? savedWallMount.pocket_depth_mm +
+        (savedWallMount.wall_offset_mm ?? initialSpec.wall_mount.wall_offset_mm)
+      : undefined;
+  const wallMount = {
+    ...initialSpec.wall_mount,
+    ...savedWallMount,
+    ...(legacyThickness === undefined ? {} : { thickness_mm: legacyThickness }),
+  } as GenerationSpec["wall_mount"] & { pocket_depth_mm?: number };
+  delete wallMount.pocket_depth_mm;
   return {
     ...initialSpec,
     ...saved,
@@ -125,6 +168,11 @@ export function mergeSpecDefaults(saved: Partial<GenerationSpec>): GenerationSpe
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     tray: { ...initialSpec.tray, ...saved.tray },
+    puzzle_retention: {
+      ...initialSpec.puzzle_retention,
+      ...saved.puzzle_retention,
+    },
+    wall_mount: wallMount,
     color_output: { ...initialSpec.color_output, ...saved.color_output },
     trails: saved.trails ?? [],
   };

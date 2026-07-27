@@ -1,58 +1,51 @@
 import type { GenerationSpec } from "../contracts";
+import type {
+  UpdateGenerationSpec,
+  UpdateTray,
+} from "./mounting-types";
 import { RangeField } from "./range-field";
 
-export function TrayPanel({
-  hidden,
+export function DisplayBaseControls({
   spec,
   update,
   updateTray,
+  setTrayEnabled,
 }: {
-  hidden: boolean;
   spec: GenerationSpec;
-  update: <Key extends keyof GenerationSpec>(
-    key: Key,
-    value: GenerationSpec[Key],
-  ) => void;
-  updateTray: <Key extends keyof GenerationSpec["tray"]>(
-    key: Key,
-    value: GenerationSpec["tray"][Key],
-  ) => void;
+  update: UpdateGenerationSpec;
+  updateTray: UpdateTray;
+  setTrayEnabled: (enabled: boolean) => void;
 }) {
   return (
-    <fieldset
-      className="color-controls tray-controls control-section"
-      aria-label="Shallow terrain tray"
-      hidden={hidden}
-    >
+    <>
       <div className="color-heading">
         <div>
-          <strong className="color-title">Shallow terrain tray</strong>
-          <p>A fitted base for the terrain or puzzle pieces.</p>
+          <strong className="color-title">Display base</strong>
+          <p>A shallow fitted tray for the terrain or puzzle pieces.</p>
         </div>
         <label className="color-toggle">
           <input
+            aria-label="Generate display tray"
             type="checkbox"
             checked={spec.tray.enabled}
-            onChange={(event) =>
-              updateTray("enabled", event.target.checked)
-            }
+            onChange={(event) => setTrayEnabled(event.target.checked)}
           />
           <span>{spec.tray.enabled ? "On" : "Off"}</span>
         </label>
       </div>
-      <label className="place-label-field">
-        Place name
-        <input
-          type="text"
-          maxLength={48}
-          required
-          value={spec.place_name}
-          onChange={(event) => update("place_name", event.target.value)}
-        />
-        <small>The tray adds the coordinates after this name.</small>
-      </label>
       {spec.tray.enabled && (
         <>
+          <label className="place-label-field">
+            Place name
+            <input
+              type="text"
+              maxLength={48}
+              required
+              value={spec.place_name}
+              onChange={(event) => update("place_name", event.target.value)}
+            />
+            <small>The tray adds the coordinates after this name.</small>
+          </label>
           <div className="color-swatches">
             {(
               [
@@ -65,15 +58,27 @@ export function TrayPanel({
                 <input
                   type="color"
                   value={spec.tray[key]}
-                  onChange={(event) =>
-                    updateTray(key, event.target.value)
-                  }
+                  onChange={(event) => updateTray(key, event.target.value)}
                 />
                 <span>{label}</span>
                 <code>{String(spec.tray[key]).toUpperCase()}</code>
               </label>
             ))}
           </div>
+          <label className="option-toggle">
+            <input
+              aria-label="Draw contour lines on tray"
+              type="checkbox"
+              checked={spec.tray.contours_enabled}
+              onChange={(event) =>
+                updateTray("contours_enabled", event.target.checked)
+              }
+            />
+            <span>
+              <strong>Contour lines</strong>
+              <small>Draw terrain contours on the tray floor.</small>
+            </span>
+          </label>
           <RangeField
             label="Tray clearance"
             value={spec.tray.clearance_mm}
@@ -97,7 +102,7 @@ export function TrayPanel({
             value={spec.tray.floor_mm}
             unit=" mm"
             min={1}
-            max={4}
+            max={20}
             step={0.2}
             onChange={(value) => updateTray("floor_mm", value)}
           />
@@ -110,17 +115,19 @@ export function TrayPanel({
             step={0.2}
             onChange={(value) => updateTray("rim_height_mm", value)}
           />
-          <RangeField
-            label="Contour lines"
-            value={spec.tray.contour_count}
-            unit=""
-            min={5}
-            max={60}
-            step={1}
-            onChange={(value) => updateTray("contour_count", value)}
-          />
+          {spec.tray.contours_enabled && (
+            <RangeField
+              label="Contour line count"
+              value={spec.tray.contour_count}
+              unit=""
+              min={5}
+              max={60}
+              step={1}
+              onChange={(value) => updateTray("contour_count", value)}
+            />
+          )}
           {(spec.adjacent_columns > 1 || spec.adjacent_rows > 1) && (
-            <label className="tray-chunk-toggle">
+            <label className="option-toggle">
               <input
                 type="checkbox"
                 checked={spec.tray.individual_tiles}
@@ -138,13 +145,13 @@ export function TrayPanel({
             </label>
           )}
           <p className="color-note">
-            The color 3MF prints contour lines on the flat tray floor and
-            the place name, latitude, and longitude as raised shapes on
-            the top front lip. Mosaic trays follow the terrain grid and
-            its shared-edge setting. The job also includes a plain STL.
+            The color 3MF prints the chosen tray details and the place name,
+            latitude, and longitude as raised shapes on the top front lip.
+            Mosaic trays follow the terrain grid and its shared-edge setting.
+            The job also includes a plain STL.
           </p>
         </>
       )}
-    </fieldset>
+    </>
   );
 }

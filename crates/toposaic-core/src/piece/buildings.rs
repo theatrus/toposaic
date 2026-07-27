@@ -14,14 +14,15 @@ use crate::heightfield::HeightField;
 use crate::mesh::{
     Mesh, MeshBuilder, point_in_polygon, quantize_export_coordinate, triangulate_constraints,
 };
+use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, VectorSurfaceArea, surface_area_bounds};
 
 use super::{
     BUILDING_GROUND_STEP_MM, MINIMUM_OVERLAY_AREA_MM2, OVERLAY_TERRAIN_EMBED_MM, bounds_overlap,
-    geo_polygon, multi_polygon_bounds, polygon_from_rings, repair_classification_pinches,
-    retract_pinch_point, ring_signed_area, sanitize_footprint_group, scaled_building_height_mm,
-    snapped_open_ring, terrain_z_at, triangulation_face_areas,
+    multi_polygon_bounds, polygon_from_rings, repair_classification_pinches, retract_pinch_point,
+    ring_signed_area, sanitize_footprint_group, scaled_building_height_mm, snapped_open_ring,
+    terrain_z_at, triangulation_face_areas,
 };
 
 /// One building footprint clipped to the current piece, with the roof level

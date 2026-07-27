@@ -139,6 +139,70 @@ test("shows the generated preview after a polled job completes", async ({
   ).toBeVisible();
 });
 
+test("shows a failed generation outside the output tab", async ({ page }) => {
+  const jobId = "98f165b3-d917-4212-b728-1efe480af3f7";
+  let jobSpec: Record<string, unknown> = {};
+
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: jobId,
+          status: "running",
+          progress: 25,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}` && request.method() === "GET") {
+      await route.fulfill({
+        json: {
+          id: jobId,
+          status: "failed",
+          progress: 68,
+          artifacts: [],
+          error: "The minimum piece height is too thin for this wall mount.",
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await page.getByRole("tab", { name: "Model" }).click();
+
+  const error = page.getByRole("alert");
+  await expect(error).toContainText(
+    "The minimum piece height is too thin for this wall mount.",
+    { timeout: 15_000 },
+  );
+  await error.getByRole("button", { name: "View output" }).click();
+  await expect(page.getByRole("tab", { name: "Output" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    page
+      .locator(".job-card")
+      .getByText("The minimum piece height is too thin for this wall mount."),
+  ).toBeVisible();
+});
+
 test("keeps direct artifact downloads in the web app", async ({ page }) => {
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();

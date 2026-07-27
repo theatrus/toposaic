@@ -56,9 +56,9 @@ import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ModelPanel } from "./panels/model-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
+import { MountingPanel } from "./panels/mounting-panel";
 import { OutputPanel } from "./panels/output-panel";
 import { SurfacePanel } from "./panels/surface-panel";
-import { TrayPanel } from "./panels/tray-panel";
 import { displayVersion, isVersionNewer } from "../updates/version";
 
 const ReliefPreview = lazy(() =>
@@ -151,7 +151,7 @@ export function TerrainStudio() {
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
   const [activeSection, setActiveSection] = useState<
-    "model" | "surface" | "buildings" | "tray" | "output"
+    "model" | "surface" | "buildings" | "mounting" | "output"
   >("model");
   const [job, setJob] = useState<Job | null>(null);
   const [generatedPreview, setGeneratedPreview] =
@@ -423,6 +423,32 @@ export function TerrainStudio() {
       setSpec((current) => ({
         ...current,
         tray: { ...current.tray, [key]: value },
+      }));
+    },
+    [],
+  );
+  const updateWallMount = useCallback(
+    <Key extends keyof GenerationSpec["wall_mount"]>(
+      key: Key,
+      value: GenerationSpec["wall_mount"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        wall_mount: { ...current.wall_mount, [key]: value },
+      }));
+    },
+    [],
+  );
+  const updatePuzzleRetention = useCallback(
+    <Key extends keyof GenerationSpec["puzzle_retention"]>(
+      key: Key,
+      value: GenerationSpec["puzzle_retention"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        puzzle_retention: { ...current.puzzle_retention, [key]: value },
       }));
     },
     [],
@@ -1711,7 +1737,7 @@ export function TerrainStudio() {
                 ["model", "Model"],
                 ["surface", "Surface"],
                 ["buildings", "Buildings"],
-                ["tray", "Tray"],
+                ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
             ).map(([key, label]) => (
@@ -1730,6 +1756,16 @@ export function TerrainStudio() {
               </button>
             ))}
           </div>
+
+          {job?.status === "failed" && activeSection !== "output" && (
+            <section className="generation-error-banner" role="alert">
+              <span className="status-dot" aria-hidden="true" />
+              <strong>{job.error ?? "Generation failed."}</strong>
+              <button type="button" onClick={() => setActiveSection("output")}>
+                View output
+              </button>
+            </section>
+          )}
 
           <ModelPanel
             adjacentMessage={adjacentMessage}
@@ -1776,11 +1812,13 @@ export function TerrainStudio() {
             update={update}
           />
 
-          <TrayPanel
-            hidden={activeSection !== "tray"}
+          <MountingPanel
+            hidden={activeSection !== "mounting"}
             spec={spec}
             update={update}
             updateTray={updateTray}
+            updatePuzzleRetention={updatePuzzleRetention}
+            updateWallMount={updateWallMount}
           />
 
           <OutputPanel

@@ -44,6 +44,7 @@ export type GenerationSpec = {
   tray: {
     enabled: boolean;
     individual_tiles: boolean;
+    contours_enabled: boolean;
     tray_color: string;
     contour_color: string;
     label_color: string;
@@ -54,6 +55,30 @@ export type GenerationSpec = {
     contour_count: number;
     segment_columns: number;
     segment_rows: number;
+  };
+  puzzle_retention: {
+    enabled: boolean;
+    pin_diameter_mm: number;
+    pin_height_mm: number;
+    clearance_mm: number;
+  };
+  wall_mount: {
+    style: "none" | "straight_pin" | "angled_pin" | "french_cleat";
+    target: "terrain" | "tray";
+    vertical_position_ratio: number;
+    depth_mm: number;
+    thickness_mm: number;
+    wall_offset_mm: number;
+    pin_diameter_mm: number;
+    pin_count: number;
+    pin_spacing_mm: number;
+    cleat_width_mm: number;
+    export_hardware: boolean;
+    fit_clearance_mm: number;
+    screw_hole_diameter_mm: number;
+    screw_countersink_depth_mm: number;
+    screw_head_clearance_mm: number;
+    wide_edge_screws: boolean;
   };
   color_output: {
     enabled: boolean;

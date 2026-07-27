@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
-use geo::{BooleanOps, Contains, Point, Polygon};
-use spade::{Point2, Triangulation};
+use anyhow::{Context, Result, bail};
+use geo::{BooleanOps, Contains, LineString, Point, Polygon};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::jigsaw::{edge_sign, puzzle_edge_point, shared_edge_pattern};
-use crate::mesh::{
-    Mesh, MeshBuilder, distance_squared, triangulate_constraints, unit_vector, weld_export_mesh,
+use crate::mesh::{Mesh, MeshBuilder, distance_squared, unit_vector, weld_export_mesh};
+use crate::mount::{circle_points, mount_bottom, mount_bottom_polygons};
+use crate::mount_layout::retention_centers_local;
+use crate::piece::{local_piece_outline, solid_outline};
+use crate::planar_mesh::{
+    add_horizontal_polygons, closed_ring, polygon_from_outline as geo_polygon,
 };
-use crate::piece::geo_polygon;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::text::{EmbossedLabel, embossing_font};
 
@@ -117,28 +119,47 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     let z_coordinates = [0.0, rim_z];
 
     let height_range = height_range_for_spec(spec, height_field);
-    let contour_paths = trace_tray_contours(
-        spec,
-        height_field,
-        height_range,
-        &inner_x,
-        &inner_y,
-        inner_x0,
-        inner_y0,
-        inner_width,
-        inner_height,
-    );
+    let contour_paths = if tray.contours_enabled {
+        trace_tray_contours(
+            spec,
+            height_field,
+            height_range,
+            &inner_x,
+            &inner_y,
+            inner_x0,
+            inner_y0,
+            inner_width,
+            inner_height,
+        )
+    } else {
+        Vec::new()
+    };
+    let retention_centers = if spec.puzzle_retention.active(spec.tray.enabled) {
+        tray_retention_centers(spec)?
+    } else {
+        Vec::new()
+    };
     let mut mesh = MeshBuilder::default();
 
-    for y in inner_y.windows(2) {
-        for x in inner_x.windows(2) {
-            mesh.quad(
-                [x[0], y[0], floor_z],
-                [x[1], y[0], floor_z],
-                [x[1], y[1], floor_z],
-                [x[0], y[1], floor_z],
-                SurfaceClass::Rock,
-            );
+    if spec.puzzle_retention.active(spec.tray.enabled) {
+        add_floor_with_retention_pins(
+            &mut mesh,
+            &[rectangle_polygon(inner_x0, inner_y0, inner_x1, inner_y1)],
+            floor_z,
+            &retention_centers,
+            spec,
+        )?;
+    } else {
+        for y in inner_y.windows(2) {
+            for x in inner_x.windows(2) {
+                mesh.quad(
+                    [x[0], y[0], floor_z],
+                    [x[1], y[0], floor_z],
+                    [x[1], y[1], floor_z],
+                    [x[0], y[1], floor_z],
+                    SurfaceClass::Rock,
+                );
+            }
         }
     }
 
@@ -255,37 +276,65 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         }
     }
 
-    let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
-    let mut boundary = Vec::new();
-    boundary.extend(x_coordinates.iter().map(|x| [*x, 0.0, 0.0]));
-    boundary.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y, 0.0]));
-    boundary.extend(
-        x_coordinates
-            .iter()
-            .rev()
-            .skip(1)
-            .map(|x| [*x, outer_height, 0.0]),
-    );
-    boundary.extend(
-        y_coordinates
-            .iter()
-            .rev()
-            .skip(1)
-            .take(y_coordinates.len().saturating_sub(2))
-            .map(|y| [0.0, *y, 0.0]),
-    );
-    for index in 0..boundary.len() {
-        let current = boundary[index];
-        let next = boundary[(index + 1) % boundary.len()];
-        mesh.triangle(center, next, current, SurfaceClass::Rock);
+    if spec.wall_mount.cuts_tray() {
+        let mut bottom_outline = Vec::new();
+        bottom_outline.extend(x_coordinates.iter().map(|x| [*x, 0.0]));
+        bottom_outline.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y]));
+        bottom_outline.extend(
+            x_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .map(|x| [*x, outer_height]),
+        );
+        bottom_outline.extend(
+            y_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .take(y_coordinates.len().saturating_sub(2))
+                .map(|y| [0.0, *y]),
+        );
+        mesh.append_isolated(mount_bottom(
+            &bottom_outline,
+            &spec.wall_mount,
+            [0.0, 0.0, outer_width, outer_height],
+        )?);
+    } else {
+        let center = [outer_width * 0.5, outer_height * 0.5, 0.0];
+        let mut boundary = Vec::new();
+        boundary.extend(x_coordinates.iter().map(|x| [*x, 0.0, 0.0]));
+        boundary.extend(y_coordinates.iter().skip(1).map(|y| [outer_width, *y, 0.0]));
+        boundary.extend(
+            x_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .map(|x| [*x, outer_height, 0.0]),
+        );
+        boundary.extend(
+            y_coordinates
+                .iter()
+                .rev()
+                .skip(1)
+                .take(y_coordinates.len().saturating_sub(2))
+                .map(|y| [0.0, *y, 0.0]),
+        );
+        for index in 0..boundary.len() {
+            let current = boundary[index];
+            let next = boundary[(index + 1) % boundary.len()];
+            mesh.triangle(center, next, current, SurfaceClass::Rock);
+        }
     }
     for path in &contour_paths {
-        add_contour_ribbon(
-            &mut mesh,
-            path,
-            floor_z - TRAY_CONTOUR_INLAY_MM,
-            floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
-        );
+        for printable_path in contour_paths_around_retention_pins(path, &retention_centers, spec) {
+            add_contour_ribbon(
+                &mut mesh,
+                &printable_path,
+                floor_z - TRAY_CONTOUR_INLAY_MM,
+                floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
+            );
+        }
     }
     label.add_embossed_shapes(&mut mesh, rim_z)?;
 
@@ -299,12 +348,24 @@ pub(crate) fn build_tray_segments(
     let mut segments = if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
         vec![build_tray(spec, height_field)?]
     } else {
-        let contour_paths = tray_contour_paths(spec, height_field);
+        let contour_paths = if spec.tray.contours_enabled {
+            tray_contour_paths(spec, height_field)
+        } else {
+            Vec::new()
+        };
         let mut segments =
             Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
         for row in 0..spec.tray.segment_rows {
             for column in 0..spec.tray.segment_columns {
-                segments.push(build_tray_segment(spec, &contour_paths, row, column)?);
+                segments.push(
+                    build_tray_segment(spec, &contour_paths, row, column).with_context(|| {
+                        format!(
+                            "build display-base segment row {} column {}",
+                            row + 1,
+                            column + 1
+                        )
+                    })?,
+                );
             }
         }
         segments
@@ -368,18 +429,54 @@ fn build_tray_segment(
     let inner_polygon = rectangle_polygon(inner_x0, inner_y0, inner_x1, inner_y1);
     let floor_polygons = segment_polygon.intersection(&inner_polygon).0;
     let rim_polygons = segment_polygon.difference(&inner_polygon).0;
+    let retention_centers = if spec.puzzle_retention.active(spec.tray.enabled) {
+        tray_retention_centers(spec)?
+    } else {
+        Vec::new()
+    };
     let mut mesh = MeshBuilder::default();
 
-    add_horizontal_polygons(
-        &mut mesh,
-        &floor_polygons,
-        floor_z,
-        SurfaceClass::Rock,
-        false,
-    )?;
+    if spec.puzzle_retention.active(spec.tray.enabled) {
+        add_floor_with_retention_pins(
+            &mut mesh,
+            &floor_polygons,
+            floor_z,
+            &retention_centers,
+            spec,
+        )?;
+    } else {
+        add_horizontal_polygons(
+            &mut mesh,
+            &floor_polygons,
+            floor_z,
+            SurfaceClass::Rock,
+            false,
+        )?;
+    }
     add_horizontal_polygons(&mut mesh, &rim_polygons, rim_z, SurfaceClass::Rock, false)?;
-    add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
-    add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;
+    if spec.wall_mount.cuts_tray() {
+        let bottom_polygons = floor_polygons
+            .iter()
+            .chain(&rim_polygons)
+            .cloned()
+            .collect::<Vec<_>>();
+        let [terrain_x0, terrain_y0, terrain_x1, terrain_y1] = segment_grid.terrain_bounds;
+        let mount_frame = [
+            terrain_x0 + (terrain_x1 - terrain_x0) * column as f32 / tray.segment_columns as f32,
+            terrain_y0 + (terrain_y1 - terrain_y0) * row as f32 / tray.segment_rows as f32,
+            terrain_x0
+                + (terrain_x1 - terrain_x0) * (column + 1) as f32 / tray.segment_columns as f32,
+            terrain_y0 + (terrain_y1 - terrain_y0) * (row + 1) as f32 / tray.segment_rows as f32,
+        ];
+        mesh.append_isolated(mount_bottom_polygons(
+            &bottom_polygons,
+            &spec.wall_mount,
+            mount_frame,
+        )?);
+    } else {
+        add_horizontal_polygons(&mut mesh, &floor_polygons, 0.0, SurfaceClass::Rock, true)?;
+        add_horizontal_polygons(&mut mesh, &rim_polygons, 0.0, SurfaceClass::Rock, true)?;
+    }
 
     let inner_frame = [inner_x0, inner_y0, inner_x1, inner_y1];
     add_segment_walls(
@@ -417,12 +514,16 @@ fn build_tray_segment(
 
     for path in contour_paths {
         for clipped in clip_contour_path(path, &segment_polygon) {
-            add_contour_ribbon(
-                &mut mesh,
-                &clipped,
-                floor_z - TRAY_CONTOUR_INLAY_MM,
-                floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
-            );
+            for printable_path in
+                contour_paths_around_retention_pins(&clipped, &retention_centers, spec)
+            {
+                add_contour_ribbon(
+                    &mut mesh,
+                    &printable_path,
+                    floor_z - TRAY_CONTOUR_INLAY_MM,
+                    floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
+                );
+            }
         }
     }
 
@@ -599,56 +700,108 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
     outline
 }
 
-fn rectangle_polygon(x0: f32, y0: f32, x1: f32, y1: f32) -> Polygon<f64> {
-    geo_polygon(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+fn tray_retention_centers(spec: &GenerationSpec) -> Result<Vec<[f32; 2]>> {
+    let frame = TrayFrame::from_spec(spec);
+    let terrain_x0 = frame.inner_x0 + spec.tray.clearance_mm;
+    let terrain_y0 = frame.inner_y0 + spec.tray.clearance_mm;
+    if spec.solid_model {
+        let outline = solid_outline(spec, 64)?;
+        return Ok(retention_centers_local(spec, 0, 0, &outline)
+            .into_iter()
+            .map(|center| [terrain_x0 + center[0], terrain_y0 + center[1]])
+            .collect());
+    }
+
+    let piece_width = spec.width_mm / spec.columns as f32;
+    let piece_height = spec.height_mm() / spec.rows as f32;
+    let mut centers = Vec::with_capacity((spec.rows * spec.columns) as usize);
+    for row in 0..spec.rows {
+        for column in 0..spec.columns {
+            let outline = local_piece_outline(spec, row, column)?;
+            centers.extend(
+                retention_centers_local(spec, row, column, &outline)
+                    .into_iter()
+                    .map(|center| {
+                        [
+                            terrain_x0 + column as f32 * piece_width + center[0],
+                            terrain_y0 + row as f32 * piece_height + center[1],
+                        ]
+                    }),
+            );
+        }
+    }
+    Ok(centers)
 }
 
-fn add_horizontal_polygons(
+fn add_floor_with_retention_pins(
     mesh: &mut MeshBuilder,
-    polygons: &[Polygon<f64>],
-    z: f32,
-    material: SurfaceClass,
-    reverse: bool,
+    floor_polygons: &[Polygon<f64>],
+    floor_z: f32,
+    centers: &[[f32; 2]],
+    spec: &GenerationSpec,
 ) -> Result<()> {
-    for polygon in polygons {
-        let mut points = Vec::new();
-        let mut constraints = Vec::new();
-        for ring in std::iter::once(polygon.exterior()).chain(polygon.interiors()) {
-            let start = points.len();
-            for coordinate in ring.0.iter().take(ring.0.len().saturating_sub(1)) {
-                points.push(Point2::new(coordinate.x, coordinate.y));
+    let radius = spec.puzzle_retention.pin_diameter_mm * 0.5;
+    let pin_rings = centers
+        .iter()
+        .map(|center| circle_points(*center, radius))
+        .collect::<Vec<_>>();
+    let mut holes = vec![Vec::<LineString<f64>>::new(); floor_polygons.len()];
+    let mut retained_pins = Vec::new();
+    for (center, pin_ring) in centers.iter().zip(&pin_rings) {
+        let center_point = Point::new(f64::from(center[0]), f64::from(center[1]));
+        if let Some(index) = floor_polygons
+            .iter()
+            .position(|polygon| polygon.contains(&center_point))
+        {
+            if !pin_ring.iter().all(|point| {
+                floor_polygons[index]
+                    .contains(&Point::new(f64::from(point[0]), f64::from(point[1])))
+            }) {
+                bail!(
+                    "a tray-retention pin crosses a tray-section join; reduce the pin size or change the tray split"
+                );
             }
-            let count = points.len() - start;
-            for index in 0..count {
-                constraints.push([start + index, start + (index + 1) % count]);
-            }
+            holes[index].push(closed_ring(pin_ring));
+            retained_pins.push((*center, pin_ring));
         }
-        if points.len() < 3 {
-            continue;
-        }
-        let triangulation =
-            triangulate_constraints(points, constraints, "triangulate tray segment")?;
-        for face in triangulation.inner_faces() {
-            let vertices = face.vertices();
-            let center = vertices.iter().fold([0.0, 0.0], |sum, vertex| {
-                let point = vertex.position();
-                [sum[0] + point.x / 3.0, sum[1] + point.y / 3.0]
-            });
-            if !polygon.contains(&Point::new(center[0], center[1])) {
-                continue;
-            }
-            let points = vertices.map(|vertex| {
-                let point = vertex.position();
-                [point.x as f32, point.y as f32, z]
-            });
-            if reverse {
-                mesh.triangle(points[0], points[2], points[1], material);
-            } else {
-                mesh.triangle(points[0], points[1], points[2], material);
-            }
+    }
+    let surfaces = floor_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, polygon)| {
+            let mut interiors = polygon.interiors().to_vec();
+            interiors.append(&mut holes[index]);
+            Polygon::new(polygon.exterior().clone(), interiors)
+        })
+        .collect::<Vec<_>>();
+    add_horizontal_polygons(mesh, &surfaces, floor_z, SurfaceClass::Rock, false)?;
+
+    let top_z = floor_z + spec.puzzle_retention.pin_height_mm;
+    for (center, pin_ring) in retained_pins {
+        for index in 0..pin_ring.len() {
+            let next = (index + 1) % pin_ring.len();
+            let a = pin_ring[index];
+            let b = pin_ring[next];
+            mesh.quad(
+                [a[0], a[1], floor_z],
+                [b[0], b[1], floor_z],
+                [b[0], b[1], top_z],
+                [a[0], a[1], top_z],
+                SurfaceClass::Rock,
+            );
+            mesh.triangle(
+                [center[0], center[1], top_z],
+                [a[0], a[1], top_z],
+                [b[0], b[1], top_z],
+                SurfaceClass::Rock,
+            );
         }
     }
     Ok(())
+}
+
+fn rectangle_polygon(x0: f32, y0: f32, x1: f32, y1: f32) -> Polygon<f64> {
+    geo_polygon(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -753,6 +906,47 @@ fn clip_contour_path(path: &ContourPath, segment: &Polygon<f64>) -> Vec<ContourP
                 closed,
             });
         }
+    }
+    paths
+}
+
+fn contour_paths_around_retention_pins(
+    path: &ContourPath,
+    centers: &[[f32; 2]],
+    spec: &GenerationSpec,
+) -> Vec<ContourPath> {
+    if centers.is_empty() {
+        return vec![path.clone()];
+    }
+    let exclusion = spec.puzzle_retention.pin_diameter_mm * 0.5 + TRAY_CONTOUR_WIDTH_MM * 1.5 + 0.1;
+    let keep = |point: &[f32; 2]| {
+        centers
+            .iter()
+            .all(|center| distance_squared(*point, *center) >= exclusion * exclusion)
+    };
+    if path.points.iter().all(&keep) {
+        return vec![path.clone()];
+    }
+
+    let mut paths = Vec::new();
+    let mut current = Vec::new();
+    for point in &path.points {
+        if keep(point) {
+            current.push(*point);
+        } else if current.len() >= 2 {
+            paths.push(ContourPath {
+                points: std::mem::take(&mut current),
+                closed: false,
+            });
+        } else {
+            current.clear();
+        }
+    }
+    if current.len() >= 2 {
+        paths.push(ContourPath {
+            points: current,
+            closed: false,
+        });
     }
     paths
 }
@@ -1272,7 +1466,9 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
-    use crate::spec::TraySpec;
+    use crate::spec::{
+        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    };
 
     #[test]
     fn tray_is_watertight_and_keeps_contours_and_label_colors() {
@@ -1314,6 +1510,129 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex[1] < spec.tray.rim_width_mm)
         );
+    }
+
+    #[test]
+    fn tray_can_omit_contour_geometry() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            tray: TraySpec {
+                enabled: true,
+                contours_enabled: false,
+                ..TraySpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(
+            3,
+            3,
+            vec![0.0, 1.0, 2.0, 1.0, 3.0, 5.0, 2.0, 5.0, 8.0],
+            "test",
+        )
+        .unwrap();
+        let mesh = build_tray(&spec, Some(&height)).unwrap();
+        assert_watertight(&mesh);
+        assert!(!mesh.materials.contains(&SurfaceClass::Forest));
+    }
+
+    #[test]
+    fn every_wall_mount_style_cuts_watertight_tray_sections() {
+        for style in [
+            WallMountStyle::StraightPin,
+            WallMountStyle::AngledPin,
+            WallMountStyle::FrenchCleat,
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 80.0,
+                rows: 2,
+                columns: 2,
+                adjacent_interlocks: true,
+                tray: TraySpec {
+                    enabled: true,
+                    contours_enabled: false,
+                    floor_mm: 2.8,
+                    segment_columns: 2,
+                    segment_rows: 2,
+                    ..TraySpec::default()
+                },
+                wall_mount: WallMountSpec {
+                    style,
+                    target: WallMountTarget::Tray,
+                    vertical_position_ratio: 0.5,
+                    pin_diameter_mm: 4.0,
+                    ..WallMountSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            let mut whole_spec = spec.clone();
+            whole_spec.tray.segment_columns = 1;
+            whole_spec.tray.segment_rows = 1;
+            let whole_trays = build_tray_segments(&whole_spec, None).unwrap();
+            assert_eq!(whole_trays.len(), 1);
+            assert_watertight(&whole_trays[0]);
+            let segments = build_tray_segments(&spec, None)
+                .unwrap_or_else(|error| panic!("{style:?} split tray failed: {error:#}"));
+            assert_eq!(segments.len(), 4);
+            for segment in &segments {
+                assert_watertight(segment);
+                assert!(segment.vertices.iter().any(|vertex| {
+                    (vertex[2] - spec.wall_mount.pocket_depth_mm()).abs() < 0.000_01
+                }));
+                assert!(segment.vertices.iter().any(|vertex| {
+                    (vertex[2] - spec.wall_mount.embedded_depth_mm()).abs() < 0.000_01
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn tray_retention_pins_stay_watertight_in_whole_and_split_trays() {
+        let spec = GenerationSpec {
+            width_mm: 80.0,
+            rows: 3,
+            columns: 3,
+            adjacent_interlocks: true,
+            tray: TraySpec {
+                enabled: true,
+                contours_enabled: false,
+                segment_columns: 2,
+                segment_rows: 2,
+                ..TraySpec::default()
+            },
+            puzzle_retention: PuzzleRetentionSpec {
+                enabled: true,
+                ..PuzzleRetentionSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let segments = build_tray_segments(&spec, None).unwrap();
+        assert_eq!(segments.len(), 4);
+        for segment in &segments {
+            assert_watertight(segment);
+            assert!(segment.vertices.iter().any(|vertex| {
+                (vertex[2] - (spec.tray.floor_mm + spec.puzzle_retention.pin_height_mm)).abs()
+                    < 0.000_01
+            }));
+        }
+
+        let solid_spec = GenerationSpec {
+            solid_model: true,
+            ..spec
+        };
+        let solid = crate::piece::build_piece(&solid_spec, None, None, 0, 0).unwrap();
+        assert_watertight(&solid);
+        let solid_segments = build_tray_segments(&solid_spec, None).unwrap();
+        assert_eq!(solid_segments.len(), 4);
+        for segment in &solid_segments {
+            assert_watertight(segment);
+            assert!(segment.vertices.iter().any(|vertex| {
+                (vertex[2] - (solid_spec.tray.floor_mm + solid_spec.puzzle_retention.pin_height_mm))
+                    .abs()
+                    < 0.000_01
+            }));
+        }
     }
 
     #[test]

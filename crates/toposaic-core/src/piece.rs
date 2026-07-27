@@ -12,6 +12,10 @@ use crate::mesh::{
     Mesh, PolygonStripIndex, distance_squared, point_in_polygon, point_line_distance,
     quantize_export_coordinate, unit_vector, weld_export_mesh,
 };
+use crate::mount::{
+    mount_bottom, mount_bottom_across_outline, retention_bottom, split_outline_at_mount,
+};
+use crate::mount_layout::retention_centers_local;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
 use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_contour_segments};
@@ -224,7 +228,10 @@ pub(crate) fn build_piece_with_height_range(
     let outline = if spec.solid_model {
         solid_outline(spec, samples)?
     } else {
-        piece_outline(spec, row, column, false)?
+        local_piece_outline(spec, row, column)?
+            .into_iter()
+            .map(|[x, y]| [x + origin_x, y + origin_y])
+            .collect()
     }
     .into_iter()
     .map(|[x, y]| [x - origin_x, y - origin_y])
@@ -237,6 +244,18 @@ pub(crate) fn build_piece_with_height_range(
     let terrain_spacing = piece_width.min(piece_height) / samples as f32;
     let boundary_spacing = piece_width.min(piece_height) / outline_samples as f32;
     let outline = densify_outline_for_triangulation(&outline, boundary_spacing);
+    let mounted_piece_back = spec.wall_mount.cuts_terrain() && !spec.solid_model;
+    let mount_frame = [
+        -origin_x,
+        -origin_y,
+        assembled_width - origin_x,
+        assembled_height - origin_y,
+    ];
+    let outline = if mounted_piece_back {
+        split_outline_at_mount(&outline, &spec.wall_mount, mount_frame)?
+    } else {
+        outline
+    };
     let mut points = outline
         .iter()
         .map(|point| Point2::new(point[0] as f64, point[1] as f64))
@@ -320,9 +339,14 @@ pub(crate) fn build_piece_with_height_range(
         let z = spec.base_mm + spec.relief_mm * terrain;
         vertices.push([position.x as f32, position.y as f32, z]);
     }
+    let lower_side_z = if mounted_piece_back {
+        spec.wall_mount.embedded_depth_mm()
+    } else {
+        0.0
+    };
     for vertex in triangulation.vertices() {
         let position = vertex.position();
-        vertices.push([position.x as f32, position.y as f32, 0.0]);
+        vertices.push([position.x as f32, position.y as f32, lower_side_z]);
     }
 
     let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
@@ -376,15 +400,20 @@ pub(crate) fn build_piece_with_height_range(
 
     let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
     let mut materials = Vec::with_capacity(triangles.capacity());
+    let retained_back = spec.puzzle_retention.active(spec.tray.enabled);
+    let mounted_back = spec.wall_mount.cuts_terrain();
+    let rebuilt_back = mounted_back || retained_back;
     for (top, material) in top_triangles.into_iter().zip(top_materials) {
         triangles.push(top);
         materials.push(material);
-        triangles.push([
-            top[0] + top_count as u32,
-            top[2] + top_count as u32,
-            top[1] + top_count as u32,
-        ]);
-        materials.push(SurfaceClass::Rock);
+        if !rebuilt_back {
+            triangles.push([
+                top[0] + top_count as u32,
+                top[2] + top_count as u32,
+                top[1] + top_count as u32,
+            ]);
+            materials.push(SurfaceClass::Rock);
+        }
     }
     // HashMap iteration order is randomized per process; sort the boundary
     // edges so the emitted mesh (and every artifact hashed from it) is
@@ -413,6 +442,24 @@ pub(crate) fn build_piece_with_height_range(
         materials,
         quantization_collisions: Vec::new(),
     };
+    if mounted_back {
+        let bottom = if spec.solid_model {
+            mount_bottom(
+                &outline,
+                &spec.wall_mount,
+                [0.0, 0.0, piece_width, piece_height],
+            )?
+        } else {
+            mount_bottom_across_outline(&outline, &spec.wall_mount, mount_frame)?
+        };
+        mesh.append_isolated(bottom);
+    } else if retained_back {
+        mesh.append_isolated(retention_bottom(
+            &outline,
+            &retention_centers_local(spec, row, column, &outline),
+            &spec.puzzle_retention,
+        )?);
+    }
     let mut building_union = None;
     if spec.buildings.enabled
         && let Some(field) = surface_field
@@ -662,22 +709,6 @@ fn terrain_z_at(
                 spec.center_lat,
                 spec.center_lon,
             )
-}
-
-pub(crate) fn geo_polygon(points: &[[f32; 2]]) -> Polygon<f64> {
-    let mut coordinates = points
-        .iter()
-        .map(|point| Coord {
-            x: point[0] as f64,
-            y: point[1] as f64,
-        })
-        .collect::<Vec<_>>();
-    if coordinates.first() != coordinates.last()
-        && let Some(first) = coordinates.first().copied()
-    {
-        coordinates.push(first);
-    }
-    Polygon::new(LineString::new(coordinates), vec![])
 }
 
 /// Areas of every triangulation face, indexed like the all-faces domain
@@ -947,6 +978,21 @@ fn piece_outline(
     Ok(outline)
 }
 
+pub(crate) fn local_piece_outline(
+    spec: &GenerationSpec,
+    row: u32,
+    column: u32,
+) -> Result<Vec<[f32; 2]>> {
+    let piece_width = spec.width_mm / spec.columns as f32;
+    let piece_height = spec.height_mm() / spec.rows as f32;
+    let origin_x = column as f32 * piece_width;
+    let origin_y = row as f32 * piece_height;
+    Ok(piece_outline(spec, row, column, false)?
+        .into_iter()
+        .map(|[x, y]| [x - origin_x, y - origin_y])
+        .collect())
+}
+
 fn puzzle_grid_point(spec: &GenerationSpec, row: u32, column: u32) -> [f32; 2] {
     let piece_width = spec.width_mm / spec.columns as f32;
     let piece_height = spec.height_mm() / spec.rows as f32;
@@ -1110,6 +1156,9 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::mesh::assert_watertight;
+    use crate::spec::{
+        PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    };
 
     #[test]
     fn shared_height_frame_keeps_absolute_elevations_at_the_same_height() {
@@ -1284,6 +1333,89 @@ mod tests {
     fn generated_piece_is_watertight() {
         let mesh = build_piece(&GenerationSpec::default(), None, None, 0, 0).unwrap();
         assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn every_wall_mount_style_cuts_a_watertight_piece_back() {
+        for style in [
+            WallMountStyle::StraightPin,
+            WallMountStyle::AngledPin,
+            WallMountStyle::FrenchCleat,
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 80.0,
+                rows: 2,
+                columns: 2,
+                wall_mount: WallMountSpec {
+                    style,
+                    target: WallMountTarget::Terrain,
+                    pin_diameter_mm: 4.0,
+                    ..WallMountSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+            assert_watertight(&mesh);
+            assert!(mesh.vertices.iter().any(|vertex| {
+                (vertex[2] - spec.wall_mount.pocket_depth_mm()).abs() < 0.000_01
+            }));
+            assert!(mesh.vertices.iter().any(|vertex| {
+                (vertex[2] - spec.wall_mount.embedded_depth_mm()).abs() < 0.000_01
+            }));
+        }
+    }
+
+    #[test]
+    fn jigsaw_wall_mount_uses_one_full_model_layout_across_piece_seams() {
+        let spec = GenerationSpec {
+            width_mm: 180.0,
+            rows: 10,
+            columns: 10,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::FrenchCleat,
+                target: WallMountTarget::Terrain,
+                ..WallMountSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.validate().unwrap();
+
+        for (row, column) in [(0, 0), (4, 4), (4, 5), (5, 4), (5, 5)] {
+            let mesh = build_piece(&spec, None, None, row, column).unwrap_or_else(|error| {
+                panic!("piece {}, {} failed: {error:#}", row + 1, column + 1)
+            });
+            assert_watertight(&mesh);
+        }
+    }
+
+    #[test]
+    fn tray_retention_adds_a_watertight_piece_socket() {
+        let spec = GenerationSpec {
+            width_mm: 80.0,
+            rows: 2,
+            columns: 2,
+            tray: TraySpec {
+                enabled: true,
+                ..TraySpec::default()
+            },
+            puzzle_retention: PuzzleRetentionSpec {
+                enabled: true,
+                ..PuzzleRetentionSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(mesh.vertices.iter().any(|vertex| {
+            (vertex[2] - spec.puzzle_retention.socket_depth_mm()).abs() < 0.000_01
+        }));
+
+        let mut changed_wall_pocket = spec.clone();
+        changed_wall_pocket.wall_mount.thickness_mm = 9.0;
+        changed_wall_pocket.wall_mount.wall_offset_mm = 8.0;
+        let unchanged_retention = build_piece(&changed_wall_pocket, None, None, 0, 0).unwrap();
+        assert_eq!(mesh.vertices, unchanged_retention.vertices);
+        assert_eq!(mesh.triangles, unchanged_retention.triangles);
     }
 
     #[test]

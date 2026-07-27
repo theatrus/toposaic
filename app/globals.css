@@ -1135,6 +1135,39 @@ a {
   background: #858d89;
 }
 
+.generation-error-banner {
+  align-items: center;
+  background: #f6e6e2;
+  border: 1px solid #d5a095;
+  display: grid;
+  font-size: 11px;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.generation-error-banner .status-dot {
+  background: #c45f4d;
+}
+
+.generation-error-banner button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 760;
+  padding: 3px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.generation-error-banner button:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+
 .control-section {
   border: 0;
   border-top: 1px solid var(--line);
@@ -1151,6 +1184,7 @@ fieldset.control-section {
 }
 
 fieldset.control-section > .color-heading,
+fieldset.control-section > .mounting-section-heading,
 fieldset.control-section > .color-note,
 fieldset.control-section > .control-hint {
   grid-column: 1 / -1;
@@ -1620,7 +1654,7 @@ fieldset.control-section .road-options {
   color: var(--moss);
 }
 
-.tray-chunk-toggle {
+.option-toggle {
   align-items: center;
   border: 1px solid var(--line);
   display: flex;
@@ -1629,20 +1663,20 @@ fieldset.control-section .road-options {
   padding: 9px;
 }
 
-.tray-chunk-toggle input {
+.option-toggle input {
   accent-color: var(--moss);
 }
 
-.tray-chunk-toggle strong,
-.tray-chunk-toggle small {
+.option-toggle strong,
+.option-toggle small {
   display: block;
 }
 
-.tray-chunk-toggle strong {
+.option-toggle strong {
   font-size: 10px;
 }
 
-.tray-chunk-toggle small {
+.option-toggle small {
   color: var(--muted);
   font-size: 8px;
   margin-top: 3px;
@@ -1722,13 +1756,30 @@ fieldset.control-section .road-options {
   padding: 15px 0 0;
 }
 
-.tray-controls {
+.mounting-controls {
   margin-top: 0;
 }
 
-.tray-controls > .place-label-field {
+.mounting-controls > .place-label-field {
   grid-column: 1 / -1;
   margin: 0;
+}
+
+.mounting-section-heading {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding-top: 14px;
+}
+
+.mounting-section-heading p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 4px 0 0;
 }
 
 .color-heading {
