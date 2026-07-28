@@ -1122,6 +1122,9 @@ mod tests {
             .iter()
             .map(|vertex| vertex[2])
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!((raised_top - flat_top - 1.44).abs() < 0.001);
+        // However the exaggeration is scaled, the roof stands exactly one
+        // building height above the terrain it was raised from.
+        let expected = crate::piece::scaled_building_height_mm(&spec, 12.0);
+        assert!((raised_top - flat_top - expected).abs() < 0.001);
     }
 }

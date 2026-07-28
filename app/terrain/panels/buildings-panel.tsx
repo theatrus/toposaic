@@ -57,9 +57,11 @@ export function BuildingsPanel({
           <p className="color-note">
             Buildings use exact mapped footprints, flat roofs, straight
             vertical walls, and their color from the Colors tab. 1× keeps true
-            height against the map width. Higher values make small buildings
-            easier to print. Tagged heights are used first, then floor count,
-            then an 8 m default.
+            height against the map width; higher values make small buildings
+            easier to print across a wide view. The exaggeration eases back to
+            true height as the ground span narrows, where buildings are
+            already tall enough to read. Tagged heights are used first, then
+            floor count, then an 8 m default.
           </p>
         </>
       )}

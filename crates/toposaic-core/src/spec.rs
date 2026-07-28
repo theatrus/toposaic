@@ -615,6 +615,35 @@ impl GenerationSpec {
         1.0 + (settings.close_view_width_multiplier - 1.0) * progress as f32
     }
 
+    /// How much taller than life buildings print at the current ground span.
+    ///
+    /// `z_scale` alone is a fixed multiplier on the PLAN scale, and the plan
+    /// scale grows as the view closes in — so an exaggeration that makes a
+    /// 100 m tower a readable 5 mm across 18 km makes a 200 m tower 72 mm
+    /// across 2.5 km, well past the whole terrain relief. The exaggeration
+    /// therefore fades with the span: full strength at the wide reference
+    /// span, easing to true scale by the close one, where buildings are
+    /// already tall enough to read without help.
+    ///
+    /// It fades between the same two spans the line widths do, by the same
+    /// logarithmic measure. How close a view feels is a property of the map,
+    /// not of what is drawn on it.
+    pub fn building_height_scale(&self) -> f32 {
+        let exaggeration = self.buildings.z_scale;
+        // Only an exaggeration fades. A scale at or below true height is a
+        // deliberate ask for shorter buildings — closing in is no reason to
+        // overrule it by making them taller, which fading toward 1.0 would.
+        if exaggeration <= 1.0 {
+            return exaggeration;
+        }
+        let span = self
+            .ground_span_km
+            .clamp(LINE_SCALE_CLOSE_SPAN_KM, LINE_SCALE_WIDE_SPAN_KM);
+        let progress = (LINE_SCALE_WIDE_SPAN_KM / span).ln()
+            / (LINE_SCALE_WIDE_SPAN_KM / LINE_SCALE_CLOSE_SPAN_KM).ln();
+        exaggeration + (1.0 - exaggeration) * progress as f32
+    }
+
     /// Whether drawn railways get their own class, color, and filament slot.
     pub fn uses_separate_rail(&self) -> bool {
         self.uses_rail() && self.color_output.rail_style == RailStyle::Separate
@@ -3299,6 +3328,67 @@ mod tests {
         let palette = spec.material_palette(any_class());
         assert_eq!(palette.slot(SurfaceClass::Building), Some(0));
         assert_eq!(palette.slot(SurfaceClass::Road), Some(0));
+    }
+
+    /// Building exaggeration is a multiplier on the PLAN scale, and the plan
+    /// scale grows as the view closes in. Left fixed, the default made a
+    /// 200 m tower 72 mm across a 2.5 km view — against 28 mm of relief.
+    #[test]
+    fn building_exaggeration_fades_as_the_view_closes_in() {
+        let spec_at = |span| GenerationSpec {
+            ground_span_km: span,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 5.0,
+            },
+            ..GenerationSpec::default()
+        };
+
+        // Full strength across a wide view, where a tower is a few
+        // millimetres and needs the help.
+        assert!((spec_at(18.0).building_height_scale() - 5.0).abs() < 1e-4);
+        // True scale close in, where it does not.
+        assert!((spec_at(2.0).building_height_scale() - 1.0).abs() < 1e-4);
+        assert!((spec_at(0.5).building_height_scale() - 1.0).abs() < 1e-4);
+
+        // Never rising as the span narrows, and never below true scale.
+        let mut previous = f32::INFINITY;
+        for span in [18.0, 12.0, 9.0, 6.0, 4.0, 2.5, 2.0] {
+            let scale = spec_at(span).building_height_scale();
+            assert!(scale <= previous + 1e-4, "{span} km rose to {scale}");
+            assert!(scale >= 1.0 - 1e-4, "{span} km fell below true scale");
+            previous = scale;
+        }
+
+        // The reported case: a 200 m tower across 2.5 km on a 180 mm model
+        // now stands with the terrain rather than spiking past it.
+        let close = spec_at(2.5);
+        let tower = crate::piece::scaled_building_height_mm(&close, 200.0);
+        assert!(
+            tower < close.relief_mm,
+            "{tower} mm against 28 mm of relief"
+        );
+        assert!(tower > 10.0, "still a tower, not a bump: {tower} mm");
+
+        // A scale below true height is an ask for SHORTER buildings, so it
+        // holds however close the view gets. Fading it toward 1.0 would
+        // make them grow as you zoom in, which is nobody's intent.
+        let shrunk = |span| GenerationSpec {
+            ground_span_km: span,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 0.5,
+            },
+            ..GenerationSpec::default()
+        };
+        assert!((shrunk(18.0).building_height_scale() - 0.5).abs() < 1e-4);
+        assert!((shrunk(2.0).building_height_scale() - 0.5).abs() < 1e-4);
+        assert!((shrunk(0.5).building_height_scale() - 0.5).abs() < 1e-4);
+
+        // A wide view is left exactly as it was.
+        let wide = spec_at(18.0);
+        let expected = 100.0 * wide.width_mm / 18_000.0 * 5.0;
+        assert!((crate::piece::scaled_building_height_mm(&wide, 100.0) - expected).abs() < 1e-4);
     }
 
     #[test]

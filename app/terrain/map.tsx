@@ -106,12 +106,15 @@ export function TerrainMap({
   onPlaceMarker,
   onCenterChange,
   onGroundSpanChange,
+  recallCount,
 }: {
   spec: GenerationSpec;
   markerPlacementMode: "place" | "move" | null;
   onPlaceMarker: (longitude: number, latitude: number) => void;
   onCenterChange: (longitude: number, latitude: number) => void;
   onGroundSpanChange: (groundSpanKm: number) => void;
+  // Bumped each time a saved setup is recalled.
+  recallCount: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
@@ -126,6 +129,9 @@ export function TerrainMap({
   } | null>(null);
   const [zoom, setZoom] = useState(9);
   const [mapOnlyZoom, setMapOnlyZoom] = useState<number | null>(null);
+  // The fitted zoom as it stands, for the recall effect below to read
+  // without re-running every time the view moves.
+  const fittedMapZoomRef = useRef(0);
   const [interactionMode, setInteractionMode] =
     useState<MapInteractionMode>("pan");
   const [viewCenter, setViewCenter] = useState<{
@@ -205,6 +211,25 @@ export function TerrainMap({
   );
   const mapZoom = mapOnlyZoom ?? fittedMapZoom;
   const zoomLinked = mapOnlyZoom === null;
+
+  // Declared before the recall effect below so the ref it reads already
+  // holds this render's value.
+  useEffect(() => {
+    fittedMapZoomRef.current = fittedMapZoom;
+  }, [fittedMapZoom]);
+
+  // A recalled setup names the ground it covers, and linked zoom resizes
+  // exactly that: one scroll over the map and the area just recalled is a
+  // different area. So recall leaves the zoom unlinked, at the zoom the
+  // recalled span fits, and the view stays put until asked to move.
+  //
+  // Keyed on the recall count alone. The fitted zoom is read through a ref
+  // because including it would re-pin the view on every zoom, which is the
+  // opposite of leaving it alone.
+  useEffect(() => {
+    if (recallCount === 0) return;
+    setMapOnlyZoom(fittedMapZoomRef.current);
+  }, [recallCount]);
   const anchorWorld = useMemo(
     () => projectToWorld(spec.center_lon, spec.center_lat, mapZoom),
     [mapZoom, spec.center_lat, spec.center_lon],

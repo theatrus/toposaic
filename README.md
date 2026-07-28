@@ -393,8 +393,13 @@ map.
 
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z
-scale controls vertical exaggeration against the map's plan scale. Buildings
-can run with or without surface color output. In color output, roofs and walls
+scale controls vertical exaggeration against the map's plan scale, and that
+exaggeration eases back to true height as the ground span narrows: the plan
+scale itself grows as the view closes in, so a multiplier that makes a 100 m
+tower a readable 5 mm across 18 km would make a 200 m tower 72 mm across
+2.5 km — taller than the whole terrain relief. Close in, buildings are tall
+enough to read without help. Buildings can run with or without surface color
+output. In color output, roofs and walls
 use their own editable building material instead of inheriting the land-cover
 color beneath each footprint.
 
