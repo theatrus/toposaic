@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.6.0](https://github.com/theatrus/toposaic/releases/tag/v0.6.0).
+[TopoSaic v0.6.1](https://github.com/theatrus/toposaic/releases/tag/v0.6.1).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -99,6 +99,13 @@ manifest in this tab.*
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. See
 [Printing in color](#printing-in-color) for how each slicer takes the palette.*
+
+## Version 0.6.1 highlights
+
+- Bleed the terrain color over a piece's side wall so a printed puzzle no
+  longer wears a grey outline around every edge. The cut face below the bleed
+  stays rock; "Edge color bleed" on the Surface tab sets how deep the band
+  runs, or turns it off.
 
 ## Version 0.6 highlights
 
