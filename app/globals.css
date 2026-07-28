@@ -3407,6 +3407,37 @@ fieldset.control-section .road-options {
   color: var(--muted);
 }
 
+/* The action most people want after a generation finishes, so it leads its
+   list rather than sitting among the per-file rows. */
+.downloads button.save-all {
+  background: var(--moss);
+  border: 1px solid var(--moss);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  padding: 11px 12px;
+}
+
+/* Inside the STL disclosure the file rows sit two to a line; the save leads
+   them across the full width. */
+.downloads details button.save-all {
+  align-items: center;
+  color: #fff;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.downloads button.save-all:hover:not(:disabled) {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.downloads button.save-all small {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .downloads details {
   color: var(--muted);
   font-size: 10px;

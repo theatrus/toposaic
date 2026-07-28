@@ -1437,6 +1437,45 @@ export function TerrainStudio() {
     }
   };
 
+  // One folder picker instead of a save dialog per file. The caller says
+  // which files: the print set, or that plus the per-piece STLs.
+  const saveDesktopArtifactSet = async (
+    key: string,
+    artifactNames: string[],
+  ) => {
+    if (!job || !IS_TAURI || artifactNames.length === 0) return;
+    setArtifactFeedback({ name: key, state: "saving" });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const saved = await invoke<{ directory: string; files: number } | null>(
+        "save_all_artifacts",
+        {
+          jobId: job.id,
+          folderName: job.spec.place_name.trim() || "toposaic",
+          artifactNames,
+        },
+      );
+      if (saved === null) {
+        setArtifactFeedback(null);
+        setMessage("Save canceled.");
+        return;
+      }
+      setArtifactFeedback({ name: key, state: "saved" });
+      setMessage(
+        `Saved ${saved.files} ${saved.files === 1 ? "file" : "files"} to ${saved.directory}.`,
+      );
+    } catch (error) {
+      setArtifactFeedback(null);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "Could not save the print files.",
+      );
+    }
+  };
+
   const noteWebDownload = (artifact: Artifact) => {
     setArtifactFeedback({ name: artifact.name, state: "sent" });
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
@@ -2122,6 +2161,7 @@ export function TerrainStudio() {
             job={job}
             message={message}
             noteWebDownload={noteWebDownload}
+            saveDesktopArtifactSet={saveDesktopArtifactSet}
             saveDesktopArtifact={saveDesktopArtifact}
             spec={spec}
             statusLabel={statusLabel}

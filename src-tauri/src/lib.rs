@@ -9,18 +9,128 @@ use uuid::Uuid;
 
 static ENGINE_STARTED: OnceLock<()> = OnceLock::new();
 
+fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not find the TopoSaic data folder: {error}"))
+}
+
+fn job_dir(data_dir: &Path, job_id: &str) -> Result<PathBuf, String> {
+    let job_id = Uuid::parse_str(job_id)
+        .map_err(|_| "The job ID is not valid.".to_owned())?
+        .hyphenated()
+        .to_string();
+    Ok(data_dir.join("jobs").join(job_id))
+}
+
 fn source_artifact_path(
     data_dir: &Path,
     job_id: &str,
     artifact_name: &str,
 ) -> Result<PathBuf, String> {
-    let job_id = Uuid::parse_str(job_id)
-        .map_err(|_| "The job ID is not valid.".to_owned())?
-        .hyphenated()
-        .to_string();
-    let output_dir = data_dir.join("jobs").join(job_id);
+    let output_dir = job_dir(data_dir, job_id)?;
     toposaic_core::artifact_path(&output_dir, artifact_name)
         .ok_or_else(|| "The requested print file does not exist.".to_owned())
+}
+
+/// A file-system-safe folder name built from the place the model is of.
+/// Runs of anything that is not a letter or a digit become one dash, so a
+/// name the user typed cannot walk out of the folder they chose.
+fn folder_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_alphanumeric() {
+            if separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            slug.push(character);
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        return "toposaic".to_owned();
+    }
+    // Long place names exist; keep the folder name workable on every OS.
+    // Counted in CHARACTERS: `String::truncate` takes a byte length and
+    // panics when that lands inside a character, which a place name in any
+    // non-Latin script will do.
+    slug.chars()
+        .take(48)
+        .collect::<String>()
+        .trim_end_matches('-')
+        .to_owned()
+}
+
+/// A folder inside `parent` that does not exist yet, starting from `stem`
+/// and counting up. Saving a job never writes over an earlier one, which a
+/// plain copy into the chosen folder would do silently for every file whose
+/// name a previous run also used.
+fn free_directory(parent: &Path, stem: &str) -> Result<PathBuf, String> {
+    for suffix in 0..1000 {
+        let name = if suffix == 0 {
+            stem.to_owned()
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Could not find a free folder name.".to_owned())
+}
+
+/// Copies the NAMED artifacts of a finished job into a new folder under
+/// `destination`. Returns the folder and how many files landed in it.
+///
+/// The caller passes the list rather than this sweeping the job folder,
+/// because not everything in there is something to hand over: `preview.json`
+/// is the app's own preview data and appears nowhere in the download list,
+/// and the per-piece STLs are an alternative to the combined 3MF rather than
+/// a companion to it. Each name is resolved through `artifact_path`, so a
+/// name cannot reach outside the job folder.
+async fn copy_job_artifacts(
+    source_dir: &Path,
+    destination: &Path,
+    folder_name: &str,
+    artifact_names: &[String],
+) -> Result<(PathBuf, usize), String> {
+    if !destination.is_dir() {
+        return Err("The selected folder does not exist.".to_owned());
+    }
+    if artifact_names.is_empty() {
+        return Err("There are no files to save.".to_owned());
+    }
+    let sources = artifact_names
+        .iter()
+        .map(|name| {
+            toposaic_core::artifact_path(source_dir, name)
+                .map(|path| (name, path))
+                .ok_or_else(|| format!("{name} is no longer on disk."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let target = free_directory(destination, &folder_slug(folder_name))?;
+    tokio::fs::create_dir(&target)
+        .await
+        .map_err(|error| format!("Could not create {}: {error}", target.display()))?;
+
+    let mut copied = 0;
+    for (name, source) in sources {
+        if let Err(error) = tokio::fs::copy(source, target.join(name)).await {
+            // Take the folder with it. A run that stops halfway — a full
+            // disk, a pulled drive — otherwise leaves a folder holding part
+            // of a job, which looks exactly like a finished one.
+            let _ = tokio::fs::remove_dir_all(&target).await;
+            return Err(format!("Could not save {name}: {error}"));
+        }
+        copied += 1;
+    }
+    Ok((target, copied))
 }
 
 #[tauri::command]
@@ -29,10 +139,7 @@ async fn save_artifact(
     job_id: String,
     artifact_name: String,
 ) -> Result<Option<u64>, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Could not find the TopoSaic data folder: {error}"))?;
+    let data_dir = app_data_dir(&app)?;
     let source = source_artifact_path(&data_dir, &job_id, &artifact_name)?;
     let extension = Path::new(&artifact_name)
         .extension()
@@ -62,12 +169,55 @@ async fn save_artifact(
         .map_err(|error| format!("Could not save {artifact_name}: {error}"))
 }
 
+/// What one "save all" wrote, for the message the app shows afterwards.
+#[derive(serde::Serialize)]
+struct SavedFolder {
+    directory: String,
+    files: usize,
+}
+
+/// Saves a set of a job's files in one go: one folder picker, one copy,
+/// rather than a save dialog each. The front end names the set — the print
+/// files, or the STLs.
+#[tauri::command]
+async fn save_all_artifacts(
+    app: tauri::AppHandle,
+    job_id: String,
+    folder_name: String,
+    artifact_names: Vec<String>,
+) -> Result<Option<SavedFolder>, String> {
+    let data_dir = app_data_dir(&app)?;
+    let source_dir = job_dir(&data_dir, &job_id)?;
+    if !source_dir.is_dir() {
+        return Err("That job's print files are no longer on disk.".to_owned());
+    }
+
+    let Some(destination) = app
+        .dialog()
+        .file()
+        .set_title("Save every print file to a folder")
+        .blocking_pick_folder()
+    else {
+        return Ok(None);
+    };
+    let destination = destination
+        .into_path()
+        .map_err(|error| format!("The selected folder is not valid: {error}"))?;
+
+    let (directory, files) =
+        copy_job_artifacts(&source_dir, &destination, &folder_name, &artifact_names).await?;
+    Ok(Some(SavedFolder {
+        directory: directory.display().to_string(),
+        files,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![save_artifact])
+        .invoke_handler(tauri::generate_handler![save_artifact, save_all_artifacts])
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -120,6 +270,132 @@ mod tests {
         );
         assert!(source_artifact_path(&root, "not-a-uuid", "terrain.3mf").is_err());
         assert!(source_artifact_path(&root, &job_id.to_string(), "../terrain.3mf").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_names_stay_inside_the_folder_the_user_picked() {
+        assert_eq!(folder_slug("Mount Rainier"), "Mount-Rainier");
+        assert_eq!(folder_slug("  Zürich / Üetliberg  "), "Zürich-Üetliberg");
+        assert_eq!(folder_slug("富士山"), "富士山");
+        // A name that would otherwise walk out of the chosen folder, and
+        // one that would leave nothing behind at all.
+        assert_eq!(folder_slug("../../etc"), "etc");
+        assert_eq!(folder_slug("/"), "toposaic");
+        assert_eq!(folder_slug(""), "toposaic");
+        assert!(!folder_slug(&"x".repeat(200)).contains('/'));
+        assert_eq!(folder_slug(&"x".repeat(200)).chars().count(), 48);
+        // Cutting a long name to length must count characters, not bytes:
+        // this name puts a byte-48 cut inside a character.
+        let long_kanji = format!("a{}", "富".repeat(60));
+        assert_eq!(folder_slug(&long_kanji).chars().count(), 48);
+    }
+
+    #[tokio::test]
+    async fn saving_all_files_copies_only_what_it_was_asked_for() {
+        let root = std::env::temp_dir().join(format!("toposaic-saveall-{}", Uuid::new_v4()));
+        let source = root.join("job");
+        let destination = root.join("picked");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("toposaic.3mf"), b"first").unwrap();
+        fs::write(source.join("manifest.json"), b"{}").unwrap();
+        fs::write(source.join("piece-1-1.stl"), b"stl").unwrap();
+        fs::write(source.join("preview.json"), b"preview").unwrap();
+
+        let print_files = ["toposaic.3mf".to_owned(), "manifest.json".to_owned()];
+        let (first, files) =
+            copy_job_artifacts(&source, &destination, "Mount Rainier", &print_files)
+                .await
+                .unwrap();
+        assert_eq!(files, 2);
+        assert_eq!(first.file_name().unwrap(), "Mount-Rainier");
+        assert_eq!(fs::read(first.join("toposaic.3mf")).unwrap(), b"first");
+        // The app's own preview data, and an STL nobody asked for, stay put.
+        assert!(!first.join("preview.json").exists());
+        assert!(!first.join("piece-1-1.stl").exists());
+
+        // A second save of a job by the same name lands beside the first,
+        // with the first left exactly as it was.
+        fs::write(source.join("toposaic.3mf"), b"second").unwrap();
+        let (again, _) = copy_job_artifacts(&source, &destination, "Mount Rainier", &print_files)
+            .await
+            .unwrap();
+        assert_ne!(again, first);
+        assert_eq!(again.file_name().unwrap(), "Mount-Rainier-1");
+        assert_eq!(fs::read(first.join("toposaic.3mf")).unwrap(), b"first");
+        assert_eq!(fs::read(again.join("toposaic.3mf")).unwrap(), b"second");
+
+        // A folder that is not there is refused rather than created.
+        assert!(
+            copy_job_artifacts(&source, &root.join("missing"), "Rainier", &print_files)
+                .await
+                .is_err()
+        );
+
+        // A name that tries to leave the job folder, or that is not there,
+        // fails before anything is written.
+        let before = fs::read_dir(&destination).unwrap().count();
+        assert!(
+            copy_job_artifacts(
+                &source,
+                &destination,
+                "Rainier",
+                &["../secrets.txt".to_owned()],
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            copy_job_artifacts(&source, &destination, "Rainier", &["gone.3mf".to_owned()])
+                .await
+                .is_err()
+        );
+        assert!(
+            copy_job_artifacts(&source, &destination, "Rainier", &[])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(&destination).unwrap().count(),
+            before,
+            "a refused save leaves no half-made folder behind"
+        );
+
+        // A copy that fails PART WAY takes its folder with it, rather than
+        // leaving one that holds half a job and looks finished. An
+        // unreadable second file gets past the is-it-there check and then
+        // fails the read, which is the shape of a full disk or a pulled
+        // drive.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let locked = source.join("locked.3mf");
+            fs::write(&locked, b"locked").unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            // Running as root would read it anyway and prove nothing.
+            if fs::read(&locked).is_err() {
+                let before = fs::read_dir(&destination).unwrap().count();
+                assert!(
+                    copy_job_artifacts(
+                        &source,
+                        &destination,
+                        "Rainier",
+                        &["toposaic.3mf".to_owned(), "locked.3mf".to_owned()],
+                    )
+                    .await
+                    .is_err()
+                );
+                assert_eq!(
+                    fs::read_dir(&destination).unwrap().count(),
+                    before,
+                    "a copy that stops halfway leaves no folder behind"
+                );
+            }
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+        }
 
         fs::remove_dir_all(root).unwrap();
     }
