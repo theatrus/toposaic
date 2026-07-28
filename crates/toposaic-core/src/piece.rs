@@ -459,8 +459,10 @@ pub(crate) fn build_piece_with_height_range(
         );
     }
 
-    let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2])>::new();
-    for triangle in &top_triangles {
+    // The surface class travels with the edge so a boundary edge — used by
+    // exactly one triangle — can hand its own land cover to the wall below it.
+    let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2], SurfaceClass)>::new();
+    for (triangle, material) in top_triangles.iter().zip(&top_materials) {
         for directed in [
             [triangle[0], triangle[1]],
             [triangle[1], triangle[2]],
@@ -471,12 +473,14 @@ pub(crate) fn build_piece_with_height_range(
             } else {
                 (directed[1], directed[0])
             };
-            let entry = edge_uses.entry(key).or_insert((0, directed));
+            let entry = edge_uses.entry(key).or_insert((0, directed, *material));
             entry.0 += 1;
         }
     }
 
-    let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
+    // Four wall triangles per boundary edge now: the bleed band and the cut
+    // face below it.
+    let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 4);
     let mut materials = Vec::with_capacity(triangles.capacity());
     let retained_back = spec.puzzle_retention.active(spec.tray.enabled);
     let mounted_back = spec.wall_mount.cuts_terrain();
@@ -515,9 +519,9 @@ pub(crate) fn build_piece_with_height_range(
         .collect::<HashSet<_>>();
     let mut boundary_edges = edge_uses
         .into_values()
-        .filter(|(uses, _)| *uses == 1)
-        .map(|(_, edge)| edge)
-        .filter(|edge| {
+        .filter(|(uses, _, _)| *uses == 1)
+        .map(|(_, edge, material)| (edge, material))
+        .filter(|(edge, _)| {
             let key = if edge[0] < edge[1] {
                 (edge[0], edge[1])
             } else {
@@ -526,12 +530,47 @@ pub(crate) fn build_piece_with_height_range(
             !flag_edges.contains(&key)
         })
         .collect::<Vec<_>>();
-    boundary_edges.sort_unstable();
-    for [from, to] in boundary_edges {
-        triangles.push([from, to + top_count as u32, to]);
-        materials.push(SurfaceClass::Rock);
-        triangles.push([from, from + top_count as u32, to + top_count as u32]);
-        materials.push(SurfaceClass::Rock);
+    boundary_edges.sort_unstable_by_key(|(edge, _)| *edge);
+    let edge_bleed_mm = spec.color_output.edge_bleed_mm;
+    // One bleed vertex per boundary vertex, not per boundary edge: two edges
+    // meeting at a corner must land on the same point, or the wall gains a
+    // T-junction and stops being watertight.
+    let mut bleed_vertices = HashMap::<u32, u32>::new();
+    for (edge, material) in boundary_edges {
+        let [from, to] = edge;
+        let from_bottom = from + top_count as u32;
+        let to_bottom = to + top_count as u32;
+        let from_bleed = bleed_vertex(
+            &mut vertices,
+            &mut bleed_vertices,
+            from,
+            top_count,
+            lower_side_z,
+            edge_bleed_mm,
+        );
+        let to_bleed = bleed_vertex(
+            &mut vertices,
+            &mut bleed_vertices,
+            to,
+            top_count,
+            lower_side_z,
+            edge_bleed_mm,
+        );
+        // The band under the rim, carrying the terrain color over the edge.
+        triangles.push([from, to_bleed, to]);
+        materials.push(material);
+        triangles.push([from, from_bleed, to_bleed]);
+        materials.push(material);
+        // The cut face below it. Either end can bottom out against a wall
+        // shorter than the bleed, which collapses that side of the quad.
+        if to_bleed != to_bottom {
+            triangles.push([from_bleed, to_bottom, to_bleed]);
+            materials.push(SurfaceClass::Rock);
+        }
+        if from_bleed != from_bottom {
+            triangles.push([from_bleed, from_bottom, to_bottom]);
+            materials.push(SurfaceClass::Rock);
+        }
     }
 
     let mut mesh = Mesh {
@@ -629,6 +668,34 @@ pub(crate) fn build_piece_with_height_range(
     }
     weld_export_mesh(&mut mesh);
     Ok(mesh)
+}
+
+/// The vertex where a piece's terrain color stops bleeding down the side wall
+/// and the rock cut face takes over, directly below the top vertex `top`.
+///
+/// Returns the wall's own bottom vertex where the wall is shorter than the
+/// bleed, so the whole of a short wall carries the surface color rather than
+/// the bleed sinking below the model. Results are cached per top vertex: two
+/// boundary edges meeting at a corner must share this point.
+fn bleed_vertex(
+    vertices: &mut Vec<[f32; 3]>,
+    cache: &mut HashMap<u32, u32>,
+    top: u32,
+    top_count: usize,
+    lower_side_z: f32,
+    bleed_mm: f32,
+) -> u32 {
+    let point = vertices[top as usize];
+    if bleed_mm <= 0.0 || point[2] - bleed_mm <= lower_side_z {
+        return top + top_count as u32;
+    }
+    if let Some(index) = cache.get(&top) {
+        return *index;
+    }
+    let index = vertices.len() as u32;
+    vertices.push([point[0], point[1], point[2] - bleed_mm]);
+    cache.insert(top, index);
+    index
 }
 
 fn append_flag_cavities(
@@ -1429,6 +1496,193 @@ mod tests {
         FlagMarkerStyle, MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec,
         WallMountStyle, WallMountTarget,
     };
+
+    #[test]
+    fn terrain_color_bleeds_over_the_piece_edge_before_the_rock_cut_face() {
+        // Rolling terrain, so the piece's walls vary from shallow to steep
+        // rather than all standing at one height.
+        let samples = 16;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let u = x as f32 / (samples - 1) as f32;
+                    let v = y as f32 / (samples - 1) as f32;
+                    900.0
+                        + 600.0 * (u * std::f32::consts::TAU).sin()
+                        + 400.0 * (v * std::f32::consts::TAU * 1.5).cos()
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "hills").unwrap();
+        let field = SurfaceField::new(3, 3, vec![SurfaceClass::Forest; 9], "forest").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.validate().unwrap();
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let bleed = spec.color_output.edge_bleed_mm;
+        // Every (x, y) column of the mesh is topped by its terrain vertex, so
+        // the highest vertex at each position is the visible surface. This
+        // holds whatever the terrain does underneath.
+        let mut column_top = HashMap::<(i32, i32), f32>::new();
+        for vertex in &mesh.vertices {
+            let key = (
+                (vertex[0] * 1_000.0).round() as i32,
+                (vertex[1] * 1_000.0).round() as i32,
+            );
+            let entry = column_top.entry(key).or_insert(f32::NEG_INFINITY);
+            *entry = entry.max(vertex[2]);
+        }
+        let is_surface = |index: &u32| {
+            let vertex = mesh.vertices[*index as usize];
+            let key = (
+                (vertex[0] * 1_000.0).round() as i32,
+                (vertex[1] * 1_000.0).round() as i32,
+            );
+            (column_top[&key] - vertex[2]).abs() < 0.0005
+        };
+
+        // The bug: rock reaching the surface draws a grey outline around the
+        // piece as soon as it is seen from an angle.
+        let rock_at_the_rim = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(triangle, material)| {
+                **material == SurfaceClass::Rock && triangle.iter().any(is_surface)
+            })
+            .count();
+        assert_eq!(rock_at_the_rim, 0, "rock still shows at the piece edge");
+
+        // The bleed is a band, not a repaint: the cut face below it stays rock.
+        let rock_wall = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(triangle, material)| {
+                **material == SurfaceClass::Rock
+                    && triangle
+                        .iter()
+                        .any(|index| mesh.vertices[*index as usize][2] > 0.001)
+            })
+            .count();
+        assert!(rock_wall > 0, "the cut face lost its rock");
+
+        // And the band really is on the wall, not just the top face. Every
+        // bleed vertex sits exactly one band below the surface above it.
+        let forest_wall = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(triangle, material)| {
+                **material == SurfaceClass::Forest
+                    && triangle.iter().any(|index| !is_surface(index))
+            })
+            .count();
+        assert!(forest_wall > 0, "the surface color never left the top face");
+        let bleed_vertices = mesh
+            .vertices
+            .iter()
+            .filter(|vertex| {
+                let key = (
+                    (vertex[0] * 1_000.0).round() as i32,
+                    (vertex[1] * 1_000.0).round() as i32,
+                );
+                (column_top[&key] - vertex[2] - bleed).abs() < 0.0005
+            })
+            .count();
+        assert!(bleed_vertices > 0, "no vertex sits at the bleed depth");
+    }
+
+    /// A mounted back raises the wall's floor, and the mount check only
+    /// guarantees 0.4 mm of wall under the cut, while the bleed goes to 2 mm.
+    /// So a flat shoreline under a deep cleat really does run out of wall,
+    /// and the clamp in `bleed_vertex` is reachable, not defensive.
+    ///
+    /// All three regimes have to stay closed: wall to spare, a wall shorter
+    /// than the bleed everywhere, and the mixed case where one end of a wall
+    /// clamps and the other does not.
+    #[test]
+    fn a_wall_squeezed_to_the_bleed_depth_still_closes() {
+        let field = SurfaceField::new(3, 3, vec![SurfaceClass::Forest; 9], "forest").unwrap();
+        let flat = HeightField::new(3, 3, vec![0.0; 9], "shoreline").unwrap();
+        // Relief low enough that the terrain crosses the bleed threshold part
+        // way up, so a single wall has clamped and unclamped ends.
+        let rolling = HeightField::new(
+            3,
+            3,
+            vec![0.0, 40.0, 0.0, 40.0, 80.0, 40.0, 0.0, 40.0, 0.0],
+            "low rise",
+        )
+        .unwrap();
+        let mut regimes = Vec::new();
+        for (depth_mm, height_field, relief_mm) in [
+            (0.4_f32, &flat, 28.0_f32),
+            (2.4, &flat, 28.0),
+            (2.4, &rolling, 1.0),
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 80.0,
+                rows: 2,
+                columns: 2,
+                relief_mm,
+                wall_mount: WallMountSpec {
+                    style: WallMountStyle::FrenchCleat,
+                    target: WallMountTarget::Terrain,
+                    depth_mm,
+                    thickness_mm: 1.2,
+                    wall_offset_mm: 0.8,
+                    ..WallMountSpec::default()
+                },
+                color_output: crate::spec::ColorOutputSpec {
+                    enabled: true,
+                    // Twice the default, so the bleed outruns the wall a
+                    // mounted back leaves behind.
+                    edge_bleed_mm: 0.8,
+                    ..crate::spec::ColorOutputSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            spec.validate().unwrap();
+            let mesh = build_piece(&spec, Some(height_field), Some(&field), 0, 0).unwrap();
+            assert_watertight(&mesh);
+
+            // Which regime this actually was, so the test cannot quietly stop
+            // reaching the clamp if the mount bounds ever move.
+            let bleed = spec.color_output.edge_bleed_mm;
+            let floor = spec.wall_mount.embedded_depth_mm();
+            let mut column_top = HashMap::<(i32, i32), f32>::new();
+            for vertex in &mesh.vertices {
+                let key = (
+                    (vertex[0] * 1_000.0).round() as i32,
+                    (vertex[1] * 1_000.0).round() as i32,
+                );
+                let entry = column_top.entry(key).or_insert(f32::NEG_INFINITY);
+                *entry = entry.max(vertex[2]);
+            }
+            let clamped = column_top
+                .values()
+                .filter(|top| **top - floor <= bleed)
+                .count();
+            regimes.push((clamped, column_top.len() - clamped));
+        }
+        assert!(regimes[0].0 == 0, "expected no clamping, got {regimes:?}");
+        assert!(regimes[1].1 == 0, "expected full clamping, got {regimes:?}");
+        assert!(
+            regimes[2].0 > 0 && regimes[2].1 > 0,
+            "expected a mix of clamped and unclamped walls, got {regimes:?}"
+        );
+    }
 
     #[test]
     fn flag_marker_cuts_a_watertight_blind_socket() {

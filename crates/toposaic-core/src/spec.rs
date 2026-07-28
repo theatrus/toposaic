@@ -1149,6 +1149,12 @@ fn default_map_label_height_mm() -> f32 {
     4.0
 }
 
+/// Two layers at the 0.2 mm default layer height: enough that the terrain
+/// color, not the cut face, meets the eye at a piece's rim.
+fn default_edge_bleed_mm() -> f32 {
+    0.4
+}
+
 impl MapMarker {
     fn validate(&self, base_mm: f32) -> Result<()> {
         if self.name.trim().is_empty() || self.name.chars().count() > MAX_MARKER_NAME_CHARS {
@@ -2012,6 +2018,13 @@ pub struct ColorOutputSpec {
     pub bridge_structure: BridgeStructure,
     pub bridge_thickness_mm: f32,
     pub minimum_patch_mm: f32,
+    /// How far the terrain color carries down a piece's side wall before the
+    /// rock cut face takes over. A wall that is rock to the top draws a grey
+    /// outline around every piece as soon as the model is seen from an angle,
+    /// worst on hills, where the wall is tallest and faces you. Zero turns the
+    /// bleed off and gives the old rock-to-the-rim wall.
+    #[serde(default = "default_edge_bleed_mm")]
+    pub edge_bleed_mm: f32,
     /// Class border drawing and smoothing. Flattened, so the JSON keys stay
     /// at the `color_output` level exactly as before the grouping.
     #[serde(flatten)]
@@ -2222,6 +2235,7 @@ impl Default for ColorOutputSpec {
             bridge_structure: BridgeStructure::Floating,
             bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
+            edge_bleed_mm: default_edge_bleed_mm(),
             borders: BorderSpec::default(),
             slope_gates: SlopeGateSpec::default(),
         }
@@ -2278,6 +2292,12 @@ impl ColorOutputSpec {
         }
         if !(0.4..=8.0).contains(&self.minimum_patch_mm) {
             bail!("minimum color patch must be between 0.4 and 8 mm");
+        }
+        // A practical cap, not a promise the wall is that tall: a mounted
+        // back can leave as little as 0.4 mm of side wall, and a bleed deeper
+        // than the wall simply takes the whole of it.
+        if !(0.0..=2.0).contains(&self.edge_bleed_mm) {
+            bail!("edge color bleed must be between 0 and 2 mm");
         }
         self.slope_gates.validate()?;
         self.borders.validate()?;
@@ -2480,7 +2500,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
@@ -2627,6 +2647,7 @@ mod tests {
                 "bridge_structure": "supported",
                 "bridge_thickness_mm": 2.0,
                 "minimum_patch_mm": 2.5,
+                "edge_bleed_mm": 0.5,
                 "class_borders": "smooth",
                 "border_smoothing_range_cells": 4.0,
                 "border_smoothing_nugget": 0.25,

@@ -402,6 +402,19 @@ other file in the download: a tray asks for its rim, contour, and label
 colors, a wall-mount bracket for the one it prints in. Two features set to
 the same color share a slot, since no slicer merges them for you.
 
+A piece's side wall is a cut through the terrain, and it prints in the rock
+color to say so. The top of that wall is the exception: it carries the land
+cover from the surface directly above, so the terrain color bleeds over the rim
+and around the tabs rather than stopping dead at the top edge. Without it every
+piece wears a grey outline the moment the model is seen from anything but
+straight above, worst on hills, where the wall is tallest and faces you.
+"Edge color bleed" on the Surface tab sets how deep the band runs, from 0 to
+2 mm, and starts at 0.4 mm — two layers at the usual 0.2 mm layer height. Set
+it to a whole number of the layers you slice at, so the band ends on a layer
+boundary rather than part way through one. Zero turns it off and gives the
+plain rock wall. Where a wall is shorter than the bleed — a shallow piece over
+a deep wall mount — the surface color simply takes the whole of it.
+
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.
 Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across

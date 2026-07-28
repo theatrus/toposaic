@@ -207,6 +207,7 @@ export type GenerationSpec = {
     bridge_structure: "floating" | "supported";
     bridge_thickness_mm: number;
     minimum_patch_mm: number;
+    edge_bleed_mm: number;
     class_borders: "blocky" | "smooth";
     border_smoothing_range_cells: number;
     border_smoothing_nugget: number;
