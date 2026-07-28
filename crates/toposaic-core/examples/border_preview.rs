@@ -37,6 +37,7 @@ fn class_color(class: SurfaceClass) -> [u8; 3] {
         SurfaceClass::Marker => [0xE2, 0x4A, 0x33],
         SurfaceClass::RouteTrail => [0xD8, 0xA3, 0x3C],
         SurfaceClass::Ferry => [0x0F, 0x8C, 0x8C],
+        SurfaceClass::Aviation => [0x4A, 0x4E, 0x54],
         SurfaceClass::Rock => [0x7C, 0x74, 0x68],
     }
 }

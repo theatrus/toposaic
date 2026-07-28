@@ -107,20 +107,20 @@ const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
 /// a few tens of megabytes even for meshes with millions of triangles.
 const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
-// OrcaSlicer and Bambu Studio face-paint values for extruders 1–9, from
-// PrusaSlicer's TriangleSelector serialization. An unsplit painted triangle
-// stores its extruder number n as a nibble stream: n = 1 or 2 fits one
-// nibble, hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates
-// at 0xC and an extension nibble carries n - 3, written before the marker —
-// "0C" through "9C" for extruders 3 to 12.
+// OrcaSlicer and Bambu Studio face-paint values, from PrusaSlicer's
+// TriangleSelector serialization. An unsplit painted triangle stores its
+// extruder number n as a nibble stream: n = 1 or 2 fits one nibble,
+// hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates at 0xC
+// and an extension nibble carries n - 3, written before the marker —
+// "0C" through "AC" for extruders 3 to 13.
 // Keep the standard 3MF color properties too, for consumers that support
 // them.
 //
 // The index here is the archive's DENSE filament slot, not the surface
 // class: extruder number = slot + 1. A spec that emits six classes only ever
 // reaches "3C" whichever six they are.
-const ORCA_PAINT_CODES: [&str; 12] = [
-    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C",
+const ORCA_PAINT_CODES: [&str; 13] = [
+    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "AC",
 ];
 const _: () = assert!(
     ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
@@ -1028,6 +1028,8 @@ mod tests {
         spec.color_output.rail_style = crate::spec::RailStyle::Separate;
         spec.color_output.aerial_style = crate::spec::AerialStyle::Separate;
         spec.color_output.ferry_style = crate::spec::FerryStyle::Separate;
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_style = crate::spec::AviationStyle::Separate;
         spec
     }
 
@@ -1149,9 +1151,10 @@ mod tests {
         let spec = separate_layers_spec();
         assert!(spec.uses_separate_rail());
         assert!(spec.uses_separate_aerial());
-        // Settings alone would charge for all three separate layers —
-        // rail, aerial, and ferry — on top of the base six...
-        assert_eq!(spec.material_palette(any_class()).len(), 9);
+        assert!(spec.uses_separate_aviation());
+        // Settings alone would charge for all four separate layers — rail,
+        // aerial, ferry, and airport pavement — on top of the base six...
+        assert_eq!(spec.material_palette(any_class()).len(), 10);
 
         // ...but a city with railways and no lifts pays for railways only.
         let city = field_with(&[SurfaceClass::Rail]);
@@ -1159,6 +1162,18 @@ mod tests {
         assert_eq!(palette.len(), 7);
         assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
         assert_eq!(palette.slot(SurfaceClass::Aerial), None);
+        assert_eq!(
+            palette.slot(SurfaceClass::Aviation),
+            None,
+            "a city with no airport pays nothing for the airport layer"
+        );
+
+        // And an airfield pays for pavement without paying for the rest.
+        let airfield = field_with(&[SurfaceClass::Aviation]);
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&airfield)));
+        assert_eq!(palette.len(), 7);
+        assert_eq!(palette.slot(SurfaceClass::Aviation), Some(6));
+        assert_eq!(palette.slot(SurfaceClass::Rail), None);
 
         // A ski area with both pays for both, in class order.
         let resort = field_with(&[SurfaceClass::Rail, SurfaceClass::Aerial]);
@@ -1301,6 +1316,12 @@ mod tests {
         field.paint_polyline(&[[0.05, 0.6], [0.95, 0.6]], 60.0, 0.8, SurfaceClass::Rail);
         field.paint_polyline(&[[0.05, 0.8], [0.95, 0.8]], 60.0, 0.8, SurfaceClass::Aerial);
         field.paint_polyline(&[[0.05, 0.7], [0.95, 0.7]], 60.0, 0.8, SurfaceClass::Ferry);
+        field.paint_polyline(
+            &[[0.05, 0.3], [0.95, 0.3]],
+            60.0,
+            0.8,
+            SurfaceClass::Aviation,
+        );
         field.paint_polyline(
             &[[0.05, 0.9], [0.95, 0.9]],
             60.0,

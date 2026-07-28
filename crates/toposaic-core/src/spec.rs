@@ -537,6 +537,49 @@ impl GenerationSpec {
         self.uses_ferry() && self.ferry_line_style().class == SurfaceClass::Ferry
     }
 
+    /// Whether airport ground surfaces are drawn at all.
+    pub fn uses_aviation(&self) -> bool {
+        self.color_output.enabled && self.color_output.aviation.aviation_enabled
+    }
+
+    /// Whether drawn airport surfaces get their own class, color, and
+    /// filament slot.
+    pub fn uses_separate_aviation(&self) -> bool {
+        self.uses_aviation() && self.aviation_line_style().class == SurfaceClass::Aviation
+    }
+
+    /// Whether any of the aeroway groups is switched on. All four off is the
+    /// same as the layer being off, and worth knowing before a fetch.
+    pub fn uses_any_aviation_group(&self) -> bool {
+        let aviation = &self.color_output.aviation;
+        self.uses_aviation()
+            && (aviation.aviation_runways_enabled
+                || aviation.aviation_taxiways_enabled
+                || aviation.aviation_aprons_enabled
+                || aviation.aviation_helipads_enabled)
+    }
+
+    /// Whether the small aeroway features are worth asking for at this span.
+    /// Below the cutoff a helipad is a printable pad; above it, a speck.
+    pub fn uses_dense_aviation_detail(&self) -> bool {
+        self.ground_span_km as f32 <= self.color_output.aviation.aviation_detail_span_km
+    }
+
+    /// Where the airport layer paints.
+    ///
+    /// Answers only "how would pavement look", so it ignores
+    /// `aviation_enabled`; [`Self::uses_aviation`] decides whether it is
+    /// drawn.
+    pub fn aviation_line_style(&self) -> LineStyle {
+        match self.color_output.aviation.aviation_style {
+            AviationStyle::Separate => LineStyle {
+                class: SurfaceClass::Aviation,
+                width_mm: self.color_output.aviation.maximum_aviation_width_mm,
+            },
+            AviationStyle::FollowRoads => self.road_line_style(),
+        }
+    }
+
     /// Where the ferry layer paints.
     ///
     /// Answers only "how would ferries look", so it ignores
@@ -872,6 +915,7 @@ impl GenerationSpec {
                 self.color_output.enabled && self.color_output.roads_enabled
             }
             SurfaceClass::Ferry => self.uses_separate_ferry(),
+            SurfaceClass::Aviation => self.uses_separate_aviation(),
         }
     }
 
@@ -893,6 +937,7 @@ impl GenerationSpec {
                 .as_deref()
                 .unwrap_or(&self.color_output.road_color),
             SurfaceClass::Ferry => &self.color_output.ferry_color,
+            SurfaceClass::Aviation => &self.color_output.aviation.aviation_color,
         }
     }
 
@@ -1699,6 +1744,121 @@ pub enum FerryStyle {
     WithRoads,
 }
 
+/// Where airport pavement takes its color from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AviationStyle {
+    #[default]
+    Separate,
+    FollowRoads,
+}
+
+/// Airport ground surfaces read from OpenStreetMap's `aeroway` scheme.
+///
+/// Flattened into [`ColorOutputSpec`], so the keys sit at the `color_output`
+/// level like every other layer's, and defaulted throughout: a setup saved
+/// before this existed comes back with airport surfaces switched off rather
+/// than silently gaining pavement it was never drawn with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AviationSpec {
+    /// The master switch. Off by default, unlike the other transport
+    /// layers: an airport is a place you go looking for, and a map that
+    /// happens to clip the edge of one should not sprout a runway because
+    /// the setting was on.
+    #[serde(default)]
+    pub aviation_enabled: bool,
+    /// Runways, airstrips, and stopways — the strips aircraft land on.
+    #[serde(default = "yes")]
+    pub aviation_runways_enabled: bool,
+    /// Taxiways and taxilanes, the paths between runway and stand.
+    #[serde(default = "yes")]
+    pub aviation_taxiways_enabled: bool,
+    /// Aprons: the parking and loading pavement.
+    #[serde(default = "yes")]
+    pub aviation_aprons_enabled: bool,
+    /// Helipads, which are usually small enough to fall to the detail
+    /// cutoff on a wide map even when switched on.
+    #[serde(default = "yes")]
+    pub aviation_helipads_enabled: bool,
+    /// Whether airport pavement gets its own color and filament slot, or
+    /// prints in the road color and costs nothing extra.
+    #[serde(default)]
+    pub aviation_style: AviationStyle,
+    /// Color of airport pavement when `aviation_style` is `separate`.
+    /// Ignored, and never emitted into any artifact, otherwise.
+    #[serde(default = "default_aviation_color")]
+    pub aviation_color: String,
+    /// How far airport pavement stands above the terrain. Defaults to the
+    /// same single print layer roads use.
+    #[serde(default = "default_aviation_height_mm")]
+    pub aviation_height_mm: f32,
+    /// The widest a mapped surface may print. A 60 m runway on a close view
+    /// is a correct reading of the data and still not what anyone wants
+    /// across a 180 mm model.
+    #[serde(default = "default_maximum_aviation_width_mm")]
+    pub maximum_aviation_width_mm: f32,
+    /// Ground span past which the small stuff — helipads and taxilanes — is
+    /// dropped before it is ever requested. A whole airport graph at an
+    /// eighty-kilometre view is a mass of unprintable threads.
+    #[serde(default = "default_aviation_detail_span_km")]
+    pub aviation_detail_span_km: f32,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_aviation_color() -> String {
+    "#4A4E54".into()
+}
+
+fn default_aviation_height_mm() -> f32 {
+    0.2
+}
+
+fn default_maximum_aviation_width_mm() -> f32 {
+    3.0
+}
+
+fn default_aviation_detail_span_km() -> f32 {
+    12.0
+}
+
+impl Default for AviationSpec {
+    fn default() -> Self {
+        Self {
+            aviation_enabled: false,
+            aviation_runways_enabled: true,
+            aviation_taxiways_enabled: true,
+            aviation_aprons_enabled: true,
+            aviation_helipads_enabled: true,
+            aviation_style: AviationStyle::default(),
+            aviation_color: default_aviation_color(),
+            aviation_height_mm: default_aviation_height_mm(),
+            maximum_aviation_width_mm: default_maximum_aviation_width_mm(),
+            aviation_detail_span_km: default_aviation_detail_span_km(),
+        }
+    }
+}
+
+impl AviationSpec {
+    fn validate(&self) -> Result<()> {
+        if !(0.08..=1.0).contains(&self.aviation_height_mm) {
+            bail!("airport surface height must be between 0.08 and 1 mm");
+        }
+        if !(0.4..=12.0).contains(&self.maximum_aviation_width_mm) {
+            bail!("maximum airport surface width must be between 0.4 and 12 mm");
+        }
+        if !(1.0..=80.0).contains(&self.aviation_detail_span_km) {
+            bail!("airport detail span must be between 1 and 80 km");
+        }
+        if !valid_hex_color(&self.aviation_color) {
+            bail!("aviation color must use #RRGGBB");
+        }
+        Ok(())
+    }
+}
+
 /// the case where the railway layer `WithRail` names is switched off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2025,6 +2185,10 @@ pub struct ColorOutputSpec {
     /// bleed off and gives the old rock-to-the-rim wall.
     #[serde(default = "default_edge_bleed_mm")]
     pub edge_bleed_mm: f32,
+    /// Airport ground surfaces. Flattened like the other grouped specs, and
+    /// defaulted, so a setup written before it existed still loads.
+    #[serde(flatten, default)]
+    pub aviation: AviationSpec,
     /// Class border drawing and smoothing. Flattened, so the JSON keys stay
     /// at the `color_output` level exactly as before the grouping.
     #[serde(flatten)]
@@ -2236,6 +2400,7 @@ impl Default for ColorOutputSpec {
             bridge_thickness_mm: 1.2,
             minimum_patch_mm: 1.2,
             edge_bleed_mm: default_edge_bleed_mm(),
+            aviation: AviationSpec::default(),
             borders: BorderSpec::default(),
             slope_gates: SlopeGateSpec::default(),
         }
@@ -2299,6 +2464,7 @@ impl ColorOutputSpec {
         if !(0.0..=2.0).contains(&self.edge_bleed_mm) {
             bail!("edge color bleed must be between 0 and 2 mm");
         }
+        self.aviation.validate()?;
         self.slope_gates.validate()?;
         self.borders.validate()?;
         self.line_scaling.validate()?;
@@ -2339,6 +2505,12 @@ pub enum SurfaceClass {
     /// appears when `ferry_style` is `separate`. Last, for the same reason
     /// `RouteTrail` is: a saved preview names classes by index.
     Ferry,
+    /// Airport pavement: runways, airstrips, stopways, taxiways, taxilanes,
+    /// aprons, and helipads, in one class. They are one printed surface to
+    /// the eye and one filament in the slicer, so splitting them would spend
+    /// spools on a distinction nobody asked for. The class only appears when
+    /// `aviation_style` is `separate`.
+    Aviation,
 }
 
 impl SurfaceClass {
@@ -2349,7 +2521,7 @@ impl SurfaceClass {
     /// 3MF packs whichever of these classes a spec actually emits into
     /// consecutive slots, so a class that never appears costs nothing. See
     /// [`GenerationSpec::material_palette`].
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -2362,6 +2534,7 @@ impl SurfaceClass {
         Self::Marker,
         Self::RouteTrail,
         Self::Ferry,
+        Self::Aviation,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -2378,6 +2551,7 @@ impl SurfaceClass {
             Self::Marker => 9,
             Self::RouteTrail => 10,
             Self::Ferry => 11,
+            Self::Aviation => 12,
         }
     }
 }
@@ -2500,7 +2674,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"aviation_enabled":false,"aviation_runways_enabled":true,"aviation_taxiways_enabled":true,"aviation_aprons_enabled":true,"aviation_helipads_enabled":true,"aviation_style":"separate","aviation_color":"#4A4E54","aviation_height_mm":0.2,"maximum_aviation_width_mm":3.0,"aviation_detail_span_km":12.0,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
@@ -2520,6 +2694,86 @@ mod tests {
         );
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
+    }
+
+    /// A setup saved before airport surfaces existed must come back with
+    /// them off. Any other answer would put pavement on a model whose owner
+    /// never chose it, and the whole group is defaulted for this reason.
+    #[test]
+    fn setups_written_before_airports_come_back_with_them_off() {
+        let mut document = serde_json::to_value(GenerationSpec::default()).unwrap();
+        let color_output = document
+            .get_mut("color_output")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("color_output object");
+        let removed = color_output
+            .keys()
+            .filter(|key| key.starts_with("aviation") || key.starts_with("maximum_aviation"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(removed.len(), 10, "every airport key should be droppable");
+        for key in removed {
+            color_output.remove(&key);
+        }
+
+        let spec: GenerationSpec = serde_json::from_value(document).unwrap();
+        spec.validate().unwrap();
+        assert!(!spec.color_output.aviation.aviation_enabled);
+        assert!(!spec.uses_aviation());
+        assert!(!spec.uses_any_aviation_group());
+        // The groups themselves default on, so switching the layer on later
+        // draws something rather than nothing.
+        assert!(spec.color_output.aviation.aviation_runways_enabled);
+        assert!(spec.color_output.aviation.aviation_aprons_enabled);
+        assert_eq!(spec.color_output.aviation.aviation_height_mm, 0.2);
+    }
+
+    /// Airport pavement is one class however many aeroway groups are drawn,
+    /// and costs a filament only when it asks for its own color.
+    #[test]
+    fn airport_surfaces_cost_one_filament_slot_at_most() {
+        let mut spec = GenerationSpec {
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(!spec.emits_class(SurfaceClass::Aviation));
+
+        spec.color_output.aviation.aviation_enabled = true;
+        assert!(spec.emits_class(SurfaceClass::Aviation));
+        assert_eq!(
+            spec.aviation_line_style().class,
+            SurfaceClass::Aviation,
+            "separate is the default style"
+        );
+
+        spec.color_output.aviation.aviation_style = AviationStyle::FollowRoads;
+        assert!(
+            !spec.emits_class(SurfaceClass::Aviation),
+            "following the roads spends no slot of its own"
+        );
+        assert_eq!(spec.aviation_line_style().class, SurfaceClass::Road);
+    }
+
+    /// The small features drop out before they are ever requested once the
+    /// view is wide enough that they could not print anyway.
+    #[test]
+    fn dense_airport_detail_stops_at_the_chosen_span() {
+        let mut spec = GenerationSpec {
+            ground_span_km: 8.0,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        assert!(spec.uses_dense_aviation_detail());
+
+        spec.ground_span_km = 40.0;
+        assert!(!spec.uses_dense_aviation_detail());
     }
 
     /// A JSON document that sets every spec field, flat `color_output` keys
@@ -2648,6 +2902,16 @@ mod tests {
                 "bridge_thickness_mm": 2.0,
                 "minimum_patch_mm": 2.5,
                 "edge_bleed_mm": 0.5,
+                "aviation_enabled": true,
+                "aviation_runways_enabled": true,
+                "aviation_taxiways_enabled": false,
+                "aviation_aprons_enabled": true,
+                "aviation_helipads_enabled": false,
+                "aviation_style": "follow_roads",
+                "aviation_color": "#334455",
+                "aviation_height_mm": 0.25,
+                "maximum_aviation_width_mm": 5.5,
+                "aviation_detail_span_km": 8.0,
                 "class_borders": "smooth",
                 "border_smoothing_range_cells": 4.0,
                 "border_smoothing_nugget": 0.25,
