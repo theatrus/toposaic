@@ -28,12 +28,12 @@ is a third-party file.
 
 ### Bambu Studio (`src/slic3r/GUI/Plater.cpp`, `Format/bbs_3mf.cpp`)
 
-Bambu never applies a third-party file's embedded settings. Whichever way
-the file arrives — File > Open, double-click, or drag-drop — it announces
-"The 3mf is not from Bambu Lab, load geometry data and color data only" and
-keeps the open project's filament list untouched. Verified live: opening a
-file whose settings carry five filaments left a 32-filament session list
-exactly as it was.
+Bambu does not apply a third-party file's embedded settings. Verified live
+through File > Open: a file whose settings carry five filaments left a
+32-filament session list exactly as it was, and Bambu announced "The 3mf is
+not from Bambu Lab, load geometry data and color data only". Drag-drop and
+double-click were not tested and take their own path through
+`Plater.cpp`'s import-action prompt; treat them as unverified.
 
 The one channel that conveys colors into Bambu is the color group. Bambu
 collects the per-triangle `pid` references of any file it did not generate
