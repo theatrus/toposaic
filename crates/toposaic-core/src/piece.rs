@@ -35,13 +35,6 @@ const FLAG_EDGE_GAP_MM: f32 = 0.02;
 /// Overlay footprint fragments below this area (mm^2) are unprintable dust
 /// left over from boolean clipping and are dropped before shelling.
 const MINIMUM_OVERLAY_AREA_MM2: f64 = 0.000_01;
-/// How far the terrain color bleeds down a piece's side wall, counted in
-/// print layers. A cut through a hill is rock, and the wall below the bleed
-/// still says so, but a wall that is rock all the way to the top draws a grey
-/// outline around every piece as soon as the model is seen from anything but
-/// straight above. Two layers put the surface color where the eye meets the
-/// rim without turning the whole cut face into land cover.
-const EDGE_BLEED_LAYERS: f32 = 2.0;
 
 struct FlagCavity {
     indices: Vec<usize>,
@@ -538,7 +531,7 @@ pub(crate) fn build_piece_with_height_range(
         })
         .collect::<Vec<_>>();
     boundary_edges.sort_unstable_by_key(|(edge, _)| *edge);
-    let edge_bleed_mm = EDGE_BLEED_LAYERS * spec.color_output.road_height_mm;
+    let edge_bleed_mm = spec.color_output.edge_bleed_mm;
     // One bleed vertex per boundary vertex, not per boundary edge: two edges
     // meeting at a corner must land on the same point, or the wall gains a
     // T-junction and stops being watertight.
@@ -1537,7 +1530,7 @@ mod tests {
         let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
 
-        let bleed = EDGE_BLEED_LAYERS * spec.color_output.road_height_mm;
+        let bleed = spec.color_output.edge_bleed_mm;
         // Every (x, y) column of the mesh is topped by its terrain vertex, so
         // the highest vertex at each position is the visible surface. This
         // holds whatever the terrain does underneath.
@@ -1612,9 +1605,9 @@ mod tests {
     }
 
     /// A mounted back raises the wall's floor, and the mount check only
-    /// guarantees 0.4 mm of wall under the cut — half of the deepest legal
-    /// bleed. So a flat shoreline under a deep cleat really does run out of
-    /// wall, and the clamp in `bleed_vertex` is reachable, not defensive.
+    /// guarantees 0.4 mm of wall under the cut, while the bleed goes to 2 mm.
+    /// So a flat shoreline under a deep cleat really does run out of wall,
+    /// and the clamp in `bleed_vertex` is reachable, not defensive.
     ///
     /// All three regimes have to stay closed: wall to spare, a wall shorter
     /// than the bleed everywhere, and the mixed case where one end of a wall
@@ -1653,8 +1646,9 @@ mod tests {
                 },
                 color_output: crate::spec::ColorOutputSpec {
                     enabled: true,
-                    // The widest legal layer, so the bleed is at its deepest.
-                    road_height_mm: 0.4,
+                    // Twice the default, so the bleed outruns the wall a
+                    // mounted back leaves behind.
+                    edge_bleed_mm: 0.8,
                     ..crate::spec::ColorOutputSpec::default()
                 },
                 ..GenerationSpec::default()
@@ -1665,7 +1659,7 @@ mod tests {
 
             // Which regime this actually was, so the test cannot quietly stop
             // reaching the clamp if the mount bounds ever move.
-            let bleed = EDGE_BLEED_LAYERS * spec.color_output.road_height_mm;
+            let bleed = spec.color_output.edge_bleed_mm;
             let floor = spec.wall_mount.embedded_depth_mm();
             let mut column_top = HashMap::<(i32, i32), f32>::new();
             for vertex in &mesh.vertices {

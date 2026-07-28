@@ -24,6 +24,16 @@ export function SurfaceTerrainSection({
         step={0.2}
         onChange={(value) => updateColor("minimum_patch_mm", value)}
       />
+      <RangeField
+        label="Edge color bleed"
+        value={spec.color_output.edge_bleed_mm}
+        unit=" mm"
+        min={0}
+        max={2}
+        step={0.1}
+        onChange={(value) => updateColor("edge_bleed_mm", value)}
+        note="How far the surface color carries down a piece's side wall before the rock cut face takes over. Without it every piece wears a grey outline seen from an angle. Set it to a whole number of print layers; zero turns it off."
+      />
       <label className="road-detail-field">
         Terrain class borders
         <select
