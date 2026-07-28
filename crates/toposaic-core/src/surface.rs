@@ -2189,8 +2189,13 @@ mod tests {
             },
             ..GenerationSpec::default()
         };
+        // A 1 km view is well inside the close reference span, so the
+        // exaggeration has eased off entirely and a 12 m building prints at
+        // true height against the map width: 12 m of 1 km across 100 mm.
+        assert!((spec.building_height_scale() - 1.0).abs() < 1e-4);
+        let expected = 12.0 * spec.width_mm / 1_000.0;
         assert!(
-            (scaled_building_height_mm(&spec, field.building_height_at(0.5, 0.5)) - 2.4).abs()
+            (scaled_building_height_mm(&spec, field.building_height_at(0.5, 0.5)) - expected).abs()
                 < 0.001
         );
     }

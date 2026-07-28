@@ -1416,7 +1416,7 @@ pub(crate) fn scaled_building_height_mm(spec: &GenerationSpec, height_m: f32) ->
     if !spec.buildings.enabled && !spec.uses_building_markers() {
         return 0.0;
     }
-    height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.buildings.z_scale
+    height_m * spec.width_mm / (spec.ground_span_km as f32 * 1_000.0) * spec.building_height_scale()
 }
 
 #[cfg(test)]

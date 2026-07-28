@@ -226,6 +226,9 @@ export function TerrainStudio() {
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<SetupVersion[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
+  // Bumped on every recall, so the map can drop linked zoom each time —
+  // including a second recall of the setup already showing.
+  const [setupRecallCount, setSetupRecallCount] = useState(0);
   // Which version is one click from being rolled back to. Rolling back
   // loads the old spec over the model on screen, so it asks first — the
   // same in-row confirm the delete action uses.
@@ -1280,6 +1283,7 @@ export function TerrainStudio() {
 
   const recallSetup = (setup: SavedSetup) => {
     setSelectedSetupId(setup.id);
+    setSetupRecallCount((count) => count + 1);
     // Merge over the client defaults so setups saved before a field existed
     // still get a value, then drop stale generated output like a place change.
     setSpec(mergeSpecDefaults(setup.spec));
@@ -2127,6 +2131,7 @@ export function TerrainStudio() {
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
             }
+            recallCount={setupRecallCount}
           />
           <div
             aria-label="Resize map and preview panes"
