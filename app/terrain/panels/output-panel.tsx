@@ -81,11 +81,8 @@ export function OutputPanel({
             Studio import the file as a project: filament colors and purge
             volumes load in one click, but printer, material, and process
             presets come along too. Painted colors keeps the per-triangle
-            paint without importing any presets. Both leave out the standard
-            3MF color group, which Bambu Studio would otherwise read as a
-            third-party model and offer to append a filament per color for.
-            Geometry only writes that group and nothing else, as a plain
-            standards-based 3MF for other tools.
+            paint without importing any presets. Geometry only writes a
+            plain standards-based 3MF.
           </small>
         </label>
       </fieldset>

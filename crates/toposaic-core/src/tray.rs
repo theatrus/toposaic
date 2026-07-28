@@ -2081,21 +2081,11 @@ mod tests {
             .unwrap()
             .read_to_string(&mut model)
             .unwrap();
-        // Rim, contours, and label, each on its own extruder.
-        assert!(model.contains(" paint_color=\"4\"/>"));
-        assert!(model.contains(" paint_color=\"8\"/>"));
-        assert!(model.contains(" paint_color=\"0C\"/>"));
-        let mut settings = String::new();
-        archive
-            .by_name("Metadata/project_settings.config")
-            .unwrap()
-            .read_to_string(&mut settings)
-            .unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
-        assert_eq!(
-            settings["filament_colour"],
-            serde_json::json!(["#252822", "#E7E4D8", "#F4F3EC"])
-        );
+        assert!(model.contains("color=\"#252822FF\""));
+        assert!(model.contains("color=\"#E7E4D8FF\""));
+        assert!(model.contains("color=\"#F4F3ECFF\""));
+        assert!(model.contains("p1=\"1\""));
+        assert!(model.contains("p1=\"2\""));
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }

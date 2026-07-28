@@ -75,32 +75,6 @@ pub(crate) struct ThreeMfWriter<'a> {
 }
 
 const COLOR_GROUP_ID: u32 = 1000;
-
-/// Whether a style carries the core-spec color group and the per-triangle
-/// `pid`/`p1`/`p2`/`p3` references into it. Only `Geometry` does.
-///
-/// The other two styles are written for OrcaSlicer and Bambu Studio, and
-/// both slicers take their colors from the `paint_color` code on each
-/// triangle and from the embedded project settings — never from the color
-/// group. Carrying it as well is not merely redundant there; in Bambu
-/// Studio it is actively harmful.
-///
-/// Bambu Studio treats a per-triangle `pid` in a file it did not generate
-/// itself as a third-party colored model needing filament assignment: it
-/// opens its "Standard 3mf Import color" dialog and offers to APPEND a
-/// filament per color, on top of whatever the project already had. Its
-/// loader collects that data only for triangles carrying a `pid`, and only
-/// when the model lacks an `Application` metadata value starting with
-/// `BambuStudio-` — which no honest generator can write. Dropping the `pid`
-/// is the only way to stay out of that path.
-///
-/// OrcaSlicer never had the dialog. Its loader keeps ONE color per group
-/// (each `<m:color>` overwrites the last) and uses it only to map an
-/// OBJECT-level `pid` to an extruder. Ours are per-triangle, so Orca was
-/// never reading the group at all.
-fn carries_color_group(style: ThreeMfStyle) -> bool {
-    style == ThreeMfStyle::Geometry
-}
 /// Elements formatted per rayon task when writing 3MF XML bodies.
 const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
@@ -161,13 +135,7 @@ impl<'a> ThreeMfWriter<'a> {
 
         zip.add_directory("3D/", options)?;
         zip.start_file("3D/3dmodel.model", options)?;
-        let palette = spec.material_palette(painted);
-        // The material namespace is declared as a REQUIRED extension, so it
-        // may only appear when the color group it exists for does.
-        let writes_color_group = spec.uses_color_materials()
-            && carries_color_group(spec.color_output.threemf_style)
-            && !palette.is_empty();
-        if writes_color_group {
+        if spec.uses_color_materials() {
             zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
@@ -188,7 +156,8 @@ impl<'a> ThreeMfWriter<'a> {
                 .as_bytes(),
             )?;
         }
-        if writes_color_group {
+        let palette = spec.material_palette(painted);
+        if spec.uses_color_materials() && !palette.is_empty() {
             // Only colors this archive prints, one slot each.
             let mut colors = String::new();
             for color in palette.colors() {
@@ -280,12 +249,11 @@ impl<'a> ThreeMfWriter<'a> {
         }
         output.write_all(b"    </vertices><triangles>\n")?;
         let uses_color = self.spec.uses_color_materials();
-        // A triangle carries its color one way or the other, never both —
-        // see `carries_color_group`. `Geometry` points into the core-spec
-        // color group; the two slicer styles carry the OrcaSlicer/Bambu
-        // `paint_color` code alone.
-        let style = self.spec.color_output.threemf_style;
-        let paints = !carries_color_group(style);
+        // `Geometry` style keeps the core-spec color group references but
+        // drops the OrcaSlicer/Bambu `paint_color` vendor attribute. The
+        // painted-triangle branch below is the exact pre-style code path, so
+        // `Painted` and `Project` archives keep their previous bytes.
+        let paints = self.spec.color_output.threemf_style != ThreeMfStyle::Geometry;
         for (triangles, materials) in mesh
             .triangles
             .chunks(WRITE_BATCH_ELEMENTS)
@@ -302,7 +270,7 @@ impl<'a> ThreeMfWriter<'a> {
                             let paint_color = ORCA_PAINT_CODES[index as usize];
                             writeln!(
                                 buffer,
-                                "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" paint_color=\"{paint_color}\"/>",
+                                "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\" paint_color=\"{paint_color}\"/>",
                                 triangle[0], triangle[1], triangle[2],
                             )
                             .expect("writing to a Vec cannot fail");
@@ -570,75 +538,16 @@ mod tests {
         archive_entry(bytes, "Metadata/project_settings.config")
     }
 
-    /// The colors in the core-spec color group, which only `Geometry`
-    /// carries.
-    fn group_colors(bytes: &[u8]) -> Vec<String> {
-        let model = model_xml(bytes);
-        model
-            .match_indices("<m:color color=\"")
-            .map(|(index, marker)| model[index + marker.len()..][..7].to_owned())
-            .collect()
-    }
-
-    /// The filament colors the embedded project settings ask the slicer to
-    /// load, which only `Project` carries.
-    fn settings_colors(bytes: &[u8]) -> Vec<String> {
-        let settings: serde_json::Value = serde_json::from_str(&project_settings(bytes)).unwrap();
-        settings["filament_colour"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|color| color.as_str().unwrap().to_owned())
-            .collect()
-    }
-
-    /// The face-paint codes the triangles actually use, in slot order. This
-    /// is how many filaments a `Painted` archive asks for, that style
-    /// recording no colors of its own.
-    fn paint_codes(bytes: &[u8]) -> Vec<String> {
-        let model = model_xml(bytes);
-        let mut codes = model
-            .match_indices("paint_color=\"")
-            .map(|(index, marker)| {
-                model[index + marker.len()..]
-                    .split('"')
-                    .next()
-                    .unwrap()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        codes.sort_by_key(|code| {
-            ORCA_PAINT_CODES
-                .iter()
-                .position(|known| known == code)
-                .expect("an emitted paint code must be in the table")
-        });
-        codes.dedup();
-        codes
-    }
-
-    /// How many filaments an archive asks for, however its style says so.
-    fn filament_count(bytes: &[u8], style: ThreeMfStyle) -> usize {
-        match style {
-            ThreeMfStyle::Geometry => group_colors(bytes).len(),
-            ThreeMfStyle::Project => settings_colors(bytes).len(),
-            ThreeMfStyle::Painted => paint_codes(bytes).len(),
-        }
-    }
-
     /// The default `Project` style must keep producing the archive it
-    /// produced last time it was reviewed. The fixture is written from
+    /// produced last time it was reviewed — geometry included, and for a
+    /// six-color spec that geometry is still what the writer emitted before
+    /// `ThreeMfStyle` existed (commit 6e4b1a0). The fixture is written from
     /// `fixture_spec`/`fixture_meshes` above; deterministic zip timestamps
     /// (a constant 1980 date without the `time` feature) and the pure-Rust
     /// zlib-rs deflate make whole-archive comparison stable.
     ///
-    /// The archive has moved twice since the fixture was first taken from
-    /// the writer as it stood before `ThreeMfStyle` existed (commit
-    /// 6e4b1a0), both times deliberately: the embedded settings now name the
-    /// `Generic PLA` preset rather than leaving the filament id empty, and
-    /// the model carries the face-paint codes alone, without the core-spec
-    /// color group that sent Bambu Studio down its third-party color import.
-    /// Vertices and triangles are untouched by either.
+    /// The embedded slicer settings have moved once since: naming the
+    /// `Generic PLA` preset instead of leaving the filament id empty.
     #[test]
     fn project_style_output_is_byte_identical_to_pre_style_writer() {
         let golden = include_bytes!(concat!(
@@ -731,14 +640,8 @@ mod tests {
         );
     }
 
-    /// A triangle says its color ONE way, never two. The slicer styles use
-    /// the face-paint code; `Geometry` uses the core-spec color group.
-    ///
-    /// Carrying both is what put Bambu Studio into its third-party color
-    /// import, where it offers to append a filament per color on top of the
-    /// ones the embedded settings already set up. See `carries_color_group`.
     #[test]
-    fn slicer_styles_carry_paint_codes_alone_and_geometry_the_color_group() {
+    fn painted_and_project_styles_keep_paint_codes_and_geometry_drops_them() {
         for style in [ThreeMfStyle::Painted, ThreeMfStyle::Project] {
             let model = model_xml(&write_fixture(style));
             for code in &ORCA_PAINT_CODES[..PRE_TRAIL_CLASSES.len()] {
@@ -747,18 +650,14 @@ mod tests {
                     "{style:?} should carry paint code {code}"
                 );
             }
-            assert!(!model.contains("<m:colorgroup"), "{style:?}");
-            assert!(!model.contains("pid="), "{style:?}");
-            // The material extension is declared as REQUIRED, so it may not
-            // be left behind once the group it exists for is gone.
-            assert!(!model.contains("requiredextensions"), "{style:?}");
-            assert!(!model.contains("xmlns:m="), "{style:?}");
+            assert!(model.contains("<m:colorgroup id=\"1000\">"));
+            assert!(model.contains("pid=\"1000\" p1=\"5\" p2=\"5\" p3=\"5\""));
         }
 
         let model = model_xml(&write_fixture(ThreeMfStyle::Geometry));
         assert!(!model.contains("paint_color"));
+        // The core-spec color group and per-triangle references stay.
         assert!(model.contains("<m:colorgroup id=\"1000\">"));
-        assert!(model.contains("requiredextensions=\"m\""));
         assert!(model.contains("color=\"#28543AFF\""));
         for index in 0..6 {
             assert!(model.contains(&format!(
@@ -889,20 +788,24 @@ mod tests {
             ThreeMfStyle::Geometry,
         ] {
             let bytes = write_fixture(style);
+            let model = model_xml(&bytes);
             assert_eq!(
-                filament_count(&bytes, style),
+                model.matches("<m:color ").count(),
                 6,
-                "{style:?} should ask for six filaments"
+                "{style:?} should keep six colors"
             );
-            assert!(
-                !model_xml(&bytes).contains("paint_color=\"4C\""),
-                "{style:?}"
-            );
-            assert!(!model_xml(&bytes).contains("#D6336C"), "{style:?}");
+            assert!(!model.contains("paint_color=\"4C\""), "{style:?}");
+            assert!(!model.contains("#D6336C"), "{style:?}");
             if style == ThreeMfStyle::Project {
-                let settings: serde_json::Value =
-                    serde_json::from_str(&project_settings(&bytes)).unwrap();
-                assert!(!project_settings(&bytes).contains("#D6336C"));
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+                let mut settings = String::new();
+                archive
+                    .by_name("Metadata/project_settings.config")
+                    .unwrap()
+                    .read_to_string(&mut settings)
+                    .unwrap();
+                let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+                assert_eq!(settings["filament_colour"].as_array().unwrap().len(), 6);
                 assert_eq!(
                     settings["flush_volumes_matrix"].as_array().unwrap().len(),
                     36
@@ -918,18 +821,14 @@ mod tests {
     #[test]
     fn trail_projects_emit_the_seventh_color_and_paint_code() {
         for style in [ThreeMfStyle::Project, ThreeMfStyle::Painted] {
-            let bytes = write_trail_fixture(style);
-            assert_eq!(filament_count(&bytes, style), 7, "{style:?}");
+            let model = model_xml(&write_trail_fixture(style));
+            assert_eq!(model.matches("<m:color ").count(), 7, "{style:?}");
+            assert!(model.contains("color=\"#D6336CFF\""), "{style:?}");
             assert!(
-                model_xml(&bytes).contains(" paint_color=\"4C\"/>"),
+                model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"),
                 "{style:?} should face-paint the trail triangle for extruder 7"
             );
         }
-        // Only the project style records what those seven colors ARE.
-        assert!(
-            settings_colors(&write_trail_fixture(ThreeMfStyle::Project))
-                .contains(&"#D6336C".into())
-        );
 
         // Geometry drops paint codes but keeps the seventh color reference.
         let model = model_xml(&write_trail_fixture(ThreeMfStyle::Geometry));
@@ -1128,12 +1027,11 @@ mod tests {
         assert_eq!(palette.slot(SurfaceClass::Water), Some(1));
 
         // And the archive asks for the two, not six — every triangle still
-        // painted, none of them reaching for a third filament.
+        // painted, none of them pointing past the group.
         let meshes = fixture_meshes();
-        let bytes = write_spec_meshes(&spec, &meshes, painted_by(&meshes));
-        let model = model_xml(&bytes);
-        assert_eq!(settings_colors(&bytes), ["#7C7468", "#2F76B5"]);
-        assert_eq!(paint_codes(&bytes), ["4", "8"], "two extruders, no more");
+        let model = model_xml(&write_spec_meshes(&spec, &meshes, painted_by(&meshes)));
+        assert_eq!(model.matches("<m:color ").count(), 2);
+        assert!(!model.contains("p1=\"2\""));
         assert_eq!(
             model.matches("<triangle ").count(),
             meshes
@@ -1162,17 +1060,15 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("toposaic-3mf-single-{}.3mf", std::process::id()));
         write_single_mesh_3mf(&spec, &mesh, &path).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
+        let model = model_xml(&std::fs::read(&path).unwrap());
         std::fs::remove_file(path).unwrap();
 
-        assert_eq!(
-            settings_colors(&bytes),
-            [
-                spec.color_output.rock_color.as_str(),
-                spec.color_output.forest_color.as_str(),
-                spec.color_output.snow_color.as_str(),
-            ],
-            "no water, road, or building filament"
+        assert_eq!(model.matches("<m:color ").count(), 3);
+        assert!(!model.contains("color=\"#2F76B5FF\""), "no water filament");
+        assert!(!model.contains("color=\"#D8A33CFF\""), "no road filament");
+        assert!(
+            !model.contains("color=\"#B8A890FF\""),
+            "no building filament"
         );
     }
 
@@ -1210,7 +1106,7 @@ mod tests {
         assert_eq!(palette.slot(SurfaceClass::Aerial), Some(6));
 
         // And it reaches the archive, not just the palette.
-        let colors = settings_colors(&write_spec_meshes(
+        let model = model_xml(&write_spec_meshes(
             &{
                 let mut spec = spec.clone();
                 spec.color_output.threemf_style = ThreeMfStyle::Project;
@@ -1219,10 +1115,10 @@ mod tests {
             &fixture_meshes(),
             PaintedClasses::sampled(Some(&city)),
         ));
-        assert_eq!(colors.len(), 7);
-        assert!(colors.contains(&"#C43D3D".into()), "the rail color");
+        assert_eq!(model.matches("<m:color ").count(), 7);
+        assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
         assert!(
-            !colors.contains(&"#6C4CB6".into()),
+            !model.contains("color=\"#6C4CB6FF\""),
             "no lift color for a map with no lifts"
         );
     }
@@ -1472,19 +1368,17 @@ mod tests {
             mesh.triangles.push([base, base + 1, base + 2]);
             mesh.materials.push(class);
         }
-        let bytes = write_spec_meshes(&spec, &meshes, painted_by(&meshes));
-        let colors = settings_colors(&bytes);
-        assert_eq!(colors.len(), 8);
-        assert_eq!(colors[6], "#C43D3D", "the rail color");
-        assert_eq!(colors[7], "#6C4CB6", "the aerialway color");
+        let model = model_xml(&write_spec_meshes(&spec, &meshes, painted_by(&meshes)));
+        assert_eq!(model.matches("<m:color ").count(), 8);
+        assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
+        assert!(model.contains("color=\"#6C4CB6FF\""), "the aerialway color");
         assert!(
-            !colors.contains(&"#D6336C".into()),
+            !model.contains("color=\"#D6336CFF\""),
             "no trail placeholder between them"
         );
         // Slots seven and eight, extruders 7 and 8.
-        let model = model_xml(&bytes);
-        assert!(model.contains(" paint_color=\"4C\"/>"));
-        assert!(model.contains(" paint_color=\"5C\"/>"));
+        assert!(model.contains("p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"));
+        assert!(model.contains("p1=\"7\" p2=\"7\" p3=\"7\" paint_color=\"5C\"/>"));
     }
 
     /// The byte-identity guarantee that survives the default flip: a spec
@@ -1573,21 +1467,25 @@ mod tests {
             assert!(!disabled.uses_separate_rail());
             assert_eq!(disabled.material_palette(any_class()).len(), 6);
 
-            let bytes = write_rail_fixture(style, RailStyle::WithRoads);
+            let model = model_xml(&write_rail_fixture(style, RailStyle::WithRoads));
             assert_eq!(
-                filament_count(&bytes, style),
+                model.matches("<m:color ").count(),
                 6,
-                "{style:?} should keep six filaments"
+                "{style:?} should keep six colors"
             );
-            assert!(
-                !model_xml(&bytes).contains("paint_color=\"4C\""),
-                "{style:?}"
-            );
-            assert!(!model_xml(&bytes).contains("#C43D3D"), "{style:?}");
+            assert!(!model.contains("paint_color=\"4C\""), "{style:?}");
+            assert!(!model.contains("#C43D3D"), "{style:?}");
             if style == ThreeMfStyle::Project {
-                let settings: serde_json::Value =
-                    serde_json::from_str(&project_settings(&bytes)).unwrap();
-                assert!(!project_settings(&bytes).contains("#C43D3D"));
+                let bytes = write_rail_fixture(style, RailStyle::WithRoads);
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+                let mut settings = String::new();
+                archive
+                    .by_name("Metadata/project_settings.config")
+                    .unwrap()
+                    .read_to_string(&mut settings)
+                    .unwrap();
+                let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+                assert_eq!(settings["filament_colour"].as_array().unwrap().len(), 6);
                 assert_eq!(
                     settings["flush_volumes_matrix"].as_array().unwrap().len(),
                     36
@@ -1610,26 +1508,22 @@ mod tests {
         use crate::spec::RailStyle;
 
         for style in [ThreeMfStyle::Project, ThreeMfStyle::Painted] {
-            let bytes = write_rail_fixture(style, RailStyle::Separate);
-            assert_eq!(filament_count(&bytes, style), 7, "{style:?}");
+            let model = model_xml(&write_rail_fixture(style, RailStyle::Separate));
+            assert_eq!(model.matches("<m:color ").count(), 7, "{style:?}");
             assert!(
-                model_xml(&bytes).contains(" paint_color=\"4C\"/>"),
+                !model.contains("color=\"#D6336CFF\""),
+                "{style:?} must not emit an unreferenced trail placeholder"
+            );
+            assert!(model.contains("color=\"#C43D3DFF\""), "{style:?}");
+            assert!(
+                model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"),
                 "{style:?} should face-paint the rail triangle for extruder 7"
             );
             assert!(
-                !model_xml(&bytes).contains("paint_color=\"5C\""),
-                "{style:?} must not reach for a slot past the palette"
+                !model.contains("p1=\"7\""),
+                "{style:?} must not reference a slot past the palette"
             );
         }
-        let colors = settings_colors(&write_rail_fixture(
-            ThreeMfStyle::Project,
-            RailStyle::Separate,
-        ));
-        assert!(
-            !colors.contains(&"#D6336C".into()),
-            "no unreferenced trail placeholder"
-        );
-        assert_eq!(colors[6], "#C43D3D");
 
         let model = model_xml(&write_rail_fixture(
             ThreeMfStyle::Geometry,
@@ -1670,17 +1564,17 @@ mod tests {
         );
     }
 
-    /// The archive-wide invariant compaction has to hold: the Orca paint
-    /// codes and the project-settings arrays must mean the same thing by
-    /// slot n.
+    /// The archive-wide invariant compaction has to hold: the color group,
+    /// the per-triangle property indices, the Orca paint codes, and the
+    /// project-settings arrays must all mean the same thing by slot n.
     ///
-    /// The check reads the emitted archive back and, for every painted
+    /// The check reads the emitted XML back and, for every painted
     /// triangle, walks slot -> color -> extruder and compares against the
     /// spec's own color for that triangle's class. A dense index used
     /// inconsistently anywhere in the chain shows up here as a mis-colored
     /// triangle, which is exactly what it would be on the plate.
     #[test]
-    fn every_emitted_slot_agrees_across_the_filament_list_and_the_paint_codes() {
+    fn every_emitted_slot_agrees_across_the_color_group_and_the_paint_codes() {
         use crate::spec::{AerialStyle, RailStyle};
 
         let mut spec = fixture_spec(ThreeMfStyle::Project);
@@ -1734,43 +1628,71 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let model = model_xml(&bytes);
 
-        // Slot -> color, read back out of the emitted filament list.
-        let filaments = settings_colors(&bytes);
-        assert_eq!(filaments.len(), 9, "every class this spec emits");
+        // Slot -> color, read back out of the emitted color group.
+        let group = model
+            .split("<m:colorgroup")
+            .nth(1)
+            .unwrap()
+            .split("</m:colorgroup>")
+            .next()
+            .unwrap();
+        let group_colors = group
+            .match_indices("color=\"")
+            .map(|(index, marker)| group[index + marker.len()..][..7].to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(group_colors.len(), 9, "every class this spec emits");
 
-        // Slot -> extruder, read back out of the per-triangle paint codes,
+        // Slot -> extruder, read back out of the per-triangle attributes,
         // in the order the meshes were written.
         let painted = model
             .lines()
             .filter(|line| line.contains("<triangle "))
             .map(|line| {
-                line.split("paint_color=\"")
+                let slot = line
+                    .split("p1=\"")
                     .nth(1)
                     .unwrap()
                     .split('"')
                     .next()
                     .unwrap()
-                    .to_owned()
+                    .parse::<usize>()
+                    .unwrap();
+                let paint = line.split("paint_color=\"").nth(1).unwrap();
+                (slot, paint.split('"').next().unwrap().to_owned())
             })
             .collect::<Vec<_>>();
         assert_eq!(painted.len(), emitted.len());
-        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
-        for (paint, class) in painted.into_iter().zip(emitted) {
-            let slot = palette.slot(class).unwrap() as usize;
+        for ((slot, paint), class) in painted.into_iter().zip(emitted) {
+            let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
             assert_eq!(
-                filaments[slot],
+                group_colors[slot],
                 palette.colors()[slot],
-                "filament slot {slot}"
+                "color group slot {slot}"
+            );
+            assert_eq!(
+                group_colors[slot],
+                palette.colors()[palette.slot(class).unwrap() as usize],
+                "{class:?} took the wrong slot"
             );
             assert_eq!(paint, ORCA_PAINT_CODES[slot], "{class:?} paint code");
         }
 
-        // The rest of the project settings size themselves from the same
-        // palette.
-        let settings: serde_json::Value = serde_json::from_str(&project_settings(&bytes)).unwrap();
+        // The project settings size themselves from the same palette.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        let mut settings = String::new();
+        archive
+            .by_name("Metadata/project_settings.config")
+            .unwrap()
+            .read_to_string(&mut settings)
+            .unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(
+            settings["filament_colour"].as_array().unwrap().len(),
+            group_colors.len()
+        );
         assert_eq!(
             settings["flush_volumes_matrix"].as_array().unwrap().len(),
-            filaments.len() * filaments.len()
+            group_colors.len() * group_colors.len()
         );
     }
 

@@ -550,24 +550,17 @@ mod tests {
         BuildingSpec, ColorOutputSpec, SurfaceClass, WallMountSpec, WallMountStyle, WallMountTarget,
     };
 
-    /// The filaments an archive asks the slicer to load. Every artifact here
-    /// is written in the default `Project` style, which records them in the
-    /// embedded settings rather than in a core-spec color group. An archive
-    /// with no color at all carries no settings file, and asks for none.
     fn colors_in(path: &Path) -> Vec<String> {
         let mut archive = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
-        let mut settings = String::new();
-        let Ok(mut entry) = archive.by_name("Metadata/project_settings.config") else {
-            return Vec::new();
-        };
-        entry.read_to_string(&mut settings).unwrap();
-        drop(entry);
-        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
-        settings["filament_colour"]
-            .as_array()
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
             .unwrap()
-            .iter()
-            .map(|color| color.as_str().unwrap().to_owned())
+            .read_to_string(&mut model)
+            .unwrap();
+        model
+            .match_indices("<m:color color=\"")
+            .map(|(index, marker)| model[index + marker.len()..][..7].to_owned())
             .collect()
     }
 
@@ -1011,24 +1004,24 @@ mod tests {
             .unwrap()
             .read_to_string(&mut model)
             .unwrap();
-        // The default `Project` style states its colors in the embedded
-        // settings and paints each triangle with a face-paint code. It does
-        // NOT also carry a core-spec color group: OrcaSlicer never read one,
-        // and Bambu Studio treats it as a third-party model to map filaments
-        // onto. See `export::carries_color_group`.
-        assert!(!model.contains("<m:colorgroup"));
-        assert!(!model.contains("pid="));
-        assert!(!model.contains("xmlns:m="));
-        let colors = colors_in(&output_dir.join("toposaic.3mf"));
-        for color in ["#28543A", "#2F76B5", "#D8A33C", "#B8A890"] {
-            assert!(colors.contains(&color.to_string()), "{color}");
-        }
-        for code in ["4", "8", "0C", "1C", "2C", "3C"] {
-            assert!(
-                model.contains(&format!(" paint_color=\"{code}\"/>")),
-                "{code}"
-            );
-        }
+        assert!(
+            model.contains(
+                "xmlns:m=\"http://schemas.microsoft.com/3dmanufacturing/material/2015/02\""
+            )
+        );
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("color=\"#28543AFF\""));
+        assert!(model.contains("color=\"#2F76B5FF\""));
+        assert!(model.contains("color=\"#D8A33CFF\""));
+        assert!(model.contains("color=\"#B8A890FF\""));
+        assert!(model.contains("pid=\"1000\""));
+        assert!(model.contains("p1=\"1\""));
+        assert!(model.contains("p1=\"2\""));
+        assert!(model.contains("p1=\"3\""));
+        assert!(model.contains("p1=\"4\""));
+        assert!(model.contains("p1=\"5\""));
+        assert!(model.contains("paint_color=\"4\""));
+        assert!(model.contains("paint_color=\"8\""));
         assert!(model.contains("paint_color=\"0C\""));
         assert!(model.contains("paint_color=\"1C\""));
         assert!(model.contains("paint_color=\"2C\""));
@@ -1110,15 +1103,15 @@ mod tests {
             .unwrap()
             .read_to_string(&mut model)
             .unwrap();
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("color=\"#8A5B3DFF\""));
+        assert!(model.contains("pid=\"1000\""));
         // Two filaments, not the old fixed six. This model prints rock and
         // buildings; with surface colors switched off it never paints the
         // forest, snow, water, or road colors, so they take no slot and the
         // buildings pack into slot two.
-        assert_eq!(
-            colors_in(&output_dir.join("toposaic.3mf")),
-            ["#7C7468", "#8A5B3D"]
-        );
-        assert!(model.contains(" paint_color=\"8\"/>"), "the second slot");
+        assert_eq!(model.matches("<m:color ").count(), 2);
+        assert!(model.contains("p1=\"1\""));
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }
