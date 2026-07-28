@@ -273,6 +273,7 @@ a {
 .setup-row {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -309,6 +310,44 @@ a {
 .setup-menu-list .setup-row-actions [role="menuitem"]:enabled:hover,
 .setup-menu-list .setup-row-actions [role="menuitem"]:focus-visible {
   color: var(--moss);
+}
+
+/* Unsaved changes are the one thing in this menu worth interrupting for. */
+.setup-menu-list .setup-row-actions .setup-row-save {
+  color: var(--moss);
+  font-weight: 800;
+}
+
+/* The row is a flex line; the history takes a line of its own under it. */
+.setup-row-history {
+  border-top: 1px dashed var(--line);
+  flex-basis: 100%;
+  padding: 6px 4px 2px;
+}
+
+.setup-row-history small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.setup-row-history ul {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.setup-row-history li {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.setup-row-history span {
+  color: var(--muted);
+  font-size: 8px;
 }
 
 .setup-menu-list .setup-row-actions .confirm-delete,

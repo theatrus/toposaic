@@ -51,9 +51,11 @@ import type {
   PlaceResult,
   PreviewData,
   SavedSetup,
+  SetupVersion,
   TrailRoute,
 } from "./contracts";
 import { describeJobFailure } from "./generation-failure";
+import { specHasDrifted } from "./setup-drift";
 import {
   MAX_TRAILS,
   MAX_TRAIL_FILE_BYTES,
@@ -219,6 +221,11 @@ export function TerrainStudio() {
   >(null);
   const [setupNameDraft, setSetupNameDraft] = useState("");
   const [setupStatus, setSetupStatus] = useState<string | null>(null);
+  // Which row's history is open, and what it holds. One row at a time: the
+  // menu is already a dense list.
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const [historyVersions, setHistoryVersions] = useState<SetupVersion[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [trailNotice, setTrailNotice] = useState<string | null>(null);
   const [savingSetup, setSavingSetup] = useState(false);
   const [confirmingSetupDeleteId, setConfirmingSetupDeleteId] = useState<
@@ -1131,6 +1138,70 @@ export function TerrainStudio() {
     }
   };
 
+  // Whether the model has moved since the recalled setup was stored. Only
+  // the recalled one can drift: another setup is not what this model came
+  // from, so "different" says nothing about it.
+  //
+  // Compared against the setup as RECALLED, not as stored. Recall fills a
+  // setup through mergeSpecDefaults, so one saved before a field existed
+  // gains that field on the way in; comparing against the stored spec would
+  // report drift the moment it was loaded, with nothing touched.
+  const selectedSetupDrifted = useMemo(
+    () =>
+      specHasDrifted(
+        spec,
+        selectedSetup ? mergeSpecDefaults(selectedSetup.spec) : undefined,
+      ),
+    [spec, selectedSetup],
+  );
+
+  const openHistory = async (setup: SavedSetup) => {
+    if (historyFor === setup.id) {
+      setHistoryFor(null);
+      return;
+    }
+    setHistoryBusy(true);
+    setHistoryFor(setup.id);
+    try {
+      setHistoryVersions(await terrainApi.listSetupVersions(setup.id));
+    } catch (error) {
+      setHistoryFor(null);
+      setSetupStatus(
+        error instanceof Error ? error.message : "No earlier versions loaded.",
+      );
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  // Puts an earlier spec back into the STORED setup. The model on screen is
+  // left alone: a restore would otherwise throw away edits the user has not
+  // saved, which is the opposite of what a rollback is for. Recalling it is
+  // one click away, and the status line says so.
+  const restoreSetupVersion = async (
+    setup: SavedSetup,
+    version: SetupVersion,
+  ) => {
+    setHistoryBusy(true);
+    try {
+      const restored = await terrainApi.restoreSetupVersion(
+        setup.id,
+        version.id,
+      );
+      await refreshSetups();
+      setHistoryVersions(await terrainApi.listSetupVersions(setup.id));
+      setSetupStatus(
+        `Rolled “${restored.name}” back to its earlier version. Click its name to load it.`,
+      );
+    } catch (error) {
+      setSetupStatus(
+        error instanceof Error ? error.message : "The version was not restored.",
+      );
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
   const renameSetup = async (id: string, name: string) => {
     setSavingSetup(true);
     try {
@@ -1725,6 +1796,36 @@ export function TerrainStudio() {
                               </button>
                             )}
                             <span className="setup-row-actions">
+                              {setup.id === selectedSetupId && (
+                                <button
+                                  aria-label={
+                                    selectedSetupDrifted
+                                      ? `Save changes to ${setup.name}`
+                                      : `${setup.name} has no unsaved changes`
+                                  }
+                                  className={
+                                    selectedSetupDrifted ? "setup-row-save" : ""
+                                  }
+                                  disabled={savingSetup || !selectedSetupDrifted}
+                                  onClick={() => void saveSetupAs(setup.name)}
+                                  role="menuitem"
+                                  type="button"
+                                >
+                                  {selectedSetupDrifted ? "Save" : "Saved"}
+                                </button>
+                              )}
+                              <button
+                                aria-label={
+                                  historyFor === setup.id
+                                    ? `Hide earlier versions of ${setup.name}`
+                                    : `Earlier versions of ${setup.name}`
+                                }
+                                onClick={() => void openHistory(setup)}
+                                role="menuitem"
+                                type="button"
+                              >
+                                History
+                              </button>
                               <button
                                 aria-label={`Rename ${setup.name}`}
                                 disabled={savingSetup}
@@ -1757,6 +1858,46 @@ export function TerrainStudio() {
                                 {confirming ? "Confirm" : "Delete"}
                               </button>
                             </span>
+                            {historyFor === setup.id && (
+                              <div className="setup-row-history">
+                                {historyBusy && historyVersions.length === 0 ? (
+                                  <small>Loading earlier versions…</small>
+                                ) : historyVersions.length === 0 ? (
+                                  <small>
+                                    No earlier versions yet. One is kept each
+                                    time this setup is saved over.
+                                  </small>
+                                ) : (
+                                  <ul role="none">
+                                    {historyVersions.map((version) => (
+                                      <li key={version.id} role="none">
+                                        <span>
+                                          {new Date(
+                                            version.saved_at,
+                                          ).toLocaleString()}
+                                        </span>
+                                        <button
+                                          aria-label={`Roll ${setup.name} back to the version from ${new Date(
+                                            version.saved_at,
+                                          ).toLocaleString()}`}
+                                          disabled={historyBusy}
+                                          onClick={() =>
+                                            void restoreSetupVersion(
+                                              setup,
+                                              version,
+                                            )
+                                          }
+                                          role="menuitem"
+                                          type="button"
+                                        >
+                                          Roll back
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
                           </li>
                         );
                       })}

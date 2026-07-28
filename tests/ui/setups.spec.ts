@@ -372,10 +372,20 @@ test("drives the setups menu from the keyboard", async ({ page }) => {
   await expect(menuButton).toHaveAttribute("aria-expanded", "true");
 
   const row = menu.getByRole("menuitem", { name: "Alps close-up", exact: true });
+  // The row's actions in order: History, then Rename, Duplicate, Delete.
+  // (A recalled setup also carries Save ahead of these; this one is not
+  // recalled, so its row starts at History.)
+  const history = menu.getByRole("menuitem", {
+    name: "Earlier versions of Alps close-up",
+  });
   const rename = menu.getByRole("menuitem", { name: "Rename Alps close-up" });
   await expect(row).toBeFocused();
   await page.keyboard.press("ArrowDown");
+  await expect(history).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(rename).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(history).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await expect(row).toBeFocused();
   await page.keyboard.press("ArrowUp");

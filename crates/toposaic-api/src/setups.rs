@@ -14,7 +14,7 @@ use crate::{
     ApiError, AppState, api_error, canonical_uuid,
     database::{
         RenameOutcome, delete_saved_setup, find_saved_setup_by_name, list_saved_setups,
-        rename_saved_setup, upsert_saved_setup,
+        list_setup_versions, rename_saved_setup, restore_setup_version, upsert_saved_setup,
     },
     internal_error,
 };
@@ -27,6 +27,15 @@ pub(crate) struct SavedSetup {
     pub(crate) name: String,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
+    pub(crate) spec: GenerationSpec,
+}
+
+/// One superseded spec of a setup, kept so an overwrite can be walked back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SetupVersion {
+    pub(crate) id: String,
+    /// When the spec it replaced was written, not when this one was made.
+    pub(crate) saved_at: DateTime<Utc>,
     pub(crate) spec: GenerationSpec,
 }
 
@@ -75,6 +84,34 @@ pub(crate) async fn save_setup(
         StatusCode::OK
     };
     Ok((status, Json(stored)))
+}
+
+/// The superseded specs of one setup, newest first.
+pub(crate) async fn list_versions(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Vec<SetupVersion>>, (StatusCode, Json<ApiError>)> {
+    let id =
+        canonical_uuid(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
+    list_setup_versions(&state, &id)
+        .map(Json)
+        .map_err(internal_error)
+}
+
+/// Puts one superseded spec back. The spec it replaces becomes a version of
+/// its own, so a restore made by mistake can be walked back in turn.
+pub(crate) async fn restore_version(
+    State(state): State<AppState>,
+    AxumPath((id, version_id)): AxumPath<(String, String)>,
+) -> Result<Json<SavedSetup>, (StatusCode, Json<ApiError>)> {
+    let id =
+        canonical_uuid(&id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "setup not found"))?;
+    let version_id = canonical_uuid(&version_id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "version not found"))?;
+    restore_setup_version(&state, &id, &version_id, Utc::now())
+        .map_err(internal_error)?
+        .map(Json)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "version not found"))
 }
 
 pub(crate) async fn rename_setup(
@@ -138,7 +175,99 @@ mod tests {
     use rusqlite::params;
 
     use super::*;
+    use crate::database::SAVED_SETUP_VERSION_LIMIT;
     use crate::test_state;
+
+    /// Overwriting a setup keeps what it held, so a wrong save can be
+    /// walked back. Saving it again unchanged must not push that history
+    /// out — a save with nothing to record is not a version.
+    #[tokio::test]
+    async fn overwriting_a_setup_keeps_what_it_replaced() {
+        let state = test_state();
+        let spec = GenerationSpec {
+            place_name: "Rainier".into(),
+            ..GenerationSpec::default()
+        };
+        let (_, first) = save_with_status(&state, "Alps", spec.clone())
+            .await
+            .unwrap();
+        assert!(
+            list_setup_versions(&state, &first.id).unwrap().is_empty(),
+            "a setup's first save replaces nothing"
+        );
+
+        // The same spec again records nothing.
+        save_with_status(&state, "Alps", spec.clone())
+            .await
+            .unwrap();
+        assert!(list_setup_versions(&state, &first.id).unwrap().is_empty());
+
+        // A real change files the spec it replaced.
+        let mut moved = spec.clone();
+        moved.relief_mm = 40.0;
+        save_with_status(&state, "Alps", moved.clone())
+            .await
+            .unwrap();
+        let versions = list_setup_versions(&state, &first.id).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].spec.relief_mm, spec.relief_mm);
+
+        // Only the last few are kept, newest first.
+        for relief in [41.0, 42.0, 43.0, 44.0, 45.0, 46.0] {
+            let mut next = moved.clone();
+            next.relief_mm = relief;
+            save_with_status(&state, "Alps", next).await.unwrap();
+        }
+        let versions = list_setup_versions(&state, &first.id).unwrap();
+        assert_eq!(versions.len(), SAVED_SETUP_VERSION_LIMIT as usize);
+        assert_eq!(versions[0].spec.relief_mm, 45.0, "newest first");
+        assert!(
+            versions
+                .windows(2)
+                .all(|pair| pair[0].saved_at >= pair[1].saved_at)
+        );
+    }
+
+    /// A restore puts a spec back and files the one it replaced, so the
+    /// restore itself can be undone.
+    #[tokio::test]
+    async fn restoring_a_version_is_itself_undoable() {
+        let state = test_state();
+        let spec = GenerationSpec {
+            relief_mm: 20.0,
+            ..GenerationSpec::default()
+        };
+        let (_, setup) = save_with_status(&state, "Alps", spec.clone())
+            .await
+            .unwrap();
+        let mut moved = spec.clone();
+        moved.relief_mm = 40.0;
+        save_with_status(&state, "Alps", moved).await.unwrap();
+
+        let version = list_setup_versions(&state, &setup.id).unwrap().remove(0);
+        let restored = restore_version(
+            State(state.clone()),
+            AxumPath((setup.id.clone(), version.id.clone())),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(restored.spec.relief_mm, 20.0);
+
+        // The 40 mm spec it replaced is now the version on offer, and the
+        // one just restored is no longer listed twice.
+        let versions = list_setup_versions(&state, &setup.id).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].spec.relief_mm, 40.0);
+
+        // A version id belonging to no setup is a 404, not a 500.
+        let missing = restore_version(
+            State(state.clone()),
+            AxumPath((setup.id.clone(), Uuid::new_v4().to_string())),
+        )
+        .await;
+        assert_eq!(missing.unwrap_err().0, StatusCode::NOT_FOUND);
+    }
 
     async fn save_with_status(
         state: &AppState,

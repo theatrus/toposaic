@@ -6,6 +6,7 @@ import type {
   PlaceResult,
   PreviewData,
   SavedSetup,
+  SetupVersion,
 } from "./contracts";
 
 export const IS_TAURI =
@@ -134,6 +135,18 @@ export const terrainApi = {
       jsonBody({ name, spec }),
     );
     return { setup: body, created: status === 201 };
+  },
+  listSetupVersions(id: string, signal?: AbortSignal) {
+    return requestJson<SetupVersion[]>(
+      `/api/setups/${encodeURIComponent(id)}/versions`,
+      { signal },
+    );
+  },
+  restoreSetupVersion(id: string, versionId: string, signal?: AbortSignal) {
+    return requestJson<SavedSetup>(
+      `/api/setups/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`,
+      { method: "POST", signal },
+    );
   },
   renameSetup(id: string, name: string, signal?: AbortSignal) {
     return requestJson<SavedSetup>(`/api/setups/${encodeURIComponent(id)}`, {

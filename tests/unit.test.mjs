@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { specHasDrifted } from "../app/terrain/setup-drift.ts";
 import {
   DEFAULT_CLASS_ORDER,
   effectiveClassOrder,
@@ -235,6 +236,34 @@ test("reordering filaments keeps classes the map does not have", () => {
     [...DEFAULT_CLASS_ORDER].sort(),
     "every class stays in the saved order",
   );
+});
+
+test("drift is what the model means, not how its keys were written", () => {
+  const saved = structuredClone(initialSpec);
+  // A recalled setup is rebuilt through mergeSpecDefaults, so the same
+  // settings can arrive with their keys in another order. That is not drift.
+  const reordered = JSON.parse(
+    JSON.stringify(
+      Object.fromEntries(Object.entries(saved).reverse()),
+    ),
+  );
+  assert.equal(specHasDrifted(reordered, saved), false);
+
+  // A real change is.
+  const moved = structuredClone(saved);
+  moved.relief_mm = saved.relief_mm + 1;
+  assert.equal(specHasDrifted(moved, saved), true);
+
+  // So is one buried in a nested object or an array.
+  const nested = structuredClone(saved);
+  nested.color_output.rock_color = "#000000";
+  assert.equal(specHasDrifted(nested, saved), true);
+  const trailed = structuredClone(saved);
+  trailed.trails = [{ name: "Loop", points: [[46.8, -121.8]] }];
+  assert.equal(specHasDrifted(trailed, saved), true);
+
+  // With nothing recalled there is nothing to drift from.
+  assert.equal(specHasDrifted(saved, undefined), false);
 });
 
 test("defaults the filament preset to the one every slicer ships", () => {

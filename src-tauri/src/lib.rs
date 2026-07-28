@@ -84,6 +84,41 @@ fn free_directory(parent: &Path, stem: &str) -> Result<PathBuf, String> {
     Err("Could not find a free folder name.".to_owned())
 }
 
+/// Name of the setup a folder save writes beside the print files.
+const SETUP_FILE_NAME: &str = "toposaic-setup.json";
+/// Version of the setup-export shape. Mirrors `SETUPS_EXPORT_VERSION` in
+/// app/terrain/studio.tsx, which is what reads a file back.
+const SETUP_EXPORT_VERSION: u32 = 1;
+
+/// The setup document for a finished job, in the shape the app's setup
+/// import reads: one named setup carrying the spec.
+///
+/// The spec comes from the job's OWN manifest, not from whatever the editor
+/// holds now. The point of saving it beside the files is to keep the setup
+/// that made THEM, and the editor has usually moved on by the time anyone
+/// saves — a slider nudged after generating would otherwise be written down
+/// as the setup that produced the print.
+fn setup_document(manifest_path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(manifest_path)
+        .map_err(|error| format!("Could not read the job manifest: {error}"))?;
+    let manifest: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Could not read the job manifest: {error}"))?;
+    let spec = manifest
+        .get("spec")
+        .ok_or_else(|| "The job manifest carries no model setup.".to_owned())?;
+    let name = spec
+        .get("place_name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("TopoSaic setup");
+    serde_json::to_string_pretty(&serde_json::json!({
+        "version": SETUP_EXPORT_VERSION,
+        "setups": [{ "name": name, "spec": spec }],
+    }))
+    .map_err(|error| format!("Could not write the setup: {error}"))
+}
+
 /// Copies the NAMED artifacts of a finished job into a new folder under
 /// `destination`. Returns the folder and how many files landed in it.
 ///
@@ -129,6 +164,26 @@ async fn copy_job_artifacts(
             return Err(format!("Could not save {name}: {error}"));
         }
         copied += 1;
+    }
+
+    // And the setup that made them, so a folder of prints can be turned
+    // back into the model that produced it. A job with no manifest to read
+    // is not worth failing a good save over — the files are already there.
+    let manifest_path = source_dir.join("manifest.json");
+    if manifest_path.is_file() {
+        match setup_document(&manifest_path) {
+            Ok(document) => {
+                if let Err(error) = tokio::fs::write(target.join(SETUP_FILE_NAME), document).await {
+                    let _ = tokio::fs::remove_dir_all(&target).await;
+                    return Err(format!("Could not save {SETUP_FILE_NAME}: {error}"));
+                }
+                copied += 1;
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&target).await;
+                return Err(error);
+            }
+        }
     }
     Ok((target, copied))
 }
@@ -292,6 +347,82 @@ mod tests {
         assert_eq!(folder_slug(&long_kanji).chars().count(), 48);
     }
 
+    /// A folder of prints can be turned back into the model that made it.
+    #[tokio::test]
+    async fn a_saved_folder_carries_the_setup_that_made_it() {
+        let root = std::env::temp_dir().join(format!("toposaic-setup-{}", Uuid::new_v4()));
+        let source = root.join("job");
+        let destination = root.join("picked");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("toposaic.3mf"), b"3MF").unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            br#"{"generator":"toposaic/0.5.0","spec":{"place_name":" Mount Rainier ","rows":3}}"#,
+        )
+        .unwrap();
+
+        let (folder, files) = copy_job_artifacts(
+            &source,
+            &destination,
+            "Mount Rainier",
+            &["toposaic.3mf".to_owned(), "manifest.json".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(files, 3, "the setup counts as a saved file");
+
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(folder.join(SETUP_FILE_NAME)).unwrap())
+                .unwrap();
+        // Exactly the shape app/terrain/studio.tsx imports.
+        assert_eq!(written["version"], 1);
+        let setups = written["setups"].as_array().unwrap();
+        assert_eq!(setups.len(), 1);
+        assert_eq!(setups[0]["name"], "Mount Rainier", "named, and trimmed");
+        assert_eq!(
+            setups[0]["spec"]["rows"], 3,
+            "the spec is the manifest's, whatever the editor now holds"
+        );
+
+        // A place name that is blank, or missing, still yields a usable one.
+        fs::write(
+            source.join("manifest.json"),
+            br#"{"spec":{"place_name":"   ","rows":3}}"#,
+        )
+        .unwrap();
+        let (blank, _) = copy_job_artifacts(
+            &source,
+            &destination,
+            "Mount Rainier",
+            &["manifest.json".to_owned()],
+        )
+        .await
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(blank.join(SETUP_FILE_NAME)).unwrap())
+                .unwrap();
+        assert_eq!(written["setups"][0]["name"], "TopoSaic setup");
+
+        // A manifest that carries no spec fails the save rather than
+        // leaving a folder with a setup missing from it.
+        fs::write(source.join("manifest.json"), br#"{"generator":"x"}"#).unwrap();
+        let before = fs::read_dir(&destination).unwrap().count();
+        assert!(
+            copy_job_artifacts(
+                &source,
+                &destination,
+                "Mount Rainier",
+                &["manifest.json".to_owned()],
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), before);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn saving_all_files_copies_only_what_it_was_asked_for() {
         let root = std::env::temp_dir().join(format!("toposaic-saveall-{}", Uuid::new_v4()));
@@ -300,7 +431,11 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("toposaic.3mf"), b"first").unwrap();
-        fs::write(source.join("manifest.json"), b"{}").unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            br#"{"spec":{"place_name":"Mount Rainier","relief_mm":28.0}}"#,
+        )
+        .unwrap();
         fs::write(source.join("piece-1-1.stl"), b"stl").unwrap();
         fs::write(source.join("preview.json"), b"preview").unwrap();
 
@@ -309,7 +444,8 @@ mod tests {
             copy_job_artifacts(&source, &destination, "Mount Rainier", &print_files)
                 .await
                 .unwrap();
-        assert_eq!(files, 2);
+        // The two named files, plus the setup that made them.
+        assert_eq!(files, 3);
         assert_eq!(first.file_name().unwrap(), "Mount-Rainier");
         assert_eq!(fs::read(first.join("toposaic.3mf")).unwrap(), b"first");
         // The app's own preview data, and an STL nobody asked for, stay put.
