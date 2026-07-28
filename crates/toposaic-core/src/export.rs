@@ -112,15 +112,15 @@ const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
 // stores its extruder number n as a nibble stream: n = 1 or 2 fits one
 // nibble, hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates
 // at 0xC and an extension nibble carries n - 3, written before the marker —
-// "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", and "8C" through extruder 11.
+// "0C" through "9C" for extruders 3 to 12.
 // Keep the standard 3MF color properties too, for consumers that support
 // them.
 //
 // The index here is the archive's DENSE filament slot, not the surface
 // class: extruder number = slot + 1. A spec that emits six classes only ever
 // reaches "3C" whichever six they are.
-const ORCA_PAINT_CODES: [&str; 11] = [
-    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C",
+const ORCA_PAINT_CODES: [&str; 12] = [
+    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C",
 ];
 const _: () = assert!(
     ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
@@ -445,9 +445,9 @@ mod tests {
 
     /// The six-slot spec the golden fixture was written from.
     ///
-    /// Both rail-family layers now default to their own color, so they are
-    /// pinned here to the MERGED styles — the fallback a user picks to save
-    /// the spools. That is the configuration whose archive still has to
+    /// The rail, aerial, and ferry layers all default to their own color,
+    /// so they are pinned here to the MERGED styles — the fallback a user
+    /// picks to save the spools. That is the configuration whose archive still has to
     /// match the pre-trail six-slot output byte for byte, and pinning it
     /// here is what keeps the golden fixture reachable.
     fn fixture_spec(style: ThreeMfStyle) -> GenerationSpec {
@@ -459,6 +459,7 @@ mod tests {
                 threemf_style: style,
                 rail_style: crate::spec::RailStyle::WithRoads,
                 aerial_style: crate::spec::AerialStyle::WithRoads,
+                ferry_style: crate::spec::FerryStyle::WithRoads,
                 ..ColorOutputSpec::default()
             },
             ..GenerationSpec::default()
@@ -1026,6 +1027,7 @@ mod tests {
         let mut spec = fixture_spec(ThreeMfStyle::Project);
         spec.color_output.rail_style = crate::spec::RailStyle::Separate;
         spec.color_output.aerial_style = crate::spec::AerialStyle::Separate;
+        spec.color_output.ferry_style = crate::spec::FerryStyle::Separate;
         spec
     }
 
@@ -1147,8 +1149,9 @@ mod tests {
         let spec = separate_layers_spec();
         assert!(spec.uses_separate_rail());
         assert!(spec.uses_separate_aerial());
-        // Settings alone would charge for both layers...
-        assert_eq!(spec.material_palette(any_class()).len(), 8);
+        // Settings alone would charge for all three separate layers —
+        // rail, aerial, and ferry — on top of the base six...
+        assert_eq!(spec.material_palette(any_class()).len(), 9);
 
         // ...but a city with railways and no lifts pays for railways only.
         let city = field_with(&[SurfaceClass::Rail]);
@@ -1297,6 +1300,7 @@ mod tests {
         field.paint_polyline(&[[0.05, 0.4], [0.95, 0.4]], 60.0, 0.8, SurfaceClass::Trail);
         field.paint_polyline(&[[0.05, 0.6], [0.95, 0.6]], 60.0, 0.8, SurfaceClass::Rail);
         field.paint_polyline(&[[0.05, 0.8], [0.95, 0.8]], 60.0, 0.8, SurfaceClass::Aerial);
+        field.paint_polyline(&[[0.05, 0.7], [0.95, 0.7]], 60.0, 0.8, SurfaceClass::Ferry);
         field.paint_polyline(
             &[[0.05, 0.9], [0.95, 0.9]],
             60.0,
@@ -1332,6 +1336,7 @@ mod tests {
             SurfaceClass::Trail,
             SurfaceClass::Rail,
             SurfaceClass::Aerial,
+            SurfaceClass::Ferry,
             SurfaceClass::Building,
             SurfaceClass::Marker,
             SurfaceClass::RouteTrail,
@@ -1465,7 +1470,8 @@ mod tests {
             "color_output": {
                 "enabled": true,
                 "rail_style": "with_roads",
-                "aerial_style": "with_roads"
+                "aerial_style": "with_roads",
+                "ferry_style": "with_roads"
             }
         }))
         .unwrap();

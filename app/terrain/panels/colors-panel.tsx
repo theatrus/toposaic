@@ -133,6 +133,7 @@ export function ColorsPanel({
     ["Imported trail", spec.color_output.trail_color],
     ["Railway", spec.color_output.rail_color],
     ["Aerial lift", spec.color_output.aerial_color],
+    ["Ferry", spec.color_output.ferry_color],
     ["Building", spec.color_output.building_color],
     ["Map marker", spec.marker_settings.color],
     ["Display base", spec.tray.tray_color],
@@ -285,7 +286,7 @@ export function ColorsPanel({
 
       <ColorGroup
         title="Roads and transport"
-        description="Mapped routes and trails, imported tracks, railways, and aerial lifts."
+        description="Mapped routes and trails, imported tracks, railways, aerial lifts, and ferries."
       >
         <HexColorField
           label="Route"
@@ -311,6 +312,11 @@ export function ColorsPanel({
           label="Aerial lift"
           value={spec.color_output.aerial_color}
           onChange={(value) => updateColor("aerial_color", value)}
+        />
+        <HexColorField
+          label="Ferry"
+          value={spec.color_output.ferry_color}
+          onChange={(value) => updateColor("ferry_color", value)}
         />
       </ColorGroup>
 

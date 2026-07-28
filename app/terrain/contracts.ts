@@ -54,6 +54,7 @@ export type SurfaceClassKey =
   | "trail"
   | "rail"
   | "aerial"
+  | "ferry"
   | "marker"
   | "route_trail";
 
@@ -187,6 +188,12 @@ export type GenerationSpec = {
     aerial_color: string;
     aerial_width_mm: number;
     aerial_style: "separate" | "with_rail" | "with_roads";
+    // Ways OpenStreetMap tags route=ferry. No lifecycle setting: there is
+    // no disused-ferry convention the way there is for track.
+    ferry_enabled: boolean;
+    ferry_color: string;
+    ferry_width_mm: number;
+    ferry_style: "separate" | "with_roads";
     road_detail: "automatic" | "major" | "minor" | "streets" | "all";
     adaptive_road_widths: boolean;
     scale_line_widths_by_span: boolean;
@@ -305,6 +312,7 @@ export type PreviewData = {
     trail?: string;
     rail?: string;
     aerialway?: string;
+    ferry?: string;
     marker?: string;
   };
   surface_coverage?: {
@@ -318,6 +326,7 @@ export type PreviewData = {
     trail?: number;
     rail?: number;
     aerialway?: number;
+    ferry?: number;
     marker?: number;
   };
   surface_source?: string;

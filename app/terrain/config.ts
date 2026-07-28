@@ -211,6 +211,12 @@ export const initialSpec: GenerationSpec = {
     // Lifts get their own color too: a chair lift is neither a road nor a
     // railway, and the map is worth more when it says so.
     aerial_style: "separate",
+    ferry_enabled: true,
+    // Deep teal: water-borne beside the gold roads, and clear of the water
+    // blue underneath it.
+    ferry_color: "#0F8C8C",
+    ferry_width_mm: 0.7,
+    ferry_style: "separate",
     road_detail: "automatic",
     adaptive_road_widths: true,
     scale_line_widths_by_span: true,
@@ -366,7 +372,7 @@ export function automaticRoadDetail(groundSpanKm: number) {
 // Which class a drawn layer's lines land in. The surface classes the
 // preview reports are raw material indices, and several layers can share
 // one, so the legend has to resolve the same chain the backend does.
-export type LineClass = "road" | "rail" | "aerialway";
+export type LineClass = "road" | "rail" | "aerialway" | "ferry";
 
 // Mirrors GenerationSpec::rail_line_style in
 // crates/toposaic-core/src/spec.rs. It answers "how would railways look",
@@ -375,6 +381,13 @@ export function railLineClass(
   colorOutput: GenerationSpec["color_output"],
 ): LineClass {
   return colorOutput.rail_style === "separate" ? "rail" : "road";
+}
+
+// Mirrors GenerationSpec::ferry_line_style.
+export function ferryLineClass(
+  colorOutput: GenerationSpec["color_output"],
+): LineClass {
+  return colorOutput.ferry_style === "separate" ? "ferry" : "road";
 }
 
 // Mirrors GenerationSpec::aerial_line_style. The chain is total: with

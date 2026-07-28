@@ -34,6 +34,7 @@ import {
 } from "./preview-orientation";
 import {
   aerialLineClass,
+  ferryLineClass,
   assembledMeshSamples,
   effectiveMeshSamples,
   isFlagMarker,
@@ -62,6 +63,7 @@ const CLASS_KEYS = [
   "aerialway",
   "marker",
   "route_trail",
+  "ferry",
 ] as const;
 
 function cubicBezier(
@@ -343,6 +345,7 @@ export function ReliefPreview({
     trail_color,
     rail_color,
     aerial_color,
+    ferry_color,
   } = spec.color_output;
   const markerColor = spec.marker_settings.color;
   const coloredMarkersPresent = markers.some(
@@ -367,10 +370,14 @@ export function ReliefPreview({
     (railDrawn && railClass === "rail") ||
     (aerialDrawn && aerialClass === "rail");
   const aerialClassDrawn = aerialDrawn && aerialClass === "aerialway";
+  const ferryClass = ferryLineClass(spec.color_output);
+  const ferryDrawn = spec.color_output.ferry_enabled;
+  const ferryClassDrawn = ferryDrawn && ferryClass === "ferry";
   const roadClassDrawn =
     spec.color_output.roads_enabled ||
     (railDrawn && railClass === "road") ||
-    (aerialDrawn && aerialClass === "road");
+    (aerialDrawn && aerialClass === "road") ||
+    (ferryDrawn && ferryClass === "road");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -457,6 +464,7 @@ export function ReliefPreview({
       trail: preview?.surface_palette?.trail ?? trail_color,
       rail: preview?.surface_palette?.rail ?? rail_color,
       aerialway: preview?.surface_palette?.aerialway ?? aerial_color,
+      ferry: preview?.surface_palette?.ferry ?? ferry_color,
       marker: preview?.surface_palette?.marker ?? markerColor,
     };
     const classColor = (surfaceClass?: number) => {
@@ -848,6 +856,7 @@ export function ReliefPreview({
     route_trail_color,
     rail_color,
     aerial_color,
+    ferry_color,
     markerColor,
     markers,
   ]);
@@ -928,6 +937,7 @@ export function ReliefPreview({
               ["Imported trail", "trail", spec.color_output.trail_color],
               ["Rail", "rail", spec.color_output.rail_color],
               ["Aerial", "aerialway", spec.color_output.aerial_color],
+              ["Ferry", "ferry", spec.color_output.ferry_color],
               ["Marker", "marker", spec.marker_settings.color],
             ] as const
           )
@@ -956,7 +966,8 @@ export function ReliefPreview({
                 (key !== "road" || roadClassDrawn) &&
                 (key !== "building" || buildingsEnabled) &&
                 (key !== "rail" || railClassDrawn) &&
-                (key !== "aerialway" || aerialClassDrawn)
+                (key !== "aerialway" || aerialClassDrawn) &&
+                (key !== "ferry" || ferryClassDrawn)
               );
             })
             .map(([label, key, color]) => (

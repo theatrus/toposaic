@@ -212,6 +212,7 @@ pub(super) fn append_road_geometry(
                 SurfaceClass::Road
                     | SurfaceClass::Rail
                     | SurfaceClass::Aerial
+                    | SurfaceClass::Ferry
                     | SurfaceClass::RouteTrail
             )
         })
@@ -295,6 +296,9 @@ pub(super) fn append_road_geometry(
     let (aerial_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::Aerial);
+    let (ferry_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Ferry);
     let (route_trail_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::RouteTrail);
@@ -542,15 +546,36 @@ pub(super) fn append_road_geometry(
         )?;
         claimed.push(rail_area);
     }
-    // Aerialways go last, so switching the lift layer on can never move a
+    // Aerialways next, so switching the lift layer on can never move a
     // road, trail, or railway triangle that was already there.
     if !aerial_regular.is_empty() {
-        append_overlay_geometry(
+        let aerial_area = append_overlay_geometry(
             mesh,
             spec,
             SurfaceClass::Aerial,
             "triangulate aerialway ribbon",
             &aerial_regular,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(aerial_area);
+    }
+    // Ferries go last for the same reason: they are the newest layer, so
+    // they yield to every overlay that could already be there.
+    if !ferry_regular.is_empty() {
+        append_overlay_geometry(
+            mesh,
+            spec,
+            SurfaceClass::Ferry,
+            "triangulate ferry ribbon",
+            &ferry_regular,
             &clip_ribbon,
             &claimed,
             &decks,

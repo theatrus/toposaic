@@ -96,6 +96,9 @@ const GONE_LIFECYCLE_PREFIXES: [&str; 6] = [
 /// Narrowest line any overlay prints. Below roughly one nozzle width a line
 /// stops being reliably extruded, so every width scale bottoms out here.
 const MINIMUM_LINE_WIDTH_MM: f32 = 0.4;
+/// Cache stem for the ferry layer. Its own, so switching ferries on never
+/// re-downloads a neighbouring layer.
+const FERRY_CACHE_PREFIX: &str = "ferry-v1";
 /// Working width for a railway whose OSM way has no explicit `width=*`.
 /// Standard gauge is 1.435 m; a representative 3.15 m loading envelope adds
 /// room for the vehicle around it. This is a print-width estimate, not a
@@ -544,6 +547,26 @@ pub fn fetch_surface_field(
             append_source(&mut field.source, failure);
         }
     }
+    if spec.uses_ferry() {
+        match paint_ferries(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+            Ok(count) => append_source(
+                &mut field.source,
+                format!(
+                    "ferries: {count} lines from OpenStreetMap via Overpass API; drawn in \
+                     the {} color; route=ferry; © OpenStreetMap contributors, ODbL; \
+                     {OPENSTREETMAP_COPYRIGHT_URL}",
+                    line_style_color_name(spec.ferry_line_style()),
+                ),
+            ),
+            Err(error) => {
+                warn!(%error, "OpenStreetMap ferries unavailable; omitting them");
+                append_source(
+                    &mut field.source,
+                    "OpenStreetMap ferries unavailable; ferry overlay omitted",
+                );
+            }
+        }
+    }
     if !spec.trails.is_empty() {
         let painted = paint_imported_trails(spec, &mut field);
         append_source(
@@ -583,6 +606,7 @@ fn line_style_color_name(style: toposaic_core::LineStyle) -> &'static str {
     match style.class {
         SurfaceClass::Rail => "rail",
         SurfaceClass::Aerial => "aerialway",
+        SurfaceClass::Ferry => "ferry",
         _ => "road",
     }
 }
@@ -815,6 +839,60 @@ fn paint_osm_ways(
             .filter(|feature| feature.bridge_elevations_m.is_some())
             .count(),
     )
+}
+
+/// Fetches and draws the ferry layer.
+///
+/// Ferries are their own fetch and their own cache entry, like each
+/// rail-family layer, so a coastal map's crossings never re-download when an
+/// unrelated layer moves.
+///
+/// They share almost nothing else with the rail family. `route=ferry` is a
+/// tag on the way itself rather than a `railway`/`aerialway` value, so there
+/// is no type to size a width from and no lifecycle grammar — OpenStreetMap
+/// has no convention of disused ferry crossings the way it does for track.
+/// Nor are there bridges or tunnels to interpolate: a crossing sits on the
+/// water for its whole length, so it paints flat like a terrain-following
+/// road.
+fn paint_ferries(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> Result<usize> {
+    let response = fetch_osm_response(cache_dir, FERRY_CACHE_PREFIX, ferry_query(bounds))?;
+    let transform = transform_for(spec);
+    let style = spec.ferry_line_style();
+    let width_mm = (style.width_mm * spec.close_view_line_scale()).max(MINIMUM_LINE_WIDTH_MM);
+    let mut drawn = 0;
+    for way in response.elements {
+        if way.geometry.len() < 2 {
+            continue;
+        }
+        let points = normalized_osm_points(&way, transform);
+        field.paint_polyline(&points, spec.width_mm, width_mm, style.class);
+        drawn += 1;
+    }
+    Ok(drawn)
+}
+
+fn ferry_query(bounds: GeoBounds) -> String {
+    let ways = bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|bounds| {
+            format!(
+                "way[\"route\"=\"ferry\"][\"area\"!=\"yes\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
+            )
+        })
+        .collect::<String>();
+    // `out geom` rather than `out tags geom`: nothing here reads a ferry's
+    // tags, so there is no reason to download them.
+    format!("[out:json][timeout:30];({ways});out geom;")
 }
 
 /// Fetches and draws the railway and aerialway layers.
@@ -2614,6 +2692,57 @@ mod tests {
         let height_field = HeightField::new(2, 2, vec![100.0; 4], "rail").unwrap();
         let ways = ways.into_iter().map(|way| (kind, way)).collect();
         paint_rail_ways(spec, &height_field, field, ways)[kind.index()]
+    }
+
+    /// Ferries ask Overpass for one thing and cache under their own stem,
+    /// so switching them on cannot answer with, or evict, another layer.
+    #[test]
+    fn ferry_query_asks_only_for_ferry_routes() {
+        let query = ferry_query(test_bounds());
+        assert!(query.contains("way[\"route\"=\"ferry\"]"));
+        assert!(query.contains("[\"area\"!=\"yes\"]"));
+        // No tags are read for ferries, so none are downloaded.
+        assert!(query.contains("out geom;"));
+        assert!(!query.contains("out tags geom;"));
+        // Nothing from a neighbouring layer leaks into the query.
+        for foreign in ["railway", "aerialway", "highway", "waterway"] {
+            assert!(!query.contains(foreign), "{foreign} has no place here");
+        }
+
+        let cache = std::env::temp_dir();
+        assert_ne!(
+            osm_cache_path(&cache, FERRY_CACHE_PREFIX, &query),
+            osm_cache_path(
+                &cache,
+                &rail_cache_prefix(RailKind::Railway, RailLifecycle::Operational),
+                &rail_query(test_bounds(), RailKind::Railway, RailLifecycle::Operational),
+            ),
+            "a ferry response must never answer a railway request"
+        );
+    }
+
+    /// A crossing spans open water, so the whole line paints flat. Nothing
+    /// in the ferry path reads bridge or tunnel tags, which the rail family
+    /// needs and ferries have no use for.
+    #[test]
+    fn ferries_paint_flat_lines_in_their_own_class() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.width_mm = 60.0;
+        assert!(spec.uses_ferry());
+        assert!(spec.uses_separate_ferry());
+        assert_eq!(spec.ferry_line_style().class, SurfaceClass::Ferry);
+
+        // Folded into the roads it costs no class of its own.
+        spec.color_output.ferry_style = toposaic_core::FerryStyle::WithRoads;
+        assert!(spec.uses_ferry());
+        assert!(!spec.uses_separate_ferry());
+        assert_eq!(spec.ferry_line_style().class, SurfaceClass::Road);
+
+        // And it rides on color output like every other mapped line.
+        spec.color_output.ferry_style = toposaic_core::FerryStyle::Separate;
+        spec.color_output.enabled = false;
+        assert!(!spec.uses_ferry());
     }
 
     fn test_bounds() -> GeoBounds {

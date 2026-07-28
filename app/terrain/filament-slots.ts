@@ -1,7 +1,7 @@
 // Explicit extension: this is a VALUE import, and the unit tests load this
 // module through Node's ESM loader, which does not guess one. Type-only
 // imports are erased before that matters.
-import { aerialLineClass, railLineClass } from "./config.ts";
+import { aerialLineClass, ferryLineClass, railLineClass } from "./config.ts";
 import type { GenerationSpec, SurfaceClassKey } from "./contracts";
 
 // The backend's fixed class order — `SurfaceClass::ALL` in
@@ -19,6 +19,7 @@ export const DEFAULT_CLASS_ORDER: readonly SurfaceClassKey[] = [
   "aerial",
   "marker",
   "route_trail",
+  "ferry",
 ];
 
 const CLASS_LABELS: Record<SurfaceClassKey, string> = {
@@ -33,6 +34,7 @@ const CLASS_LABELS: Record<SurfaceClassKey, string> = {
   aerial: "Aerial lift",
   marker: "Map marker",
   route_trail: "Trail",
+  ferry: "Ferry",
 };
 
 export type FilamentSlotEntry = {
@@ -61,6 +63,7 @@ export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
     aerial: spec.color_output.aerial_color,
     marker: spec.marker_settings.color,
     route_trail: spec.color_output.route_trail_color,
+    ferry: spec.color_output.ferry_color,
   };
   // Mirrors GenerationSpec::emits_class. The rail and aerial layers ride on
   // color output the way roads do, and each takes a slot only when its
@@ -85,6 +88,8 @@ export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
       (marker) => marker.kind !== "flag_hole" && marker.kind !== "flag_label",
     ),
     route_trail: output.enabled && output.roads_enabled,
+    ferry:
+      output.enabled && output.ferry_enabled && ferryLineClass(output) === "ferry",
   };
   const slotByColor = new Map<string, number>();
   const entries: FilamentSlotEntry[] = [];

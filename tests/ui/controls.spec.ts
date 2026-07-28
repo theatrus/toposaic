@@ -185,6 +185,9 @@ test("switches between the reflowed control panels", async ({ page }) => {
     surfaceColors.getByRole("group", { name: "Railways and lifts" }),
   ).toBeVisible();
   await expect(
+    surfaceColors.getByRole("group", { name: "Ferries" }),
+  ).toBeVisible();
+  await expect(
     surfaceColors.getByRole("group", { name: "Imported trails" }),
   ).toBeVisible();
   await expect(page.getByLabel("Find a place")).toBeHidden();
@@ -617,7 +620,9 @@ test("switches railways on apart from roads and submits them", async ({
   ).toBeVisible();
   // The slot is only spent where the mapped data holds railways.
   await expect(
-    surfaceColors.getByText(/uses a filament slot only where the map has a/),
+    surfaceColors.getByText(
+      /uses a filament slot only where the map has a\s+railway/,
+    ),
   ).toBeVisible();
 
   // Switching the layer off takes its style, width, and legend entry with it.

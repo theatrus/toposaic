@@ -86,12 +86,13 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /Draw with roads/);
   assert.match(html, /Draw with railways/);
   assert.match(html, /Own color/);
-  // Both layers default to their own color — picking them out is the point
-  // of drawing them — so the server renders both selects on "separate" and
-  // neither folded into another layer.
+  // Railways, lifts, and ferries all default to their own color — picking
+  // them out is the point of drawing them — so the server renders all three
+  // selects on "separate" and none folded into another layer.
+  assert.match(html, /Render ferries/);
   assert.equal(
     (html.match(/<option value="separate" selected="">/g) ?? []).length,
-    2,
+    3,
   );
   assert.doesNotMatch(html, /<option value="with_roads" selected="">/);
   assert.doesNotMatch(html, /<option value="with_rail" selected="">/);

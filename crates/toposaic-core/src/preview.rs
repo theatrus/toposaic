@@ -49,13 +49,14 @@ pub(crate) fn build_preview(
             ) / spec.relief_mm.max(f32::EPSILON);
             let road = surface_sample
                 .filter(|sample| {
-                    // Railways and aerialways paint as Road-class samples
-                    // under their default styles, so they must raise the
-                    // preview even when the road layer itself is off.
+                    // Railways, aerialways, and ferries can all paint as
+                    // Road-class samples under a merged style, so they must
+                    // raise the preview even when the road layer is off.
                     (spec.color_output.enabled
                         && (spec.color_output.roads_enabled
                             || spec.color_output.rail_enabled
-                            || spec.color_output.aerial_enabled)
+                            || spec.color_output.aerial_enabled
+                            || spec.color_output.ferry_enabled)
                         && sample.class == SurfaceClass::Road)
                         || (spec.color_output.enabled
                             && spec.color_output.roads_enabled
@@ -63,6 +64,7 @@ pub(crate) fn build_preview(
                         || (spec.uses_trails() && sample.class == SurfaceClass::Trail)
                         || (spec.uses_rail_or_aerial() && sample.class == SurfaceClass::Rail)
                         || (spec.uses_aerial() && sample.class == SurfaceClass::Aerial)
+                        || (spec.uses_ferry() && sample.class == SurfaceClass::Ferry)
                 })
                 .map(|_| spec.color_output.road_height_mm)
                 .unwrap_or(0.0)
@@ -158,6 +160,11 @@ pub(crate) fn build_preview(
                 serde_json::json!(spec.color_output.aerial_color);
             preview["surface_coverage"]["aerialway"] =
                 serde_json::json!(coverage[SurfaceClass::Aerial.material_index() as usize]);
+        }
+        if spec.uses_separate_ferry() {
+            preview["surface_palette"]["ferry"] = serde_json::json!(spec.color_output.ferry_color);
+            preview["surface_coverage"]["ferry"] =
+                serde_json::json!(coverage[SurfaceClass::Ferry.material_index() as usize]);
         }
         preview["surface_source"] = serde_json::json!(field.source);
     }

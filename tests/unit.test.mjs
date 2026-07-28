@@ -156,11 +156,22 @@ test("filament slots number the palette and reorder without loss", () => {
   // route color, and has no imported trails or markers.
   assert.deepEqual(
     entries.map((entry) => entry.classKey),
-    ["rock", "forest", "snow", "water", "road", "building", "rail", "aerial", "route_trail"],
+    [
+      "rock",
+      "forest",
+      "snow",
+      "water",
+      "road",
+      "building",
+      "rail",
+      "aerial",
+      "route_trail",
+      "ferry",
+    ],
   );
   assert.deepEqual(
     entries.map((entry) => entry.filament),
-    [1, 2, 3, 4, 5, 6, 7, 8, 5],
+    [1, 2, 3, 4, 5, 6, 7, 8, 5, 9],
     "the mapped trail shares the route filament",
   );
 
