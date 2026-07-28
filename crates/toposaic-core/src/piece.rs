@@ -485,7 +485,9 @@ pub(crate) fn build_piece_with_height_range(
         }
     }
 
-    let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 2);
+    // Four wall triangles per boundary edge now: the bleed band and the cut
+    // face below it.
+    let mut triangles = Vec::with_capacity(top_triangles.len() * 2 + edge_uses.len() * 4);
     let mut materials = Vec::with_capacity(triangles.capacity());
     let retained_back = spec.puzzle_retention.active(spec.tray.enabled);
     let mounted_back = spec.wall_mount.cuts_terrain();
@@ -1607,6 +1609,85 @@ mod tests {
             })
             .count();
         assert!(bleed_vertices > 0, "no vertex sits at the bleed depth");
+    }
+
+    /// A mounted back raises the wall's floor, and the mount check only
+    /// guarantees 0.4 mm of wall under the cut — half of the deepest legal
+    /// bleed. So a flat shoreline under a deep cleat really does run out of
+    /// wall, and the clamp in `bleed_vertex` is reachable, not defensive.
+    ///
+    /// All three regimes have to stay closed: wall to spare, a wall shorter
+    /// than the bleed everywhere, and the mixed case where one end of a wall
+    /// clamps and the other does not.
+    #[test]
+    fn a_wall_squeezed_to_the_bleed_depth_still_closes() {
+        let field = SurfaceField::new(3, 3, vec![SurfaceClass::Forest; 9], "forest").unwrap();
+        let flat = HeightField::new(3, 3, vec![0.0; 9], "shoreline").unwrap();
+        // Relief low enough that the terrain crosses the bleed threshold part
+        // way up, so a single wall has clamped and unclamped ends.
+        let rolling = HeightField::new(
+            3,
+            3,
+            vec![0.0, 40.0, 0.0, 40.0, 80.0, 40.0, 0.0, 40.0, 0.0],
+            "low rise",
+        )
+        .unwrap();
+        let mut regimes = Vec::new();
+        for (depth_mm, height_field, relief_mm) in [
+            (0.4_f32, &flat, 28.0_f32),
+            (2.4, &flat, 28.0),
+            (2.4, &rolling, 1.0),
+        ] {
+            let spec = GenerationSpec {
+                width_mm: 80.0,
+                rows: 2,
+                columns: 2,
+                relief_mm,
+                wall_mount: WallMountSpec {
+                    style: WallMountStyle::FrenchCleat,
+                    target: WallMountTarget::Terrain,
+                    depth_mm,
+                    thickness_mm: 1.2,
+                    wall_offset_mm: 0.8,
+                    ..WallMountSpec::default()
+                },
+                color_output: crate::spec::ColorOutputSpec {
+                    enabled: true,
+                    // The widest legal layer, so the bleed is at its deepest.
+                    road_height_mm: 0.4,
+                    ..crate::spec::ColorOutputSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            spec.validate().unwrap();
+            let mesh = build_piece(&spec, Some(height_field), Some(&field), 0, 0).unwrap();
+            assert_watertight(&mesh);
+
+            // Which regime this actually was, so the test cannot quietly stop
+            // reaching the clamp if the mount bounds ever move.
+            let bleed = EDGE_BLEED_LAYERS * spec.color_output.road_height_mm;
+            let floor = spec.wall_mount.embedded_depth_mm();
+            let mut column_top = HashMap::<(i32, i32), f32>::new();
+            for vertex in &mesh.vertices {
+                let key = (
+                    (vertex[0] * 1_000.0).round() as i32,
+                    (vertex[1] * 1_000.0).round() as i32,
+                );
+                let entry = column_top.entry(key).or_insert(f32::NEG_INFINITY);
+                *entry = entry.max(vertex[2]);
+            }
+            let clamped = column_top
+                .values()
+                .filter(|top| **top - floor <= bleed)
+                .count();
+            regimes.push((clamped, column_top.len() - clamped));
+        }
+        assert!(regimes[0].0 == 0, "expected no clamping, got {regimes:?}");
+        assert!(regimes[1].1 == 0, "expected full clamping, got {regimes:?}");
+        assert!(
+            regimes[2].0 > 0 && regimes[2].1 > 0,
+            "expected a mix of clamped and unclamped walls, got {regimes:?}"
+        );
     }
 
     #[test]
