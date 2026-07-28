@@ -268,11 +268,15 @@ impl GenerationSpec {
         {
             bail!("center-anchored super-tile grids require odd column and row counts");
         }
-        let (south, north) = self.terrain_footprint_latitude_bounds();
-        if south < -85.0 || north > 85.0 {
-            bail!(
-                "terrain footprint reaches {south:.3} to {north:.3} degrees latitude; keep the full rotated super-tile grid between -85 and 85 degrees"
-            );
+        // North-up sampling clamps at the model latitude limit like it always
+        // has, so only rotated grids need the hard footprint check.
+        if !self.geo_transform().is_north_up() {
+            let (south, north) = self.terrain_footprint_latitude_bounds();
+            if south < -85.0 || north > 85.0 {
+                bail!(
+                    "terrain footprint reaches {south:.3} to {north:.3} degrees latitude; keep the full rotated super-tile grid between -85 and 85 degrees"
+                );
+            }
         }
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
@@ -446,6 +450,13 @@ impl GenerationSpec {
             self.map_frame
                 .map_or(self.center_lat, |frame| frame.origin_lat),
         )
+    }
+
+    /// Whether separately generated tiles sit against this one, so its
+    /// sampled outer edges must stay exactly as fetched. A lone tile has no
+    /// neighbours and keeps full edge repair and filtering instead.
+    pub fn shares_tile_edges(&self) -> bool {
+        self.map_frame.is_some() || self.adjacent_columns > 1 || self.adjacent_rows > 1
     }
 
     fn terrain_footprint_latitude_bounds(&self) -> (f64, f64) {
@@ -2603,6 +2614,32 @@ mod tests {
         let error = spec.validate().unwrap_err().to_string();
         assert!(error.contains("full rotated super-tile grid"));
         assert!(error.contains("-85 and 85"));
+
+        // North-up sampling clamps at the model limit as it always has, so
+        // the same near-pole grid still validates without rotation.
+        let north_up = GenerationSpec {
+            terrain_rotation_degrees: 0.0,
+            ..spec
+        };
+        north_up.validate().unwrap();
+    }
+
+    #[test]
+    fn only_tiles_with_matching_neighbours_share_edges() {
+        let lone = GenerationSpec::default();
+        assert!(!lone.shares_tile_edges());
+
+        let grid = GenerationSpec {
+            adjacent_columns: 2,
+            ..GenerationSpec::default()
+        };
+        assert!(grid.shares_tile_edges());
+
+        let framed = GenerationSpec {
+            map_frame: Some(MapFrame::at_spec_origin(&GenerationSpec::default())),
+            ..GenerationSpec::default()
+        };
+        assert!(framed.shares_tile_edges());
     }
 
     #[test]

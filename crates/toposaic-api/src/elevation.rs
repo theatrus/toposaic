@@ -156,7 +156,15 @@ fn fetch_height_field_at_size(
     // against damage too broad to judge pixel by pixel.
     if spec.despike_terrain {
         let spacing_m = sample_spacing_m(spec, sample_width, sample_height);
-        let report = field.despike_interior(spacing_m);
+        // Matching tiles sample the outer ring in common, so it must stay as
+        // fetched to keep their height seams equal. A lone tile has no seams
+        // and heals edge spikes too, which also keeps them out of the
+        // automatic elevation datum.
+        let report = if spec.shares_tile_edges() {
+            field.despike_interior(spacing_m)
+        } else {
+            field.despike(spacing_m)
+        };
         if !report.is_empty() {
             field.source.push_str(&describe_despike(&report));
         }

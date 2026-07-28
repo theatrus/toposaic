@@ -322,7 +322,11 @@ pub fn fetch_surface_field(
     }
 
     let mut field = SurfaceField::new(width, height, classes, source)?;
-    let source_edges = field.raster_edge_classes();
+    // Only tiles with separately generated neighbours freeze their outer
+    // ring; a lone tile lets slope gates and smoothing reach its edges.
+    let source_edges = spec
+        .shares_tile_edges()
+        .then(|| field.raster_edge_classes());
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gates = &spec.color_output.slope_gates;
@@ -441,7 +445,9 @@ pub fn fetch_surface_field(
                 );
             }
         }
-        field.restore_raster_edge_classes(&source_edges)?;
+        if let Some(edges) = &source_edges {
+            field.restore_raster_edge_classes(edges)?;
+        }
         if spec.color_output.osm_water_enabled {
             match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
                 Ok(counts) => append_source(
