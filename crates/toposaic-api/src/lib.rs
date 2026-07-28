@@ -38,7 +38,7 @@ pub mod diagnostics {
 use database::migrate;
 use geocoding::search_places;
 pub(crate) use jobs::Job;
-pub(crate) use setups::SavedSetup;
+pub(crate) use setups::{SavedSetup, SetupVersion};
 
 #[derive(Clone)]
 struct AppState {
@@ -115,6 +115,11 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .route(
             "/api/setups/{id}",
             axum::routing::delete(setups::delete_setup).patch(setups::rename_setup),
+        )
+        .route("/api/setups/{id}/versions", get(setups::list_versions))
+        .route(
+            "/api/setups/{id}/versions/{version_id}/restore",
+            axum::routing::post(setups::restore_version),
         )
         .layer(http::cors_layer(settings::allowed_origins()))
         .layer(TraceLayer::new_for_http())

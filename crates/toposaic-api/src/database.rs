@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use toposaic_core::Artifact;
 
-use crate::{AppState, Job, SavedSetup, jobs::classify_job_error};
+use uuid::Uuid;
+
+use crate::{AppState, Job, SavedSetup, SetupVersion, jobs::classify_job_error};
 
 pub fn migrate(connection: &Connection) -> Result<()> {
     connection.execute_batch(
@@ -31,6 +33,17 @@ pub fn migrate(connection: &Connection) -> Result<()> {
             spec_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS saved_setups_updated_at_idx ON saved_setups(updated_at DESC);
+        -- What a setup held before each overwrite, newest first, trimmed to
+        -- SAVED_SETUP_VERSION_LIMIT. Deleting a setup takes its history with
+        -- it; foreign keys are ON above, so the cascade is enforced.
+        CREATE TABLE IF NOT EXISTS saved_setup_versions (
+            id TEXT PRIMARY KEY,
+            setup_id TEXT NOT NULL REFERENCES saved_setups(id) ON DELETE CASCADE,
+            saved_at TEXT NOT NULL,
+            spec_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS saved_setup_versions_setup_idx
+            ON saved_setup_versions(setup_id, saved_at DESC);
         CREATE TABLE IF NOT EXISTS place_search_cache (
             query TEXT PRIMARY KEY,
             response_json TEXT NOT NULL,
@@ -130,8 +143,19 @@ pub fn recent_jobs(state: &AppState, limit: usize) -> Result<Vec<Job>> {
 /// caller's freshly minted id only when the insert arm won, so the flag is
 /// as race-free as the upsert itself.
 pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<(SavedSetup, bool)> {
-    let connection = connection(state)?;
-    let mut statement = connection.prepare(
+    let mut guard = connection(state)?;
+    // One unit of work: a version filed without the write it stands for
+    // would be a lie about what the setup used to hold.
+    let transaction = guard.transaction()?;
+    // Keep what the name held before this write, so an overwrite can be
+    // undone. Only when the spec actually moves: saving a setup twice
+    // without touching the model should not push its real history out.
+    if let Some(previous) = read_saved_setup_by_name(&transaction, &setup.name)?
+        && serde_json::to_string(&previous.spec)? != serde_json::to_string(&setup.spec)?
+    {
+        archive_setup_version(&transaction, &previous, setup.updated_at)?;
+    }
+    let mut statement = transaction.prepare(
         "INSERT INTO saved_setups (id, name, created_at, updated_at, spec_json)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(name) DO UPDATE SET
@@ -150,6 +174,8 @@ pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<(Saved
         row_to_saved_setup,
     )?;
     let created = stored.id == setup.id;
+    drop(statement);
+    transaction.commit()?;
     Ok((stored, created))
 }
 
@@ -194,6 +220,127 @@ pub fn rename_saved_setup(
         .transpose()?
         .map(|setup| RenameOutcome::Renamed(Box::new(setup)))
         .unwrap_or(RenameOutcome::NotFound))
+}
+
+/// How many superseded versions of a setup are kept. A few, so a wrong
+/// overwrite can be walked back, without the store growing without bound.
+pub const SAVED_SETUP_VERSION_LIMIT: i64 = 5;
+
+fn read_saved_setup_by_name(connection: &Connection, name: &str) -> Result<Option<SavedSetup>> {
+    let mut statement = connection.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups WHERE name = ?1",
+    )?;
+    let mut rows = statement.query([name])?;
+    rows.next()?
+        .map(row_to_saved_setup)
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// Files one superseded spec and drops whatever falls past the limit.
+fn archive_setup_version(
+    connection: &Connection,
+    previous: &SavedSetup,
+    saved_at: DateTime<Utc>,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO saved_setup_versions (id, setup_id, saved_at, spec_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            Uuid::new_v4().to_string(),
+            previous.id,
+            saved_at.to_rfc3339(),
+            serde_json::to_string(&previous.spec)?,
+        ],
+    )?;
+    connection.execute(
+        "DELETE FROM saved_setup_versions
+         WHERE setup_id = ?1
+           AND id NOT IN (
+               SELECT id FROM saved_setup_versions
+               WHERE setup_id = ?1
+               ORDER BY saved_at DESC, rowid DESC
+               LIMIT ?2
+           )",
+        params![previous.id, SAVED_SETUP_VERSION_LIMIT],
+    )?;
+    Ok(())
+}
+
+/// One superseded spec, newest first.
+pub fn list_setup_versions(state: &AppState, setup_id: &str) -> Result<Vec<SetupVersion>> {
+    let connection = connection(state)?;
+    let mut statement = connection.prepare(
+        "SELECT id, saved_at, spec_json
+         FROM saved_setup_versions
+         WHERE setup_id = ?1
+         ORDER BY saved_at DESC, rowid DESC",
+    )?;
+    let rows = statement.query_map([setup_id], |row| {
+        let saved_at: String = row.get(1)?;
+        let spec_json: String = row.get(2)?;
+        Ok(SetupVersion {
+            id: row.get(0)?,
+            saved_at: saved_at.parse().map_err(sql_conversion_error)?,
+            spec: serde_json::from_str(&spec_json).map_err(sql_conversion_error)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Puts a superseded spec back, filing the current one as a version of its
+/// own so the restore can itself be walked back. Returns the updated setup,
+/// or `None` when the version is not that setup's.
+pub fn restore_setup_version(
+    state: &AppState,
+    setup_id: &str,
+    version_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<SavedSetup>> {
+    let mut guard = connection(state)?;
+    // One unit of work: the four writes below leave the store telling a
+    // different story about this setup if any of them lands without the
+    // rest.
+    let transaction = guard.transaction()?;
+    let mut statement = transaction
+        .prepare("SELECT spec_json FROM saved_setup_versions WHERE id = ?1 AND setup_id = ?2")?;
+    let mut rows = statement.query(params![version_id, setup_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let spec: toposaic_core::GenerationSpec = serde_json::from_str(&row.get::<_, String>(0)?)?;
+    drop(rows);
+    drop(statement);
+
+    let mut statement = transaction.prepare(
+        "SELECT id, name, created_at, updated_at, spec_json
+         FROM saved_setups WHERE id = ?1",
+    )?;
+    let mut rows = statement.query([setup_id])?;
+    let Some(current) = rows.next()?.map(row_to_saved_setup).transpose()? else {
+        return Ok(None);
+    };
+    drop(rows);
+    drop(statement);
+    archive_setup_version(&transaction, &current, now)?;
+    transaction.execute(
+        "DELETE FROM saved_setup_versions WHERE id = ?1",
+        params![version_id],
+    )?;
+
+    let mut statement = transaction.prepare(
+        "UPDATE saved_setups SET spec_json = ?2, updated_at = ?3 WHERE id = ?1
+         RETURNING id, name, created_at, updated_at, spec_json",
+    )?;
+    let restored = statement.query_row(
+        params![setup_id, serde_json::to_string(&spec)?, now.to_rfc3339()],
+        row_to_saved_setup,
+    )?;
+    drop(statement);
+    transaction.commit()?;
+    Ok(Some(restored))
 }
 
 fn is_unique_violation(error: &rusqlite::Error) -> bool {

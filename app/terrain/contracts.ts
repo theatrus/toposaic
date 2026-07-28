@@ -244,6 +244,14 @@ export type CacheClearResult = {
   removed_entries: number;
 };
 
+// One superseded spec of a setup, kept so an overwrite can be walked back.
+export type SetupVersion = {
+  id: string;
+  // When the spec it replaced was written.
+  saved_at: string;
+  spec: GenerationSpec;
+};
+
 export type SavedSetup = {
   id: string;
   name: string;

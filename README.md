@@ -63,6 +63,14 @@ list, Save current setup stores the model under a typed name (an existing name
 is overwritten), Export writes every setup to a `toposaic-setups.json` file,
 and Import reads such a file back, so setups can move between machines.
 
+The recalled setup's row also carries its own Save, which reads "Saved" until
+the model moves away from what was stored and then offers to write the change
+back. Each row keeps a History: the last five specs a setup held before being
+saved over, any of which can be rolled back to. Rolling back restores the
+setup and loads it, replacing the model on screen, so it asks first — the same
+in-row confirm that Delete uses. The spec it replaced becomes a version of its
+own, so a rollback can itself be rolled back.
+
 Next to it, a gear button opens the settings pane. It shows the map data
 cache — elevation tiles, land cover, OpenStreetMap, and place search — with
 each category's size and entry count plus the total. Clearing is always
@@ -424,7 +432,9 @@ those.
 
 In the desktop app, **Save all print files to a folder** asks once for a
 folder and writes the 3MFs and the manifest into a new subfolder named after
-the place. The STL list has its own save for the same reason. Saving the
+the place, along with `toposaic-setup.json` — the setup that made those files,
+in the shape Import reads, taken from the job's own manifest rather than from
+whatever the controls hold by then. The STL list has its own save for the same reason. Saving the
 same job twice makes a second folder rather than writing over the first.
 Single files still save one at a time from either list, and the browser
 build downloads them individually.
