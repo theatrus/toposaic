@@ -403,6 +403,17 @@ work in order. No more than eight piece meshes stay in memory at once. Set
 cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 ```
 
+## Collecting the files
+
+A finished job lists every file it made on the Output tab. In the desktop
+app, **Save all files to a folder** asks once for a folder and writes the
+whole job into a new subfolder named after the place — a 10x10 puzzle is
+over a hundred piece STLs beside the 3MF, tray, and manifest, and picking a
+path for each one is not a workflow. Saving the same job twice makes a
+second folder rather than writing over the first. Single files still save
+one at a time from the same list, and the browser build downloads them
+individually.
+
 ## Printing in color
 
 The Output tab offers three 3MF styles. Each states the model's colors one

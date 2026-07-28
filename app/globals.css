@@ -3407,6 +3407,27 @@ fieldset.control-section .road-options {
   color: var(--muted);
 }
 
+/* The one action most people want after a generation finishes, so it leads
+   the list rather than sitting among the per-file rows. */
+.downloads > button.save-all {
+  background: var(--moss);
+  border: 1px solid var(--moss);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  padding: 11px 12px;
+}
+
+.downloads > button.save-all:hover:not(:disabled) {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.downloads > button.save-all small {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .downloads details {
   color: var(--muted);
   font-size: 10px;

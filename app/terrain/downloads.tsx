@@ -1,6 +1,10 @@
 import type { Artifact, ArtifactFeedback, Job } from "./contracts";
 import { terrainApi } from "./api";
 
+// The feedback slot the "save everything" button uses. Artifact names are
+// file names, so this cannot collide with one.
+export const SAVE_ALL_KEY = "*all*";
+
 type ArtifactActionProps = {
   artifact: Artifact;
   feedback: ArtifactFeedback | null;
@@ -66,12 +70,14 @@ export function ArtifactDownloads({
   feedback,
   isDesktop,
   onSave,
+  onSaveAll,
   onWebDownload,
 }: {
   job: Job;
   feedback: ArtifactFeedback | null;
   isDesktop: boolean;
   onSave: (artifact: Artifact) => void;
+  onSaveAll: () => void;
   onWebDownload: (artifact: Artifact) => void;
 }) {
   const printFiles = job.artifacts.filter(
@@ -81,8 +87,33 @@ export function ArtifactDownloads({
   const stlFiles = job.artifacts.filter((artifact) =>
     artifact.name.endsWith(".stl"),
   );
+  const saveAllState =
+    feedback?.name === SAVE_ALL_KEY ? feedback.state : null;
+  const totalBytes = job.artifacts.reduce(
+    (sum, artifact) => sum + artifact.bytes,
+    0,
+  );
   return (
     <div className="downloads">
+      {isDesktop && job.artifacts.length > 1 && (
+        <button
+          className="save-all"
+          disabled={saveAllState === "saving"}
+          onClick={onSaveAll}
+          type="button"
+        >
+          <span>
+            Save all {job.artifacts.length} files to a folder
+          </span>
+          <small aria-live="polite">
+            {saveAllState === "saving"
+              ? "Choosing a folder…"
+              : saveAllState === "saved"
+                ? "Saved"
+                : `${(totalBytes / 1024 / 1024).toFixed(1)} MB`}
+          </small>
+        </button>
+      )}
       {printFiles.map((artifact) => {
         const size = `${(artifact.bytes / 1024 / 1024).toFixed(1)} MB`;
         return (

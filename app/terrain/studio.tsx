@@ -25,6 +25,7 @@ import {
   downloadAndInstallSignedUpdate,
 } from "../updates/desktop";
 import { IS_TAURI, terrainApi } from "./api";
+import { SAVE_ALL_KEY } from "./downloads";
 import { ExternalLink } from "./external-link";
 import {
   DEFAULT_DOT_MARKER_STYLE,
@@ -1437,6 +1438,42 @@ export function TerrainStudio() {
     }
   };
 
+  // One folder picker for the whole job. A 10x10 puzzle is a hundred piece
+  // STLs plus the 3MF, tray, and manifest; saving those one dialog at a
+  // time is not a workflow.
+  const saveAllDesktopArtifacts = async () => {
+    if (!job || !IS_TAURI) return;
+    setArtifactFeedback({ name: SAVE_ALL_KEY, state: "saving" });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const saved = await invoke<{ directory: string; files: number } | null>(
+        "save_all_artifacts",
+        {
+          jobId: job.id,
+          folderName: job.spec.place_name.trim() || "toposaic",
+        },
+      );
+      if (saved === null) {
+        setArtifactFeedback(null);
+        setMessage("Save canceled.");
+        return;
+      }
+      setArtifactFeedback({ name: SAVE_ALL_KEY, state: "saved" });
+      setMessage(
+        `Saved ${saved.files} ${saved.files === 1 ? "file" : "files"} to ${saved.directory}.`,
+      );
+    } catch (error) {
+      setArtifactFeedback(null);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "Could not save the print files.",
+      );
+    }
+  };
+
   const noteWebDownload = (artifact: Artifact) => {
     setArtifactFeedback({ name: artifact.name, state: "sent" });
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
@@ -2122,6 +2159,7 @@ export function TerrainStudio() {
             job={job}
             message={message}
             noteWebDownload={noteWebDownload}
+            saveAllDesktopArtifacts={saveAllDesktopArtifacts}
             saveDesktopArtifact={saveDesktopArtifact}
             spec={spec}
             statusLabel={statusLabel}

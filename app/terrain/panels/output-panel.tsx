@@ -16,6 +16,7 @@ export function OutputPanel({
   job,
   message,
   noteWebDownload,
+  saveAllDesktopArtifacts,
   saveDesktopArtifact,
   spec,
   statusLabel,
@@ -33,6 +34,7 @@ export function OutputPanel({
   job: Job | null;
   message: string | null;
   noteWebDownload: (artifact: Artifact) => void;
+  saveAllDesktopArtifacts: () => Promise<void>;
   saveDesktopArtifact: (artifact: Artifact) => Promise<void>;
   spec: GenerationSpec;
   statusLabel: string | null;
@@ -193,6 +195,7 @@ export function OutputPanel({
               isDesktop={IS_TAURI}
               job={job}
               onSave={(artifact) => void saveDesktopArtifact(artifact)}
+              onSaveAll={() => void saveAllDesktopArtifacts()}
               onWebDownload={noteWebDownload}
             />
           )}
