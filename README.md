@@ -402,6 +402,15 @@ other file in the download: a tray asks for its rim, contour, and label
 colors, a wall-mount bracket for the one it prints in. Two features set to
 the same color share a slot, since no slicer merges them for you.
 
+A piece's side wall is a cut through the terrain, and it prints in the rock
+color to say so. The top two print layers of that wall are the exception: they
+carry the land cover from the surface directly above, so the terrain color
+bleeds over the rim and around the tabs rather than stopping dead at the top
+edge. Without it every piece wears a grey outline the moment the model is seen
+from anything but straight above, worst on hills, where the wall is tallest and
+faces you. The band follows the road layer height, so setting that to the
+height you slice at also keeps the bleed at two real layers.
+
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.
 Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across
