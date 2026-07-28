@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.5.0](https://github.com/theatrus/toposaic/releases/tag/v0.5.0).
+[TopoSaic v0.6.0](https://github.com/theatrus/toposaic/releases/tag/v0.6.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.5.0/TopoSaic-0.5.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.6.0/TopoSaic-0.6.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -100,16 +100,32 @@ manifest in this tab.*
 road, and building materials ready for a color print. See
 [Printing in color](#printing-in-color) for how each slicer takes the palette.*
 
-## Version 0.5 highlights
+## Version 0.6 highlights
 
+- Draw mapped ferry crossings as their own layer, in their own color or with
+  the roads, alongside the railway and aerial lift layers.
 - Place editable building highlights, color dots, blank flags, and named flags
   by latitude and longitude. Named flags emboss their editable text in a chosen
   bundled font; controls set the banner width, height, and text size. Manual
   surface labels follow the terrain, while raised plaques give text a flat
   backing; each label has its own print size and map rotation.
+- Get only the filament colors a model actually prints. Two layers set to one
+  color share a slot, a layer the map has none of costs nothing, and every slot
+  names a real filament preset instead of leaving the slicer to guess. The
+  Colors tab shows which filament number each layer prints from and reorders
+  them to match the spools already loaded.
+- Save a whole job to a folder in one step, print files or STLs, with the setup
+  that made them written alongside. Saved setups offer to store changes when
+  the model drifts from them, and keep their last five versions to roll back to.
 - Save a stable puzzle seed and signed tile coordinates with each setup so
   later super-tile runs can make matching edges. Outer edge notches are
   optional and off by default.
+- Turn the map by any bearing and pan it without moving the selected ground.
+- Keep buildings in proportion as the view closes in, and read a base label
+  cut to the precision its map can support — or leave the label off.
+
+## Version 0.5 highlights
+
 - Mount a full terrain tile or display base with printable straight pins,
   angled pins, or a flush French-cleat receiver. Matching wall hardware,
   screw clearance, alignment spacers, and shared cuts across puzzle pieces
