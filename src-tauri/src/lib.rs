@@ -9,6 +9,12 @@ use uuid::Uuid;
 
 static ENGINE_STARTED: OnceLock<()> = OnceLock::new();
 
+fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not find the TopoSaic data folder: {error}"))
+}
+
 fn job_dir(data_dir: &Path, job_id: &str) -> Result<PathBuf, String> {
     let job_id = Uuid::parse_str(job_id)
         .map_err(|_| "The job ID is not valid.".to_owned())?
@@ -28,8 +34,8 @@ fn source_artifact_path(
 }
 
 /// A file-system-safe folder name built from the place the model is of.
-/// Anything that is not a letter, a digit, or a dash collapses to a single
-/// dash, so a name the user typed cannot walk out of the folder they chose.
+/// Runs of anything that is not a letter or a digit become one dash, so a
+/// name the user typed cannot walk out of the folder they chose.
 fn folder_slug(name: &str) -> String {
     let mut slug = String::new();
     let mut separator = false;
@@ -48,10 +54,15 @@ fn folder_slug(name: &str) -> String {
     if slug.is_empty() {
         return "toposaic".to_owned();
     }
-    let mut slug = slug.to_owned();
     // Long place names exist; keep the folder name workable on every OS.
-    slug.truncate(48);
-    slug.trim_end_matches('-').to_owned()
+    // Counted in CHARACTERS: `String::truncate` takes a byte length and
+    // panics when that lands inside a character, which a place name in any
+    // non-Latin script will do.
+    slug.chars()
+        .take(48)
+        .collect::<String>()
+        .trim_end_matches('-')
+        .to_owned()
 }
 
 /// A folder inside `parent` that does not exist yet, starting from `stem`
@@ -110,9 +121,13 @@ async fn copy_job_artifacts(
 
     let mut copied = 0;
     for (name, source) in sources {
-        tokio::fs::copy(source, target.join(name))
-            .await
-            .map_err(|error| format!("Could not save {name}: {error}"))?;
+        if let Err(error) = tokio::fs::copy(source, target.join(name)).await {
+            // Take the folder with it. A run that stops halfway — a full
+            // disk, a pulled drive — otherwise leaves a folder holding part
+            // of a job, which looks exactly like a finished one.
+            let _ = tokio::fs::remove_dir_all(&target).await;
+            return Err(format!("Could not save {name}: {error}"));
+        }
         copied += 1;
     }
     Ok((target, copied))
@@ -124,10 +139,7 @@ async fn save_artifact(
     job_id: String,
     artifact_name: String,
 ) -> Result<Option<u64>, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Could not find the TopoSaic data folder: {error}"))?;
+    let data_dir = app_data_dir(&app)?;
     let source = source_artifact_path(&data_dir, &job_id, &artifact_name)?;
     let extension = Path::new(&artifact_name)
         .extension()
@@ -165,8 +177,8 @@ struct SavedFolder {
 }
 
 /// Saves a set of a job's files in one go: one folder picker, one copy,
-/// rather than a save dialog each. The front end decides which set — the
-/// print files, or those plus the per-piece STLs.
+/// rather than a save dialog each. The front end names the set — the print
+/// files, or the STLs.
 #[tauri::command]
 async fn save_all_artifacts(
     app: tauri::AppHandle,
@@ -174,10 +186,7 @@ async fn save_all_artifacts(
     folder_name: String,
     artifact_names: Vec<String>,
 ) -> Result<Option<SavedFolder>, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Could not find the TopoSaic data folder: {error}"))?;
+    let data_dir = app_data_dir(&app)?;
     let source_dir = job_dir(&data_dir, &job_id)?;
     if !source_dir.is_dir() {
         return Err("That job's print files are no longer on disk.".to_owned());
@@ -276,7 +285,11 @@ mod tests {
         assert_eq!(folder_slug("/"), "toposaic");
         assert_eq!(folder_slug(""), "toposaic");
         assert!(!folder_slug(&"x".repeat(200)).contains('/'));
-        assert!(folder_slug(&"x".repeat(200)).len() <= 48);
+        assert_eq!(folder_slug(&"x".repeat(200)).chars().count(), 48);
+        // Cutting a long name to length must count characters, not bytes:
+        // this name puts a byte-48 cut inside a character.
+        let long_kanji = format!("a{}", "富".repeat(60));
+        assert_eq!(folder_slug(&long_kanji).chars().count(), 48);
     }
 
     #[tokio::test]
@@ -349,6 +362,40 @@ mod tests {
             before,
             "a refused save leaves no half-made folder behind"
         );
+
+        // A copy that fails PART WAY takes its folder with it, rather than
+        // leaving one that holds half a job and looks finished. An
+        // unreadable second file gets past the is-it-there check and then
+        // fails the read, which is the shape of a full disk or a pulled
+        // drive.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let locked = source.join("locked.3mf");
+            fs::write(&locked, b"locked").unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            // Running as root would read it anyway and prove nothing.
+            if fs::read(&locked).is_err() {
+                let before = fs::read_dir(&destination).unwrap().count();
+                assert!(
+                    copy_job_artifacts(
+                        &source,
+                        &destination,
+                        "Rainier",
+                        &["toposaic.3mf".to_owned(), "locked.3mf".to_owned()],
+                    )
+                    .await
+                    .is_err()
+                );
+                assert_eq!(
+                    fs::read_dir(&destination).unwrap().count(),
+                    before,
+                    "a copy that stops halfway leaves no folder behind"
+                );
+            }
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+        }
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -3,8 +3,8 @@ import { terrainApi } from "./api";
 
 // Feedback slots for the two folder saves. Artifact names are file names,
 // so neither can collide with one.
-export const SAVE_PRINT_KEY = "*print*";
-export const SAVE_STL_KEY = "*stl*";
+const SAVE_PRINT_KEY = "*print*";
+const SAVE_STL_KEY = "*stl*";
 
 type ArtifactActionProps = {
   artifact: Artifact;
