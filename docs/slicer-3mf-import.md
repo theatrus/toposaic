@@ -37,27 +37,42 @@ exactly as it was.
 
 The one channel that conveys colors into Bambu is the color group. Bambu
 collects the per-triangle `pid` references of any file it did not generate
-and opens its "Standard 3mf Import color" dialog:
+and opens its "Standard 3mf Import color" dialog. Without a group, the paint
+codes silently index into whatever filaments the project already has —
+extruders 1..N, whatever their colors, which is right for a deliberately
+pre-painted file and wrong for one that means to state its own palette.
 
-- **Color match** (pre-selected when the colors are close) maps the file's
-  colors onto filaments already loaded and adds nothing. Verified live: a
-  five-color file matched onto five existing slots, list length unchanged.
-- **Append** adds one filament per file color — and each addition is a COPY
-  OF THE LAST FILAMENT in the current list (`PresetBundle::
-  set_num_filaments` resizes with `filament_presets.back()`). One TPU spool
-  at the end of the list turns every appended color into Generic TPU, and
-  the clones persist in the project, so repeated imports pile them up. A
-  32-filament list holding the same five terrain colors over and over as
-  Generic TPU is this loop's signature; delete the clones once and use
-  Color match.
+#### The import dialog, and why it multiplies filaments
 
-Without a group, the paint codes silently index into whatever filaments the
-project already has — extruders 1..N, whatever their colors. That is
-correct behavior for a deliberately pre-painted file and wrong for one that
-means to state its own palette.
+The dialog offers two quick sets:
 
-The dialog is also why the palette must be deduplicated: every color in the
-group is offered as a potential new filament.
+- **Color match** maps the file's colors onto filaments already loaded and
+  adds nothing. Verified live: a five-color file matched onto five existing
+  slots, list length unchanged.
+- **Append** adds one filament per file color.
+
+Its DEFAULT is append, not match. `ObjColorPanel::deal_default_strategy`
+runs `deal_add_btn` first, staging one new filament per file color and
+pointing every mapping row at the staged copies; the nearest-color match
+runs after, with those copies as zero-distance candidates, so a row without
+a clearly closer existing filament stays on its copy. OK commits every row
+pointing past the current list as a new filament — so accepting the defaults
+appends the whole palette without anyone clicking Append. Only a list at the
+32-filament cap skips the staging, forcing a pure match.
+
+Two things then compound it:
+
+- Each appended filament is a COPY OF THE LAST ONE in the list
+  (`PresetBundle::set_num_filaments` resizes with `filament_presets.back()`),
+  so a trailing TPU spool makes every appended color Generic TPU.
+- The filament list is APP state, not project state. It persists across
+  sessions, so the copies appear in every later import dialog until deleted
+  by hand.
+
+A long list holding the same few terrain colors over and over as Generic TPU
+is this loop's signature; delete the copies once and use Color match. It is
+also why the palette must be deduplicated: every color in the group is
+offered as a potential new filament.
 
 ### OrcaSlicer (`src/slic3r/GUI/Plater.cpp`, `Format/bbs_3mf.cpp`)
 
