@@ -135,6 +135,13 @@ export type GenerationSpec = {
   color_output: {
     enabled: boolean;
     threemf_style: "painted" | "project" | "geometry";
+    // The slicer filament preset every slot of a "project" 3MF names. Left
+    // unnamed, OrcaSlicer and Bambu Studio pick a material themselves.
+    filament_profile:
+      | "generic_pla"
+      | "bambu_pla_basic"
+      | "polylite_pla"
+      | "polyterra_pla";
     forest_color: string;
     rock_color: string;
     snow_color: string;

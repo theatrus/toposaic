@@ -278,9 +278,13 @@ color properties, and an Output-tab style picker sets what else it carries.
 The default "Color project" style also embeds filament colors, purge settings,
 and OrcaSlicer/Bambu face-paint codes, so those slicers open the file as a
 project with colors set up in one click — importing printer, material, and
-process presets with it. Each slot asks for the stock "Generic PLA" preset,
-so the filaments arrive as the PLA they are rather than whatever the slicer
-would otherwise reach for. "Painted colors" keeps the face-paint codes but skips
+process presets with it. Each slot names a filament preset, picked in the
+Colors tab: Generic PLA, Bambu PLA Basic, PolyLite PLA, or PolyTerra PLA. Name
+one and the slot arrives as the PLA it is, rather than whatever the slicer
+reaches for when the file names nothing. Slicer preset names also carry a
+printer suffix — `PolyTerra PLA @BBL A1` — which the file cannot know, so a
+slicer that cannot match the exact preset still reads the right vendor and the
+right material. "Painted colors" keeps the face-paint codes but skips
 the embedded settings, so opening the model never touches slicer presets.
 "Geometry only" drops the paint codes too and writes a plain standards-based
 3MF for other tools.

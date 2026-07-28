@@ -75,10 +75,6 @@ pub(crate) struct ThreeMfWriter<'a> {
 }
 
 const COLOR_GROUP_ID: u32 = 1000;
-/// The stock filament preset every slot asks for. It ships with OrcaSlicer
-/// and Bambu Studio under this exact name, so it resolves on import instead
-/// of leaving the slicer to guess a material.
-const GENERIC_PLA_PRESET: &str = "Generic PLA";
 /// Elements formatted per rayon task when writing 3MF XML bodies.
 const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
@@ -359,11 +355,12 @@ impl<'a> ThreeMfWriter<'a> {
             // `filament_settings_id` names the slicer preset each slot
             // loads. Left empty, OrcaSlicer and Bambu Studio have nothing to
             // match and fall back to whichever preset they please — which is
-            // how six terrain colors arrived as Generic TPU. Naming the
-            // stock `Generic PLA` preset, with the vendor it belongs to,
-            // makes them all import as the PLA `filament_type` already says
-            // they are.
+            // how six terrain colors arrived as Generic TPU. Naming a real
+            // preset, with the vendor it belongs to, makes them import as
+            // the PLA the `filament_type` beside them already says they are.
             let colors = self.palette.colors();
+            let profile = self.spec.color_output.filament_profile;
+            let (preset, vendor) = profile.preset();
             let flush_volumes_matrix = (0..self.palette.len())
                 .flat_map(|row| {
                     (0..self.palette.len())
@@ -373,9 +370,9 @@ impl<'a> ThreeMfWriter<'a> {
             let project_settings = serde_json::json!({
                 "default_filament_colour": colors,
                 "filament_colour": colors,
-                "filament_settings_id": vec![GENERIC_PLA_PRESET; colors.len()],
-                "filament_type": vec!["PLA"; colors.len()],
-                "filament_vendor": vec!["Generic"; colors.len()],
+                "filament_settings_id": vec![preset; colors.len()],
+                "filament_type": vec![profile.material(); colors.len()],
+                "filament_vendor": vec![vendor; colors.len()],
                 "flush_volumes_matrix": flush_volumes_matrix,
                 "flush_volumes_vector": vec!["140"; colors.len() * 2],
             });
@@ -963,6 +960,42 @@ mod tests {
         spec.color_output.rail_style = crate::spec::RailStyle::Separate;
         spec.color_output.aerial_style = crate::spec::AerialStyle::Separate;
         spec
+    }
+
+    /// Every slot names a real slicer preset and the vendor that ships it.
+    /// An empty id is what left OrcaSlicer and Bambu Studio to guess, and
+    /// what they guessed was TPU.
+    #[test]
+    fn every_slot_asks_for_the_chosen_filament_preset() {
+        use crate::spec::FilamentProfile;
+
+        for (profile, preset, vendor) in [
+            (FilamentProfile::GenericPla, "Generic PLA", "Generic"),
+            (
+                FilamentProfile::BambuPlaBasic,
+                "Bambu PLA Basic",
+                "Bambu Lab",
+            ),
+            (FilamentProfile::PolyLitePla, "PolyLite PLA", "Polymaker"),
+            (FilamentProfile::PolyTerraPla, "PolyTerra PLA", "Polymaker"),
+        ] {
+            let mut spec = fixture_spec(ThreeMfStyle::Project);
+            spec.color_output.filament_profile = profile;
+            let settings: serde_json::Value =
+                serde_json::from_str(&project_settings(&write_spec_fixture(&spec))).unwrap();
+            for (key, expected) in [
+                ("filament_settings_id", preset),
+                ("filament_vendor", vendor),
+                ("filament_type", "PLA"),
+            ] {
+                let values = settings[key].as_array().unwrap();
+                assert_eq!(values.len(), 6, "{profile:?} {key}");
+                assert!(
+                    values.iter().all(|value| value == expected),
+                    "{profile:?} {key} should be {expected}, got {values:?}"
+                );
+            }
+        }
     }
 
     /// Two classes printed in one color are one spool. No slicer merges

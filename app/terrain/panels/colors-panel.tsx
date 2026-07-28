@@ -174,6 +174,32 @@ export function ColorsPanel({
         </button>
       </div>
 
+      <label className="road-detail-field">
+        Filament preset
+        <select
+          value={spec.color_output.filament_profile}
+          onChange={(event) =>
+            updateColor(
+              "filament_profile",
+              event.target
+                .value as GenerationSpec["color_output"]["filament_profile"],
+            )
+          }
+        >
+          <option value="generic_pla">Generic PLA</option>
+          <option value="bambu_pla_basic">Bambu PLA Basic</option>
+          <option value="polylite_pla">Polymaker PolyLite PLA</option>
+          <option value="polyterra_pla">Polymaker PolyTerra PLA</option>
+        </select>
+        <small>
+          The preset each filament slot asks for when the Output tab writes a
+          color project. Naming one stops OrcaSlicer and Bambu Studio picking
+          a material of their own. Slicer preset names also carry a printer
+          suffix, which the file cannot know, so a slicer that cannot match
+          the exact preset still reads the right vendor and material.
+        </small>
+      </label>
+
       <ColorGroup
         title="Terrain and land cover"
         description="Mapped surface classes. Sides and bottoms use rock."

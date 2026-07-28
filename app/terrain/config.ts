@@ -170,6 +170,9 @@ export const initialSpec: GenerationSpec = {
     // settings for one-click Bambu color setups. mergeSpecDefaults fills it
     // into setups saved before the field existed.
     threemf_style: "project",
+    // Which slicer preset each filament slot asks for. "generic_pla" is the
+    // one every slicer has, so it resolves whatever the user runs.
+    filament_profile: "generic_pla",
     forest_color: "#28543A",
     rock_color: "#7C7468",
     snow_color: "#F4F3EC",

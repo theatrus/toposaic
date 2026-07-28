@@ -342,6 +342,11 @@ test("switches between the reflowed control panels", async ({ page }) => {
       }),
     ).toBeVisible();
   }
+  const filamentPreset = printColors.getByLabel("Filament preset");
+  await expect(filamentPreset).toHaveValue("generic_pla");
+  await filamentPreset.selectOption("polyterra_pla");
+  await expect(filamentPreset).toHaveValue("polyterra_pla");
+  await filamentPreset.selectOption("generic_pla");
   await expect(
     printColors.getByRole("textbox", { name: "Forest color" }),
   ).toHaveValue("#28543A");

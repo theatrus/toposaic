@@ -142,6 +142,17 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("defaults the filament preset to the one every slicer ships", () => {
+  assert.equal(initialSpec.color_output.filament_profile, "generic_pla");
+  // Setups saved before the field existed recall with that default, so a
+  // color project always names a preset rather than leaving the slicer to
+  // pick a material of its own.
+  const oldColorOutput = { ...initialSpec.color_output };
+  delete oldColorOutput.filament_profile;
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.filament_profile, "generic_pla");
+});
+
 test("marker settings keep only the shared material color", () => {
   const merged = mergeSpecDefaults({
     marker_settings: undefined,
