@@ -289,9 +289,9 @@ the model. Set it to 0% for major waterways only or 100% for every mapped
 stream. Mapped water areas do not use this cutoff.
 STL files stay single-color but retain the raised road geometry.
 
-Railways and aerial lifts are two layers, each with its own Overpass query
-and its own cache, so switching one never re-downloads roads and never
-re-downloads the other. The railway layer covers heavy rail, light rail,
+Railways, aerial lifts, and ferries are separate layers, each with its own
+Overpass query and its own cache, so switching one never re-downloads roads
+and never re-downloads the others. The railway layer covers heavy rail, light rail,
 metros, trams, narrow gauge, funiculars, monorails, and miniature and
 preserved lines; the aerialway layer covers cable cars, gondolas, mixed
 lifts, chair lifts, drag lifts, T-bars, platters, rope tows, and magic
@@ -316,6 +316,16 @@ it still shows up without adding a filament. The lift layer has a third
 choice, "Draw with railways", which folds lifts into the railway layer so the
 two share one color; with the railway layer switched off, that falls back to
 the road color rather than making an enabled layer disappear.
+
+Ferries are a third layer of the same shape: every way OpenStreetMap tags
+`route=ferry`, drawn across the water as a raised line like a road, in a deep
+teal of its own or folded into the roads. It is on by default and, like the
+others, costs a filament only where the map really has a crossing — an inland
+map never sees it. Ferries carry none of the rail family's other machinery:
+there is no width-by-type, because a crossing has no gauge, and no history
+setting, because OpenStreetMap has no convention of disused ferry routes. Nor
+are there bridges or tunnels to interpolate; a crossing is on the water for
+its whole length.
 
 Out-of-service lines are a setting, not a rule. "Operational" is the default
 and draws running lines only. "Disused" adds track and lift lines still in

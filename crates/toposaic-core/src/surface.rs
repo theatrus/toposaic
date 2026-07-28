@@ -1019,6 +1019,28 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        // Ferries sit above roads for the reason railways do: where the two
+        // meet, at a terminal apron, the crossing is the feature worth
+        // reading. Under any style but `separate` no Ferry line exists and
+        // this check never matches.
+        //
+        // Like every overlay above it this is gated on `include_roads`, so
+        // the TERRAIN sampler still answers with the water a crossing runs
+        // over. Without the gate the mesh would paint its terrain triangles
+        // in the ferry material and then raise the ferry ribbon on top of
+        // them.
+        let has_ferry = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Ferry
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_ferry {
+            return SurfaceSample {
+                class: SurfaceClass::Ferry,
+                building_height_m,
+            };
+        }
         let has_road = include_roads
             && line_entries.iter().any(|entry| {
                 let line = &self.vector_lines[entry.line_index];
@@ -1057,6 +1079,7 @@ impl SurfaceField {
                         | SurfaceClass::Trail
                         | SurfaceClass::Rail
                         | SurfaceClass::Aerial
+                        | SurfaceClass::Ferry
                 )
             })
             .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
@@ -2184,5 +2207,33 @@ mod tests {
 
         assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Marker);
         assert_eq!(field.class_at(0.25, 0.5), SurfaceClass::Road);
+    }
+
+    /// A ferry is a raised ribbon over the water, not a recolouring of the
+    /// water. The mesh takes each terrain triangle's material from
+    /// `terrain_at`, so a crossing that reached it would paint the surface
+    /// teal and then raise the ribbon on top of that.
+    #[test]
+    fn a_ferry_line_colors_its_ribbon_and_not_the_water_under_it() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Water; 9], "ferry").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Ferry);
+
+        // The artifact colors that spot as a ferry...
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Ferry);
+        // ...while the terrain under it stays the water it crosses.
+        assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Water);
+        // And the coverage histogram, which reads the overlay sampler, still
+        // counts it, so the preview legend can show the layer.
+        assert!(field.coverage()[SurfaceClass::Ferry.material_index() as usize] > 0.0);
+    }
+
+    /// Where a crossing meets the road at its terminal, the crossing is the
+    /// feature worth reading — the rule railways already follow over roads.
+    #[test]
+    fn a_ferry_outranks_a_road_it_meets() {
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Water; 9], "ferry").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Road);
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Ferry);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Ferry);
     }
 }

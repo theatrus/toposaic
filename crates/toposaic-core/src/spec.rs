@@ -525,6 +525,32 @@ impl GenerationSpec {
         self.uses_rail() || self.uses_aerial()
     }
 
+    /// Whether the ferry layer — ways tagged `route=ferry` — is drawn. Like
+    /// the other mapped lines it rides on color output, because it comes
+    /// from the same OpenStreetMap fetch.
+    pub fn uses_ferry(&self) -> bool {
+        self.color_output.enabled && self.color_output.ferry_enabled
+    }
+
+    /// Whether drawn ferries get their own class, color, and filament slot.
+    pub fn uses_separate_ferry(&self) -> bool {
+        self.uses_ferry() && self.ferry_line_style().class == SurfaceClass::Ferry
+    }
+
+    /// Where the ferry layer paints.
+    ///
+    /// Answers only "how would ferries look", so it ignores
+    /// `ferry_enabled`; [`Self::uses_ferry`] decides whether they are drawn.
+    pub fn ferry_line_style(&self) -> LineStyle {
+        match self.color_output.ferry_style {
+            FerryStyle::Separate => LineStyle {
+                class: SurfaceClass::Ferry,
+                width_mm: self.color_output.ferry_width_mm,
+            },
+            FerryStyle::WithRoads => self.road_line_style(),
+        }
+    }
+
     /// Where the railway layer paints: `Separate` gives it the Rail class,
     /// color, and filament slot; `WithRoads` paints it as a road, in the
     /// road color at the road width.
@@ -816,6 +842,7 @@ impl GenerationSpec {
             SurfaceClass::RouteTrail => {
                 self.color_output.enabled && self.color_output.roads_enabled
             }
+            SurfaceClass::Ferry => self.uses_separate_ferry(),
         }
     }
 
@@ -836,6 +863,7 @@ impl GenerationSpec {
                 .route_trail_color
                 .as_deref()
                 .unwrap_or(&self.color_output.road_color),
+            SurfaceClass::Ferry => &self.color_output.ferry_color,
         }
     }
 
@@ -1620,6 +1648,18 @@ pub enum RailStyle {
 /// `WithRail` folds lifts into the railway layer, so the two rail-family
 /// layers share one spool and one look; `WithRoads` folds them into the
 /// roads. [`GenerationSpec::aerial_line_style`] resolves the chain, including
+/// Where the ferry layer paints: `Separate` gives it the Ferry class,
+/// color, and filament slot; `WithRoads` paints it as a road, in the road
+/// color at the road width, for anyone who would rather not spend a spool
+/// on sea crossings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FerryStyle {
+    #[default]
+    Separate,
+    WithRoads,
+}
+
 /// the case where the railway layer `WithRail` names is switched off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1911,6 +1951,20 @@ pub struct ColorOutputSpec {
     /// Whether aerialways get their own color and filament slot (the
     /// default), follow the railway layer, or paint as roads.
     pub aerial_style: AerialStyle,
+    /// Draw ferry crossings — ways OpenStreetMap tags `route=ferry`. On by
+    /// default like the other transport layers; a map with no crossings
+    /// pays nothing for it, because the palette drops a class the data has
+    /// none of.
+    pub ferry_enabled: bool,
+    /// Color of ferry crossings when `ferry_style` is `separate`. Ignored,
+    /// and never emitted into any artifact, otherwise.
+    pub ferry_color: String,
+    /// Print width of ferry crossings when `ferry_style` is `separate`;
+    /// otherwise the road width applies.
+    pub ferry_width_mm: f32,
+    /// Whether ferries get their own color and filament slot (the default)
+    /// or paint as roads.
+    pub ferry_style: FerryStyle,
     pub roads_enabled: bool,
     pub road_detail: RoadDetail,
     pub adaptive_road_widths: bool,
@@ -2118,6 +2172,12 @@ impl Default for ColorOutputSpec {
             aerial_color: "#6C4CB6".into(),
             aerial_width_mm: 0.7,
             aerial_style: AerialStyle::default(),
+            ferry_enabled: true,
+            // Deep teal: reads as water-borne beside the gold roads and the
+            // blue of the water itself, without meeting either.
+            ferry_color: "#0F8C8C".into(),
+            ferry_width_mm: 0.7,
+            ferry_style: FerryStyle::default(),
             roads_enabled: true,
             road_detail: RoadDetail::Automatic,
             adaptive_road_widths: true,
@@ -2153,6 +2213,7 @@ impl ColorOutputSpec {
             ("imported trail", self.trail_color.as_str()),
             ("rail", self.rail_color.as_str()),
             ("aerialway", self.aerial_color.as_str()),
+            ("ferry", self.ferry_color.as_str()),
         ] {
             if !valid_hex_color(color) {
                 bail!("{name} color must use #RRGGBB");
@@ -2169,6 +2230,9 @@ impl ColorOutputSpec {
         }
         if !(0.4..=5.0).contains(&self.aerial_width_mm) {
             bail!("aerialway line width must be between 0.4 and 5 mm");
+        }
+        if !(0.4..=5.0).contains(&self.ferry_width_mm) {
+            bail!("ferry line width must be between 0.4 and 5 mm");
         }
         if !(0.0..=100.0).contains(&self.waterway_coverage_percent) {
             bail!("waterway coverage cutoff must be between 0 and 100 percent");
@@ -2218,6 +2282,10 @@ pub enum SurfaceClass {
     /// Paths and trails read from OpenStreetMap. Kept after every older
     /// class so saved preview class indices remain stable.
     RouteTrail,
+    /// Ferry crossings drawn in their own color. The class only ever
+    /// appears when `ferry_style` is `separate`. Last, for the same reason
+    /// `RouteTrail` is: a saved preview names classes by index.
+    Ferry,
 }
 
 impl SurfaceClass {
@@ -2228,7 +2296,7 @@ impl SurfaceClass {
     /// 3MF packs whichever of these classes a spec actually emits into
     /// consecutive slots, so a class that never appears costs nothing. See
     /// [`GenerationSpec::material_palette`].
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -2240,6 +2308,7 @@ impl SurfaceClass {
         Self::Aerial,
         Self::Marker,
         Self::RouteTrail,
+        Self::Ferry,
     ];
 
     pub(crate) fn material_index(self) -> u32 {
@@ -2255,6 +2324,7 @@ impl SurfaceClass {
             Self::Aerial => 8,
             Self::Marker => 9,
             Self::RouteTrail => 10,
+            Self::Ferry => 11,
         }
     }
 }
@@ -2377,7 +2447,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
@@ -2506,6 +2576,10 @@ mod tests {
                 "aerial_color": "#5533AA",
                 "aerial_width_mm": 1.75,
                 "aerial_style": "separate",
+                "ferry_enabled": false,
+                "ferry_color": "#118899",
+                "ferry_width_mm": 1.5,
+                "ferry_style": "with_roads",
                 "roads_enabled": false,
                 "road_detail": "streets",
                 "adaptive_road_widths": false,
@@ -3041,7 +3115,7 @@ mod tests {
     #[test]
     fn rail_defaults_draw_both_layers_in_their_own_colors() {
         let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
-            "color_output": { "enabled": true }
+            "color_output": { "enabled": true, "ferry_style": "with_roads" }
         }))
         .unwrap();
         assert!(spec.color_output.rail_enabled);
@@ -3090,6 +3164,9 @@ mod tests {
     fn merged_styles_fold_both_layers_back_into_the_roads() {
         let mut spec = GenerationSpec::default();
         spec.color_output.enabled = true;
+        // Ferries are their own layer with their own default; fold them in
+        // so every slot this test counts belongs to the rail family.
+        spec.color_output.ferry_style = FerryStyle::WithRoads;
         spec.color_output.rail_style = RailStyle::WithRoads;
         spec.color_output.aerial_style = AerialStyle::WithRail;
         assert!(spec.uses_rail());
@@ -3116,7 +3193,8 @@ mod tests {
         let mut spec = GenerationSpec::default();
         spec.color_output.enabled = true;
         // Start from the merged styles so each slot below is one this test
-        // switched on deliberately.
+        // switched on deliberately — ferries included.
+        spec.color_output.ferry_style = FerryStyle::WithRoads;
         spec.color_output.rail_style = RailStyle::WithRoads;
         spec.color_output.aerial_style = AerialStyle::WithRail;
 
