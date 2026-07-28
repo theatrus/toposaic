@@ -22,8 +22,6 @@ use toposaic_api::diagnostics::{fetch_height_field_with_progress, map_cache_root
 use toposaic_core::{ElevationSource, GenerationSpec, HeightField};
 
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
-const KILOMETRES_PER_LATITUDE_DEGREE: f64 = 110.574;
-const KILOMETRES_PER_LONGITUDE_DEGREE: f64 = 111.32;
 
 fn cases() -> Vec<(&'static str, GenerationSpec)> {
     let close = |source: ElevationSource| GenerationSpec {
@@ -224,15 +222,13 @@ fn column_boundaries(
     tile_size: u32,
     zoom: u8,
 ) -> Vec<bool> {
-    let half_longitude = spec.ground_span_km
-        / 2.0
-        / (KILOMETRES_PER_LONGITUDE_DEGREE * spec.center_lat.to_radians().cos().abs()).max(20.0);
-    let west = spec.center_lon - half_longitude;
-    let east = spec.center_lon + half_longitude;
+    // Read positions along the model's middle row; for a rotated model this
+    // follows the rotated axis, matching what the sampler actually fetched.
+    let transform = spec.geo_transform();
     let pixels = (0..field.width)
         .map(|column| {
             let u = column as f64 / (field.width - 1) as f64;
-            let longitude = west + (east - west) * u;
+            let (_, longitude) = transform.coordinate_at_uv(u, 0.5);
             let x = (longitude + 180.0) / 360.0 * f64::from(1_u32 << zoom) * f64::from(tile_size);
             (x - 0.5).floor() as i64
         })
@@ -246,15 +242,12 @@ fn row_boundaries(
     tile_size: u32,
     zoom: u8,
 ) -> Vec<bool> {
-    let half_latitude = spec.ground_span_km / 2.0 / KILOMETRES_PER_LATITUDE_DEGREE;
-    let south = spec.center_lat - half_latitude;
-    let north = spec.center_lat + half_latitude;
+    let transform = spec.geo_transform();
     let pixels = (0..field.height)
         .map(|row| {
             let v = row as f64 / (field.height - 1) as f64;
-            let latitude = (south + (north - south) * v)
-                .clamp(-85.051_128_78, 85.051_128_78)
-                .to_radians();
+            let (latitude, _) = transform.coordinate_at_uv(0.5, v);
+            let latitude = latitude.clamp(-85.051_128_78, 85.051_128_78).to_radians();
             let y = (1.0 - (latitude.tan() + 1.0 / latitude.cos()).ln() / std::f64::consts::PI)
                 / 2.0
                 * f64::from(1_u32 << zoom)

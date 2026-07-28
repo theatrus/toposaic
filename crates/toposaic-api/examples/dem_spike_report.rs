@@ -14,9 +14,6 @@ use std::{path::Path, time::Instant};
 use toposaic_api::diagnostics::{fetch_height_field_with_progress, map_cache_root};
 use toposaic_core::{GenerationSpec, HeightField};
 
-const KILOMETRES_PER_LATITUDE_DEGREE: f64 = 110.574;
-const KILOMETRES_PER_LONGITUDE_DEGREE: f64 = 111.32;
-
 fn cases() -> Vec<(&'static str, GenerationSpec)> {
     vec![
         (
@@ -279,13 +276,7 @@ fn sample_position(
     column: usize,
     row: usize,
 ) -> (f64, f64) {
-    let half_latitude = spec.ground_span_km / 2.0 / KILOMETRES_PER_LATITUDE_DEGREE;
-    let scale =
-        (KILOMETRES_PER_LONGITUDE_DEGREE * spec.center_lat.to_radians().cos().abs()).max(20.0);
-    let half_longitude = spec.ground_span_km / 2.0 / scale;
     let u = column as f64 / (field.width - 1) as f64;
     let v = row as f64 / (field.height - 1) as f64;
-    let latitude = spec.center_lat - half_latitude + 2.0 * half_latitude * v;
-    let longitude = spec.center_lon - half_longitude + 2.0 * half_longitude * u;
-    (latitude, longitude)
+    spec.geo_transform().coordinate_at_uv(u, v)
 }

@@ -909,6 +909,14 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
     .toBeGreaterThan(20);
   const initialBounds = await selection.boundingBox();
   expect(initialBounds).not.toBeNull();
+  const selectionTopEdge = async () => {
+    const points = (await selection.getAttribute("points"))!
+      .trim()
+      .split(/\s+/)
+      .map((point) => point.split(",").map(Number));
+    return Math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1]);
+  };
+  const initialEdge = await selectionTopEdge();
   await expect(selection).toHaveAttribute("data-map-zoom", "9");
   const meshDetail = page.getByRole("radiogroup", { name: "Mesh detail" });
   await expect(
@@ -943,9 +951,8 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
     page.getByText(/640 across · about 14\.1 m ground spacing/),
   ).toBeVisible();
 
-  const linkedZoomBounds = await selection.boundingBox();
-  expect(linkedZoomBounds).not.toBeNull();
-  expect(linkedZoomBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+  const linkedZoomEdge = await selectionTopEdge();
+  expect(linkedZoomEdge).toBeCloseTo(initialEdge, 0);
 
   await zoomMode.click();
   await expect(zoomMode).toHaveAttribute("aria-pressed", "false");
@@ -955,16 +962,14 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
   await expect(groundSpan).toHaveValue("9");
   const mapOnlyZoomBounds = await selection.boundingBox();
   expect(mapOnlyZoomBounds).not.toBeNull();
-  expect(mapOnlyZoomBounds!.width).toBeCloseTo(initialBounds!.width / 2, 0);
+  expect(await selectionTopEdge()).toBeCloseTo(initialEdge / 2, 0);
 
   const map = page.locator(".map-canvas");
   await map.hover();
   await page.mouse.wheel(0, -100);
   await expect(selection).toHaveAttribute("data-map-zoom", "10");
   await expect(groundSpan).toHaveValue("9");
-  const wheelZoomedBounds = await selection.boundingBox();
-  expect(wheelZoomedBounds).not.toBeNull();
-  expect(wheelZoomedBounds!.width).toBeCloseTo(initialBounds!.width, 0);
+  expect(await selectionTopEdge()).toBeCloseTo(initialEdge, 0);
 
   // Map-only zoom keeps increasing after the selection grows beyond the
   // viewport. Auto-fit must not cancel these explicit zoom steps.

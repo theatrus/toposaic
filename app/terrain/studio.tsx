@@ -60,7 +60,11 @@ import {
   MAX_TRAIL_POINTS,
   parseTrailFile,
 } from "./trails";
-import { type AdjacentDirection, adjacentCenter } from "./geo";
+import {
+  type AdjacentDirection,
+  mapFrameForSpec,
+  matchingTileCenter,
+} from "./geo";
 import { TerrainMap } from "./map";
 import { SettingsMenu } from "./settings-menu";
 import { useOutsideDismiss } from "./use-outside-dismiss";
@@ -426,6 +430,16 @@ export function TerrainStudio() {
     ) => {
       setGeneratedPreview(null);
       setSpec((current) => {
+        if (
+          key === "center_lat" ||
+          key === "center_lon" ||
+          key === "ground_span_km" ||
+          key === "terrain_rotation_degrees" ||
+          key === "puzzle_tile_column" ||
+          key === "puzzle_tile_row"
+        ) {
+          return { ...current, [key]: value, map_frame: null };
+        }
         if (key !== "base_mm") return { ...current, [key]: value };
         const baseMm = value as number;
         return {
@@ -772,6 +786,7 @@ export function TerrainStudio() {
       ...current,
       center_lat: Number(latitude.toFixed(5)),
       center_lon: Number(longitude.toFixed(5)),
+      map_frame: null,
     }));
   }, []);
 
@@ -841,41 +856,31 @@ export function TerrainStudio() {
         datum = derived.datum;
         metresPerMm = Number(derived.metresPerMm.toFixed(4));
       }
-      const next = adjacentCenter(
-        spec.center_lat,
-        spec.center_lon,
-        spec.ground_span_km,
-        direction,
-      );
+      const frame = mapFrameForSpec(spec);
+      const tileColumn =
+        spec.puzzle_tile_column +
+        (direction === "east" ? 1 : direction === "west" ? -1 : 0);
+      const tileRow =
+        spec.puzzle_tile_row +
+        (direction === "south" ? 1 : direction === "north" ? -1 : 0);
+      const next = matchingTileCenter(spec, tileColumn, tileRow);
       setGeneratedPreview(null);
       setElevationPreview(null);
       setSpec((current) => ({
         ...current,
-        center_lat: Number(next.latitude.toFixed(5)),
-        center_lon: Number(next.longitude.toFixed(5)),
+        center_lat: next.latitude,
+        center_lon: next.longitude,
+        map_frame: frame,
         elevation_datum_m: datum,
         elevation_m_per_mm: metresPerMm,
-        puzzle_tile_column:
-          current.puzzle_tile_column +
-          (direction === "east" ? 1 : direction === "west" ? -1 : 0),
-        puzzle_tile_row:
-          current.puzzle_tile_row +
-          (direction === "south" ? 1 : direction === "north" ? -1 : 0),
+        puzzle_tile_column: tileColumn,
+        puzzle_tile_row: tileRow,
       }));
       setAdjacentMessage(
         `Moved ${direction} by one tile. The shared height frame stays locked.`,
       );
     },
-    [
-      elevationPreview,
-      generatedPreview,
-      spec.center_lat,
-      spec.center_lon,
-      spec.elevation_datum_m,
-      spec.elevation_m_per_mm,
-      spec.ground_span_km,
-      spec.relief_mm,
-    ],
+    [elevationPreview, generatedPreview, spec],
   );
 
   useEffect(() => {
@@ -889,6 +894,8 @@ export function TerrainStudio() {
         center_lon: spec.center_lon,
         elevation_source: spec.elevation_source,
         ground_span_km: spec.ground_span_km,
+        terrain_rotation_degrees: spec.terrain_rotation_degrees,
+        map_frame: spec.map_frame,
         width_mm: spec.width_mm,
         base_mm: spec.base_mm,
         relief_mm: spec.relief_mm,
@@ -935,6 +942,8 @@ export function TerrainStudio() {
     spec.elevation_source,
     spec.fine_dem_detail,
     spec.ground_span_km,
+    spec.map_frame,
+    spec.terrain_rotation_degrees,
     spec.mesh_samples_across,
     spec.overlay_samples_per_piece,
     spec.overlay_samples_across,

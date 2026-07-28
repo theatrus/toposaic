@@ -1,6 +1,7 @@
 #[doc(hidden)]
 pub mod analysis;
 mod export;
+mod geography;
 mod heightfield;
 mod jigsaw;
 mod marker;
@@ -16,6 +17,7 @@ mod surface;
 mod text;
 mod tray;
 
+pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
 pub use heightfield::{DespikeReport, HeightField};
 pub use preview::build_height_preview;
 pub use project::{
@@ -26,7 +28,7 @@ pub use project::{
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     DotMarkerStyle, ElevationSource, FlagMarkerStyle, GenerationSpec, LabelFont, LineScaleSpec,
-    LineStyle, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
+    LineStyle, MapFrame, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
     RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
     SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
     TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,

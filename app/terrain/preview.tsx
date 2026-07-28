@@ -319,6 +319,8 @@ export function ReliefPreview({
     center_lat,
     center_lon,
     ground_span_km,
+    terrain_rotation_degrees,
+    map_frame,
     markers,
     rows,
     columns,
@@ -559,7 +561,13 @@ export function ReliefPreview({
     canvas.dataset.vectorDotCount = String(dotMarkers.length);
     for (const marker of dotMarkers) {
       const { u, v } = normalizedMapPoint(
-        { center_lat, center_lon, ground_span_km },
+        {
+          center_lat,
+          center_lon,
+          ground_span_km,
+          terrain_rotation_degrees,
+          map_frame,
+        },
         marker.latitude,
         marker.longitude,
       );
@@ -816,6 +824,8 @@ export function ReliefPreview({
     center_lat,
     center_lon,
     ground_span_km,
+    terrain_rotation_degrees,
+    map_frame,
     rows,
     columns,
     solid_model,

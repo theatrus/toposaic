@@ -11,11 +11,10 @@ use reqwest::{StatusCode, blocking::Client};
 use toposaic_core::{DespikeReport, ElevationSource, GenerationSpec, HeightField};
 use tracing::warn;
 
-use crate::{
-    cache,
-    geo::{GeoBounds, normalize_longitude},
-    http,
-};
+use crate::{cache, http};
+
+#[cfg(test)]
+use crate::geo::normalize_longitude;
 
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const SOURCE_SAMPLES_PER_MESH_INTERVAL: f64 = 2.0;
@@ -122,7 +121,7 @@ fn fetch_height_field_at_size(
     let client = elevation_client()?;
     let mut tiles = HashMap::new();
     let mut missing_tiles = HashSet::new();
-    let bounds = GeoBounds::around(spec.center_lat, spec.center_lon, spec.ground_span_km);
+    let transform = spec.geo_transform();
     let mut values_m = Vec::with_capacity(sample_width * sample_height);
     let mut sampler = ElevationSampler {
         client: &client,
@@ -137,10 +136,9 @@ fn fetch_height_field_at_size(
 
     for row in 0..sample_height {
         let v = row as f64 / (sample_height - 1) as f64;
-        let latitude = bounds.south + (bounds.north - bounds.south) * v;
         for column in 0..sample_width {
             let u = column as f64 / (sample_width - 1) as f64;
-            let longitude = normalize_longitude(bounds.west + (bounds.east - bounds.west) * u);
+            let (latitude, longitude) = transform.coordinate_at_uv(u, v);
             values_m.push(sampler.sample(requested_zoom, longitude, latitude)?);
         }
         on_progress((row + 1) as f32 / sample_height as f32)?;
@@ -158,7 +156,15 @@ fn fetch_height_field_at_size(
     // against damage too broad to judge pixel by pixel.
     if spec.despike_terrain {
         let spacing_m = sample_spacing_m(spec, sample_width, sample_height);
-        let report = field.despike(spacing_m);
+        // Matching tiles sample the outer ring in common, so it must stay as
+        // fetched to keep their height seams equal. A lone tile has no seams
+        // and heals edge spikes too, which also keeps them out of the
+        // automatic elevation datum.
+        let report = if spec.shares_tile_edges() {
+            field.despike_interior(spacing_m)
+        } else {
+            field.despike(spacing_m)
+        };
         if !report.is_empty() {
             field.source.push_str(&describe_despike(&report));
         }

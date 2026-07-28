@@ -48,6 +48,9 @@ export type GenerationSpec = {
   center_lon: number;
   elevation_source: "mapzen" | "mapterhorn";
   ground_span_km: number;
+  /** Clockwise rotation of the model's top edge from true north. */
+  terrain_rotation_degrees: number;
+  map_frame: MapFrame | null;
   width_mm: number;
   rows: number;
   columns: number;
@@ -182,6 +185,13 @@ export type GenerationSpec = {
   };
   trails: TrailRoute[];
   markers: MapMarker[];
+};
+
+export type MapFrame = {
+  origin_lat: number;
+  origin_lon: number;
+  origin_tile_column: number;
+  origin_tile_row: number;
 };
 
 export type CacheCategoryKey = "elevation" | "world_cover" | "osm" | "places";

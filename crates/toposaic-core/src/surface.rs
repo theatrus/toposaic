@@ -212,6 +212,60 @@ impl SurfaceField {
         })
     }
 
+    /// Captures the outer raster ring in clockwise order. Vector overlays are
+    /// not included because their geographic paths already cross tile seams.
+    pub fn raster_edge_classes(&self) -> Vec<SurfaceClass> {
+        let mut edges = Vec::with_capacity(self.width * 2 + self.height.saturating_sub(2) * 2);
+        edges.extend_from_slice(&self.classes[..self.width]);
+        for row in 1..self.height - 1 {
+            edges.push(self.classes[row * self.width + self.width - 1]);
+        }
+        edges.extend(
+            self.classes[(self.height - 1) * self.width..]
+                .iter()
+                .rev()
+                .copied(),
+        );
+        for row in (1..self.height - 1).rev() {
+            edges.push(self.classes[row * self.width]);
+        }
+        edges
+    }
+
+    /// Restores a captured raster ring after tile-local filtering. Adjacent
+    /// tiles sample the same raw ring, so this keeps their final material seam
+    /// equal while allowing all interior smoothing and slope gates to run.
+    pub fn restore_raster_edge_classes(&mut self, edges: &[SurfaceClass]) -> Result<()> {
+        let expected = self.width * 2 + self.height.saturating_sub(2) * 2;
+        if edges.len() != expected {
+            bail!("surface edge ring does not match field dimensions");
+        }
+        let mut cursor = 0;
+        for column in 0..self.width {
+            self.set_raster_class(column, 0, edges[cursor]);
+            cursor += 1;
+        }
+        for row in 1..self.height - 1 {
+            self.set_raster_class(self.width - 1, row, edges[cursor]);
+            cursor += 1;
+        }
+        for column in (0..self.width).rev() {
+            self.set_raster_class(column, self.height - 1, edges[cursor]);
+            cursor += 1;
+        }
+        for row in (1..self.height - 1).rev() {
+            self.set_raster_class(0, row, edges[cursor]);
+            cursor += 1;
+        }
+        Ok(())
+    }
+
+    fn set_raster_class(&mut self, column: usize, row: usize, class: SurfaceClass) {
+        let index = row * self.width + column;
+        self.classes[index] = class;
+        self.base_classes[index] = class;
+    }
+
     pub fn filter_small_patches(&mut self, print_width_mm: f32, minimum_patch_mm: f32) {
         let cells_across =
             minimum_patch_mm / print_width_mm.max(f32::EPSILON) * (self.width - 1) as f32;
@@ -1450,6 +1504,36 @@ mod tests {
         let mut field = SurfaceField::new(5, 5, classes, "test").unwrap();
         field.filter_small_patches(10.0, 4.0);
         assert_eq!(field.classes[12], SurfaceClass::Forest);
+    }
+
+    #[test]
+    fn restoring_raster_edges_keeps_tile_local_changes_inside() {
+        let classes = (0_usize..25)
+            .map(|index| {
+                if index.is_multiple_of(2) {
+                    SurfaceClass::Forest
+                } else {
+                    SurfaceClass::Rock
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut field = SurfaceField::new(5, 5, classes.clone(), "test").unwrap();
+        let edges = field.raster_edge_classes();
+        field.classes.fill(SurfaceClass::Snow);
+        field.base_classes.fill(SurfaceClass::Snow);
+
+        field.restore_raster_edge_classes(&edges).unwrap();
+
+        assert_eq!(field.classes[2 * 5 + 2], SurfaceClass::Snow);
+        for column in 0..5 {
+            assert_eq!(field.classes[column], classes[column]);
+            assert_eq!(field.classes[4 * 5 + column], classes[4 * 5 + column]);
+        }
+        for row in 1..4 {
+            assert_eq!(field.classes[row * 5], classes[row * 5]);
+            assert_eq!(field.classes[row * 5 + 4], classes[row * 5 + 4]);
+        }
+        assert_eq!(field.classes, field.base_classes);
     }
 
     #[test]

@@ -18,7 +18,7 @@ import {
   MAX_GROUND_SPAN_KM,
   MIN_GROUND_SPAN_KM,
 } from "./config";
-import { superTileCenter } from "./geo";
+import { superTileCorners } from "./geo";
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
@@ -138,6 +138,10 @@ export function TerrainMap({
   const superTileColumns = Math.max(1, spec.adjacent_columns);
   const superTileRows = Math.max(1, spec.adjacent_rows);
   const superTileActive = superTileColumns > 1 || superTileRows > 1;
+  const terrainRotationDegrees = spec.terrain_rotation_degrees;
+  const terrainRotationRadians = (terrainRotationDegrees * Math.PI) / 180;
+  const rotationSine = Math.sin(terrainRotationRadians);
+  const rotationCosine = Math.cos(terrainRotationRadians);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -152,16 +156,48 @@ export function TerrainMap({
     return () => observer.disconnect();
   }, []);
 
-  const baseMetresPerPixel = metresPerPixelAtLatitude(spec.center_lat, zoom);
-  const baseSelectionSize = (spec.ground_span_km * 1000) / baseMetresPerPixel;
+  const superTileGeography = useMemo(() => {
+    const cells = [];
+    for (let row = 0; row < superTileRows; row += 1) {
+      for (let column = 0; column < superTileColumns; column += 1) {
+        cells.push({ row, column, corners: superTileCorners(spec, row, column) });
+      }
+    }
+    return cells;
+  }, [spec, superTileColumns, superTileRows]);
+  const baseAnchorWorld = projectToWorld(spec.center_lon, spec.center_lat, zoom);
+  const baseWorldScale = TILE_SIZE * 2 ** zoom;
+  const baseFootprintPoints = superTileGeography.flatMap((cell) =>
+    cell.corners.map((corner) => {
+      const point = projectToWorld(corner.longitude, corner.latitude, zoom);
+      let deltaX = point.x - baseAnchorWorld.x;
+      if (deltaX > baseWorldScale / 2) deltaX -= baseWorldScale;
+      if (deltaX < -baseWorldScale / 2) deltaX += baseWorldScale;
+      return { x: baseAnchorWorld.x + deltaX, y: point.y };
+    }),
+  );
+  const baseFootprintBounds = baseFootprintPoints.reduce(
+    (bounds, point) => ({
+      left: Math.min(bounds.left, point.x),
+      right: Math.max(bounds.right, point.x),
+      top: Math.min(bounds.top, point.y),
+      bottom: Math.max(bounds.bottom, point.y),
+    }),
+    {
+      left: baseAnchorWorld.x,
+      right: baseAnchorWorld.x,
+      top: baseAnchorWorld.y,
+      bottom: baseAnchorWorld.y,
+    },
+  );
+  const projectedFootprintWidth =
+    baseFootprintBounds.right - baseFootprintBounds.left;
+  const projectedFootprintHeight =
+    baseFootprintBounds.bottom - baseFootprintBounds.top;
   const fitScale = Math.max(
     1,
-    size.width
-      ? (baseSelectionSize * superTileColumns) / (size.width * 0.88)
-      : 1,
-    size.height
-      ? (baseSelectionSize * superTileRows) / (size.height * 0.82)
-      : 1,
+    size.width ? projectedFootprintWidth / (size.width * 0.88) : 1,
+    size.height ? projectedFootprintHeight / (size.height * 0.82) : 1,
   );
   const fittedMapZoom = Math.max(
     MIN_MAP_ZOOM,
@@ -175,53 +211,48 @@ export function TerrainMap({
   );
   const superTileCells = useMemo(() => {
     const worldScale = TILE_SIZE * 2 ** mapZoom;
-    const cells = [];
-    for (let row = 0; row < superTileRows; row += 1) {
-      for (let column = 0; column < superTileColumns; column += 1) {
-        const center = superTileCenter(
-          spec.center_lat,
-          spec.center_lon,
-          spec.ground_span_km,
-          row,
-          column,
-          superTileRows,
-          superTileColumns,
-          spec.super_tile_anchor,
-        );
+    return superTileGeography.map((cell) => {
+      const corners = cell.corners.map((corner) => {
         const projected = projectToWorld(
-          center.longitude,
-          center.latitude,
+          corner.longitude,
+          corner.latitude,
           mapZoom,
         );
         let deltaX = projected.x - anchorWorld.x;
         if (deltaX > worldScale / 2) deltaX -= worldScale;
         if (deltaX < -worldScale / 2) deltaX += worldScale;
-        cells.push({
-          row,
-          column,
-          worldX: anchorWorld.x + deltaX,
-          worldY: projected.y,
-        });
-      }
-    }
-    return cells;
+        return { x: anchorWorld.x + deltaX, y: projected.y };
+      });
+      return {
+        ...cell,
+        corners,
+      };
+    });
   }, [
     anchorWorld.x,
     mapZoom,
-    spec.center_lat,
-    spec.center_lon,
-    spec.ground_span_km,
-    spec.super_tile_anchor,
-    superTileColumns,
-    superTileRows,
+    superTileGeography,
   ]);
   const selectionWorldCenter = useMemo(() => {
-    const firstCell = superTileCells[0];
-    const lastCell = superTileCells.at(-1);
-    if (!firstCell || !lastCell) return anchorWorld;
+    const points = superTileCells.flatMap((cell) => cell.corners);
+    if (points.length === 0) return anchorWorld;
+    const bounds = points.reduce(
+      (current, point) => ({
+        left: Math.min(current.left, point.x),
+        right: Math.max(current.right, point.x),
+        top: Math.min(current.top, point.y),
+        bottom: Math.max(current.bottom, point.y),
+      }),
+      {
+        left: points[0].x,
+        right: points[0].x,
+        top: points[0].y,
+        bottom: points[0].y,
+      },
+    );
     return {
-      x: (firstCell.worldX + lastCell.worldX) / 2,
-      y: (firstCell.worldY + lastCell.worldY) / 2,
+      x: (bounds.left + bounds.right) / 2,
+      y: (bounds.top + bounds.bottom) / 2,
     };
   }, [anchorWorld, superTileCells]);
   const viewWorldCenter = useMemo(
@@ -313,14 +344,6 @@ export function TerrainMap({
     });
   }, [anchorWorld.x, mapZoom, size, spec.markers, viewWorldCenter]);
 
-  const metresPerPixel = metresPerPixelAtLatitude(spec.center_lat, mapZoom);
-  const selectionSize = Math.max(
-    8,
-    Math.min(
-      Math.min(size.width, size.height) * 0.94,
-      (spec.ground_span_km * 1000) / metresPerPixel,
-    ),
-  );
   const groundSpanLabel = Number.isInteger(spec.ground_span_km)
     ? spec.ground_span_km.toFixed(0)
     : spec.ground_span_km.toFixed(2).replace(/0$/, "");
@@ -328,6 +351,19 @@ export function TerrainMap({
     spec.super_tile_anchor === "center" ? Math.floor(superTileRows / 2) : 0;
   const anchorColumn =
     spec.super_tile_anchor === "center" ? Math.floor(superTileColumns / 2) : 0;
+  const selectedCell = superTileCells.find(
+    (cell) => cell.row === anchorRow && cell.column === anchorColumn,
+  );
+  const projectedSelectionWidth = selectedCell
+    ? Math.hypot(
+        selectedCell.corners[1].x - selectedCell.corners[0].x,
+        selectedCell.corners[1].y - selectedCell.corners[0].y,
+      )
+    : 8;
+  const selectionSize = Math.max(
+    8,
+    Math.min(Math.min(size.width, size.height) * 0.94, projectedSelectionWidth),
+  );
   const anchorDescription =
     spec.super_tile_anchor === "center" ? "center tile" : "top-left tile";
 
@@ -437,11 +473,19 @@ export function TerrainMap({
       const anchorX =
         spec.super_tile_anchor === "center"
           ? nextDraft.left + nextDraft.width * 0.5
-          : nextDraft.left + nextDraft.cellSize * 0.5;
+          : nextDraft.left + nextDraft.width * 0.5 +
+            (-nextDraft.width * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationCosine -
+            (-nextDraft.height * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationSine;
       const anchorY =
         spec.super_tile_anchor === "center"
           ? nextDraft.top + nextDraft.height * 0.5
-          : nextDraft.top + nextDraft.cellSize * 0.5;
+          : nextDraft.top + nextDraft.height * 0.5 +
+            (-nextDraft.width * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationSine +
+            (-nextDraft.height * 0.5 + nextDraft.cellSize * 0.5) *
+              rotationCosine;
       const nextAnchor = moveToWorld(
         viewWorldCenter.x + anchorX - size.width * 0.5,
         viewWorldCenter.y + anchorY - size.height * 0.5,
@@ -591,42 +635,61 @@ export function TerrainMap({
             />
           ))}
         </div>
-        <div
-          aria-label={`Super-tile map: ${superTileColumns} across by ${superTileRows} down, anchored at ${anchorDescription}`}
+        <svg
+          aria-label={`Super-tile map: ${superTileColumns} across by ${superTileRows} down, ${
+            terrainRotationDegrees === 0
+              ? ""
+              : `rotated ${terrainRotationDegrees} degrees, `
+          }anchored at ${anchorDescription}`}
           className="map-super-tile-grid"
           data-super-tile-columns={superTileColumns}
           data-super-tile-rows={superTileRows}
+          height={size.height}
           role="group"
+          width={size.width}
         >
           {superTileCells.map((cell) => {
             const current =
               cell.row === anchorRow && cell.column === anchorColumn;
+            const corners = cell.corners.map((point) => ({
+              x: point.x - viewWorldCenter.x + size.width / 2,
+              y: point.y - viewWorldCenter.y + size.height / 2,
+            }));
+            const points = corners
+              .map((point) => `${point.x.toFixed(3)},${point.y.toFixed(3)}`)
+              .join(" ");
+            const labelX = (corners[0].x + corners[1].x) / 2;
+            const labelY = (corners[0].y + corners[1].y) / 2 - 6;
             return (
-              <div
-                aria-label={
-                  current
-                    ? `Selected terrain area: ${groundSpanLabel} km square`
-                    : `Super-tile row ${cell.row + 1}, column ${cell.column + 1}`
-                }
-                className={`map-selection${current ? " current" : ""}`}
-                data-ground-span-km={spec.ground_span_km}
-                data-map-zoom={mapZoom}
-                data-super-tile-column={cell.column + 1}
-                data-super-tile-row={cell.row + 1}
-                key={`${cell.row}-${cell.column}`}
-                role="img"
-                style={{
-                  height: selectionSize,
-                  left: cell.worldX - viewWorldCenter.x + size.width / 2,
-                  top: cell.worldY - viewWorldCenter.y + size.height / 2,
-                  width: selectionSize,
-                }}
-              >
-                {current && <span>{groundSpanLabel} km</span>}
-              </div>
+              <g key={`${cell.row}-${cell.column}`}>
+                <polygon
+                  aria-label={
+                    current
+                      ? `Selected terrain area: ${groundSpanLabel} km square`
+                      : `Super-tile row ${cell.row + 1}, column ${cell.column + 1}`
+                  }
+                  className={`map-selection${current ? " current" : ""}`}
+                  data-ground-span-km={spec.ground_span_km}
+                  data-map-zoom={mapZoom}
+                  data-super-tile-column={cell.column + 1}
+                  data-super-tile-row={cell.row + 1}
+                  points={points}
+                  role="img"
+                />
+                {current && (
+                  <text
+                    className="map-selection-label"
+                    textAnchor="middle"
+                    x={labelX}
+                    y={labelY}
+                  >
+                    {groundSpanLabel} km
+                  </text>
+                )}
+              </g>
             );
           })}
-        </div>
+        </svg>
         {draft && (
           <div
             aria-label={`New terrain area: ${superTileColumns} across by ${superTileRows} down`}
@@ -641,6 +704,7 @@ export function TerrainMap({
                 width: draft.width,
                 "--draft-columns": superTileColumns,
                 "--draft-rows": superTileRows,
+                transform: `rotate(${terrainRotationDegrees}deg)`,
               } as CSSProperties
             }
           >

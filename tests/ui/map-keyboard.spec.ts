@@ -113,6 +113,63 @@ test("moves the terrain area with the legacy fixed-rectangle pan", async ({
     .toBeGreaterThan(afterDragLatitude);
 });
 
+test("rotates the terrain footprint by an arbitrary bearing", async ({
+  page,
+}) => {
+  await mockSetupsService(page, []);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const rotation = page.getByRole("slider", {
+    name: "Terrain rotation clockwise from north",
+  });
+  const initialPoints = await page
+    .locator(".map-selection.current")
+    .getAttribute("points");
+  await rotation.fill("37.5");
+  await expect(rotation).toHaveValue("37.5");
+  const rotatedPoints = await page
+    .locator(".map-selection.current")
+    .getAttribute("points");
+  expect(rotatedPoints).not.toBe(initialPoints);
+  expect(rotatedPoints?.trim().split(/\s+/)).toHaveLength(4);
+  await expect(page.locator(".map-super-tile-grid")).toHaveAttribute(
+    "aria-label",
+    /rotated 37\.5 degrees/,
+  );
+
+  const grid = page.getByLabel("Super-tile grid");
+  await grid.getByLabel("Across").selectOption("2");
+  const west = (await page
+    .locator(
+      '.map-selection[data-super-tile-row="1"][data-super-tile-column="1"]',
+    )
+    .getAttribute("points"))!
+    .split(" ");
+  const east = (await page
+    .locator(
+      '.map-selection[data-super-tile-row="1"][data-super-tile-column="2"]',
+    )
+    .getAttribute("points"))!
+    .split(" ");
+  expect(west[1]).toBe(east[0]);
+  expect(west[2]).toBe(east[3]);
+
+  await page.getByRole("button", { name: "Draw terrain area" }).click();
+  const map = page.locator(".map-canvas");
+  const bounds = await map.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  await page.mouse.move(bounds.x + 240, bounds.y + 170);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 350, bounds.y + 270, { steps: 5 });
+  await expect(page.locator(".map-selection-draft")).toHaveAttribute(
+    "style",
+    /rotate\(37\.5deg\)/,
+  );
+  await page.mouse.up();
+});
+
 test("pans independently and draws a new terrain area", async ({ page }) => {
   await mockSetupsService(page, []);
   await page.setViewportSize({ width: 1440, height: 900 });

@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::surface::SurfaceField;
+use crate::{
+    geography::{GeoTransform, normalize_longitude},
+    surface::SurfaceField,
+};
 
 const MAX_ADJACENT_GRID_SIDE: u32 = 12;
 const MAX_PUZZLE_TILE_COORDINATE: i32 = 1_000_000;
@@ -25,10 +28,54 @@ const MAX_TRAIL_POINTS: usize = 20_000;
 const MAX_TRAIL_NAME_CHARS: usize = 80;
 const MAX_MAP_MARKERS: usize = 50;
 const MAX_MARKER_NAME_CHARS: usize = 80;
-const KILOMETRES_PER_LATITUDE_DEGREE: f64 = 110.574;
-const KILOMETRES_PER_LONGITUDE_DEGREE: f64 = 111.32;
-const MINIMUM_LONGITUDE_SCALE: f64 = 20.0;
-const MAX_MODEL_LATITUDE: f64 = 85.0;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MapFrame {
+    pub origin_lat: f64,
+    pub origin_lon: f64,
+    pub origin_tile_column: i32,
+    pub origin_tile_row: i32,
+}
+
+impl MapFrame {
+    pub fn at_spec_origin(spec: &GenerationSpec) -> Self {
+        Self {
+            origin_lat: spec.center_lat,
+            origin_lon: spec.center_lon,
+            origin_tile_column: spec.puzzle_tile_column,
+            origin_tile_row: spec.puzzle_tile_row,
+        }
+    }
+
+    fn validate(self) -> Result<()> {
+        if !(-85.0..=85.0).contains(&self.origin_lat) {
+            bail!("map-frame latitude must be between -85 and 85 degrees");
+        }
+        if !(-180.0..=180.0).contains(&self.origin_lon) {
+            bail!("map-frame longitude must be between -180 and 180 degrees");
+        }
+        if self.origin_tile_column.unsigned_abs() > MAX_PUZZLE_TILE_COORDINATE as u32
+            || self.origin_tile_row.unsigned_abs() > MAX_PUZZLE_TILE_COORDINATE as u32
+        {
+            bail!("map-frame tile coordinates are out of range");
+        }
+        Ok(())
+    }
+
+    fn expected_center(self, spec: &GenerationSpec) -> (f64, f64) {
+        GeoTransform::with_reference_latitude(
+            self.origin_lat,
+            self.origin_lon,
+            spec.ground_span_km,
+            spec.terrain_rotation_degrees,
+            self.origin_lat,
+        )
+        .coordinate_at_local_offset(
+            f64::from(spec.puzzle_tile_column - self.origin_tile_column) * spec.ground_span_km,
+            -f64::from(spec.puzzle_tile_row - self.origin_tile_row) * spec.ground_span_km,
+        )
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -37,6 +84,11 @@ pub struct GenerationSpec {
     pub center_lon: f64,
     pub elevation_source: ElevationSource,
     pub ground_span_km: f64,
+    /// Clockwise rotation of the model's top edge from true north.
+    pub terrain_rotation_degrees: f64,
+    /// Stable geographic origin for separately generated matching tiles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map_frame: Option<MapFrame>,
     pub width_mm: f32,
     pub rows: u32,
     pub columns: u32,
@@ -97,6 +149,8 @@ impl Default for GenerationSpec {
             center_lon: -121.7603,
             elevation_source: ElevationSource::Mapzen,
             ground_span_km: 18.0,
+            terrain_rotation_degrees: 0.0,
+            map_frame: None,
             width_mm: 180.0,
             rows: 3,
             columns: 3,
@@ -148,6 +202,14 @@ impl GenerationSpec {
         if !(0.25..=250.0).contains(&self.ground_span_km) {
             bail!("ground span must be between 0.25 and 250 km");
         }
+        if !self.terrain_rotation_degrees.is_finite()
+            || !(-180.0..=180.0).contains(&self.terrain_rotation_degrees)
+        {
+            bail!("terrain rotation must be between -180 and 180 degrees");
+        }
+        if let Some(frame) = self.map_frame {
+            frame.validate()?;
+        }
         if !(60.0..=500.0).contains(&self.width_mm) {
             bail!("model width must be between 60 and 500 mm");
         }
@@ -191,10 +253,30 @@ impl GenerationSpec {
                 "puzzle tile row and column must each be between -{MAX_PUZZLE_TILE_COORDINATE} and {MAX_PUZZLE_TILE_COORDINATE}"
             );
         }
+        if let Some(frame) = self.map_frame {
+            let (expected_lat, expected_lon) = frame.expected_center(self);
+            let latitude_error = (self.center_lat - expected_lat).abs();
+            let longitude_error = normalize_longitude(self.center_lon - expected_lon).abs();
+            if latitude_error > 1e-7 || longitude_error > 1e-7 {
+                bail!(
+                    "map frame does not match this tile center; reset the map frame after changing the location, span, rotation, or tile position"
+                );
+            }
+        }
         if self.super_tile_anchor == SuperTileAnchor::Center
             && (self.adjacent_columns.is_multiple_of(2) || self.adjacent_rows.is_multiple_of(2))
         {
             bail!("center-anchored super-tile grids require odd column and row counts");
+        }
+        // North-up sampling clamps at the model latitude limit like it always
+        // has, so only rotated grids need the hard footprint check.
+        if !self.geo_transform().is_north_up() {
+            let (south, north) = self.terrain_footprint_latitude_bounds();
+            if south < -85.0 || north > 85.0 {
+                bail!(
+                    "terrain footprint reaches {south:.3} to {north:.3} degrees latitude; keep the full rotated super-tile grid between -85 and 85 degrees"
+                );
+            }
         }
         if !(0.0..=0.8).contains(&self.clearance_mm) {
             bail!("clearance must be between 0 and 0.8 mm");
@@ -355,19 +437,60 @@ impl GenerationSpec {
     /// The API uses this same helper for OSM data, so markers, trails, and
     /// fetched features cannot drift apart at high latitude or the date line.
     pub fn normalized_map_point(&self, latitude: f64, longitude: f64) -> [f32; 2] {
-        let half_latitude = self.ground_span_km / (2.0 * KILOMETRES_PER_LATITUDE_DEGREE);
-        let longitude_scale = (KILOMETRES_PER_LONGITUDE_DEGREE
-            * self.center_lat.to_radians().cos().abs())
-        .max(MINIMUM_LONGITUDE_SCALE);
-        let half_longitude = self.ground_span_km / (2.0 * longitude_scale);
-        let longitude =
-            self.center_lon + (longitude - self.center_lon + 180.0).rem_euclid(360.0) - 180.0;
-        let south = (self.center_lat - half_latitude).max(-MAX_MODEL_LATITUDE);
-        let north = (self.center_lat + half_latitude).min(MAX_MODEL_LATITUDE);
+        self.geo_transform().normalized_point(latitude, longitude)
+    }
+
+    /// Geographic transform shared by DEM, vector, and marker inputs.
+    pub fn geo_transform(&self) -> GeoTransform {
+        GeoTransform::with_reference_latitude(
+            self.center_lat,
+            self.center_lon,
+            self.ground_span_km,
+            self.terrain_rotation_degrees,
+            self.map_frame
+                .map_or(self.center_lat, |frame| frame.origin_lat),
+        )
+    }
+
+    /// Whether separately generated tiles sit against this one, so its
+    /// sampled outer edges must stay exactly as fetched. A lone tile has no
+    /// neighbours and keeps full edge repair and filtering instead.
+    pub fn shares_tile_edges(&self) -> bool {
+        self.map_frame.is_some() || self.adjacent_columns > 1 || self.adjacent_rows > 1
+    }
+
+    fn terrain_footprint_latitude_bounds(&self) -> (f64, f64) {
+        let row_anchor = match self.super_tile_anchor {
+            SuperTileAnchor::TopLeft => 0.0,
+            SuperTileAnchor::Center => f64::from(self.adjacent_rows - 1) / 2.0,
+        };
+        let column_anchor = match self.super_tile_anchor {
+            SuperTileAnchor::TopLeft => 0.0,
+            SuperTileAnchor::Center => f64::from(self.adjacent_columns - 1) / 2.0,
+        };
+        let span = self.ground_span_km;
+        let west = (-column_anchor - 0.5) * span;
+        let east = (f64::from(self.adjacent_columns - 1) - column_anchor + 0.5) * span;
+        let north = (row_anchor + 0.5) * span;
+        let south = (row_anchor - f64::from(self.adjacent_rows - 1) - 0.5) * span;
         [
-            ((longitude - (self.center_lon - half_longitude)) / (2.0 * half_longitude)) as f32,
-            ((latitude - south) / (north - south)) as f32,
+            self.geo_transform()
+                .coordinate_at_local_offset(west, south)
+                .0,
+            self.geo_transform()
+                .coordinate_at_local_offset(west, north)
+                .0,
+            self.geo_transform()
+                .coordinate_at_local_offset(east, south)
+                .0,
+            self.geo_transform()
+                .coordinate_at_local_offset(east, north)
+                .0,
         ]
+        .into_iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
+            (low.min(value), high.max(value))
+        })
     }
 
     /// Whether the railway layer — `railway=*`: trains, trams, metros,
@@ -2148,6 +2271,10 @@ mod tests {
             "\"adjacent_interlocks\":false,\"outer_edge_interlocks\":false,",
         );
         let expected = expected.replace(
+            "\"ground_span_km\":18.0,",
+            "\"ground_span_km\":18.0,\"terrain_rotation_degrees\":0.0,",
+        );
+        let expected = expected.replace(
             "\"adjacent_tile_row\":0,",
             "\"adjacent_tile_row\":0,\"puzzle_seed\":0,\"puzzle_tile_column\":0,\"puzzle_tile_row\":0,",
         );
@@ -2165,6 +2292,7 @@ mod tests {
             "center_lon": -110.5,
             "elevation_source": "mapterhorn",
             "ground_span_km": 6.0,
+            "terrain_rotation_degrees": 27.5,
             "width_mm": 240.0,
             "rows": 5,
             "columns": 5,
@@ -2469,6 +2597,90 @@ mod tests {
         assert!(overlapping.validate().is_err());
         overlapping.markers[1].longitude += 0.01;
         overlapping.validate().unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_a_rotated_grid_that_reaches_the_mercator_limit() {
+        let spec = GenerationSpec {
+            center_lat: 84.5,
+            ground_span_km: 100.0,
+            terrain_rotation_degrees: 37.5,
+            adjacent_columns: 3,
+            adjacent_rows: 3,
+            super_tile_anchor: SuperTileAnchor::Center,
+            ..GenerationSpec::default()
+        };
+
+        let error = spec.validate().unwrap_err().to_string();
+        assert!(error.contains("full rotated super-tile grid"));
+        assert!(error.contains("-85 and 85"));
+
+        // North-up sampling clamps at the model limit as it always has, so
+        // the same near-pole grid still validates without rotation.
+        let north_up = GenerationSpec {
+            terrain_rotation_degrees: 0.0,
+            ..spec
+        };
+        north_up.validate().unwrap();
+    }
+
+    #[test]
+    fn only_tiles_with_matching_neighbours_share_edges() {
+        let lone = GenerationSpec::default();
+        assert!(!lone.shares_tile_edges());
+
+        let grid = GenerationSpec {
+            adjacent_columns: 2,
+            ..GenerationSpec::default()
+        };
+        assert!(grid.shares_tile_edges());
+
+        let framed = GenerationSpec {
+            map_frame: Some(MapFrame::at_spec_origin(&GenerationSpec::default())),
+            ..GenerationSpec::default()
+        };
+        assert!(framed.shares_tile_edges());
+    }
+
+    #[test]
+    fn map_frame_round_trips_and_rejects_a_moved_center() {
+        let origin = GenerationSpec {
+            center_lat: 46.8523,
+            center_lon: -121.7603,
+            ground_span_km: 18.0,
+            terrain_rotation_degrees: 37.5,
+            ..GenerationSpec::default()
+        };
+        let frame = MapFrame::at_spec_origin(&origin);
+        let (center_lat, center_lon) = frame.expected_center(&GenerationSpec {
+            puzzle_tile_column: 1,
+            puzzle_tile_row: 1,
+            ..origin.clone()
+        });
+        let tile = GenerationSpec {
+            center_lat,
+            center_lon,
+            puzzle_tile_column: 1,
+            puzzle_tile_row: 1,
+            map_frame: Some(frame),
+            ..origin
+        };
+
+        tile.validate().unwrap();
+        let json = serde_json::to_string(&tile).unwrap();
+        let decoded: GenerationSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.map_frame, Some(frame));
+        decoded.validate().unwrap();
+
+        let mut moved = decoded;
+        moved.center_lat += 0.001;
+        assert!(
+            moved
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("map frame")
+        );
     }
 
     #[test]
