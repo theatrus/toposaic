@@ -2609,18 +2609,43 @@ fieldset.control-section .road-options {
   gap: 12px;
 }
 
+/* Each marker kind is its own card, told apart by an accent stripe down
+   its left edge and repeated on its rows. The paper-map palette, used at
+   full strength here because these are the only saturated marks on the
+   page. */
 .marker-type-group {
+  --marker-accent: var(--moss);
+  background: var(--panel);
   border: 1px solid var(--line);
+  border-left: 3px solid var(--marker-accent);
   display: grid;
   gap: 10px;
-  padding: 10px;
+  padding: 10px 10px 12px;
+}
+
+.marker-type-building {
+  --marker-accent: #8a6a4a;
+}
+
+.marker-type-dot {
+  --marker-accent: var(--clay);
+}
+
+.marker-type-flag {
+  --marker-accent: #3f6f8b;
+}
+
+.marker-type-label {
+  --marker-accent: var(--moss);
 }
 
 .marker-type-heading {
   align-items: center;
+  border-bottom: 1px solid var(--line);
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  padding-bottom: 8px;
 }
 
 .marker-type-heading > div {
@@ -2641,9 +2666,9 @@ fieldset.control-section .road-options {
 
 .marker-type-heading > span {
   align-items: center;
-  background: var(--paper-deep);
+  background: var(--marker-accent, var(--paper-deep));
   border-radius: 999px;
-  color: var(--muted);
+  color: #fff;
   display: inline-flex;
   font-size: 9px;
   font-weight: 700;
@@ -2679,13 +2704,47 @@ fieldset.control-section .road-options {
 
 .marker-list li {
   align-items: end;
+  background: var(--field);
   border: 1px solid var(--line);
   display: grid;
-  gap: 6px;
+  gap: 6px 8px;
   grid-template-columns:
     minmax(100px, 1fr) minmax(110px, 0.8fr) minmax(160px, 1.2fr)
     auto;
-  padding: 7px;
+  padding: 8px 8px 8px 34px;
+  position: relative;
+}
+
+/* Banding, so a long list reads as separate rows rather than one field of
+   boxes. */
+.marker-list li:nth-child(even) {
+  background: var(--paper-deep);
+}
+
+.marker-list li:hover {
+  border-color: var(--marker-accent, var(--line-strong));
+}
+
+.marker-list li:focus-within {
+  border-color: var(--marker-accent, var(--moss));
+  box-shadow: var(--focus-ring);
+}
+
+/* Which marker this row is — the same number its coordinate labels use. */
+/* Out of the grid flow on purpose. As a grid item it would take a column,
+   and every row a marker wraps onto — coordinates, actions, a kind's own
+   settings — would auto-place into that column and collapse. */
+.marker-row-index {
+  background: var(--marker-accent, var(--moss));
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  left: 8px;
+  line-height: 20px;
+  min-width: 20px;
+  position: absolute;
+  text-align: center;
+  top: 8px;
 }
 
 .marker-list input,
@@ -2738,12 +2797,15 @@ fieldset.control-section .road-options {
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
 }
 
-.marker-label-fields > label:not(.font-select-field) {
+/* Plain "label / field / unit" rows only. A range field brings its own
+   layout — label left, value right, slider under — and forcing it into
+   these three columns ran its label and its value together. */
+.marker-label-fields > label:not(.font-select-field, .range-field) {
   align-items: center;
   color: var(--muted);
   display: grid;
   font-size: 8px;
-  gap: 4px;
+  gap: 6px;
   grid-template-columns: auto minmax(70px, 1fr) auto;
 }
 

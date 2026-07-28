@@ -203,6 +203,9 @@ export function MarkersPanel({
               <ul className="marker-list">
                 {group.markers.map(({ marker, index }) => (
                   <li key={`${marker.latitude}:${marker.longitude}:${index}`}>
+                    <span aria-hidden="true" className="marker-row-index">
+                      {index + 1}
+                    </span>
                     <div className="marker-name-field">
                       <input
                         aria-label={`Marker ${index + 1} name`}
