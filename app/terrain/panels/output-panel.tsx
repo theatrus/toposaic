@@ -69,20 +69,23 @@ export function OutputPanel({
             }
           >
             <option value="project">
-              Color project · filament colors and purge settings
+              Color project (for Bambu) · filament colors and purge settings
             </option>
             <option value="painted">
-              Painted colors · no embedded presets
+              Painted colors (for Orca) · paint only, no presets
             </option>
-            <option value="geometry">Geometry only · plain colors</option>
+            <option value="geometry">Geometry only · standard 3MF colors</option>
           </select>
           <small>
-            Color project embeds slicer settings, so OrcaSlicer and Bambu
-            Studio import the file as a project: filament colors and purge
-            volumes load in one click, but printer, material, and process
-            presets come along too. Painted colors keeps the per-triangle
-            paint without importing any presets. Geometry only writes a
-            plain standards-based 3MF.
+            Color project carries its colors every way Bambu Studio reads
+            them: opened as a project it sets the filament list from the
+            Colors tab, and imported into an existing project its color
+            group feeds the import dialog, where Color match puts the
+            palette on the filaments already loaded. Painted colors is a
+            plain pre-painted model: triangles carry extruder assignments
+            1..N, colors come from the filaments already loaded, and no
+            presets are touched — the shape OrcaSlicer expects. Geometry
+            only writes a plain standards-based 3MF for other tools.
           </small>
         </label>
       </fieldset>

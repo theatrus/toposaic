@@ -273,21 +273,27 @@ crosses the area, it still uses paths and trails as a fallback. Rivers, streams,
 canals, and mapped water areas use the same vector path so they stay smooth and
 flush with the terrain. Building footprints keep
 their straight mapped edges, with dense local mesh detail along each wall
-instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
-color properties, and an Output-tab style picker sets what else it carries.
-The default "Color project" style also embeds filament colors, purge settings,
-and OrcaSlicer/Bambu face-paint codes, so those slicers open the file as a
-project with colors set up in one click — importing printer, material, and
-process presets with it. Each slot names a filament preset, picked in the
-Colors tab: Generic PLA, Bambu PLA Basic, PolyLite PLA, or PolyTerra PLA. Name
-one and the slot arrives as the PLA it is, rather than whatever the slicer
-reaches for when the file names nothing. Slicer preset names also carry a
-printer suffix — `PolyTerra PLA @BBL A1` — which the file cannot know, so a
-slicer that cannot match the exact preset still reads the right vendor and the
-right material. "Painted colors" keeps the face-paint codes but skips
-the embedded settings, so opening the model never touches slicer presets.
-"Geometry only" drops the paint codes too and writes a plain standards-based
-3MF for other tools.
+instead of a blocky whole-map sampling edge. An Output-tab style picker sets
+how the 3MF states its colors, one style per slicer workflow.
+
+"Color project (for Bambu)", the default, carries its colors every way Bambu
+Studio reads them. Opened as a project, the embedded settings set the filament
+list to exactly the Colors-tab palette, with purge volumes to match. Imported
+as geometry into a project already in progress — where Bambu ignores embedded
+settings by design — the standard color group feeds Bambu's import dialog
+instead, and its Color match puts the palette onto the filaments already
+loaded. Each settings slot names a filament preset, picked in the Colors tab:
+Generic PLA, Bambu PLA Basic, PolyLite PLA, or PolyTerra PLA. Name one and the
+slot arrives as the PLA it is, rather than whatever the slicer reaches for
+when the file names nothing. Slicer preset names also carry a printer suffix —
+`PolyTerra PLA @BBL A1` — which the file cannot know, so a slicer that cannot
+match the exact preset still reads the right vendor and the right material.
+
+"Painted colors (for Orca)" is a plain pre-painted model: face-paint codes
+assign each triangle an extruder, colors come from the filaments already
+loaded, and nothing else is in the file — no settings, no dialogs, no presets
+touched. "Geometry only" writes the standard 3MF color group and nothing
+vendor-specific, for every other tool.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
 networks without dropping any selected road class. Roads tagged as bridges in

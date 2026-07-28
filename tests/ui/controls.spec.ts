@@ -517,9 +517,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const threeMfStyle = page.getByLabel("3MF style");
   await expect(threeMfStyle).toHaveValue("project");
   await expect(
-    page.getByText(
-      /OrcaSlicer and Bambu\s+Studio import the file as a project/,
-    ),
+    page.getByText(/carries its colors every way Bambu\s+Studio reads/),
   ).toBeVisible();
   await threeMfStyle.selectOption("painted");
   await expect(threeMfStyle).toHaveValue("painted");

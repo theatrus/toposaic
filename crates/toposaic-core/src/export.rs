@@ -75,6 +75,33 @@ pub(crate) struct ThreeMfWriter<'a> {
 }
 
 const COLOR_GROUP_ID: u32 = 1000;
+
+/// Whether a style carries the core-spec color group and the per-triangle
+/// `pid`/`p1`/`p2`/`p3` references into it. `Painted` alone does not.
+///
+/// Bambu Studio has two import flows and they read different parts of a
+/// third-party file. Opening AS A PROJECT loads the embedded
+/// `project_settings.config`, so the filament list becomes exactly this
+/// archive's palette. IMPORTING GEOMETRY into an existing project skips the
+/// embedded settings by design; there, the color group is what carries the
+/// colors — Bambu collects the per-triangle `pid` references of a file it
+/// did not generate and opens its "Standard 3mf Import color" dialog, whose
+/// Color match maps this palette onto the filaments already loaded.
+/// `Project` therefore carries the group so its colors survive BOTH flows.
+/// (OrcaSlicer reads only the settings and the `paint_color` codes; it has
+/// no such dialog, and only ever maps a color group through an object-level
+/// `pid`, which these archives do not use.)
+///
+/// `Painted` is the plain pre-painted model: `paint_color` codes assign
+/// extruders 1..N and the colors come from whatever filaments the project
+/// has. No group, no settings, no dialogs, no presets touched — in either
+/// slicer.
+///
+/// `Geometry` is the standards flavor: the color group is the one channel
+/// other 3MF consumers read, so it is the one channel that style writes.
+fn carries_color_group(style: ThreeMfStyle) -> bool {
+    style != ThreeMfStyle::Painted
+}
 /// Elements formatted per rayon task when writing 3MF XML bodies.
 const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
@@ -135,7 +162,13 @@ impl<'a> ThreeMfWriter<'a> {
 
         zip.add_directory("3D/", options)?;
         zip.start_file("3D/3dmodel.model", options)?;
-        if spec.uses_color_materials() {
+        let palette = spec.material_palette(painted);
+        // The material namespace is declared as a REQUIRED extension, so it
+        // may only appear when the color group it exists for does.
+        let writes_color_group = spec.uses_color_materials()
+            && carries_color_group(spec.color_output.threemf_style)
+            && !palette.is_empty();
+        if writes_color_group {
             zip.write_all(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="m">
@@ -156,8 +189,7 @@ impl<'a> ThreeMfWriter<'a> {
                 .as_bytes(),
             )?;
         }
-        let palette = spec.material_palette(painted);
-        if spec.uses_color_materials() && !palette.is_empty() {
+        if writes_color_group {
             // Only colors this archive prints, one slot each.
             let mut colors = String::new();
             for color in palette.colors() {
@@ -249,11 +281,13 @@ impl<'a> ThreeMfWriter<'a> {
         }
         output.write_all(b"    </vertices><triangles>\n")?;
         let uses_color = self.spec.uses_color_materials();
-        // `Geometry` style keeps the core-spec color group references but
-        // drops the OrcaSlicer/Bambu `paint_color` vendor attribute. The
-        // painted-triangle branch below is the exact pre-style code path, so
-        // `Painted` and `Project` archives keep their previous bytes.
-        let paints = self.spec.color_output.threemf_style != ThreeMfStyle::Geometry;
+        // Which color channels each triangle carries — see
+        // `carries_color_group` for why they differ by style. `Project`
+        // carries both and is the exact pre-style code path, so its archives
+        // keep their previous bytes.
+        let style = self.spec.color_output.threemf_style;
+        let groups = carries_color_group(style);
+        let paints = style != ThreeMfStyle::Geometry;
         for (triangles, materials) in mesh
             .triangles
             .chunks(WRITE_BATCH_ELEMENTS)
@@ -265,12 +299,21 @@ impl<'a> ThreeMfWriter<'a> {
                 .map(|(triangles, materials)| {
                     let mut buffer = Vec::with_capacity(triangles.len() * 128);
                     for (triangle, material) in triangles.iter().zip(materials) {
-                        if uses_color && paints {
+                        if uses_color && groups && paints {
                             let index = slots[material.material_index() as usize];
                             let paint_color = ORCA_PAINT_CODES[index as usize];
                             writeln!(
                                 buffer,
                                 "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" pid=\"{COLOR_GROUP_ID}\" p1=\"{index}\" p2=\"{index}\" p3=\"{index}\" paint_color=\"{paint_color}\"/>",
+                                triangle[0], triangle[1], triangle[2],
+                            )
+                            .expect("writing to a Vec cannot fail");
+                        } else if uses_color && paints {
+                            let index = slots[material.material_index() as usize];
+                            let paint_color = ORCA_PAINT_CODES[index as usize];
+                            writeln!(
+                                buffer,
+                                "      <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\" paint_color=\"{paint_color}\"/>",
                                 triangle[0], triangle[1], triangle[2],
                             )
                             .expect("writing to a Vec cannot fail");
@@ -640,8 +683,13 @@ mod tests {
         );
     }
 
+    /// The channels each style carries — see `carries_color_group`.
+    /// `Project` carries the group AND the paint codes, so its colors
+    /// survive both of Bambu Studio's import flows; `Painted` is a plain
+    /// pre-painted model, paint codes only; `Geometry` is the standards
+    /// flavor, group only.
     #[test]
-    fn painted_and_project_styles_keep_paint_codes_and_geometry_drops_them() {
+    fn each_style_carries_its_own_color_channels() {
         for style in [ThreeMfStyle::Painted, ThreeMfStyle::Project] {
             let model = model_xml(&write_fixture(style));
             for code in &ORCA_PAINT_CODES[..PRE_TRAIL_CLASSES.len()] {
@@ -650,9 +698,21 @@ mod tests {
                     "{style:?} should carry paint code {code}"
                 );
             }
-            assert!(model.contains("<m:colorgroup id=\"1000\">"));
-            assert!(model.contains("pid=\"1000\" p1=\"5\" p2=\"5\" p3=\"5\""));
         }
+
+        // Project: the color group rides along with the paint codes.
+        let model = model_xml(&write_fixture(ThreeMfStyle::Project));
+        assert!(model.contains("<m:colorgroup id=\"1000\">"));
+        assert!(model.contains("pid=\"1000\" p1=\"5\" p2=\"5\" p3=\"5\""));
+        assert!(model.contains("requiredextensions=\"m\""));
+
+        // Painted: paint codes alone, and no leftover REQUIRED extension
+        // declaration for a group that is not there.
+        let model = model_xml(&write_fixture(ThreeMfStyle::Painted));
+        assert!(!model.contains("<m:colorgroup"));
+        assert!(!model.contains("pid="));
+        assert!(!model.contains("requiredextensions"));
+        assert!(!model.contains("xmlns:m="));
 
         let model = model_xml(&write_fixture(ThreeMfStyle::Geometry));
         assert!(!model.contains("paint_color"));
@@ -789,9 +849,12 @@ mod tests {
         ] {
             let bytes = write_fixture(style);
             let model = model_xml(&bytes);
+            // Painted states no colors of its own; the other two carry the
+            // six in their group.
+            let expected_colors = if style == ThreeMfStyle::Painted { 0 } else { 6 };
             assert_eq!(
                 model.matches("<m:color ").count(),
-                6,
+                expected_colors,
                 "{style:?} should keep six colors"
             );
             assert!(!model.contains("paint_color=\"4C\""), "{style:?}");
@@ -822,13 +885,17 @@ mod tests {
     fn trail_projects_emit_the_seventh_color_and_paint_code() {
         for style in [ThreeMfStyle::Project, ThreeMfStyle::Painted] {
             let model = model_xml(&write_trail_fixture(style));
-            assert_eq!(model.matches("<m:color ").count(), 7, "{style:?}");
-            assert!(model.contains("color=\"#D6336CFF\""), "{style:?}");
             assert!(
-                model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"),
+                model.contains(" paint_color=\"4C\"/>"),
                 "{style:?} should face-paint the trail triangle for extruder 7"
             );
         }
+        // Project also states what the seven colors ARE, in its group and
+        // its settings; Painted deliberately does not.
+        let model = model_xml(&write_trail_fixture(ThreeMfStyle::Project));
+        assert_eq!(model.matches("<m:color ").count(), 7);
+        assert!(model.contains("color=\"#D6336CFF\""));
+        assert!(model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"));
 
         // Geometry drops paint codes but keeps the seventh color reference.
         let model = model_xml(&write_trail_fixture(ThreeMfStyle::Geometry));
@@ -1468,9 +1535,10 @@ mod tests {
             assert_eq!(disabled.material_palette(any_class()).len(), 6);
 
             let model = model_xml(&write_rail_fixture(style, RailStyle::WithRoads));
+            let expected_colors = if style == ThreeMfStyle::Painted { 0 } else { 6 };
             assert_eq!(
                 model.matches("<m:color ").count(),
-                6,
+                expected_colors,
                 "{style:?} should keep six colors"
             );
             assert!(!model.contains("paint_color=\"4C\""), "{style:?}");
@@ -1509,21 +1577,25 @@ mod tests {
 
         for style in [ThreeMfStyle::Project, ThreeMfStyle::Painted] {
             let model = model_xml(&write_rail_fixture(style, RailStyle::Separate));
-            assert_eq!(model.matches("<m:color ").count(), 7, "{style:?}");
             assert!(
-                !model.contains("color=\"#D6336CFF\""),
-                "{style:?} must not emit an unreferenced trail placeholder"
-            );
-            assert!(model.contains("color=\"#C43D3DFF\""), "{style:?}");
-            assert!(
-                model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"),
+                model.contains(" paint_color=\"4C\"/>"),
                 "{style:?} should face-paint the rail triangle for extruder 7"
             );
             assert!(
-                !model.contains("p1=\"7\""),
-                "{style:?} must not reference a slot past the palette"
+                !model.contains("paint_color=\"5C\""),
+                "{style:?} must not reach for a slot past the palette"
             );
         }
+        // Project also states what the seven colors ARE; no unreferenced
+        // trail placeholder among them.
+        let model = model_xml(&write_rail_fixture(
+            ThreeMfStyle::Project,
+            RailStyle::Separate,
+        ));
+        assert_eq!(model.matches("<m:color ").count(), 7);
+        assert!(!model.contains("color=\"#D6336CFF\""));
+        assert!(model.contains("color=\"#C43D3DFF\""));
+        assert!(model.contains("pid=\"1000\" p1=\"6\" p2=\"6\" p3=\"6\" paint_color=\"4C\"/>"));
 
         let model = model_xml(&write_rail_fixture(
             ThreeMfStyle::Geometry,
@@ -1716,13 +1788,32 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// A painted model is a project stripped to its paint: same geometry,
+    /// same per-triangle extruder assignments, none of the color statements.
     #[test]
-    fn painted_style_differs_from_project_only_by_the_settings_file() {
-        // Same model XML, different archive: the paint codes stay, only the
-        // embedded slicer settings go away.
-        let painted = write_fixture(ThreeMfStyle::Painted);
-        let project = write_fixture(ThreeMfStyle::Project);
-        assert_eq!(model_xml(&painted), model_xml(&project));
-        assert_ne!(painted, project);
+    fn painted_style_is_the_project_stripped_to_its_paint() {
+        let painted = model_xml(&write_fixture(ThreeMfStyle::Painted));
+        let project = model_xml(&write_fixture(ThreeMfStyle::Project));
+        // Removing the group references and the namespace from the project
+        // model yields the painted model exactly, so the two can never
+        // disagree on geometry or on which extruder paints a triangle.
+        let stripped = project
+            .replace(
+                " xmlns:m=\"http://schemas.microsoft.com/3dmanufacturing/material/2015/02\" requiredextensions=\"m\"",
+                "",
+            )
+            .lines()
+            .filter(|line| !line.contains("<m:color") && !line.contains("</m:colorgroup>"))
+            .map(|line| {
+                let mut line = line.to_owned();
+                if let (Some(start), Some(end)) = (line.find(" pid=\""), line.find(" paint_color=\""))
+                {
+                    line.replace_range(start..end, "");
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(painted, stripped.trim_end_matches('\n'));
     }
 }
