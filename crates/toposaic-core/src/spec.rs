@@ -629,12 +629,18 @@ impl GenerationSpec {
     /// logarithmic measure. How close a view feels is a property of the map,
     /// not of what is drawn on it.
     pub fn building_height_scale(&self) -> f32 {
+        let exaggeration = self.buildings.z_scale;
+        // Only an exaggeration fades. A scale at or below true height is a
+        // deliberate ask for shorter buildings — closing in is no reason to
+        // overrule it by making them taller, which fading toward 1.0 would.
+        if exaggeration <= 1.0 {
+            return exaggeration;
+        }
         let span = self
             .ground_span_km
             .clamp(LINE_SCALE_CLOSE_SPAN_KM, LINE_SCALE_WIDE_SPAN_KM);
         let progress = (LINE_SCALE_WIDE_SPAN_KM / span).ln()
             / (LINE_SCALE_WIDE_SPAN_KM / LINE_SCALE_CLOSE_SPAN_KM).ln();
-        let exaggeration = self.buildings.z_scale;
         exaggeration + (1.0 - exaggeration) * progress as f32
     }
 
@@ -3363,6 +3369,21 @@ mod tests {
             "{tower} mm against 28 mm of relief"
         );
         assert!(tower > 10.0, "still a tower, not a bump: {tower} mm");
+
+        // A scale below true height is an ask for SHORTER buildings, so it
+        // holds however close the view gets. Fading it toward 1.0 would
+        // make them grow as you zoom in, which is nobody's intent.
+        let shrunk = |span| GenerationSpec {
+            ground_span_km: span,
+            buildings: BuildingSpec {
+                enabled: true,
+                z_scale: 0.5,
+            },
+            ..GenerationSpec::default()
+        };
+        assert!((shrunk(18.0).building_height_scale() - 0.5).abs() < 1e-4);
+        assert!((shrunk(2.0).building_height_scale() - 0.5).abs() < 1e-4);
+        assert!((shrunk(0.5).building_height_scale() - 0.5).abs() < 1e-4);
 
         // A wide view is left exactly as it was.
         let wide = spec_at(18.0);
