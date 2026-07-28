@@ -11,14 +11,14 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::export::{ThreeMfWriter, write_binary_stl};
+use crate::export::{ThreeMfWriter, write_binary_stl, write_single_mesh_3mf};
 use crate::heightfield::{HeightField, height_range_for_spec, validate_height_frame};
 use crate::marker::build_flag_template;
 use crate::mesh::Mesh;
 use crate::mount::{build_wall_alignment_spacer, build_wall_hardware};
 use crate::piece::build_piece_with_height_range;
 use crate::preview::{build_preview, preview_sample_count};
-use crate::spec::{GenerationSpec, MapMarker, MarkerKind, WallMountStyle};
+use crate::spec::{GenerationSpec, MapMarker, MarkerKind, PaintedClasses, WallMountStyle};
 use crate::surface::SurfaceField;
 use crate::tray::build_tray_segments;
 
@@ -119,8 +119,7 @@ pub fn generate_tray_artifacts(
     tray_spec.color_output.rail_color = spec.tray.tray_color.clone();
     tray_spec.color_output.aerial_color = spec.tray.tray_color.clone();
     // Trays never draw trails, railways, or lifts; dropping all three keeps
-    // the tray 3MF at its six-slot layout however the terrain model is
-    // configured.
+    // the terrain model's settings from reaching the tray at all.
     tray_spec.trails = Vec::new();
     tray_spec.color_output.rail_enabled = false;
     tray_spec.color_output.aerial_enabled = false;
@@ -140,11 +139,9 @@ pub fn generate_tray_artifacts(
         artifacts.push(file_artifact(&tray_stl_path, "model/stl")?);
 
         let tray_3mf_path = output_dir.join(format!("terrain-tray{suffix}.3mf"));
-        // Trays carry no surface data, so their palette falls back to the
-        // settings alone — the base six, exactly as before.
-        let mut tray_writer = ThreeMfWriter::new(&tray_spec, None, &tray_3mf_path)?;
-        tray_writer.write_mesh(tray_mesh)?;
-        tray_writer.finish()?;
+        // A tray prints in three colors at most — its rim, its contours, and
+        // its label — whatever the terrain model is set to.
+        write_single_mesh_3mf(&tray_spec, tray_mesh, &tray_3mf_path)?;
         artifacts.push(file_artifact(&tray_3mf_path, "model/3mf")?);
     }
     Ok(artifacts)
@@ -180,9 +177,7 @@ pub fn generate_wall_mount_artifacts(
     hardware_spec.buildings.enabled = false;
     hardware_spec.trails.clear();
     let three_mf_path = output_dir.join("wall-mount-hardware.3mf");
-    let mut writer = ThreeMfWriter::new(&hardware_spec, None, &three_mf_path)?;
-    writer.write_mesh(&hardware)?;
-    writer.finish()?;
+    write_single_mesh_3mf(&hardware_spec, &hardware, &three_mf_path)?;
     let mut artifacts = vec![
         file_artifact(&stl_path, "model/stl")?,
         file_artifact(&three_mf_path, "model/3mf")?,
@@ -194,9 +189,7 @@ pub fn generate_wall_mount_artifacts(
         artifacts.push(file_artifact(&spacer_stl_path, "model/stl")?);
 
         let spacer_3mf_path = output_dir.join("wall-mount-alignment-spacer.3mf");
-        let mut spacer_writer = ThreeMfWriter::new(&hardware_spec, None, &spacer_3mf_path)?;
-        spacer_writer.write_mesh(&spacer)?;
-        spacer_writer.finish()?;
+        write_single_mesh_3mf(&hardware_spec, &spacer, &spacer_3mf_path)?;
         artifacts.push(file_artifact(&spacer_3mf_path, "model/3mf")?);
     }
     Ok(artifacts)
@@ -279,9 +272,7 @@ fn write_flag_artifacts(
     let stl_path = output_dir.join(format!("{stem}.stl"));
     write_binary_stl(flag, &stl_path)?;
     let three_mf_path = output_dir.join(format!("{stem}.3mf"));
-    let mut writer = ThreeMfWriter::new(spec, None, &three_mf_path)?;
-    writer.write_mesh(flag)?;
-    writer.finish()?;
+    write_single_mesh_3mf(spec, flag, &three_mf_path)?;
     Ok(vec![
         file_artifact(&stl_path, "model/stl")?,
         file_artifact(&three_mf_path, "model/3mf")?,
@@ -375,7 +366,8 @@ fn generate_project_inner(
             // The surface field is finished before any mesh is built, so
             // the palette can be sized from the data the meshes will sample
             // without buffering a single mesh.
-            let mut project_writer = ThreeMfWriter::new(spec, surface_field, writer_path)?;
+            let mut project_writer =
+                ThreeMfWriter::new(spec, PaintedClasses::sampled(surface_field), writer_path)?;
             for mesh in mesh_receiver {
                 project_writer.write_mesh(&mesh)?;
             }
@@ -557,6 +549,163 @@ mod tests {
     use crate::spec::{
         BuildingSpec, ColorOutputSpec, SurfaceClass, WallMountSpec, WallMountStyle, WallMountTarget,
     };
+
+    fn colors_in(path: &Path) -> Vec<String> {
+        let mut archive = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
+        let mut model = String::new();
+        archive
+            .by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        model
+            .match_indices("<m:color color=\"")
+            .map(|(index, marker)| model[index + marker.len()..][..7].to_owned())
+            .collect()
+    }
+
+    /// A tray prints in three colors: rim, contours, and label. It used to
+    /// ask for six, four of them the same tray color, because the tray spec
+    /// points every unused class at the tray color and nothing merged them.
+    #[test]
+    fn tray_archives_ask_for_the_three_tray_colors_only() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-tray-colors-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let mut spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        spec.tray.enabled = true;
+        generate_tray_artifacts(&spec, None, &output_dir).unwrap();
+
+        assert_eq!(
+            colors_in(&output_dir.join("terrain-tray.3mf")),
+            [
+                spec.tray.tray_color.as_str(),
+                spec.tray.contour_color.as_str(),
+                spec.tray.label_color.as_str(),
+            ]
+        );
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    /// A wall-mount bracket is one solid color and a flag template is two.
+    /// Neither has any business asking for the terrain palette.
+    #[test]
+    fn hardware_and_flag_archives_do_not_carry_the_terrain_palette() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-hardware-colors-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            wall_mount: WallMountSpec {
+                style: WallMountStyle::StraightPin,
+                ..WallMountSpec::default()
+            },
+            markers: vec![MapMarker {
+                name: "Summit".into(),
+                latitude: 46.8523,
+                longitude: -121.7603,
+                kind: MarkerKind::FlagLabel,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
+            }],
+            ..GenerationSpec::default()
+        };
+        generate_wall_mount_artifacts(&spec, &output_dir).unwrap();
+        let flags = generate_marker_artifacts(&spec, &output_dir).unwrap();
+
+        // The bracket is rock all over, so it needs one filament — and the
+        // terrain colors it never paints must not follow it into the file.
+        let hardware = colors_in(&output_dir.join("wall-mount-hardware.3mf"));
+        assert!(hardware.len() <= 1, "{hardware:?}");
+        assert!(!hardware.contains(&spec.color_output.water_color));
+
+        let flag_archives = flags
+            .iter()
+            .filter(|artifact| artifact.name.ends_with(".3mf"))
+            .collect::<Vec<_>>();
+        assert_eq!(flag_archives.len(), 1, "one labeled flag template");
+        for artifact in flag_archives {
+            // The banner and the name cut into it: two colors, not seven.
+            let colors = colors_in(&output_dir.join(&artifact.name));
+            assert_eq!(colors.len(), 2, "{} carries {colors:?}", artifact.name);
+            for unused in [
+                &spec.color_output.forest_color,
+                &spec.color_output.water_color,
+                &spec.color_output.road_color,
+                &spec.color_output.building_color,
+            ] {
+                assert!(
+                    !colors.contains(unused),
+                    "{} carries {unused}",
+                    artifact.name
+                );
+            }
+        }
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    /// A map with no water, no roads, and no buildings pays for none of the
+    /// three. Only the classes its own data holds reach the color group.
+    #[test]
+    fn wilderness_maps_do_not_pay_for_water_roads_or_buildings() {
+        let output_dir =
+            std::env::temp_dir().join(format!("toposaic-wilderness-{}", std::process::id()));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(5, 5, vec![0.0; 25], "test").unwrap();
+        let surface = SurfaceField::new(
+            3,
+            3,
+            vec![
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Rock,
+            ],
+            "wilderness",
+        )
+        .unwrap();
+        generate_project_with_fields(&spec, &height, Some(&surface), &output_dir).unwrap();
+
+        assert_eq!(
+            colors_in(&output_dir.join("toposaic.3mf")),
+            [
+                spec.color_output.rock_color.as_str(),
+                spec.color_output.forest_color.as_str(),
+            ]
+        );
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
 
     #[test]
     fn project_writes_print_artifacts() {
@@ -957,7 +1106,12 @@ mod tests {
         assert!(model.contains("<m:colorgroup id=\"1000\">"));
         assert!(model.contains("color=\"#8A5B3DFF\""));
         assert!(model.contains("pid=\"1000\""));
-        assert!(model.contains("p1=\"5\""));
+        // Two filaments, not the old fixed six. This model prints rock and
+        // buildings; with surface colors switched off it never paints the
+        // forest, snow, water, or road colors, so they take no slot and the
+        // buildings pack into slot two.
+        assert_eq!(model.matches("<m:color ").count(), 2);
+        assert!(model.contains("p1=\"1\""));
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }

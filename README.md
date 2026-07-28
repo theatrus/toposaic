@@ -278,7 +278,9 @@ color properties, and an Output-tab style picker sets what else it carries.
 The default "Color project" style also embeds filament colors, purge settings,
 and OrcaSlicer/Bambu face-paint codes, so those slicers open the file as a
 project with colors set up in one click — importing printer, material, and
-process presets with it. "Painted colors" keeps the face-paint codes but skips
+process presets with it. Each slot asks for the stock "Generic PLA" preset,
+so the filaments arrive as the PLA they are rather than whatever the slicer
+would otherwise reach for. "Painted colors" keeps the face-paint codes but skips
 the embedded settings, so opening the model never touches slicer presets.
 "Geometry only" drops the paint codes too and writes a plain standards-based
 3MF for other tools.
@@ -363,9 +365,12 @@ the model spec, so saved setups and exported setup files carry them. Files are
 parsed in the browser; tracks longer than 20,000 points are thinned on import,
 and a model holds up to 20 trails. Filament slots are packed, not reserved:
 the 3MF carries a color for each feature the model actually contains and
-nothing for the rest, so folding the rail and lift layers into the roads and
-importing no trails gives exactly the six-color output as before, and each
-extra layer that has something to draw adds exactly one filament.
+nothing for the rest, and each extra layer that has something to draw adds
+exactly one filament. That applies to the base colors too — a wilderness map
+with no water, roads, or buildings asks for none of the three — and to every
+other file in the download: a tray asks for its rim, contour, and label
+colors, a wall-mount bracket for the one it prints in. Two features set to
+the same color share a slot, since no slicer merges them for you.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.

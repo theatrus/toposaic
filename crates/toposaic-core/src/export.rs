@@ -9,8 +9,7 @@ use rayon::prelude::*;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::mesh::Mesh;
-use crate::spec::{GenerationSpec, MaterialPalette, SurfaceClass, ThreeMfStyle};
-use crate::surface::SurfaceField;
+use crate::spec::{GenerationSpec, MaterialPalette, PaintedClasses, SurfaceClass, ThreeMfStyle};
 
 pub(crate) fn write_binary_stl(mesh: &Mesh, path: &Path) -> Result<()> {
     let mut writer = BufWriter::new(
@@ -76,6 +75,10 @@ pub(crate) struct ThreeMfWriter<'a> {
 }
 
 const COLOR_GROUP_ID: u32 = 1000;
+/// The stock filament preset every slot asks for. It ships with OrcaSlicer
+/// and Bambu Studio under this exact name, so it resolves on import instead
+/// of leaving the slicer to guess a material.
+const GENERIC_PLA_PRESET: &str = "Generic PLA";
 /// Elements formatted per rayon task when writing 3MF XML bodies.
 const FORMAT_CHUNK_ELEMENTS: usize = 64 * 1024;
 /// Elements formatted per in-memory batch; keeps peak buffered XML text to
@@ -102,13 +105,12 @@ const _: () = assert!(
 );
 
 impl<'a> ThreeMfWriter<'a> {
-    /// Opens an archive. `surface_field` is the data every mesh will be
-    /// built from, and it is what lets the filament palette leave out a
-    /// layer the settings enable but the map has none of; pass `None` for
-    /// archives built without surface data, such as trays.
+    /// Opens an archive. `painted` is what the meshes to come can paint, and
+    /// it is what lets the filament palette leave out a layer the settings
+    /// enable but this archive never draws.
     pub(crate) fn new(
         spec: &'a GenerationSpec,
-        surface_field: Option<&SurfaceField>,
+        painted: PaintedClasses,
         path: &Path,
     ) -> Result<Self> {
         let file = File::create(path).with_context(|| format!("create 3MF {}", path.display()))?;
@@ -158,11 +160,9 @@ impl<'a> ThreeMfWriter<'a> {
                 .as_bytes(),
             )?;
         }
-        let palette = spec.material_palette(surface_field);
-        if spec.uses_color_materials() {
-            // The trail, rail, and aerialway colors join the group only when
-            // the spec actually draws them, so archives with none of them
-            // keep their exact bytes.
+        let palette = spec.material_palette(painted);
+        if spec.uses_color_materials() && !palette.is_empty() {
+            // Only colors this archive prints, one slot each.
             let mut colors = String::new();
             for color in palette.colors() {
                 colors.push_str(&format!("      <m:color color=\"{color}FF\"/>\n"));
@@ -354,9 +354,15 @@ impl<'a> ThreeMfWriter<'a> {
             // Every per-filament array, and the flush matrix's side length,
             // size themselves from the same dense palette the color group
             // and the paint codes used, so slot n means one filament
-            // throughout the archive. For a spec drawing none of the extra
-            // layers the palette is the base six and the JSON is
-            // value-for-value what the fixed six-slot literals produced.
+            // throughout the archive.
+            //
+            // `filament_settings_id` names the slicer preset each slot
+            // loads. Left empty, OrcaSlicer and Bambu Studio have nothing to
+            // match and fall back to whichever preset they please — which is
+            // how six terrain colors arrived as Generic TPU. Naming the
+            // stock `Generic PLA` preset, with the vendor it belongs to,
+            // makes them all import as the PLA `filament_type` already says
+            // they are.
             let colors = self.palette.colors();
             let flush_volumes_matrix = (0..self.palette.len())
                 .flat_map(|row| {
@@ -367,9 +373,9 @@ impl<'a> ThreeMfWriter<'a> {
             let project_settings = serde_json::json!({
                 "default_filament_colour": colors,
                 "filament_colour": colors,
-                "filament_settings_id": vec![""; colors.len()],
+                "filament_settings_id": vec![GENERIC_PLA_PRESET; colors.len()],
                 "filament_type": vec!["PLA"; colors.len()],
-                "filament_vendor": vec!["(Undefined)"; colors.len()],
+                "filament_vendor": vec!["Generic"; colors.len()],
                 "flush_volumes_matrix": flush_volumes_matrix,
                 "flush_volumes_vector": vec!["140"; colors.len() * 2],
             });
@@ -380,12 +386,22 @@ impl<'a> ThreeMfWriter<'a> {
     }
 }
 
+/// Writes a one-mesh 3MF — a tray segment, a piece of wall-mount hardware, a
+/// flag template. The mesh is in hand before the archive opens, so its
+/// palette is exactly the colors that mesh paints and no others.
+pub(crate) fn write_single_mesh_3mf(spec: &GenerationSpec, mesh: &Mesh, path: &Path) -> Result<()> {
+    let mut writer = ThreeMfWriter::new(spec, PaintedClasses::of_mesh(mesh), path)?;
+    writer.write_mesh(mesh)?;
+    writer.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;
 
     use super::*;
     use crate::spec::{ColorOutputSpec, SurfaceClass};
+    use crate::surface::SurfaceField;
 
     /// The six-slot spec the golden fixture was written from.
     ///
@@ -452,6 +468,22 @@ mod tests {
             .collect()
     }
 
+    /// The classes a set of finished meshes paints, as every caller holding
+    /// its meshes hands them to the writer.
+    fn painted_by(meshes: &[Mesh]) -> PaintedClasses {
+        let mut present = [false; SurfaceClass::ALL.len()];
+        for material in meshes.iter().flat_map(|mesh| &mesh.materials) {
+            present[material.material_index() as usize] = true;
+        }
+        PaintedClasses::Exact(present)
+    }
+
+    /// Nothing ruled out by the data, so the settings alone decide the
+    /// palette. Used to test what a spec CAN emit, apart from any map.
+    fn any_class() -> PaintedClasses {
+        PaintedClasses::Exact([true; SurfaceClass::ALL.len()])
+    }
+
     fn write_fixture(style: ThreeMfStyle) -> Vec<u8> {
         write_spec_fixture(&fixture_spec(style))
     }
@@ -459,13 +491,14 @@ mod tests {
     /// Writes the fixture meshes under an arbitrary spec, so two specs can
     /// be compared archive against archive.
     fn write_spec_fixture(spec: &GenerationSpec) -> Vec<u8> {
-        write_spec_meshes(spec, &fixture_meshes(), None)
+        let meshes = fixture_meshes();
+        write_spec_meshes(spec, &meshes, painted_by(&meshes))
     }
 
     fn write_spec_meshes(
         spec: &GenerationSpec,
         meshes: &[Mesh],
-        surface_field: Option<&SurfaceField>,
+        painted: PaintedClasses,
     ) -> Vec<u8> {
         static NEXT_FIXTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let unique = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -474,7 +507,7 @@ mod tests {
             "toposaic-3mf-style-{style:?}-{}-{unique}.3mf",
             std::process::id()
         ));
-        let mut writer = ThreeMfWriter::new(spec, surface_field, &path).unwrap();
+        let mut writer = ThreeMfWriter::new(spec, painted, &path).unwrap();
         for mesh in meshes {
             writer.write_mesh(mesh).unwrap();
         }
@@ -489,23 +522,35 @@ mod tests {
         archive.file_names().map(str::to_owned).collect()
     }
 
-    fn model_xml(bytes: &[u8]) -> String {
+    fn archive_entry(bytes: &[u8], name: &str) -> String {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        let mut model = String::new();
+        let mut contents = String::new();
         archive
-            .by_name("3D/3dmodel.model")
+            .by_name(name)
             .unwrap()
-            .read_to_string(&mut model)
+            .read_to_string(&mut contents)
             .unwrap();
-        model
+        contents
     }
 
-    /// The default `Project` style must keep producing the exact archive the
-    /// pre-style writer produced. The golden fixture was written by the
-    /// writer as it stood before `ThreeMfStyle` existed (commit 6e4b1a0),
-    /// from `fixture_spec`/`fixture_meshes` above; deterministic zip
-    /// timestamps (a constant 1980 date without the `time` feature) and the
-    /// pure-Rust zlib-rs deflate make whole-archive comparison stable.
+    fn model_xml(bytes: &[u8]) -> String {
+        archive_entry(bytes, "3D/3dmodel.model")
+    }
+
+    fn project_settings(bytes: &[u8]) -> String {
+        archive_entry(bytes, "Metadata/project_settings.config")
+    }
+
+    /// The default `Project` style must keep producing the archive it
+    /// produced last time it was reviewed — geometry included, and for a
+    /// six-color spec that geometry is still what the writer emitted before
+    /// `ThreeMfStyle` existed (commit 6e4b1a0). The fixture is written from
+    /// `fixture_spec`/`fixture_meshes` above; deterministic zip timestamps
+    /// (a constant 1980 date without the `time` feature) and the pure-Rust
+    /// zlib-rs deflate make whole-archive comparison stable.
+    ///
+    /// The embedded slicer settings have moved once since: naming the
+    /// `Generic PLA` preset instead of leaving the filament id empty.
     #[test]
     fn project_style_output_is_byte_identical_to_pre_style_writer() {
         let golden = include_bytes!(concat!(
@@ -514,15 +559,23 @@ mod tests {
         ));
         let current = write_fixture(ThreeMfStyle::Project);
         if current != golden.as_slice() {
-            // Distinguish "the format changed" from "only the compressed
-            // bytes changed" (a zip or zlib-rs bump reframes deflate blocks
-            // without touching content). The second case is safe to accept.
+            // Name which entry moved before blaming compression: geometry,
+            // the embedded slicer settings, or neither (a zip or zlib-rs
+            // bump reframes deflate blocks without touching content, which
+            // is the only one of the three safe to accept unreviewed).
             assert_eq!(
                 model_xml(&current),
                 model_xml(golden),
                 "the 3MF MODEL CONTENT changed; if that change is intentional, \
                  regenerate the fixture with: cargo test -p toposaic-core \
                  regenerate_project_style_golden -- --ignored"
+            );
+            assert_eq!(
+                project_settings(&current),
+                project_settings(golden),
+                "the EMBEDDED SLICER SETTINGS changed; if that change is \
+                 intentional, regenerate the fixture with: cargo test -p \
+                 toposaic-core regenerate_project_style_golden -- --ignored"
             );
             panic!(
                 "the 3MF content is unchanged but the archive bytes differ — \
@@ -622,7 +675,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("toposaic-3mf-mismatch-{}.3mf", std::process::id()));
         let spec = fixture_spec(ThreeMfStyle::Project);
-        let mut writer = ThreeMfWriter::new(&spec, None, &path).unwrap();
+        let mut writer = ThreeMfWriter::new(&spec, any_class(), &path).unwrap();
         let mut mesh = fixture_meshes().remove(0);
         mesh.materials.pop();
         let error = writer.write_mesh(&mesh).unwrap_err().to_string();
@@ -661,7 +714,7 @@ mod tests {
         spec.color_output.rail_enabled = true;
         spec.color_output.rail_style = crate::spec::RailStyle::Separate;
         let slot = spec
-            .material_palette(None)
+            .material_palette(any_class())
             .slot(SurfaceClass::Rail)
             .unwrap();
         assert_eq!(ORCA_PAINT_CODES[slot as usize], "4C");
@@ -681,7 +734,7 @@ mod tests {
             label_style: None,
         }];
         let slot = spec
-            .material_palette(None)
+            .material_palette(any_class())
             .slot(SurfaceClass::Rail)
             .unwrap();
         assert_eq!(ORCA_PAINT_CODES[slot as usize], "5C");
@@ -719,9 +772,10 @@ mod tests {
             std::process::id()
         ));
         let spec = trail_spec(style);
-        let mut writer = ThreeMfWriter::new(&spec, None, &path).unwrap();
-        for mesh in trail_meshes() {
-            writer.write_mesh(&mesh).unwrap();
+        let meshes = trail_meshes();
+        let mut writer = ThreeMfWriter::new(&spec, painted_by(&meshes), &path).unwrap();
+        for mesh in &meshes {
+            writer.write_mesh(mesh).unwrap();
         }
         writer.finish().unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -856,14 +910,14 @@ mod tests {
             std::process::id()
         ));
         let spec = rail_spec(style, rail_style);
-        let mut writer = ThreeMfWriter::new(&spec, None, &path).unwrap();
         let meshes = if spec.uses_separate_rail() {
             rail_meshes()
         } else {
             fixture_meshes()
         };
-        for mesh in meshes {
-            writer.write_mesh(&mesh).unwrap();
+        let mut writer = ThreeMfWriter::new(&spec, painted_by(&meshes), &path).unwrap();
+        for mesh in &meshes {
+            writer.write_mesh(mesh).unwrap();
         }
         writer.finish().unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -871,11 +925,33 @@ mod tests {
         bytes
     }
 
-    /// A surface field carrying exactly the given overlay lines, as the API
-    /// produces for a map that really has those features.
+    /// An ordinary map: every base class in the raster, a building, a road,
+    /// and exactly the extra overlay lines asked for. The palette is sized
+    /// from data now, so a test about optional layers needs a field that
+    /// really carries the six a map normally has.
     fn field_with(lines: &[SurfaceClass]) -> SurfaceField {
-        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "palette").unwrap();
-        for (index, class) in lines.iter().enumerate() {
+        let mut field = SurfaceField::new(
+            3,
+            3,
+            vec![
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Snow,
+                SurfaceClass::Water,
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Snow,
+                SurfaceClass::Water,
+                SurfaceClass::Rock,
+            ],
+            "palette",
+        )
+        .unwrap();
+        field.paint_building(&[[0.4, 0.02], [0.6, 0.02], [0.6, 0.1], [0.4, 0.1]], 12.0);
+        for (index, class) in std::iter::once(&SurfaceClass::Road)
+            .chain(lines)
+            .enumerate()
+        {
             let across = 0.15 + index as f32 * 0.17;
             field.paint_polyline(&[[0.05, across], [0.95, across]], 60.0, 1.0, *class);
         }
@@ -889,6 +965,80 @@ mod tests {
         spec
     }
 
+    /// Two classes printed in one color are one spool. No slicer merges
+    /// them for us, so the palette must — however the two ended up matching.
+    #[test]
+    fn classes_sharing_a_color_share_a_slot() {
+        let mut spec = fixture_spec(ThreeMfStyle::Project);
+        // A wilderness map printed on one spool of grey, bar the water.
+        spec.color_output.forest_color = spec.color_output.rock_color.clone();
+        spec.color_output.snow_color = spec.color_output.rock_color.to_lowercase();
+        spec.color_output.road_color = spec.color_output.rock_color.clone();
+        spec.color_output.building_color = spec.color_output.rock_color.clone();
+
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.len(), 2, "one grey and one blue");
+        for class in [
+            SurfaceClass::Rock,
+            SurfaceClass::Forest,
+            SurfaceClass::Snow,
+            SurfaceClass::Road,
+            SurfaceClass::Building,
+        ] {
+            assert_eq!(
+                palette.slot(class),
+                Some(0),
+                "{class:?} prints in the grey filament"
+            );
+        }
+        assert_eq!(palette.slot(SurfaceClass::Water), Some(1));
+
+        // And the archive asks for the two, not six — every triangle still
+        // painted, none of them pointing past the group.
+        let meshes = fixture_meshes();
+        let model = model_xml(&write_spec_meshes(&spec, &meshes, painted_by(&meshes)));
+        assert_eq!(model.matches("<m:color ").count(), 2);
+        assert!(!model.contains("p1=\"2\""));
+        assert_eq!(
+            model.matches("<triangle ").count(),
+            meshes
+                .iter()
+                .map(|mesh| mesh.triangles.len())
+                .sum::<usize>()
+        );
+    }
+
+    /// An archive that holds its meshes before it opens — a tray, a piece of
+    /// hardware, a flag — asks for exactly the colors those meshes paint.
+    #[test]
+    fn single_mesh_archives_ask_only_for_what_the_mesh_paints() {
+        let spec = fixture_spec(ThreeMfStyle::Project);
+        let mut mesh = fixture_meshes().remove(0);
+        // A tray: rim, contours, label. Nothing else.
+        mesh.materials = vec![
+            SurfaceClass::Rock,
+            SurfaceClass::Forest,
+            SurfaceClass::Snow,
+            SurfaceClass::Rock,
+            SurfaceClass::Forest,
+            SurfaceClass::Snow,
+        ];
+
+        let path =
+            std::env::temp_dir().join(format!("toposaic-3mf-single-{}.3mf", std::process::id()));
+        write_single_mesh_3mf(&spec, &mesh, &path).unwrap();
+        let model = model_xml(&std::fs::read(&path).unwrap());
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(model.matches("<m:color ").count(), 3);
+        assert!(!model.contains("color=\"#2F76B5FF\""), "no water filament");
+        assert!(!model.contains("color=\"#D8A33CFF\""), "no road filament");
+        assert!(
+            !model.contains("color=\"#B8A890FF\""),
+            "no building filament"
+        );
+    }
+
     /// The point of sizing the palette from the data: a layer switched on
     /// but with nothing to draw costs nothing. A city map with railways and
     /// no cable cars must not bill a spool for cable cars.
@@ -898,26 +1048,26 @@ mod tests {
         assert!(spec.uses_separate_rail());
         assert!(spec.uses_separate_aerial());
         // Settings alone would charge for both layers...
-        assert_eq!(spec.material_palette(None).len(), 8);
+        assert_eq!(spec.material_palette(any_class()).len(), 8);
 
         // ...but a city with railways and no lifts pays for railways only.
-        let city = field_with(&[SurfaceClass::Road, SurfaceClass::Rail]);
-        let palette = spec.material_palette(Some(&city));
+        let city = field_with(&[SurfaceClass::Rail]);
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&city)));
         assert_eq!(palette.len(), 7);
         assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
         assert_eq!(palette.slot(SurfaceClass::Aerial), None);
 
         // A ski area with both pays for both, in class order.
-        let resort = field_with(&[SurfaceClass::Road, SurfaceClass::Rail, SurfaceClass::Aerial]);
-        let palette = spec.material_palette(Some(&resort));
+        let resort = field_with(&[SurfaceClass::Rail, SurfaceClass::Aerial]);
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&resort)));
         assert_eq!(palette.len(), 8);
         assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
         assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
 
         // A valley with lifts and no railway pays for lifts only, and the
         // lift color moves up into slot seven rather than leaving a hole.
-        let valley = field_with(&[SurfaceClass::Road, SurfaceClass::Aerial]);
-        let palette = spec.material_palette(Some(&valley));
+        let valley = field_with(&[SurfaceClass::Aerial]);
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&valley)));
         assert_eq!(palette.len(), 7);
         assert_eq!(palette.slot(SurfaceClass::Rail), None);
         assert_eq!(palette.slot(SurfaceClass::Aerial), Some(6));
@@ -930,7 +1080,7 @@ mod tests {
                 spec
             },
             &fixture_meshes(),
-            Some(&city),
+            PaintedClasses::sampled(Some(&city)),
         ));
         assert_eq!(model.matches("<m:color ").count(), 7);
         assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
@@ -955,12 +1105,16 @@ mod tests {
             label_style: None,
         });
         let field = field_with(&[]);
-        let palette = spec.material_palette(Some(&field));
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
         assert_eq!(palette.slot(SurfaceClass::Marker), Some(6));
 
         let mut meshes = fixture_meshes();
         meshes[0].materials[0] = SurfaceClass::Marker;
-        let model = model_xml(&write_spec_meshes(&spec, &meshes, Some(&field)));
+        let model = model_xml(&write_spec_meshes(
+            &spec,
+            &meshes,
+            PaintedClasses::sampled(Some(&field)),
+        ));
         assert!(model.contains("paint_color=\"4C\""));
     }
 
@@ -980,7 +1134,7 @@ mod tests {
         });
         let field = field_with(&[]);
         assert_eq!(
-            spec.material_palette(Some(&field))
+            spec.material_palette(PaintedClasses::sampled(Some(&field)))
                 .slot(SurfaceClass::Marker),
             Some(6)
         );
@@ -1060,7 +1214,7 @@ mod tests {
             contained.iter().all(|present| *present),
             "the fixture field should hold every class"
         );
-        let palette = spec.material_palette(Some(&field));
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
         assert_eq!(palette.len(), SurfaceClass::ALL.len());
 
         let height_field = HeightField::new(
@@ -1092,7 +1246,65 @@ mod tests {
                 "{material:?} has no filament slot"
             );
         }
-        write_spec_meshes(&spec, &[mesh], Some(&field));
+        write_spec_meshes(&spec, &[mesh], PaintedClasses::sampled(Some(&field)));
+    }
+
+    /// A piece cuts plaque label text in the Snow class and the plaque under
+    /// it in Marker, neither of which the surface data reports. Sizing the
+    /// palette from data alone would leave a named peak on a snowless map
+    /// with nothing to print its own name in, and the writer would refuse
+    /// the archive. Proved through the real piece builder and the real
+    /// writer, on a field with no snow anywhere in it.
+    #[test]
+    fn plaque_labels_keep_their_filaments_on_a_map_without_snow() {
+        use crate::heightfield::HeightField;
+        use crate::piece::build_piece;
+
+        let mut spec = fixture_spec(ThreeMfStyle::Project);
+        spec.rows = 1;
+        spec.columns = 1;
+        spec.solid_model = true;
+        spec.width_mm = 60.0;
+        spec.samples_per_piece = 16;
+        spec.overlay_samples_per_piece = 32;
+        spec.markers = vec![crate::spec::MapMarker {
+            name: "Peak".into(),
+            latitude: spec.center_lat,
+            longitude: spec.center_lon,
+            kind: crate::spec::MarkerKind::PlaqueLabel,
+            label_height_mm: 6.0,
+            rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
+            label_style: None,
+        }];
+
+        let field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "no snow").unwrap();
+        assert!(
+            !field.contained_classes()[SurfaceClass::Snow.material_index() as usize],
+            "the fixture field must hold no snow"
+        );
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
+        assert!(palette.slot(SurfaceClass::Snow).is_some(), "plaque text");
+        assert!(palette.slot(SurfaceClass::Marker).is_some(), "the plaque");
+
+        let height = HeightField::new(
+            3,
+            3,
+            vec![0.0, 40.0, 0.0, 40.0, 80.0, 40.0, 0.0, 40.0, 0.0],
+            "relief",
+        )
+        .unwrap();
+        let mesh = build_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
+        for class in [SurfaceClass::Snow, SurfaceClass::Marker] {
+            assert!(
+                mesh.materials.contains(&class),
+                "{class:?} should be built, or this test proves nothing"
+            );
+        }
+        // The writer refuses any triangle whose class has no slot, so
+        // reaching the end IS the assertion.
+        write_spec_meshes(&spec, &[mesh], PaintedClasses::sampled(Some(&field)));
     }
 
     /// What the DEFAULT emits now: both rail-family layers in their own
@@ -1123,7 +1335,7 @@ mod tests {
             mesh.triangles.push([base, base + 1, base + 2]);
             mesh.materials.push(class);
         }
-        let model = model_xml(&write_spec_meshes(&spec, &meshes, None));
+        let model = model_xml(&write_spec_meshes(&spec, &meshes, painted_by(&meshes)));
         assert_eq!(model.matches("<m:color ").count(), 8);
         assert!(model.contains("color=\"#C43D3DFF\""), "the rail color");
         assert!(model.contains("color=\"#6C4CB6FF\""), "the aerialway color");
@@ -1159,7 +1371,7 @@ mod tests {
         .unwrap();
         assert!(merged.color_output.rail_enabled);
         assert!(merged.color_output.aerial_enabled);
-        assert_eq!(merged.material_palette(None).len(), 6);
+        assert_eq!(merged.material_palette(any_class()).len(), 6);
         assert_eq!(write_spec_fixture(&merged), baseline);
 
         // Every combination that resolves to "paint as roads" is the same
@@ -1220,7 +1432,7 @@ mod tests {
             let mut disabled = fixture_spec(style);
             disabled.color_output.rail_enabled = false;
             assert!(!disabled.uses_separate_rail());
-            assert_eq!(disabled.material_palette(None).len(), 6);
+            assert_eq!(disabled.material_palette(any_class()).len(), 6);
 
             let model = model_xml(&write_rail_fixture(style, RailStyle::WithRoads));
             assert_eq!(
@@ -1345,7 +1557,6 @@ mod tests {
         // The data the palette is now sized from: every optional layer
         // present, so all nine classes are in play.
         let field = field_with(&[
-            SurfaceClass::Road,
             SurfaceClass::Trail,
             SurfaceClass::Rail,
             SurfaceClass::Aerial,
@@ -1370,7 +1581,8 @@ mod tests {
 
         let path =
             std::env::temp_dir().join(format!("toposaic-3mf-agree-{}.3mf", std::process::id()));
-        let mut writer = ThreeMfWriter::new(&spec, Some(&field), &path).unwrap();
+        let mut writer =
+            ThreeMfWriter::new(&spec, PaintedClasses::sampled(Some(&field)), &path).unwrap();
         let emitted = meshes
             .iter()
             .flat_map(|mesh| mesh.materials.clone())
@@ -1418,7 +1630,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(painted.len(), emitted.len());
         for ((slot, paint), class) in painted.into_iter().zip(emitted) {
-            let palette = spec.material_palette(Some(&field));
+            let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
             assert_eq!(
                 group_colors[slot],
                 palette.colors()[slot],
@@ -1461,8 +1673,8 @@ mod tests {
             std::process::id()
         ));
         let spec = fixture_spec(ThreeMfStyle::Project);
-        assert_eq!(spec.material_palette(None).len(), 6);
-        let mut writer = ThreeMfWriter::new(&spec, None, &path).unwrap();
+        assert_eq!(spec.material_palette(any_class()).len(), 6);
+        let mut writer = ThreeMfWriter::new(&spec, any_class(), &path).unwrap();
         let mut mesh = fixture_meshes().remove(0);
         mesh.materials[0] = SurfaceClass::Aerial;
         let error = writer.write_mesh(&mesh).unwrap_err().to_string();
