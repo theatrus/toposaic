@@ -126,6 +126,7 @@ export const initialSpec: GenerationSpec = {
     enabled: true,
     individual_tiles: false,
     contours_enabled: true,
+    label_enabled: true,
     tray_color: "#252822",
     contour_color: "#E7E4D8",
     label_color: "#F4F3EC",

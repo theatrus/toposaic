@@ -277,6 +277,13 @@ test("drift is what the model means, not how its keys were written", () => {
   assert.equal(specHasDrifted(saved, undefined), false);
 });
 
+test("the display base keeps its label on for setups saved before the switch", () => {
+  assert.equal(initialSpec.tray.label_enabled, true);
+  const old = { ...initialSpec.tray };
+  delete old.label_enabled;
+  assert.equal(mergeSpecDefaults({ tray: old }).tray.label_enabled, true);
+});
+
 test("defaults the filament preset to the one every slicer ships", () => {
   assert.equal(initialSpec.color_output.filament_profile, "generic_pla");
   // Setups saved before the field existed recall with that default, so a
