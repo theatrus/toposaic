@@ -69,7 +69,7 @@ export function OutputPanel({
             }
           >
             <option value="project">
-              Color project (for Bambu) · filament colors and purge settings
+              Color project · filament colors and purge settings
             </option>
             <option value="painted">
               Painted colors (for Orca) · paint only, no presets
@@ -77,15 +77,17 @@ export function OutputPanel({
             <option value="geometry">Geometry only · standard 3MF colors</option>
           </select>
           <small>
-            Color project carries its colors every way Bambu Studio reads
-            them: opened as a project it sets the filament list from the
-            Colors tab, and imported into an existing project its color
-            group feeds the import dialog, where Color match puts the
-            palette on the filaments already loaded. Painted colors is a
-            plain pre-painted model: triangles carry extruder assignments
-            1..N, colors come from the filaments already loaded, and no
-            presets are touched — the shape OrcaSlicer expects. Geometry
-            only writes a plain standards-based 3MF for other tools.
+            Color project carries its colors for both slicers. Bambu Studio
+            never applies an embedded filament list; its import dialog reads
+            the file&apos;s color group instead, and Color match puts the
+            palette on the filaments already loaded — use it rather than
+            Append, which copies your last filament once per color and piles
+            the copies up across imports. OrcaSlicer applies the embedded
+            settings, so the filament list becomes the Colors tab palette.
+            Painted colors is a plain pre-painted model: triangles carry
+            extruder assignments 1..N, colors come from the filaments
+            already loaded, and no presets are touched. Geometry only writes
+            a plain standards-based 3MF for other tools.
           </small>
         </label>
       </fieldset>

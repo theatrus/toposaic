@@ -720,16 +720,17 @@ impl GenerationSpec {
     }
 
     /// The filament palette of one archive: one slot per color it actually
-    /// prints, in `SurfaceClass::ALL` order.
+    /// prints, in [`Self::slot_order`] — the user's `filament_order` first,
+    /// then `SurfaceClass::ALL` order for the rest.
     ///
     /// A slot is a spool the user has to load, so the palette earns every
     /// one of them twice over.
     ///
     /// A class takes a slot only if the settings draw it AND `painted` says
-    /// a mesh in this archive can paint it. Filtering `SurfaceClass::ALL`
-    /// rather than reordering it keeps the same feature in the same relative
-    /// position, and the palette is computed once per archive, so every mesh
-    /// in the file agrees on it.
+    /// a mesh in this archive can paint it. Filtering the fixed order
+    /// rather than sorting keeps the same feature in the same relative
+    /// position from map to map, and the palette is computed once per
+    /// archive, so every mesh in the file agrees on it.
     ///
     /// Then classes sharing a color share a slot. Two features printed in
     /// one color are one spool: a slicer will not merge them for us, so a
@@ -747,7 +748,7 @@ impl GenerationSpec {
         painted: PaintedClasses,
     ) -> MaterialPalette<'spec> {
         let mut palette = MaterialPalette::default();
-        for class in SurfaceClass::ALL {
+        for class in self.slot_order() {
             if !self.emits_class(class) || !painted.can_paint(self, class) {
                 continue;
             }
@@ -763,6 +764,22 @@ impl GenerationSpec {
             palette.slots[class.material_index() as usize] = Some(slot as u32);
         }
         palette
+    }
+
+    /// Every surface class once, in the order they take filament slots:
+    /// `filament_order` first — duplicates dropped after their first
+    /// appearance — then whatever it leaves out, in `SurfaceClass::ALL`
+    /// order.
+    fn slot_order(&self) -> impl Iterator<Item = SurfaceClass> + '_ {
+        let mut seen = [false; SurfaceClass::ALL.len()];
+        self.color_output
+            .filament_order
+            .iter()
+            .copied()
+            .chain(SurfaceClass::ALL)
+            .filter(move |class| {
+                !std::mem::replace(&mut seen[class.material_index() as usize], true)
+            })
     }
 
     /// Whether a mesh builds this class in itself rather than reading it out
@@ -1835,6 +1852,15 @@ pub struct ColorOutputSpec {
     /// Which filament preset each slot of a `Project` 3MF asks for. Ignored
     /// by the other two styles, which embed no settings at all.
     pub filament_profile: FilamentProfile,
+    /// The order surface classes take filament slots, for users who line
+    /// the output up with the spools already in the printer. Classes left
+    /// out — and every spec saved before the field existed — follow in
+    /// [`SurfaceClass::ALL`] order after the ones listed; a class listed
+    /// twice counts once, where it first appears. The order changes slot
+    /// NUMBERS only: which classes take a slot at all, and which share one,
+    /// is decided the same way whatever the order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filament_order: Vec<SurfaceClass>,
     pub forest_color: String,
     pub rock_color: String,
     pub snow_color: String,
@@ -2065,6 +2091,7 @@ impl Default for ColorOutputSpec {
             enabled: false,
             threemf_style: ThreeMfStyle::default(),
             filament_profile: FilamentProfile::default(),
+            filament_order: Vec::new(),
             forest_color: "#28543A".into(),
             rock_color: "#7C7468".into(),
             snow_color: "#F4F3EC".into(),
@@ -2461,6 +2488,7 @@ mod tests {
                 "enabled": true,
                 "threemf_style": "painted",
                 "filament_profile": "polyterra_pla",
+                "filament_order": ["water", "snow", "rock"],
                 "forest_color": "#014421",
                 "rock_color": "#6E6E6E",
                 "snow_color": "#FFFFFF",
@@ -3145,6 +3173,54 @@ mod tests {
         spec.color_output.aerial_enabled = false;
         spec.color_output.rail_enabled = false;
         assert_eq!(spec.material_palette(any_class()).len(), 6);
+    }
+
+    /// The order decides slot NUMBERS only. Membership and color sharing
+    /// are unchanged by any reordering.
+    #[test]
+    fn filament_order_renumbers_slots_without_changing_membership() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+
+        // Water first: the map's water prints from filament one.
+        spec.color_output.filament_order = vec![SurfaceClass::Water, SurfaceClass::Snow];
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Water), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Snow), Some(1));
+        assert_eq!(palette.slot(SurfaceClass::Rock), Some(2));
+        assert_eq!(palette.colors()[0], "#2F76B5");
+
+        // Same colors, same count, whatever the order.
+        let default_order = GenerationSpec {
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mut sorted_ours = palette.colors().to_vec();
+        let mut sorted_default = default_order
+            .material_palette(any_class())
+            .colors()
+            .to_vec();
+        sorted_ours.sort_unstable();
+        sorted_default.sort_unstable();
+        assert_eq!(sorted_ours, sorted_default);
+
+        // Duplicates count once, where they first appear.
+        spec.color_output.filament_order =
+            vec![SurfaceClass::Water, SurfaceClass::Water, SurfaceClass::Rock];
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Water), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Rock), Some(1));
+
+        // Classes sharing a color still share a slot; the shared slot sits
+        // where the FIRST of them lands.
+        spec.color_output.filament_order = vec![SurfaceClass::Building];
+        spec.color_output.building_color = spec.color_output.road_color.clone();
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Building), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Road), Some(0));
     }
 
     #[test]

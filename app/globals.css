@@ -3542,3 +3542,74 @@ fieldset.control-section .road-options {
     transition-duration: 0.01ms !important;
   }
 }
+
+.filament-order {
+  border: 1px solid var(--line);
+  margin-top: 10px;
+  padding: 9px;
+}
+
+.filament-order legend {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.filament-order-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.filament-order-list li {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 26px 18px minmax(0, 1fr) auto auto;
+}
+
+.filament-number {
+  font:
+    600 10px/1.2 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.filament-swatch {
+  border: 1px solid var(--line);
+  display: inline-block;
+  height: 16px;
+  width: 16px;
+}
+
+.filament-label {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filament-order-list button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.filament-order-list button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.filament-order small {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  line-height: 1.45;
+}

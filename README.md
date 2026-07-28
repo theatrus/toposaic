@@ -276,18 +276,23 @@ their straight mapped edges, with dense local mesh detail along each wall
 instead of a blocky whole-map sampling edge. An Output-tab style picker sets
 how the 3MF states its colors, one style per slicer workflow.
 
-"Color project (for Bambu)", the default, carries its colors every way Bambu
-Studio reads them. Opened as a project, the embedded settings set the filament
-list to exactly the Colors-tab palette, with purge volumes to match. Imported
-as geometry into a project already in progress — where Bambu ignores embedded
-settings by design — the standard color group feeds Bambu's import dialog
-instead, and its Color match puts the palette onto the filaments already
-loaded. Each settings slot names a filament preset, picked in the Colors tab:
-Generic PLA, Bambu PLA Basic, PolyLite PLA, or PolyTerra PLA. Name one and the
-slot arrives as the PLA it is, rather than whatever the slicer reaches for
-when the file names nothing. Slicer preset names also carry a printer suffix —
-`PolyTerra PLA @BBL A1` — which the file cannot know, so a slicer that cannot
-match the exact preset still reads the right vendor and the right material.
+"Color project", the default, carries its colors both ways the two slicers
+read them. Bambu Studio never applies a third-party file's embedded settings;
+there, the standard color group feeds its import dialog, whose Color match
+puts the palette onto the filaments already loaded without adding any. (Use
+Color match, not Append: Bambu builds each appended filament by copying the
+last one in your list, and the copies pile up across imports.) OrcaSlicer is
+the reverse — it applies the embedded settings, so the filament list becomes
+exactly the Colors-tab palette. Each settings slot names a filament preset,
+picked in the Colors tab: Generic PLA, Bambu PLA Basic, PolyLite PLA, or
+PolyTerra PLA. Name one and the slot arrives as the PLA it is, rather than
+whatever the slicer reaches for when the file names nothing. Slicer preset
+names also carry a printer suffix — `PolyTerra PLA @BBL A1` — which the file
+cannot know, so a slicer that cannot match the exact preset still reads the
+right vendor and the right material. The Colors tab also shows which filament
+number each layer prints from and reorders them, so the output can line up
+with the spools already in the printer — layers set to one color share a
+number, and a layer the map turns out to lack gives its number up.
 
 "Painted colors (for Orca)" is a plain pre-painted model: face-paint codes
 assign each triangle an extruder, colors come from the filaments already

@@ -1,8 +1,9 @@
 # How the slicers read a third-party color 3MF
 
 Findings from the Bambu Studio and OrcaSlicer sources, current as of July
-2026. They decide what each `threemf_style` carries; see
-`carries_color_group` in `crates/toposaic-core/src/export.rs`.
+2026, with the Bambu behavior verified live against Bambu Studio on macOS.
+They decide what each `threemf_style` carries; see `carries_color_group` in
+`crates/toposaic-core/src/export.rs`.
 
 ## The three color channels
 
@@ -27,27 +28,35 @@ is a third-party file.
 
 ### Bambu Studio (`src/slic3r/GUI/Plater.cpp`, `Format/bbs_3mf.cpp`)
 
-Bambu has two import flows for a third-party file, and they read different
-channels:
+Bambu never applies a third-party file's embedded settings. Whichever way
+the file arrives — File > Open, double-click, or drag-drop — it announces
+"The 3mf is not from Bambu Lab, load geometry data and color data only" and
+keeps the open project's filament list untouched. Verified live: opening a
+file whose settings carry five filaments left a 32-filament session list
+exactly as it was.
 
-- **Open as project** (double-click, File > Open, drag-drop → "Open as
-  project"): the embedded settings load into the preset bundle, so the
-  filament list becomes exactly the file's `filament_colour` array and each
-  slot selects the preset `filament_settings_id` names. The paint codes then
-  bind each triangle to those slots.
-- **Import geometry** (drag-drop → "Import geometry only", the usual way to
-  add a model to a plate in progress): embedded settings are skipped BY
-  DESIGN — `load_config` is off, and nothing from the file may touch the
-  open project's config. In this flow the only channel that conveys colors
-  is the color group: Bambu collects the per-triangle `pid` references of
-  any file it did not generate and opens its "Standard 3mf Import color"
-  dialog, where Color match maps the file's colors onto the loaded filaments
-  and Append adds new ones. Without a group, the paint codes silently index
-  into whatever filaments the project already has.
+The one channel that conveys colors into Bambu is the color group. Bambu
+collects the per-triangle `pid` references of any file it did not generate
+and opens its "Standard 3mf Import color" dialog:
 
-So a file that wants its colors to survive both flows must carry the
-settings AND the group — which is what the Project style does. The dialog's
-Append is also why the palette must be deduplicated: every color in the
+- **Color match** (pre-selected when the colors are close) maps the file's
+  colors onto filaments already loaded and adds nothing. Verified live: a
+  five-color file matched onto five existing slots, list length unchanged.
+- **Append** adds one filament per file color — and each addition is a COPY
+  OF THE LAST FILAMENT in the current list (`PresetBundle::
+  set_num_filaments` resizes with `filament_presets.back()`). One TPU spool
+  at the end of the list turns every appended color into Generic TPU, and
+  the clones persist in the project, so repeated imports pile them up. A
+  32-filament list holding the same five terrain colors over and over as
+  Generic TPU is this loop's signature; delete the clones once and use
+  Color match.
+
+Without a group, the paint codes silently index into whatever filaments the
+project already has — extruders 1..N, whatever their colors. That is
+correct behavior for a deliberately pre-painted file and wrong for one that
+means to state its own palette.
+
+The dialog is also why the palette must be deduplicated: every color in the
 group is offered as a potential new filament.
 
 ### OrcaSlicer (`src/slic3r/GUI/Plater.cpp`, `Format/bbs_3mf.cpp`)
@@ -78,9 +87,10 @@ the base name still resolves the vendor and material.
 | Painted colors (for Orca) | — | yes | — |
 | Geometry only | yes | — | — |
 
-- **Project** survives both Bambu flows: settings for open-as-project, the
-  group for import-geometry. In Orca the settings apply and the group is
-  ignored.
+- **Project** carries colors into both slicers, through different channels:
+  in Bambu the group feeds the import dialog (the settings are dead weight
+  there — Bambu refuses third-party configs); in Orca the settings set the
+  filament list and the group is ignored.
 - **Painted** is a plain pre-painted model in both slicers: triangles carry
   extruder assignments 1..N, colors come from the filaments already loaded,
   and no dialog opens and no preset changes.

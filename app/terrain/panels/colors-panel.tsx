@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 
 import type { GenerationSpec } from "../contracts";
+import { filamentSlotEntries, moveFilamentClass } from "../filament-slots";
 import type { UpdateTray } from "./mounting-types";
 import type { UpdateColor } from "./surface-types";
 
@@ -199,6 +200,62 @@ export function ColorsPanel({
           the exact preset still reads the right vendor and material.
         </small>
       </label>
+
+      <fieldset
+        aria-label="Output filament order"
+        className="filament-order control-subsection"
+      >
+        <legend>Output filament order</legend>
+        <ol className="filament-order-list">
+          {filamentSlotEntries(spec).map((entry, index, entries) => (
+            <li key={entry.classKey}>
+              <span className="filament-number">F{entry.filament}</span>
+              <span
+                aria-hidden="true"
+                className="filament-swatch"
+                style={{ backgroundColor: entry.color }}
+              />
+              <span className="filament-label">{entry.label}</span>
+              <button
+                aria-label={`Move ${entry.label} earlier`}
+                disabled={index === 0}
+                onClick={() => {
+                  const order = moveFilamentClass(
+                    spec,
+                    entry.classKey,
+                    "earlier",
+                  );
+                  if (order) {
+                    updateColor("filament_order", order);
+                  }
+                }}
+                type="button"
+              >
+                ↑
+              </button>
+              <button
+                aria-label={`Move ${entry.label} later`}
+                disabled={index === entries.length - 1}
+                onClick={() => {
+                  const order = moveFilamentClass(spec, entry.classKey, "later");
+                  if (order) {
+                    updateColor("filament_order", order);
+                  }
+                }}
+                type="button"
+              >
+                ↓
+              </button>
+            </li>
+          ))}
+        </ol>
+        <small>
+          The filament number each layer prints from, in every 3MF style.
+          Two layers with one color share a number. Numbers assume each
+          layer appears on the map; a layer the map lacks gives its number
+          up and later ones move down.
+        </small>
+      </fieldset>
 
       <ColorGroup
         title="Terrain and land cover"

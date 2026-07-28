@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DEFAULT_CLASS_ORDER,
+  effectiveClassOrder,
+  filamentSlotEntries,
+  moveFilamentClass,
+} from "../app/terrain/filament-slots.ts";
+import {
   previewInitialCameraPosition,
   previewWorldX,
 } from "../app/terrain/preview-orientation.ts";
@@ -140,6 +146,44 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   delete oldColorOutput.threemf_style;
   const merged = mergeSpecDefaults({ color_output: oldColorOutput });
   assert.equal(merged.color_output.threemf_style, "project");
+});
+
+test("filament slots number the palette and reorder without loss", () => {
+  const spec = structuredClone(initialSpec);
+  spec.color_output.enabled = true;
+  const entries = filamentSlotEntries(spec);
+  // The default spec separates rail and aerial, draws mapped trails in the
+  // route color, and has no imported trails or markers.
+  assert.deepEqual(
+    entries.map((entry) => entry.classKey),
+    ["rock", "forest", "snow", "water", "road", "building", "rail", "aerial", "route_trail"],
+  );
+  assert.deepEqual(
+    entries.map((entry) => entry.filament),
+    [1, 2, 3, 4, 5, 6, 7, 8, 5],
+    "the mapped trail shares the route filament",
+  );
+
+  // Move water to the front and every number follows.
+  spec.color_output.filament_order = moveFilamentClass(spec, "water", "earlier");
+  spec.color_output.filament_order = moveFilamentClass(spec, "water", "earlier");
+  spec.color_output.filament_order = moveFilamentClass(spec, "water", "earlier");
+  const reordered = filamentSlotEntries(spec);
+  assert.equal(reordered[0].classKey, "water");
+  assert.equal(reordered[0].filament, 1);
+  assert.equal(
+    reordered.find((entry) => entry.classKey === "rock").filament,
+    2,
+  );
+
+  // Moving past either end is refused, not wrapped.
+  assert.equal(moveFilamentClass(spec, "water", "earlier"), null);
+
+  // The full order still names every class exactly once.
+  assert.deepEqual(
+    [...effectiveClassOrder(spec)].sort(),
+    [...DEFAULT_CLASS_ORDER].sort(),
+  );
 });
 
 test("defaults the filament preset to the one every slicer ships", () => {

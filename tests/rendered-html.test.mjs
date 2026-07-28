@@ -126,14 +126,14 @@ test("server-renders TopoSaic", async () => {
   assert.match(html, /3MF style/);
   assert.match(
     html,
-    /Color project \(for Bambu\) · filament colors and purge settings/,
+    /Color project · filament colors and purge settings/,
   );
   assert.match(html, /Painted colors \(for Orca\) · paint only, no presets/);
   assert.match(html, /Geometry only · standard 3MF colors/);
   // The server renders the default style selected: the embedded-settings
   // project output existing users already get.
   assert.match(html, /<option value="project" selected="">/);
-  assert.match(html, /carries its colors every way Bambu Studio reads/);
+  assert.match(html, /carries its colors for both slicers/);
   // The border smoothing sliders render with the smoothed default.
   assert.match(html, /Border bend range/);
   assert.match(html, /Border noise damping/);

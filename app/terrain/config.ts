@@ -173,6 +173,9 @@ export const initialSpec: GenerationSpec = {
     // Which slicer preset each filament slot asks for. "generic_pla" is the
     // one every slicer has, so it resolves whatever the user runs.
     filament_profile: "generic_pla",
+    // Empty means the backend's fixed class order; reordering in the
+    // Colors tab fills it.
+    filament_order: [],
     forest_color: "#28543A",
     rock_color: "#7C7468",
     snow_color: "#F4F3EC",
