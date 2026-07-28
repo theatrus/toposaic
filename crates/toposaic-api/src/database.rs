@@ -143,16 +143,19 @@ pub fn recent_jobs(state: &AppState, limit: usize) -> Result<Vec<Job>> {
 /// caller's freshly minted id only when the insert arm won, so the flag is
 /// as race-free as the upsert itself.
 pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<(SavedSetup, bool)> {
-    let connection = connection(state)?;
+    let mut guard = connection(state)?;
+    // One unit of work: a version filed without the write it stands for
+    // would be a lie about what the setup used to hold.
+    let transaction = guard.transaction()?;
     // Keep what the name held before this write, so an overwrite can be
     // undone. Only when the spec actually moves: saving a setup twice
     // without touching the model should not push its real history out.
-    if let Some(previous) = read_saved_setup_by_name(&connection, &setup.name)?
+    if let Some(previous) = read_saved_setup_by_name(&transaction, &setup.name)?
         && serde_json::to_string(&previous.spec)? != serde_json::to_string(&setup.spec)?
     {
-        archive_setup_version(&connection, &previous, setup.updated_at)?;
+        archive_setup_version(&transaction, &previous, setup.updated_at)?;
     }
-    let mut statement = connection.prepare(
+    let mut statement = transaction.prepare(
         "INSERT INTO saved_setups (id, name, created_at, updated_at, spec_json)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(name) DO UPDATE SET
@@ -171,6 +174,8 @@ pub fn upsert_saved_setup(state: &AppState, setup: &SavedSetup) -> Result<(Saved
         row_to_saved_setup,
     )?;
     let created = stored.id == setup.id;
+    drop(statement);
+    transaction.commit()?;
     Ok((stored, created))
 }
 
@@ -294,8 +299,12 @@ pub fn restore_setup_version(
     version_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Option<SavedSetup>> {
-    let connection = connection(state)?;
-    let mut statement = connection
+    let mut guard = connection(state)?;
+    // One unit of work: the four writes below leave the store telling a
+    // different story about this setup if any of them lands without the
+    // rest.
+    let transaction = guard.transaction()?;
+    let mut statement = transaction
         .prepare("SELECT spec_json FROM saved_setup_versions WHERE id = ?1 AND setup_id = ?2")?;
     let mut rows = statement.query(params![version_id, setup_id])?;
     let Some(row) = rows.next()? else {
@@ -305,7 +314,7 @@ pub fn restore_setup_version(
     drop(rows);
     drop(statement);
 
-    let mut statement = connection.prepare(
+    let mut statement = transaction.prepare(
         "SELECT id, name, created_at, updated_at, spec_json
          FROM saved_setups WHERE id = ?1",
     )?;
@@ -315,13 +324,13 @@ pub fn restore_setup_version(
     };
     drop(rows);
     drop(statement);
-    archive_setup_version(&connection, &current, now)?;
-    connection.execute(
+    archive_setup_version(&transaction, &current, now)?;
+    transaction.execute(
         "DELETE FROM saved_setup_versions WHERE id = ?1",
         params![version_id],
     )?;
 
-    let mut statement = connection.prepare(
+    let mut statement = transaction.prepare(
         "UPDATE saved_setups SET spec_json = ?2, updated_at = ?3 WHERE id = ?1
          RETURNING id, name, created_at, updated_at, spec_json",
     )?;
@@ -329,6 +338,8 @@ pub fn restore_setup_version(
         params![setup_id, serde_json::to_string(&spec)?, now.to_rfc3339()],
         row_to_saved_setup,
     )?;
+    drop(statement);
+    transaction.commit()?;
     Ok(Some(restored))
 }
 

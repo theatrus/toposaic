@@ -232,6 +232,9 @@ export function TerrainStudio() {
   const [confirmingRollbackId, setConfirmingRollbackId] = useState<
     string | null
   >(null);
+  // The row whose versions the panel is currently waiting for, so a slower
+  // answer for an earlier row can be dropped instead of overwriting it.
+  const historyRequestRef = useRef<string | null>(null);
   const [trailNotice, setTrailNotice] = useState<string | null>(null);
   const [savingSetup, setSavingSetup] = useState(false);
   const [confirmingSetupDeleteId, setConfirmingSetupDeleteId] = useState<
@@ -1163,21 +1166,32 @@ export function TerrainStudio() {
   );
 
   const openHistory = async (setup: SavedSetup) => {
+    setConfirmingRollbackId(null);
     if (historyFor === setup.id) {
       setHistoryFor(null);
       return;
     }
+    // Drop the row's versions before showing another row's panel. Held on
+    // to, they render under the setup now open — a list of times that
+    // belong to a different setup, each offering to roll THIS one back.
+    setHistoryVersions([]);
     setHistoryBusy(true);
     setHistoryFor(setup.id);
+    historyRequestRef.current = setup.id;
     try {
-      setHistoryVersions(await terrainApi.listSetupVersions(setup.id));
+      const versions = await terrainApi.listSetupVersions(setup.id);
+      // A slower request for an earlier row must not land on top of this
+      // one; only the newest asked-for row may fill the panel.
+      if (historyRequestRef.current !== setup.id) return;
+      setHistoryVersions(versions);
     } catch (error) {
+      if (historyRequestRef.current !== setup.id) return;
       setHistoryFor(null);
       setSetupStatus(
         error instanceof Error ? error.message : "No earlier versions loaded.",
       );
     } finally {
-      setHistoryBusy(false);
+      if (historyRequestRef.current === setup.id) setHistoryBusy(false);
     }
   };
 
