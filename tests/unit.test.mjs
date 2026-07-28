@@ -186,6 +186,57 @@ test("filament slots number the palette and reorder without loss", () => {
   );
 });
 
+test("filament slots follow the backend's emits_class rules", () => {
+  // Rail, aerial, and the mapped trail ride on color output, exactly as
+  // GenerationSpec::emits_class has them. With it off, the model still
+  // prints its base six and nothing else.
+  const off = structuredClone(initialSpec);
+  off.color_output.enabled = false;
+  assert.deepEqual(
+    filamentSlotEntries(off).map((entry) => entry.classKey),
+    ["rock", "forest", "snow", "water", "road", "building"],
+  );
+
+  // An aerial layer set to follow the railways paints in the RAIL class, so
+  // it takes no slot of its own — and none at all once rail is merged into
+  // the roads.
+  const merged = structuredClone(initialSpec);
+  merged.color_output.enabled = true;
+  merged.color_output.aerial_style = "with_rail";
+  const withRail = filamentSlotEntries(merged).map((entry) => entry.classKey);
+  assert.ok(withRail.includes("rail"));
+  assert.ok(!withRail.includes("aerial"));
+
+  merged.color_output.rail_style = "with_roads";
+  const allMerged = filamentSlotEntries(merged).map((entry) => entry.classKey);
+  assert.ok(!allMerged.includes("rail"));
+  assert.ok(!allMerged.includes("aerial"));
+});
+
+test("reordering filaments keeps classes the map does not have", () => {
+  const spec = structuredClone(initialSpec);
+  spec.color_output.enabled = true;
+  spec.trails = [{ name: "Loop", points: [[46.8, -121.8], [46.9, -121.7]] }];
+
+  // Put the imported trail one place earlier, then take the trails away.
+  spec.color_output.filament_order = moveFilamentClass(spec, "trail", "earlier");
+  const placed = spec.color_output.filament_order.indexOf("trail");
+  spec.trails = [];
+
+  // Reordering something else must not forget where the trail belongs.
+  spec.color_output.filament_order = moveFilamentClass(spec, "water", "earlier");
+  assert.equal(
+    spec.color_output.filament_order.indexOf("trail"),
+    placed,
+    "the trail keeps its saved position while the map has no trails",
+  );
+  assert.deepEqual(
+    [...spec.color_output.filament_order].sort(),
+    [...DEFAULT_CLASS_ORDER].sort(),
+    "every class stays in the saved order",
+  );
+});
+
 test("defaults the filament preset to the one every slicer ships", () => {
   assert.equal(initialSpec.color_output.filament_profile, "generic_pla");
   // Setups saved before the field existed recall with that default, so a

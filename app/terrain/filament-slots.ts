@@ -1,3 +1,7 @@
+// Explicit extension: this is a VALUE import, and the unit tests load this
+// module through Node's ESM loader, which does not guess one. Type-only
+// imports are erased before that matters.
+import { aerialLineClass, railLineClass } from "./config.ts";
 import type { GenerationSpec, SurfaceClassKey } from "./contracts";
 
 // The backend's fixed class order — `SurfaceClass::ALL` in
@@ -58,6 +62,11 @@ export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
     marker: spec.marker_settings.color,
     route_trail: spec.color_output.route_trail_color,
   };
+  // Mirrors GenerationSpec::emits_class. The rail and aerial layers ride on
+  // color output the way roads do, and each takes a slot only when its
+  // style resolves to its OWN class — an aerial layer set to follow the
+  // railways paints in the rail class and costs nothing.
+  const output = spec.color_output;
   const emits: Record<SurfaceClassKey, boolean> = {
     rock: true,
     forest: true,
@@ -67,15 +76,15 @@ export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
     building: true,
     trail: spec.trails.length > 0,
     rail:
-      spec.color_output.rail_enabled &&
-      spec.color_output.rail_style === "separate",
+      output.enabled && output.rail_enabled && railLineClass(output) === "rail",
     aerial:
-      spec.color_output.aerial_enabled &&
-      spec.color_output.aerial_style === "separate",
+      output.enabled &&
+      output.aerial_enabled &&
+      aerialLineClass(output) === "aerialway",
     marker: spec.markers.some(
       (marker) => marker.kind !== "flag_hole" && marker.kind !== "flag_label",
     ),
-    route_trail: spec.color_output.roads_enabled,
+    route_trail: output.enabled && output.roads_enabled,
   };
   const slotByColor = new Map<string, number>();
   const entries: FilamentSlotEntry[] = [];
@@ -115,9 +124,14 @@ export function effectiveClassOrder(spec: GenerationSpec): SurfaceClassKey[] {
   return order;
 }
 
-// The saved order after moving one displayed class a step earlier or later
-// among the displayed classes. Returns null when the move falls off either
-// end. Classes not displayed keep following in default order.
+// The saved order after moving one displayed class past its neighbour in
+// the list. Returns null when the move falls off either end.
+//
+// The move is measured against the DISPLAYED classes — those are the rows
+// the user sees — but the saved order keeps all of them. Returning only the
+// displayed ones would drop the saved position of every class a map happens
+// not to have right now, so reordering with no trails imported would forget
+// where the user had put trails.
 export function moveFilamentClass(
   spec: GenerationSpec,
   classKey: SurfaceClassKey,
@@ -129,6 +143,9 @@ export function moveFilamentClass(
   if (from < 0 || to < 0 || to >= displayed.length) {
     return null;
   }
-  [displayed[from], displayed[to]] = [displayed[to], displayed[from]];
-  return displayed;
+  const neighbour = displayed[to];
+  const order = effectiveClassOrder(spec).filter((key) => key !== classKey);
+  const at = order.indexOf(neighbour);
+  order.splice(direction === "earlier" ? at : at + 1, 0, classKey);
+  return order;
 }
