@@ -1339,6 +1339,70 @@ mod tests {
         assert_watertight(&plain);
     }
 
+    /// A ferry is a raised ribbon like every other mapped line, and it is
+    /// drawn last, so it yields to the road it meets at a terminal rather
+    /// than moving a triangle that was already there.
+    #[test]
+    fn ferries_ride_the_raised_road_treatment_and_yield_to_what_is_there() {
+        use crate::spec::FerryStyle;
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Water; 9], "ferry").unwrap();
+        // A road down to the water, and a crossing leaving from it.
+        field.paint_polyline(&[[0.1, 0.5], [0.5, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        field.paint_polyline(&[[0.4, 0.5], [0.9, 0.5]], 60.0, 0.7, SurfaceClass::Ferry);
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "flat").unwrap();
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            samples_per_piece: 16,
+            overlay_samples_per_piece: 32,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_height_mm: 0.2,
+                ferry_enabled: true,
+                ferry_style: FerryStyle::Separate,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        assert!(spec.uses_separate_ferry());
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        let ferry_vertices = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Ferry)
+            .flat_map(|(triangle, _)| triangle)
+            .map(|index| mesh.vertices[*index as usize])
+            .collect::<Vec<_>>();
+        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(ferry_vertices.len() > 100);
+        let minimum_z = ferry_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = ferry_vertices
+            .iter()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        // Same raised layer as roads: embedded bottom, road-height top.
+        assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
+        assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
+        assert_watertight(&mesh);
+
+        // Folded into the roads, no Ferry material reaches the piece at all.
+        let mut with_roads = spec.clone();
+        with_roads.color_output.ferry_style = FerryStyle::WithRoads;
+        let mut road_class =
+            SurfaceField::new(3, 3, vec![SurfaceClass::Water; 9], "ferry").unwrap();
+        road_class.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
+        let plain = build_piece(&with_roads, Some(&height_field), Some(&road_class), 0, 0).unwrap();
+        assert!(!plain.materials.contains(&SurfaceClass::Ferry));
+        assert!(plain.materials.contains(&SurfaceClass::Road));
+        assert_watertight(&plain);
+    }
+
     /// Railways switch on and off independently of roads, so a model with
     /// the road layer off and railways on must still build overlay
     /// geometry. Under the default `with_roads` style those railways are
