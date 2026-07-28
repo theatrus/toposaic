@@ -66,9 +66,10 @@ and Import reads such a file back, so setups can move between machines.
 The recalled setup's row also carries its own Save, which reads "Saved" until
 the model moves away from what was stored and then offers to write the change
 back. Each row keeps a History: the last five specs a setup held before being
-saved over, any of which can be rolled back to. A rollback changes the stored
-setup and leaves the model on screen alone, so unsaved work is never thrown
-away by one; click the setup's name to load what was restored.
+saved over, any of which can be rolled back to. Rolling back restores the
+setup and loads it, replacing the model on screen, so it asks first — the same
+in-row confirm that Delete uses. The spec it replaced becomes a version of its
+own, so a rollback can itself be rolled back.
 
 Next to it, a gear button opens the settings pane. It shows the map data
 cache — elevation tiles, land cover, OpenStreetMap, and place search — with

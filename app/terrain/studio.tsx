@@ -226,6 +226,12 @@ export function TerrainStudio() {
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [historyVersions, setHistoryVersions] = useState<SetupVersion[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
+  // Which version is one click from being rolled back to. Rolling back
+  // loads the old spec over the model on screen, so it asks first — the
+  // same in-row confirm the delete action uses.
+  const [confirmingRollbackId, setConfirmingRollbackId] = useState<
+    string | null
+  >(null);
   const [trailNotice, setTrailNotice] = useState<string | null>(null);
   const [savingSetup, setSavingSetup] = useState(false);
   const [confirmingSetupDeleteId, setConfirmingSetupDeleteId] = useState<
@@ -1022,6 +1028,7 @@ export function TerrainStudio() {
     setSetupMenuOpen(false);
     setSetupNameMode(null);
     setConfirmingSetupDeleteId(null);
+    setConfirmingRollbackId(null);
     if (focusButton) setupMenuButtonRef.current?.focus();
   }, []);
 
@@ -1174,14 +1181,20 @@ export function TerrainStudio() {
     }
   };
 
-  // Puts an earlier spec back into the STORED setup. The model on screen is
-  // left alone: a restore would otherwise throw away edits the user has not
-  // saved, which is the opposite of what a rollback is for. Recalling it is
-  // one click away, and the status line says so.
+  // Puts an earlier spec back into the setup AND loads it, which is what
+  // rolling back means. It therefore replaces whatever is on screen, so the
+  // first click only arms the button — the same in-row confirm the delete
+  // action uses — and the label says what is about to be lost.
   const restoreSetupVersion = async (
     setup: SavedSetup,
     version: SetupVersion,
   ) => {
+    if (confirmingRollbackId !== version.id) {
+      setConfirmingSetupDeleteId(null);
+      setConfirmingRollbackId(version.id);
+      return;
+    }
+    setConfirmingRollbackId(null);
     setHistoryBusy(true);
     try {
       const restored = await terrainApi.restoreSetupVersion(
@@ -1190,9 +1203,8 @@ export function TerrainStudio() {
       );
       await refreshSetups();
       setHistoryVersions(await terrainApi.listSetupVersions(setup.id));
-      setSetupStatus(
-        `Rolled “${restored.name}” back to its earlier version. Click its name to load it.`,
-      );
+      recallSetup(restored);
+      setSetupStatus(`Rolled “${restored.name}” back to an earlier version.`);
     } catch (error) {
       setSetupStatus(
         error instanceof Error ? error.message : "The version was not restored.",
@@ -1877,9 +1889,20 @@ export function TerrainStudio() {
                                           ).toLocaleString()}
                                         </span>
                                         <button
-                                          aria-label={`Roll ${setup.name} back to the version from ${new Date(
-                                            version.saved_at,
-                                          ).toLocaleString()}`}
+                                          aria-label={
+                                            confirmingRollbackId === version.id
+                                              ? `Confirm loading ${setup.name} from ${new Date(
+                                                  version.saved_at,
+                                                ).toLocaleString()}, replacing the model on screen`
+                                              : `Roll ${setup.name} back to the version from ${new Date(
+                                                  version.saved_at,
+                                                ).toLocaleString()}`
+                                          }
+                                          className={
+                                            confirmingRollbackId === version.id
+                                              ? "confirm-delete"
+                                              : ""
+                                          }
                                           disabled={historyBusy}
                                           onClick={() =>
                                             void restoreSetupVersion(
@@ -1890,7 +1913,9 @@ export function TerrainStudio() {
                                           role="menuitem"
                                           type="button"
                                         >
-                                          Roll back
+                                          {confirmingRollbackId === version.id
+                                            ? "Confirm · replaces model"
+                                            : "Roll back"}
                                         </button>
                                       </li>
                                     ))}
