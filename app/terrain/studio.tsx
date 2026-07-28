@@ -25,7 +25,6 @@ import {
   downloadAndInstallSignedUpdate,
 } from "../updates/desktop";
 import { IS_TAURI, terrainApi } from "./api";
-import { SAVE_ALL_KEY } from "./downloads";
 import { ExternalLink } from "./external-link";
 import {
   DEFAULT_DOT_MARKER_STYLE,
@@ -1438,12 +1437,14 @@ export function TerrainStudio() {
     }
   };
 
-  // One folder picker for the whole job. A 10x10 puzzle is a hundred piece
-  // STLs plus the 3MF, tray, and manifest; saving those one dialog at a
-  // time is not a workflow.
-  const saveAllDesktopArtifacts = async () => {
-    if (!job || !IS_TAURI) return;
-    setArtifactFeedback({ name: SAVE_ALL_KEY, state: "saving" });
+  // One folder picker instead of a save dialog per file. The caller says
+  // which files: the print set, or that plus the per-piece STLs.
+  const saveDesktopArtifactSet = async (
+    key: string,
+    artifactNames: string[],
+  ) => {
+    if (!job || !IS_TAURI || artifactNames.length === 0) return;
+    setArtifactFeedback({ name: key, state: "saving" });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const saved = await invoke<{ directory: string; files: number } | null>(
@@ -1451,6 +1452,7 @@ export function TerrainStudio() {
         {
           jobId: job.id,
           folderName: job.spec.place_name.trim() || "toposaic",
+          artifactNames,
         },
       );
       if (saved === null) {
@@ -1458,7 +1460,7 @@ export function TerrainStudio() {
         setMessage("Save canceled.");
         return;
       }
-      setArtifactFeedback({ name: SAVE_ALL_KEY, state: "saved" });
+      setArtifactFeedback({ name: key, state: "saved" });
       setMessage(
         `Saved ${saved.files} ${saved.files === 1 ? "file" : "files"} to ${saved.directory}.`,
       );
@@ -2159,7 +2161,7 @@ export function TerrainStudio() {
             job={job}
             message={message}
             noteWebDownload={noteWebDownload}
-            saveAllDesktopArtifacts={saveAllDesktopArtifacts}
+            saveDesktopArtifactSet={saveDesktopArtifactSet}
             saveDesktopArtifact={saveDesktopArtifact}
             spec={spec}
             statusLabel={statusLabel}

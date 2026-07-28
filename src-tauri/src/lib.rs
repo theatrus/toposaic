@@ -73,37 +73,46 @@ fn free_directory(parent: &Path, stem: &str) -> Result<PathBuf, String> {
     Err("Could not find a free folder name.".to_owned())
 }
 
-/// Copies every artifact of a finished job into a new folder under
+/// Copies the NAMED artifacts of a finished job into a new folder under
 /// `destination`. Returns the folder and how many files landed in it.
+///
+/// The caller passes the list rather than this sweeping the job folder,
+/// because not everything in there is something to hand over: `preview.json`
+/// is the app's own preview data and appears nowhere in the download list,
+/// and the per-piece STLs are an alternative to the combined 3MF rather than
+/// a companion to it. Each name is resolved through `artifact_path`, so a
+/// name cannot reach outside the job folder.
 async fn copy_job_artifacts(
     source_dir: &Path,
     destination: &Path,
     folder_name: &str,
+    artifact_names: &[String],
 ) -> Result<(PathBuf, usize), String> {
     if !destination.is_dir() {
         return Err("The selected folder does not exist.".to_owned());
     }
+    if artifact_names.is_empty() {
+        return Err("There are no files to save.".to_owned());
+    }
+    let sources = artifact_names
+        .iter()
+        .map(|name| {
+            toposaic_core::artifact_path(source_dir, name)
+                .map(|path| (name, path))
+                .ok_or_else(|| format!("{name} is no longer on disk."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let target = free_directory(destination, &folder_slug(folder_name))?;
     tokio::fs::create_dir(&target)
         .await
         .map_err(|error| format!("Could not create {}: {error}", target.display()))?;
 
-    let mut entries = tokio::fs::read_dir(source_dir)
-        .await
-        .map_err(|error| format!("Could not read the job folder: {error}"))?;
     let mut copied = 0;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|error| format!("Could not read the job folder: {error}"))?
-    {
-        if !entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let name = entry.file_name();
-        tokio::fs::copy(entry.path(), target.join(&name))
+    for (name, source) in sources {
+        tokio::fs::copy(source, target.join(name))
             .await
-            .map_err(|error| format!("Could not save {}: {error}", name.to_string_lossy()))?;
+            .map_err(|error| format!("Could not save {name}: {error}"))?;
         copied += 1;
     }
     Ok((target, copied))
@@ -155,13 +164,15 @@ struct SavedFolder {
     files: usize,
 }
 
-/// Saves every file of a job in one go: one folder picker, one copy, rather
-/// than a save dialog per file — a 10x10 puzzle is over a hundred of them.
+/// Saves a set of a job's files in one go: one folder picker, one copy,
+/// rather than a save dialog each. The front end decides which set — the
+/// print files, or those plus the per-piece STLs.
 #[tauri::command]
 async fn save_all_artifacts(
     app: tauri::AppHandle,
     job_id: String,
     folder_name: String,
+    artifact_names: Vec<String>,
 ) -> Result<Option<SavedFolder>, String> {
     let data_dir = app
         .path()
@@ -184,7 +195,8 @@ async fn save_all_artifacts(
         .into_path()
         .map_err(|error| format!("The selected folder is not valid: {error}"))?;
 
-    let (directory, files) = copy_job_artifacts(&source_dir, &destination, &folder_name).await?;
+    let (directory, files) =
+        copy_job_artifacts(&source_dir, &destination, &folder_name, &artifact_names).await?;
     Ok(Some(SavedFolder {
         directory: directory.display().to_string(),
         files,
@@ -268,27 +280,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saving_all_files_never_writes_over_an_earlier_save() {
+    async fn saving_all_files_copies_only_what_it_was_asked_for() {
         let root = std::env::temp_dir().join(format!("toposaic-saveall-{}", Uuid::new_v4()));
         let source = root.join("job");
         let destination = root.join("picked");
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("toposaic.3mf"), b"first").unwrap();
+        fs::write(source.join("manifest.json"), b"{}").unwrap();
         fs::write(source.join("piece-1-1.stl"), b"stl").unwrap();
-        fs::create_dir(source.join("scratch")).unwrap();
+        fs::write(source.join("preview.json"), b"preview").unwrap();
 
-        let (first, files) = copy_job_artifacts(&source, &destination, "Mount Rainier")
-            .await
-            .unwrap();
-        assert_eq!(files, 2, "the folder inside the job is not an artifact");
+        let print_files = ["toposaic.3mf".to_owned(), "manifest.json".to_owned()];
+        let (first, files) =
+            copy_job_artifacts(&source, &destination, "Mount Rainier", &print_files)
+                .await
+                .unwrap();
+        assert_eq!(files, 2);
         assert_eq!(first.file_name().unwrap(), "Mount-Rainier");
         assert_eq!(fs::read(first.join("toposaic.3mf")).unwrap(), b"first");
+        // The app's own preview data, and an STL nobody asked for, stay put.
+        assert!(!first.join("preview.json").exists());
+        assert!(!first.join("piece-1-1.stl").exists());
 
         // A second save of a job by the same name lands beside the first,
         // with the first left exactly as it was.
         fs::write(source.join("toposaic.3mf"), b"second").unwrap();
-        let (again, _) = copy_job_artifacts(&source, &destination, "Mount Rainier")
+        let (again, _) = copy_job_artifacts(&source, &destination, "Mount Rainier", &print_files)
             .await
             .unwrap();
         assert_ne!(again, first);
@@ -298,9 +316,38 @@ mod tests {
 
         // A folder that is not there is refused rather than created.
         assert!(
-            copy_job_artifacts(&source, &root.join("missing"), "Mount Rainier")
+            copy_job_artifacts(&source, &root.join("missing"), "Rainier", &print_files)
                 .await
                 .is_err()
+        );
+
+        // A name that tries to leave the job folder, or that is not there,
+        // fails before anything is written.
+        let before = fs::read_dir(&destination).unwrap().count();
+        assert!(
+            copy_job_artifacts(
+                &source,
+                &destination,
+                "Rainier",
+                &["../secrets.txt".to_owned()],
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            copy_job_artifacts(&source, &destination, "Rainier", &["gone.3mf".to_owned()])
+                .await
+                .is_err()
+        );
+        assert!(
+            copy_job_artifacts(&source, &destination, "Rainier", &[])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(&destination).unwrap().count(),
+            before,
+            "a refused save leaves no half-made folder behind"
         );
 
         fs::remove_dir_all(root).unwrap();

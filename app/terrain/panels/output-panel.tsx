@@ -16,8 +16,8 @@ export function OutputPanel({
   job,
   message,
   noteWebDownload,
-  saveAllDesktopArtifacts,
   saveDesktopArtifact,
+  saveDesktopArtifactSet,
   spec,
   statusLabel,
   updateColor,
@@ -34,8 +34,8 @@ export function OutputPanel({
   job: Job | null;
   message: string | null;
   noteWebDownload: (artifact: Artifact) => void;
-  saveAllDesktopArtifacts: () => Promise<void>;
   saveDesktopArtifact: (artifact: Artifact) => Promise<void>;
+  saveDesktopArtifactSet: (key: string, names: string[]) => Promise<void>;
   spec: GenerationSpec;
   statusLabel: string | null;
   updateColor: <Key extends keyof GenerationSpec["color_output"]>(
@@ -195,7 +195,7 @@ export function OutputPanel({
               isDesktop={IS_TAURI}
               job={job}
               onSave={(artifact) => void saveDesktopArtifact(artifact)}
-              onSaveAll={() => void saveAllDesktopArtifacts()}
+              onSaveSet={(key, names) => void saveDesktopArtifactSet(key, names)}
               onWebDownload={noteWebDownload}
             />
           )}

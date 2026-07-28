@@ -405,14 +405,19 @@ cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 
 ## Collecting the files
 
-A finished job lists every file it made on the Output tab. In the desktop
-app, **Save all files to a folder** asks once for a folder and writes the
-whole job into a new subfolder named after the place — a 10x10 puzzle is
-over a hundred piece STLs beside the 3MF, tray, and manifest, and picking a
-path for each one is not a workflow. Saving the same job twice makes a
-second folder rather than writing over the first. Single files still save
-one at a time from the same list, and the browser build downloads them
-individually.
+A finished job lists its files on the Output tab. The color 3MF holds every
+puzzle piece as its own object, so it is the only model file most prints
+need; the tray, its segments, wall-mount hardware, and each flag template
+are separate 3MFs beside it, and every one of those also has a plain STL,
+along with one STL per puzzle piece for anyone who would rather print from
+those.
+
+In the desktop app, **Save all print files to a folder** asks once for a
+folder and writes the 3MFs and the manifest into a new subfolder named after
+the place. The STL list has its own save for the same reason. Saving the
+same job twice makes a second folder rather than writing over the first.
+Single files still save one at a time from either list, and the browser
+build downloads them individually.
 
 ## Printing in color
 
