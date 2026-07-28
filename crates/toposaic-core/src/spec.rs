@@ -433,6 +433,15 @@ impl GenerationSpec {
         self.markers.iter().any(|marker| marker.kind.is_map_label())
     }
 
+    /// Whether any label sits on a raised plaque. Plaque text is the one
+    /// thing a piece builds in the Snow class, so it decides whether a
+    /// snowless map still needs that filament.
+    pub(crate) fn uses_plaque_labels(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| marker.kind == MarkerKind::PlaqueLabel)
+    }
+
     /// Maps a geographic point into this tile's normalized model square.
     /// The API uses this same helper for OSM data, so markers, trails, and
     /// fetched features cannot drift apart at high latitude or the date line.
@@ -710,94 +719,85 @@ impl GenerationSpec {
             || self.uses_colored_markers()
     }
 
-    /// The filament palette of one archive: every surface class it can
-    /// emit, in `SurfaceClass::ALL` order, packed into consecutive slots.
+    /// The filament palette of one archive: one slot per color it actually
+    /// prints, in [`Self::slot_order`] — the user's `filament_order` first,
+    /// then `SurfaceClass::ALL` order for the rest.
     ///
-    /// The palette is DENSE. A class the archive never paints takes no slot
-    /// and the classes after it move up, so a separately-styled rail layer
-    /// without imported trails is seven colors with rail in slot seven — not
-    /// eight with an unreferenced trail placeholder. It filters
-    /// `SurfaceClass::ALL` rather than reordering it, so the same feature
-    /// always lands in the same relative position, and it is computed once
-    /// per archive, so every mesh in the file agrees on it.
+    /// A slot is a spool the user has to load, so the palette earns every
+    /// one of them twice over.
     ///
-    /// Membership takes TWO tests, and a class needs both.
+    /// A class takes a slot only if the settings draw it AND `painted` says
+    /// a mesh in this archive can paint it. Filtering the fixed order
+    /// rather than sorting keeps the same feature in the same relative
+    /// position from map to map, and the palette is computed once per
+    /// archive, so every mesh in the file agrees on it.
     ///
-    /// The spec test asks whether the settings draw the class at all. The
-    /// `surface` test asks whether the drawn data actually contains one —
-    /// because with both rail-family layers coloring themselves by default,
-    /// a settings-only palette would charge a spool for cable cars in a city
-    /// that has none, and the whole point of packing the palette is not to
-    /// bill for what is not there. Passing `None` (a tray, or any archive
-    /// with no surface data) skips the second test, which can only ever make
-    /// the palette larger.
+    /// Then classes sharing a color share a slot. Two features printed in
+    /// one color are one spool: a slicer will not merge them for us, so a
+    /// tray whose rim, roads, and buildings are all the tray color must not
+    /// arrive asking for that color three times over.
     ///
-    /// The result is a SUPERSET of what any mesh in the archive paints, and
-    /// that direction is the one that matters:
-    ///
-    /// - The base six are unconditional. Terrain tops sample the field's
-    ///   base classes; every wall, floor, and underside is Rock; building
-    ///   shells are Building; road ribbons and every bridge deck default to
-    ///   Road; and tray meshes, which carry no field at all, use Rock,
-    ///   Forest, and Snow. Holding all six by construction covers each of
-    ///   those without a per-source special case — and keeps every archive
-    ///   written before the palette became dense byte-for-byte unchanged.
-    /// - Trails, railways, and aerialways only ever reach a mesh as vector
-    ///   lines of the surface field, which is exactly what
-    ///   [`SurfaceField::contained_classes`] reports.
-    ///
-    /// So a triangle without a slot is unreachable, and the export can never
-    /// be refused over a thin line the palette missed. The cost is that the
-    /// palette may be slightly LOOSE — a line in the field that no piece
-    /// happens to sample still takes a slot. That is the right way round.
+    /// A triangle whose class has no slot cannot be written — see
+    /// [`crate::export::ThreeMfWriter::write_mesh`], which refuses the
+    /// archive rather than mis-color it — so `painted` must never be short.
+    /// [`PaintedClasses::Exact`] cannot be, being read off the finished
+    /// meshes. [`PaintedClasses::Sampled`] covers what the meshes read out
+    /// of surface data and is topped up with [`Self::builds_in_class`].
     pub(crate) fn material_palette<'spec>(
         &'spec self,
-        surface: Option<&SurfaceField>,
+        painted: PaintedClasses,
     ) -> MaterialPalette<'spec> {
-        let contained = surface.map(SurfaceField::contained_classes);
         let mut palette = MaterialPalette::default();
-        for class in SurfaceClass::ALL {
-            // Only data-backed optional layers consult the field. Dots and
-            // map labels build straight into the mesh, so Marker must stay
-            // even when the downloaded field contains no marker pixels.
-            let mesh_class = matches!(
-                class,
-                SurfaceClass::Rock
-                    | SurfaceClass::Forest
-                    | SurfaceClass::Snow
-                    | SurfaceClass::Water
-                    | SurfaceClass::Road
-                    | SurfaceClass::Building
-            ) || (class == SurfaceClass::Marker
-                && (self.uses_dot_markers() || self.uses_map_labels()));
-            let in_data = mesh_class
-                || if class == SurfaceClass::RouteTrail {
-                    // Mapped trails can only come from a surface field. A
-                    // tray or fixture with no field must keep the old six
-                    // base slots.
-                    contained.is_some_and(|present| present[class.material_index() as usize])
-                } else {
-                    contained.is_none_or(|present| present[class.material_index() as usize])
-                };
-            if !self.emits_class(class) || !in_data {
+        for class in self.slot_order() {
+            if !self.emits_class(class) || !painted.can_paint(self, class) {
                 continue;
             }
-            // Mapped trails start in the route filament. Keep one slot
-            // while their colors match; choosing a new trail color below
-            // gives the class its own slot without changing its geometry.
-            if class == SurfaceClass::RouteTrail
-                && self
-                    .class_color(class)
-                    .eq_ignore_ascii_case(&self.color_output.road_color)
-            {
-                palette.slots[class.material_index() as usize] =
-                    palette.slots[SurfaceClass::Road.material_index() as usize];
-                continue;
-            }
-            palette.slots[class.material_index() as usize] = Some(palette.colors.len() as u32);
-            palette.colors.push(self.class_color(class));
+            let color = self.class_color(class);
+            let slot = palette
+                .colors
+                .iter()
+                .position(|existing| existing.eq_ignore_ascii_case(color))
+                .unwrap_or_else(|| {
+                    palette.colors.push(color);
+                    palette.colors.len() - 1
+                });
+            palette.slots[class.material_index() as usize] = Some(slot as u32);
         }
         palette
+    }
+
+    /// Every surface class once, in the order they take filament slots:
+    /// `filament_order` first — duplicates dropped after their first
+    /// appearance — then whatever it leaves out, in `SurfaceClass::ALL`
+    /// order.
+    fn slot_order(&self) -> impl Iterator<Item = SurfaceClass> + '_ {
+        let mut seen = [false; SurfaceClass::ALL.len()];
+        self.color_output
+            .filament_order
+            .iter()
+            .copied()
+            .chain(SurfaceClass::ALL)
+            .filter(move |class| {
+                !std::mem::replace(&mut seen[class.material_index() as usize], true)
+            })
+    }
+
+    /// Whether a mesh builds this class in itself rather than reading it out
+    /// of surface data.
+    ///
+    /// Every wall, floor, and underside is Rock, whatever the map holds.
+    /// Marker dots and map labels are placed from the spec, not read out of
+    /// the data, and the text on a raised plaque is cut in the Snow class —
+    /// so a named peak on a snowless map still needs that filament.
+    /// Everything else reaches a mesh only as field pixels or vector
+    /// features.
+    fn builds_in_class(&self, class: SurfaceClass) -> bool {
+        match class {
+            SurfaceClass::Rock => true,
+            SurfaceClass::Marker => self.uses_dot_markers() || self.uses_map_labels(),
+            SurfaceClass::Snow => self.uses_plaque_labels(),
+            _ => false,
+        }
     }
 
     /// Whether a spec's SETTINGS draw this class at all.
@@ -848,6 +848,55 @@ impl GenerationSpec {
     }
 }
 
+/// The set of surface classes an archive's meshes can paint, and how well
+/// the caller knows it.
+///
+/// Whichever variant it is, it must never be short of what the meshes go on
+/// to paint: a class outside it takes no filament slot, and a triangle with
+/// no slot fails the archive.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PaintedClasses {
+    /// Exactly what a set of finished meshes paints, read off their material
+    /// lists. Every archive whose meshes are built before it opens — trays,
+    /// wall-mount hardware, flag templates — can say this much.
+    Exact([bool; SurfaceClass::ALL.len()]),
+    /// What the meshes will read out of the surface data they are built
+    /// from, for archives written as their meshes arrive. Classes a mesh
+    /// builds in itself are not in here; the palette adds them from the
+    /// settings.
+    Sampled([bool; SurfaceClass::ALL.len()]),
+}
+
+impl PaintedClasses {
+    /// The exact classes one finished mesh paints.
+    pub(crate) fn of_mesh(mesh: &crate::mesh::Mesh) -> Self {
+        let mut present = [false; SurfaceClass::ALL.len()];
+        for material in &mesh.materials {
+            present[material.material_index() as usize] = true;
+        }
+        Self::Exact(present)
+    }
+
+    /// What meshes built from this surface data will sample. `None` is an
+    /// archive with no surface data at all, which samples nothing.
+    pub(crate) fn sampled(surface: Option<&SurfaceField>) -> Self {
+        Self::Sampled(
+            surface
+                .map(SurfaceField::contained_classes)
+                .unwrap_or_default(),
+        )
+    }
+
+    fn can_paint(self, spec: &GenerationSpec, class: SurfaceClass) -> bool {
+        match self {
+            Self::Exact(present) => present[class.material_index() as usize],
+            Self::Sampled(present) => {
+                present[class.material_index() as usize] || spec.builds_in_class(class)
+            }
+        }
+    }
+}
+
 /// One archive's dense filament palette: the colors it emits, in slot order,
 /// and the slot each surface class was packed into.
 ///
@@ -871,6 +920,10 @@ impl<'spec> MaterialPalette<'spec> {
 
     pub(crate) fn len(&self) -> usize {
         self.colors.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.colors.is_empty()
     }
 
     /// The slot a class paints into, or `None` when the palette does not
@@ -1744,6 +1797,50 @@ pub enum ThreeMfStyle {
     Geometry,
 }
 
+/// Which filament preset the embedded project settings name for every slot.
+///
+/// A `Project` 3MF has to tell the slicer what each slot is loaded with.
+/// Naming nothing is what had OrcaSlicer and Bambu Studio guess a material
+/// and land on TPU, so every choice here is a real preset those slicers
+/// ship, paired with the vendor it belongs to.
+///
+/// Preset names in both slicers carry a printer suffix — `PolyTerra PLA @BBL
+/// A1` — which this cannot know. It writes the base name, so a slicer that
+/// cannot resolve the exact preset still reads the right vendor and the
+/// right material rather than picking for itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilamentProfile {
+    /// The stock preset every slicer has. Matches whatever is loaded.
+    #[default]
+    GenericPla,
+    BambuPlaBasic,
+    // Polymaker spells both as one word, so name the wire values by hand
+    // rather than let snake_case split them into `poly_lite_pla`.
+    #[serde(rename = "polylite_pla")]
+    PolyLitePla,
+    #[serde(rename = "polyterra_pla")]
+    PolyTerraPla,
+}
+
+impl FilamentProfile {
+    /// The preset name and vendor to write, in that order.
+    pub(crate) fn preset(self) -> (&'static str, &'static str) {
+        match self {
+            Self::GenericPla => ("Generic PLA", "Generic"),
+            Self::BambuPlaBasic => ("Bambu PLA Basic", "Bambu Lab"),
+            Self::PolyLitePla => ("PolyLite PLA", "Polymaker"),
+            Self::PolyTerraPla => ("PolyTerra PLA", "Polymaker"),
+        }
+    }
+
+    /// Every choice is a PLA, which is what the terrain colors are printed
+    /// in. Split out so adding a non-PLA profile cannot forget to change it.
+    pub(crate) fn material(self) -> &'static str {
+        "PLA"
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorOutputSpec {
@@ -1752,6 +1849,18 @@ pub struct ColorOutputSpec {
     /// this with `Project` for specs saved before the field existed, so
     /// existing users keep today's one-click color behavior unchanged.
     pub threemf_style: ThreeMfStyle,
+    /// Which filament preset each slot of a `Project` 3MF asks for. Ignored
+    /// by the other two styles, which embed no settings at all.
+    pub filament_profile: FilamentProfile,
+    /// The order surface classes take filament slots, for users who line
+    /// the output up with the spools already in the printer. Classes left
+    /// out — and every spec saved before the field existed — follow in
+    /// [`SurfaceClass::ALL`] order after the ones listed; a class listed
+    /// twice counts once, where it first appears. The order changes slot
+    /// NUMBERS only: which classes take a slot at all, and which share one,
+    /// is decided the same way whatever the order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filament_order: Vec<SurfaceClass>,
     pub forest_color: String,
     pub rock_color: String,
     pub snow_color: String,
@@ -1981,6 +2090,8 @@ impl Default for ColorOutputSpec {
         Self {
             enabled: false,
             threemf_style: ThreeMfStyle::default(),
+            filament_profile: FilamentProfile::default(),
+            filament_order: Vec::new(),
             forest_color: "#28543A".into(),
             rock_color: "#7C7468".into(),
             snow_color: "#F4F3EC".into(),
@@ -2152,6 +2263,12 @@ impl SurfaceClass {
 mod tests {
     use super::*;
 
+    /// Nothing ruled out by the data, so the settings alone decide the
+    /// palette. Used to test what a spec CAN emit, apart from any map.
+    fn any_class() -> PaintedClasses {
+        PaintedClasses::Exact([true; SurfaceClass::ALL.len()])
+    }
+
     #[test]
     fn accepts_the_full_relief_range() {
         let mut spec = GenerationSpec {
@@ -2260,7 +2377,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
@@ -2370,6 +2487,8 @@ mod tests {
             "color_output": {
                 "enabled": true,
                 "threemf_style": "painted",
+                "filament_profile": "polyterra_pla",
+                "filament_order": ["water", "snow", "rock"],
                 "forest_color": "#014421",
                 "rock_color": "#6E6E6E",
                 "snow_color": "#FFFFFF",
@@ -2947,7 +3066,7 @@ mod tests {
 
         // Eight slots: the base six plus one each, and no trail placeholder
         // between them.
-        let palette = spec.material_palette(None);
+        let palette = spec.material_palette(any_class());
         assert_eq!(palette.len(), 8);
         assert_eq!(palette.slot(SurfaceClass::Trail), None);
         assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
@@ -2959,7 +3078,7 @@ mod tests {
         assert!(!off.color_output.enabled);
         assert!(!off.uses_rail());
         assert!(!off.uses_aerial());
-        assert_eq!(off.material_palette(None).len(), 6);
+        assert_eq!(off.material_palette(any_class()).len(), 6);
         off.color_output.enabled = true;
         assert!(off.uses_rail_or_aerial());
     }
@@ -2983,11 +3102,11 @@ mod tests {
             spec.rail_line_style().width_mm,
             spec.color_output.road_width_mm
         );
-        assert_eq!(spec.material_palette(None).len(), 6);
+        assert_eq!(spec.material_palette(any_class()).len(), 6);
 
         spec.color_output.aerial_style = AerialStyle::WithRoads;
         assert_eq!(spec.aerial_line_style().class, SurfaceClass::Road);
-        assert_eq!(spec.material_palette(None).len(), 6);
+        assert_eq!(spec.material_palette(any_class()).len(), 6);
     }
 
     /// The two layers switch independently, and each separate style costs
@@ -3018,7 +3137,7 @@ mod tests {
             !spec.uses_separate_aerial(),
             "an aerial layer left on with_rail shares the rail slot"
         );
-        let palette = spec.material_palette(None);
+        let palette = spec.material_palette(any_class());
         assert_eq!(palette.len(), 7);
         assert_eq!(palette.colors()[6], "#C43D3D");
         assert_eq!(palette.slot(SurfaceClass::Rail), Some(6));
@@ -3028,7 +3147,7 @@ mod tests {
         // Separate aerial alongside it: eight colors, aerial last.
         spec.color_output.aerial_style = AerialStyle::Separate;
         assert!(spec.uses_separate_aerial());
-        let palette = spec.material_palette(None);
+        let palette = spec.material_palette(any_class());
         assert_eq!(palette.len(), 8);
         assert_eq!(palette.colors()[7], "#6C4CB6");
         assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
@@ -3036,7 +3155,7 @@ mod tests {
 
         // Separate aerial WITHOUT rail: seven colors, aerial in slot seven.
         spec.color_output.rail_style = RailStyle::WithRoads;
-        let palette = spec.material_palette(None);
+        let palette = spec.material_palette(any_class());
         assert_eq!(palette.len(), 7);
         assert_eq!(palette.colors()[6], "#6C4CB6");
         assert_eq!(palette.slot(SurfaceClass::Rail), None);
@@ -3044,7 +3163,7 @@ mod tests {
 
         // Trails ahead of it push it along, and the order never reorders.
         spec.trails = vec![trail(vec![[46.85, -121.76], [46.86, -121.75]])];
-        let palette = spec.material_palette(None);
+        let palette = spec.material_palette(any_class());
         assert_eq!(palette.len(), 8);
         assert_eq!(palette.slot(SurfaceClass::Trail), Some(6));
         assert_eq!(palette.slot(SurfaceClass::Aerial), Some(7));
@@ -3053,7 +3172,55 @@ mod tests {
         spec.trails.clear();
         spec.color_output.aerial_enabled = false;
         spec.color_output.rail_enabled = false;
-        assert_eq!(spec.material_palette(None).len(), 6);
+        assert_eq!(spec.material_palette(any_class()).len(), 6);
+    }
+
+    /// The order decides slot NUMBERS only. Membership and color sharing
+    /// are unchanged by any reordering.
+    #[test]
+    fn filament_order_renumbers_slots_without_changing_membership() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+
+        // Water first: the map's water prints from filament one.
+        spec.color_output.filament_order = vec![SurfaceClass::Water, SurfaceClass::Snow];
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Water), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Snow), Some(1));
+        assert_eq!(palette.slot(SurfaceClass::Rock), Some(2));
+        assert_eq!(palette.colors()[0], "#2F76B5");
+
+        // Same colors, same count, whatever the order.
+        let default_order = GenerationSpec {
+            color_output: ColorOutputSpec {
+                enabled: true,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mut sorted_ours = palette.colors().to_vec();
+        let mut sorted_default = default_order
+            .material_palette(any_class())
+            .colors()
+            .to_vec();
+        sorted_ours.sort_unstable();
+        sorted_default.sort_unstable();
+        assert_eq!(sorted_ours, sorted_default);
+
+        // Duplicates count once, where they first appear.
+        spec.color_output.filament_order =
+            vec![SurfaceClass::Water, SurfaceClass::Water, SurfaceClass::Rock];
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Water), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Rock), Some(1));
+
+        // Classes sharing a color still share a slot; the shared slot sits
+        // where the FIRST of them lands.
+        spec.color_output.filament_order = vec![SurfaceClass::Building];
+        spec.color_output.building_color = spec.color_output.road_color.clone();
+        let palette = spec.material_palette(any_class());
+        assert_eq!(palette.slot(SurfaceClass::Building), Some(0));
+        assert_eq!(palette.slot(SurfaceClass::Road), Some(0));
     }
 
     #[test]
@@ -3063,30 +3230,39 @@ mod tests {
         spec.color_output.road_color = "#123456".into();
         let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "trail").unwrap();
         field.paint_polyline(
+            &[[0.0, 0.3], [1.0, 0.3]],
+            spec.width_mm,
+            1.0,
+            SurfaceClass::Road,
+        );
+        field.paint_polyline(
             &[[0.0, 0.5], [1.0, 0.5]],
             spec.width_mm,
             1.0,
             SurfaceClass::RouteTrail,
         );
 
-        let palette = spec.material_palette(Some(&field));
+        // Rock and one road color. The mapped trail prints in the route
+        // filament, so it costs no slot of its own.
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
         let slot = palette.slot(SurfaceClass::RouteTrail).unwrap() as usize;
         assert_eq!(palette.colors()[slot], "#123456");
         assert_eq!(
             palette.slot(SurfaceClass::RouteTrail),
             palette.slot(SurfaceClass::Road)
         );
-        assert_eq!(palette.len(), 6);
+        assert_eq!(palette.len(), 2);
 
+        // Give it its own color and it takes its own slot.
         spec.color_output.route_trail_color = Some("#654321".into());
-        let palette = spec.material_palette(Some(&field));
+        let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
         let slot = palette.slot(SurfaceClass::RouteTrail).unwrap() as usize;
         assert_eq!(palette.colors()[slot], "#654321");
         assert_ne!(
             palette.slot(SurfaceClass::RouteTrail),
             palette.slot(SurfaceClass::Road)
         );
-        assert_eq!(palette.len(), 7);
+        assert_eq!(palette.len(), 3);
     }
 
     /// The aerial style chain is total, including when the railway layer it
@@ -3127,7 +3303,10 @@ mod tests {
         spec.color_output.rail_enabled = false;
         assert_eq!(spec.aerial_line_style(), road);
         assert!(!spec.uses_separate_aerial());
-        assert_eq!(spec.material_palette(None).slot(SurfaceClass::Rail), None);
+        assert_eq!(
+            spec.material_palette(any_class()).slot(SurfaceClass::Rail),
+            None
+        );
         spec.color_output.rail_enabled = true;
 
         // The explicit styles ignore the rail layer entirely.

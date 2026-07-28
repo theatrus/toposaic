@@ -10,6 +10,122 @@
   --acid: #d8fb72;
   --clay: #c4724a;
   --shadow: 0 24px 70px rgba(20, 32, 29, 0.1);
+
+  /* Where a value is TYPED or CHOSEN. White against the cream panels, so a
+     field reads as a field before anyone clicks it. */
+  --field: #ffffff;
+  /* The hairline --line is right for dividing a panel from a panel. Anything
+     you can click or type into earns the stronger one. */
+  --line-strong: #b9bdae;
+  --focus-ring: 0 0 0 3px rgba(38, 63, 52, 0.16);
+  /* One height for every input, select, and inline button, so a row of them
+     lines up without per-component padding maths. */
+  --control-height: 34px;
+  /* A panel nested inside a panel, sunk rather than raised. Two rules
+     already asked for this and it had never been defined, so they were
+     rendering transparent. */
+  --paper-deep: #eceade;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+/* Every field looks like a field. Components used to declare
+   `background: transparent` one at a time, which left a typed value
+   indistinguishable from a printed label on the cream panels. */
+/* `input:not([type])` matters: a bare <input> defaults to text in the DOM
+   but an attribute selector never matches it, and the app writes plenty of
+   them. Checkbox, radio, range, and color keep their own treatments. */
+input:not([type]),
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="url"],
+input[type="email"],
+input[type="password"],
+input[type="tel"],
+select,
+textarea {
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  color: var(--ink);
+  min-height: var(--control-height);
+  min-width: 0;
+  outline: none;
+  padding: 0 9px;
+  width: 100%;
+}
+
+textarea {
+  padding: 8px 9px;
+}
+
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) calc(50% + 1px),
+    calc(100% - 10px) calc(50% + 1px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+  padding-right: 26px;
+}
+
+input:not([type]):hover:not(:disabled),
+input[type="text"]:hover:not(:disabled),
+input[type="number"]:hover:not(:disabled),
+input[type="search"]:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--moss);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--moss);
+  box-shadow: var(--focus-ring);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--paper);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+/* A pressed toggle states itself. The markup already carried aria-pressed
+   in several panels with nothing rendering it. */
+button[aria-pressed="true"] {
+  background: var(--moss);
+  border-color: var(--moss);
+  color: #fff;
+}
+
+button:focus-visible,
+[role="tab"]:focus-visible,
+a:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--moss);
+  outline-offset: 1px;
 }
 
 * {
@@ -201,11 +317,7 @@ a {
 }
 
 .setup-row-input {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
   flex: 1;
-  font: inherit;
   font-size: 11px;
   margin: 3px;
   min-width: 0;
@@ -257,11 +369,7 @@ a {
 }
 
 .setup-menu-name-row input {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
   flex: 1;
-  font: inherit;
   font-size: 11px;
   min-width: 0;
   padding: 4px 5px;
@@ -388,12 +496,8 @@ a {
 }
 
 .settings-clear-row select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
   font-size: 11px;
-  padding: 3px 4px;
+  padding: 3px 22px 3px 6px;
   text-transform: none;
 }
 
@@ -1415,12 +1519,8 @@ fieldset.control-section .road-options {
 }
 
 .elevation-source-field select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
   font-size: 11px;
-  padding: 10px;
+  padding: 0 26px 0 10px;
   text-transform: none;
 }
 
@@ -1521,12 +1621,7 @@ fieldset.control-section .road-options {
 }
 
 .place-search-row input {
-  background: transparent;
-  border: 1px solid var(--line);
   border-right: 0;
-  border-radius: 0;
-  color: var(--ink);
-  font: inherit;
   min-width: 0;
   padding: 12px;
 }
@@ -1676,15 +1771,10 @@ fieldset.control-section .road-options {
 }
 
 .coordinate-row input {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  color: var(--ink);
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   margin-top: 7px;
-  outline: none;
   padding: 10px;
   width: 100%;
 }
@@ -1784,14 +1874,10 @@ fieldset.control-section .road-options {
 }
 
 .adjacent-grid select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
   display: block;
-  font: inherit;
   font-size: 9px;
   margin-top: 2px;
-  padding: 4px 18px 4px 5px;
+  padding: 0 22px 0 6px;
 }
 
 .super-tile-anchor {
@@ -1916,15 +2002,10 @@ fieldset.control-section .road-options {
 }
 
 .puzzle-seed-row input {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  color: var(--ink);
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   margin-top: 6px;
-  outline: none;
   padding: 9px;
   width: 100%;
 }
@@ -1996,12 +2077,7 @@ fieldset.control-section .road-options {
 }
 
 .place-label-field input {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  color: var(--ink);
   display: block;
-  font: inherit;
   font-size: 12px;
   letter-spacing: normal;
   margin-top: 7px;
@@ -2050,17 +2126,12 @@ fieldset.control-section .road-options {
 
 .font-select-field select {
   appearance: none;
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  color: var(--ink);
   display: block;
-  font: inherit;
   font-size: 11px;
   font-weight: 520;
   min-width: 0;
   overflow: hidden;
-  padding: 9px 32px 9px 10px;
+  padding: 0 26px 0 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
@@ -2121,12 +2192,8 @@ fieldset.control-section .road-options {
 }
 
 .tray-label-position-field select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
   font-weight: 520;
-  padding: 9px 10px;
+  padding: 0 26px 0 10px;
 }
 
 .tray-label-position-field select:focus-visible {
@@ -2509,19 +2576,32 @@ fieldset.control-section .road-options {
 }
 
 .marker-kind-buttons button {
-  background: transparent;
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
   color: var(--ink);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
   font-weight: 700;
+  min-height: var(--control-height);
   padding: 9px;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
 
-.marker-kind-buttons button.active {
-  background: var(--ink);
-  color: white;
+.marker-kind-buttons button:hover {
+  background: var(--field);
+  border-color: var(--moss);
+}
+
+/* Which marker the next map click will place. Both spellings: the panel
+   sets aria-pressed, and `.active` is kept for anything still using it. */
+.marker-kind-buttons button.active,
+.marker-kind-buttons button[aria-pressed="true"] {
+  background: var(--moss);
+  border-color: var(--moss);
+  color: #fff;
 }
 
 .marker-type-groups {
@@ -2529,18 +2609,43 @@ fieldset.control-section .road-options {
   gap: 12px;
 }
 
+/* Each marker kind is its own card, told apart by an accent stripe down
+   its left edge and repeated on its rows. The paper-map palette, used at
+   full strength here because these are the only saturated marks on the
+   page. */
 .marker-type-group {
+  --marker-accent: var(--moss);
+  background: var(--panel);
   border: 1px solid var(--line);
+  border-left: 3px solid var(--marker-accent);
   display: grid;
   gap: 10px;
-  padding: 10px;
+  padding: 10px 10px 12px;
+}
+
+.marker-type-building {
+  --marker-accent: #8a6a4a;
+}
+
+.marker-type-dot {
+  --marker-accent: var(--clay);
+}
+
+.marker-type-flag {
+  --marker-accent: #3f6f8b;
+}
+
+.marker-type-label {
+  --marker-accent: var(--moss);
 }
 
 .marker-type-heading {
   align-items: center;
+  border-bottom: 1px solid var(--line);
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  padding-bottom: 8px;
 }
 
 .marker-type-heading > div {
@@ -2561,9 +2666,9 @@ fieldset.control-section .road-options {
 
 .marker-type-heading > span {
   align-items: center;
-  background: var(--paper-deep);
+  background: var(--marker-accent, var(--paper-deep));
   border-radius: 999px;
-  color: var(--muted);
+  color: #fff;
   display: inline-flex;
   font-size: 9px;
   font-weight: 700;
@@ -2598,25 +2703,55 @@ fieldset.control-section .road-options {
 }
 
 .marker-list li {
-  align-items: center;
+  align-items: end;
+  background: var(--field);
   border: 1px solid var(--line);
   display: grid;
-  gap: 6px;
+  gap: 6px 8px;
   grid-template-columns:
     minmax(100px, 1fr) minmax(110px, 0.8fr) minmax(160px, 1.2fr)
     auto;
-  padding: 7px;
+  padding: 8px 8px 8px 34px;
+  position: relative;
+}
+
+/* Banding, so a long list reads as separate rows rather than one field of
+   boxes. */
+.marker-list li:nth-child(even) {
+  background: var(--paper-deep);
+}
+
+.marker-list li:hover {
+  border-color: var(--marker-accent, var(--line-strong));
+}
+
+.marker-list li:focus-within {
+  border-color: var(--marker-accent, var(--moss));
+  box-shadow: var(--focus-ring);
+}
+
+/* Which marker this row is — the same number its coordinate labels use. */
+/* Out of the grid flow on purpose. As a grid item it would take a column,
+   and every row a marker wraps onto — coordinates, actions, a kind's own
+   settings — would auto-place into that column and collapse. */
+.marker-row-index {
+  background: var(--marker-accent, var(--moss));
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  left: 8px;
+  line-height: 20px;
+  min-width: 20px;
+  position: absolute;
+  text-align: center;
+  top: 8px;
 }
 
 .marker-list input,
 .marker-list select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
   font-size: 10px;
   min-width: 0;
-  padding: 7px;
+  padding: 0 24px 0 8px;
 }
 
 .marker-name-field {
@@ -2642,14 +2777,16 @@ fieldset.control-section .road-options {
 
 .marker-coordinates label {
   color: var(--muted);
-  font-size: 7px;
+  display: grid;
+  font-size: 9px;
   font-weight: 700;
+  gap: 4px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .marker-coordinates input {
   display: block;
-  margin-top: 2px;
   width: 100%;
 }
 
@@ -2660,12 +2797,15 @@ fieldset.control-section .road-options {
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
 }
 
-.marker-label-fields > label:not(.font-select-field) {
+/* Plain "label / field / unit" rows only. A range field brings its own
+   layout — label left, value right, slider under — and forcing it into
+   these three columns ran its label and its value together. */
+.marker-label-fields > label:not(.font-select-field, .range-field) {
   align-items: center;
   color: var(--muted);
   display: grid;
   font-size: 8px;
-  gap: 4px;
+  gap: 6px;
   grid-template-columns: auto minmax(70px, 1fr) auto;
 }
 
@@ -2689,9 +2829,29 @@ fieldset.control-section .road-options {
   gap: 5px;
 }
 
-.marker-actions button.active {
-  background: var(--ink);
-  color: white;
+/* Buttons that sit in a row beside fields share the field's height, so the
+   row has one baseline top and bottom instead of three. */
+.marker-actions button {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+  height: var(--control-height);
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.marker-actions button:hover {
+  border-color: var(--moss);
+}
+
+.marker-actions button.active,
+.marker-actions button[aria-pressed="true"] {
+  background: var(--moss);
+  border-color: var(--moss);
+  color: #fff;
 }
 
 .marker-template-toggle {
@@ -2703,6 +2863,7 @@ fieldset.control-section .road-options {
 }
 
 .road-detail-field {
+  align-content: start;
   color: var(--muted);
   display: grid;
   font-size: 9px;
@@ -2712,12 +2873,8 @@ fieldset.control-section .road-options {
 }
 
 .road-detail-field select {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font: inherit;
   font-size: 11px;
-  padding: 10px;
+  padding: 0 26px 0 10px;
   text-transform: none;
 }
 
@@ -2899,14 +3056,9 @@ fieldset.control-section .road-options {
 }
 
 .piece-custom select {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  color: var(--ink);
   display: block;
-  font: inherit;
   margin-top: 6px;
-  padding: 9px;
+  padding: 0 26px 0 9px;
   width: 100%;
 }
 
@@ -3541,4 +3693,75 @@ fieldset.control-section .road-options {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.filament-order {
+  border: 1px solid var(--line);
+  margin-top: 10px;
+  padding: 9px;
+}
+
+.filament-order legend {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.filament-order-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.filament-order-list li {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 26px 18px minmax(0, 1fr) auto auto;
+}
+
+.filament-number {
+  font:
+    600 10px/1.2 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.filament-swatch {
+  border: 1px solid var(--line);
+  display: inline-block;
+  height: 16px;
+  width: 16px;
+}
+
+.filament-label {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filament-order-list button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.filament-order-list button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.filament-order small {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  line-height: 1.45;
 }

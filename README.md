@@ -89,8 +89,8 @@ manifest in this tab.*
 ![A generated Mount Rainier color 3MF opened in Bambu Studio](docs/images/toposaic-3mf-bambu-studio.jpg)
 
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
-road, and building materials ready for a color print. Bambu Studio and
-OrcaSlicer load the palette colors as filament assignments.*
+road, and building materials ready for a color print. See
+[Printing in color](#printing-in-color) for how each slicer takes the palette.*
 
 ## Version 0.5 highlights
 
@@ -273,15 +273,9 @@ crosses the area, it still uses paths and trails as a fallback. Rivers, streams,
 canals, and mapped water areas use the same vector path so they stay smooth and
 flush with the terrain. Building footprints keep
 their straight mapped edges, with dense local mesh detail along each wall
-instead of a blocky whole-map sampling edge. The 3MF stores standard triangle
-color properties, and an Output-tab style picker sets what else it carries.
-The default "Color project" style also embeds filament colors, purge settings,
-and OrcaSlicer/Bambu face-paint codes, so those slicers open the file as a
-project with colors set up in one click — importing printer, material, and
-process presets with it. "Painted colors" keeps the face-paint codes but skips
-the embedded settings, so opening the model never touches slicer presets.
-"Geometry only" drops the paint codes too and writes a plain standards-based
-3MF for other tools.
+instead of a blocky whole-map sampling edge. An Output-tab style picker sets
+how the 3MF states its colors; see [Printing in color](#printing-in-color)
+for which style suits which slicer and how each import goes.
 Roads also rise by one configurable print-layer height, which defaults to 0.2
 mm. Road width starts at 0.7 mm and can thin automatically in dense road
 networks without dropping any selected road class. Roads tagged as bridges in
@@ -363,9 +357,12 @@ the model spec, so saved setups and exported setup files carry them. Files are
 parsed in the browser; tracks longer than 20,000 points are thinned on import,
 and a model holds up to 20 trails. Filament slots are packed, not reserved:
 the 3MF carries a color for each feature the model actually contains and
-nothing for the rest, so folding the rail and lift layers into the roads and
-importing no trails gives exactly the six-color output as before, and each
-extra layer that has something to draw adds exactly one filament.
+nothing for the rest, and each extra layer that has something to draw adds
+exactly one filament. That applies to the base colors too — a wilderness map
+with no water, roads, or buildings asks for none of the three — and to every
+other file in the download: a tray asks for its rim, contour, and label
+colors, a wall-mount bracket for the one it prints in. Two features set to
+the same color share a slot, since no slicer merges them for you.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.
@@ -405,6 +402,57 @@ work in order. No more than eight piece meshes stay in memory at once. Set
 ```bash
 cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 ```
+
+## Printing in color
+
+The Output tab offers three 3MF styles. Each states the model's colors one
+way, matched to how the slicers read them; the full findings live in
+[docs/slicer-3mf-import.md](docs/slicer-3mf-import.md).
+
+| Style | Carries | For |
+| --- | --- | --- |
+| Color project (default) | Standard color group, paint codes, filament settings | Bambu Studio and OrcaSlicer |
+| Painted colors | Paint codes only | A pre-painted model for OrcaSlicer |
+| Geometry only | Standard color group only | Every other 3MF tool |
+
+The Colors tab picks the filament preset each slot names — Generic PLA,
+Bambu PLA Basic, PolyLite PLA, or PolyTerra PLA — and shows which filament
+number each layer prints from. Reorder the layers there to line the numbers
+up with the spools already in the printer. Layers set to one color share a
+number, and a layer the map turns out to lack gives its number up.
+
+### Bambu Studio
+
+Bambu does not apply another program's embedded settings. Colors arrive
+through its "Standard 3mf Import color" dialog instead, which opens for any
+color 3MF it did not write:
+
+1. Open or import the color project 3MF.
+2. In the dialog, click **Color match**, check the mapping, and click OK.
+   The palette lands on filaments you already have, and none are added.
+3. Avoid **Append**, and check where the mapping points before OK — the
+   dialog stages one new filament per color by default, and every filament
+   Bambu adds is a copy of the last one in your list, whatever its material.
+   The copies stay in the app from session to session.
+
+If your filament list already holds stacks of same-colored "Generic TPU"
+entries, earlier imports appended them; delete them once and they stay gone.
+
+### OrcaSlicer
+
+Orca applies the embedded settings, so there are two clean workflows:
+
+- **Open the color project 3MF as a project.** The filament list becomes
+  exactly the Colors-tab palette, each slot on the preset the Colors tab
+  names.
+- **Import a painted-colors 3MF** into a project you have already set up.
+  Nothing in the file touches your presets: each layer prints from the
+  filament number the Colors tab shows, so load spools in that order first.
+
+### Other tools
+
+Geometry only writes a plain standards-based 3MF: the color group and
+nothing vendor-specific.
 
 ## Requirements
 

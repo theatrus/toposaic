@@ -342,6 +342,32 @@ test("switches between the reflowed control panels", async ({ page }) => {
       }),
     ).toBeVisible();
   }
+  const filamentPreset = printColors.getByLabel("Filament preset");
+  await expect(filamentPreset).toHaveValue("generic_pla");
+  await filamentPreset.selectOption("polyterra_pla");
+  await expect(filamentPreset).toHaveValue("polyterra_pla");
+  await filamentPreset.selectOption("generic_pla");
+  const filamentOrder = printColors.getByRole("group", {
+    name: "Output filament order",
+  });
+  const firstRow = filamentOrder.getByRole("listitem").first();
+  await expect(firstRow).toContainText("F1");
+  await expect(firstRow).toContainText("Rock");
+  await expect(
+    firstRow.getByRole("button", { name: "Move Rock earlier" }),
+  ).toBeDisabled();
+  await filamentOrder
+    .getByRole("button", { name: "Move Forest earlier" })
+    .click();
+  await expect(filamentOrder.getByRole("listitem").first()).toContainText(
+    "Forest",
+  );
+  await filamentOrder
+    .getByRole("button", { name: "Move Forest later" })
+    .click();
+  await expect(filamentOrder.getByRole("listitem").first()).toContainText(
+    "Rock",
+  );
   await expect(
     printColors.getByRole("textbox", { name: "Forest color" }),
   ).toHaveValue("#28543A");
@@ -512,9 +538,7 @@ test("switches between the reflowed control panels", async ({ page }) => {
   const threeMfStyle = page.getByLabel("3MF style");
   await expect(threeMfStyle).toHaveValue("project");
   await expect(
-    page.getByText(
-      /OrcaSlicer and Bambu\s+Studio import the file as a project/,
-    ),
+    page.getByText(/carries its colors for both slicers/),
   ).toBeVisible();
   await threeMfStyle.selectOption("painted");
   await expect(threeMfStyle).toHaveValue("painted");

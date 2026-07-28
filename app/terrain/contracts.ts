@@ -43,6 +43,20 @@ export type MapMarker = {
   } | null;
 };
 
+// The backend's surface classes, spelled the way its serializer does.
+export type SurfaceClassKey =
+  | "rock"
+  | "forest"
+  | "snow"
+  | "water"
+  | "road"
+  | "building"
+  | "trail"
+  | "rail"
+  | "aerial"
+  | "marker"
+  | "route_trail";
+
 export type GenerationSpec = {
   center_lat: number;
   center_lon: number;
@@ -135,6 +149,17 @@ export type GenerationSpec = {
   color_output: {
     enabled: boolean;
     threemf_style: "painted" | "project" | "geometry";
+    // The slicer filament preset every slot of a "project" 3MF names. Left
+    // unnamed, OrcaSlicer and Bambu Studio pick a material themselves.
+    filament_profile:
+      | "generic_pla"
+      | "bambu_pla_basic"
+      | "polylite_pla"
+      | "polyterra_pla";
+    // The order surface classes take filament slots. Classes left out
+    // follow in the backend's fixed class order; empty means that fixed
+    // order alone. Changes slot numbers only, never which classes print.
+    filament_order: SurfaceClassKey[];
     forest_color: string;
     rock_color: string;
     snow_color: string;
