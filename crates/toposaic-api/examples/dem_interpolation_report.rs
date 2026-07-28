@@ -247,9 +247,7 @@ fn row_boundaries(
         .map(|row| {
             let v = row as f64 / (field.height - 1) as f64;
             let (latitude, _) = transform.coordinate_at_uv(0.5, v);
-            let latitude = latitude
-                .clamp(-85.051_128_78, 85.051_128_78)
-                .to_radians();
+            let latitude = latitude.clamp(-85.051_128_78, 85.051_128_78).to_radians();
             let y = (1.0 - (latitude.tan() + 1.0 / latitude.cos()).ln() / std::f64::consts::PI)
                 / 2.0
                 * f64::from(1_u32 << zoom)
