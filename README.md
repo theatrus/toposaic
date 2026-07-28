@@ -172,25 +172,39 @@ road, and building materials ready for a color print. See
 - Mesh, tray, building, overlay, and export code now reject bad input without
   crashing. Generated models pass stricter manifold checks before release.
 
+## Solid terrain and piece layouts
+
+Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
+model with a straight outer edge and no puzzle seams. It keeps the full source
+sampling grid while limiting the single mesh to a safe detail level.
+
+Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
+pieces with narrow-necked, round puzzle knobs like a standard jigsaw. The model
+controls also set the minimum solid thickness under the lowest terrain point.
+
+## Display tray
+
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,
 and longitude in smooth vector letterforms. The coordinates carry no more
-precision than the map they name can support — no finer than a twentieth of
-its width, so an eighty-kilometre view reads 46.85N and a two-kilometre one
+precision than the map they name can support — no finer than a twentieth of its
+width, so an eighty-kilometre view reads 46.85N and a two-kilometre one
 46.8523N rather than putting eleven metres of false precision on every base.
 Controls set the tray clearance, rim, floor, line count, text font, text
 height, text position, and three print colors; the label and the contour lines
-can each be left out for a plainer tray. Bundled Atkinson
-Hyperlegible, Noto Sans CJK, and B612 Mono fonts provide clear sans, Noto sans,
-and technical mono choices. They keep labels stable on every OS, preserve case,
-and support Japanese as well as Latin, Cyrillic, and Vietnamese text. All three
-fonts remain under their included SIL Open Font licenses.
+can each be left out for a plainer tray. Bundled Atkinson Hyperlegible, Noto
+Sans CJK, and B612 Mono fonts provide clear sans, Noto sans, and technical mono
+choices. They keep labels stable on every OS, preserve case, and support
+Japanese as well as Latin, Cyrillic, and Vietnamese text. All three fonts
+remain under their included SIL Open Font licenses.
 
 Tray-retention controls add a fitted pin beneath each puzzle piece, or each
 section of a solid model, so a completed puzzle stays in an upright tray. Pin
 diameter, height, and fit clearance are adjustable. Split trays move pins away
 from their joins and give each solid-model section its own mating socket.
+
+## Wall mounting
 
 Wall-mount controls cut blind straight-pin sockets, angled-pin sockets, or a
 French-cleat receiver into the flat back. Every wall mount also cuts a visible
@@ -198,8 +212,8 @@ rectangular pocket swept over the wall plate's full entry-to-lock travel.
 French cleats are the recommended option: they spread the load across the full
 tile or display base and include matching wall hardware and an alignment
 spacer. French-cleat travel grows with slot height. Terrain targets put that
-pocket in one full-tile layout across the assembled puzzle or solid model;
-each puzzle piece receives only the part of the shared cut that crosses it.
+pocket in one full-tile layout across the assembled puzzle or solid model; each
+puzzle piece receives only the part of the shared cut that crosses it.
 Display-base targets put the layout in the base. Puzzle-retention pins stay per
 piece and never add wall pockets to the terrain. The French-cleat receiver has
 a lower entry box: set it over the wall cleat, then slide it toward map north
@@ -221,19 +235,10 @@ pin or cleat enters the model. Wall offset sets the finished gap for an uneven
 wall; TopoSaic derives the hidden pocket from the full plate thickness minus
 that offset. It reports when the chosen minimum piece height or base floor is
 too thin and gives the required height. It never raises that height itself.
-French-cleat jobs also include a thin
-alignment spacer with matching screw pilots. Print one per mounted output and
-place the frames edge-to-edge to align terrain tiles, split bases, or a full
-super-tile panel before removing the frames and installing the cleats.
-
-Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
-model with a straight outer edge and no puzzle seams. It keeps the full source
-sampling grid while limiting the single mesh to a safe detail level.
-
-Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
-pieces with narrow-necked, round puzzle knobs like a standard jigsaw.
-The model controls also set the minimum solid thickness under the lowest
-terrain point.
+French-cleat jobs also include a thin alignment spacer with matching screw
+pilots. Print one per mounted output and place the frames edge-to-edge to align
+terrain tiles, split bases, or a full super-tile panel before removing the
+frames and installing the cleats.
 
 ## Super-tile mode
 
@@ -241,10 +246,10 @@ Super-tile mode makes terrain sets larger than one printer's build plate. The
 map draws the full grid before export. The chosen point can mark the top-left
 tile or the center tile; center anchoring uses odd row and column counts so one
 real tile stays at the chosen point. A grid can contain up to 12×12 print
-passes. Each terrain tile gets its own color 3MF, while every tile uses the same
-elevation datum and vertical scale. Straight tile bounds keep the grid aligned.
-Optional external tabs and sockets join shared edges, and the full set keeps a
-flat outside border.
+passes. Each terrain tile gets its own color 3MF, while every tile uses the
+same elevation datum and vertical scale. Straight tile bounds keep the grid
+aligned. Optional external tabs and sockets join shared edges, and the full set
+keeps a flat outside border.
 
 The tray follows the same grid. TopoSaic makes one outer frame, then splits it
 into matching printable tray parts. Joined inner edges have no walls. Each part
@@ -255,8 +260,10 @@ framed tray.
 North, south, east, and west buttons move the selection by one full tile. The
 first move locks the elevation datum and vertical scale, so the same real
 elevation prints at the same Z height on each tile. If a later tile drops below
-that datum, TopoSaic warns that the shared datum must move down and that earlier
-tiles must be regenerated.
+that datum, TopoSaic warns that the shared datum must move down and that
+earlier tiles must be regenerated.
+
+## Elevation and mesh detail
 
 The elevation provider reads Mapzen Terrarium tiles by default. A Mapterhorn
 option uses 512 px WebP Terrarium tiles with regional elevation data up to zoom
@@ -268,159 +275,6 @@ Between tile readings the surface follows a Catmull-Rom curve on the lattice of
 the tiles that answered, clamped to the readings around it. Close views ask for
 more samples than the source holds, and a straight-line blend would print those
 readings as flat pixel-sized facets hinged along the tile grid.
-The service caches elevation, ESA WorldCover, and OpenStreetMap input under the
-operating system's user cache directory. OpenStreetMap entries keep the raw
-response, so width, density, color, and visibility changes reuse the same
-download.
-
-For uncached requests, the service tries a second public Overpass instance when
-the first rejects or cannot serve the request. If both fail, generation
-continues without that OSM layer. WorldCover water and terrain output remain
-available. Concurrent jobs share each cache fill, and the service tries the last
-working public instance first on its next request. It retries a failed fetch
-once and rejects HTTP 200 responses that contain an Overpass timeout remark, so
-it never caches a partial building set. Set `OVERPASS_BASE_URL` to use one
-specific Overpass instance.
-
-Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
-maps tree cover, bare ground, snow or ice, and permanent water to editable
-forest, rock, snow, and water colors. Terrain class borders are smoothed by
-default: forest, rock, and water edges bend into curves drawn from the source
-pixels on their true 10 m lattice. Smoothing gates itself by scale and runs
-only where the model samples each 10 m cell at least one and a half times —
-the close views where single cells show as blocks. Wider views sample the
-land cover more coarsely than the source does, so smoothing there would blur
-real data; it stays off and the map keeps the source resolution, which the
-listed data sources say outright. Switch the setting to blocky to keep the
-native 10 m cells at every span. Expert sliders set how far smoothed borders
-bend (in 10 m cells) and how strongly staircase noise is damped at the cost
-of single-cell detail. Color mode also keeps forest off steep rock and snow off
-sheer faces by default, since WorldCover bleeds tree cover and snow onto
-cliff walls: forest above an adjustable limit (55° to start) prints as rock —
-or as snow above the snowline, if chosen — and snow above its own limit
-(65° to start) prints as rock, even snow the forest gate just made. It also
-reads routes from OpenStreetMap
-through Overpass and draws them as smooth, print-safe vector lines. Route detail
-can stop at major roads, add minor roads, add local streets, or include paths
-and trails. Automatic mode includes more classes as the ground span shrinks,
-including streets, paths, and trails at 2 km or less. If no selected road
-crosses the area, it still uses paths and trails as a fallback. Rivers, streams,
-canals, and mapped water areas use the same vector path so they stay smooth and
-flush with the terrain. Building footprints keep
-their straight mapped edges, with dense local mesh detail along each wall
-instead of a blocky whole-map sampling edge. An Output-tab style picker sets
-how the 3MF states its colors; see [Printing in color](#printing-in-color)
-for which style suits which slicer and how each import goes.
-Roads also rise by one configurable print-layer height, which defaults to 0.2
-mm. Road width starts at 0.7 mm and can thin automatically in dense road
-networks without dropping any selected road class. Roads tagged as bridges in
-OpenStreetMap interpolate a deck between
-their DEM-height abutments instead of dropping into the ravine or water below.
-Untagged roads still follow the terrain, and `layer=*` is not treated as a
-height. OpenStreetMap water can be disabled without hiding WorldCover water.
-The waterway coverage cutoff always keeps rivers and canals, then keeps the
-longest streams until their estimated printed area reaches the chosen share of
-the model. Set it to 0% for major waterways only or 100% for every mapped
-stream. Mapped water areas do not use this cutoff.
-STL files stay single-color but retain the raised road geometry.
-
-Railways, aerial lifts, and ferries are separate layers, each with its own
-Overpass query and its own cache, so switching one never re-downloads roads
-and never re-downloads the others. The railway layer covers heavy rail, light rail,
-metros, trams, narrow gauge, funiculars, monorails, and miniature and
-preserved lines; the aerialway layer covers cable cars, gondolas, mixed
-lifts, chair lifts, drag lifts, T-bars, platters, rope tows, and magic
-carpets. A chairlift up a ski slope and a mainline railway are different
-features, so a ski map can print the lifts without the trains and a city map
-the trains without the lifts. Line width scales with the type, from a
-full-width mainline formation down to a rope-tow cable. Tunnels vanish, as
-they should, and that takes most metros with them; railway bridges and
-viaducts get the same interpolated deck as road bridges.
-
-By default both layers draw in a color of their own — a steel blue-grey for
-railways, a signal violet for lifts — because a railway is not a road and a
-chair lift is neither, and the map is worth more when it says so. Each costs
-exactly one filament slot, and only when the mapped area actually has that
-kind of line: the 3MF emits colors for the features the model really
-contains, so a city with no cable cars is never asked for a cable-car spool,
-and nothing is ever reserved for a layer that draws nothing.
-
-If you would rather spend the spools elsewhere, either layer can be folded in
-instead. "Draw with roads" paints it in the route color at the route width, so
-it still shows up without adding a filament. The lift layer has a third
-choice, "Draw with railways", which folds lifts into the railway layer so the
-two share one color; with the railway layer switched off, that falls back to
-the road color rather than making an enabled layer disappear.
-
-Ferries are a third layer of the same shape: every way OpenStreetMap tags
-`route=ferry`, drawn across the water as a raised line like a road, in a deep
-teal of its own or folded into the roads. It is on by default and, like the
-others, costs a filament only where the map really has a crossing — an inland
-map never sees it. Ferries carry none of the rail family's other machinery:
-there is no width-by-type, because a crossing has no gauge, and no history
-setting, because OpenStreetMap has no convention of disused ferry routes. Nor
-are there bridges or tunnels to interpolate; a crossing is on the water for
-its whole length.
-
-Out-of-service lines are a setting, not a rule. "Operational" is the default
-and draws running lines only. "Disused" adds track and lift lines still in
-place but out of use — the rails, ties, ballast, cable, and pylons are all
-still there. "Abandoned" adds those plus lines whose rails have been lifted
-but whose formation is still the most legible thing in the landscape:
-embankments, cuttings, a dead-straight trackbed, the cleared swath of an old
-lift line. Out-of-service lines print thinner than running ones, and lifted
-formations thinner again — a scar, not a track. Both encodings OpenStreetMap
-uses are read, whether the lifecycle tag sits beside the railway tag or
-replaces it. Lines tagged razed, dismantled, demolished, removed, or historic
-are never drawn at any setting, because nothing is left on the ground to
-print; neither are proposed or under-construction lines, because nothing is
-there yet. The setting is part of the download cache key, so asking for
-abandoned lines fetches them rather than serving a filtered download. One
-setting covers both layers.
-
-The Surface tab switches railways and lifts on and off on their own, apart
-from roads and from each other: streets can print without rails, and rails
-without streets. Each toggle carries its own style picker, and both start on
-"Own color": railways choose between that and "Draw with roads", lifts add
-"Draw with railways". The color swatch and width slider show under "Own
-color" and hide when a layer is folded into another, since that layer's
-values apply instead. One
-"Railway and lift history" picker sits below both toggles and governs both,
-and shows whenever either layer is on. The 3D legend names whatever the
-model actually shows: a layer drawn in its own color gets its own entry,
-and a layer that borrowed another's color is named by that entry instead —
-so lifts following separately colored railways appear under Rail, and
-either layer drawn with roads appears under Route, whether or not roads
-themselves are switched on.
-
-Hikers can import their own routes from GPX or KML files on the Surface tab.
-Each track, route, LineString, or gx:Track becomes one trail, named from the
-file, drawn on the model as a raised vector line like a road, and printed in
-its own seventh color (a high-vis magenta to start). Trail width has its own
-slider, trails show on the map preview and in the 3D legend, and they live in
-the model spec, so saved setups and exported setup files carry them. Files are
-parsed in the browser; tracks longer than 20,000 points are thinned on import,
-and a model holds up to 20 trails. Filament slots are packed, not reserved:
-the 3MF carries a color for each feature the model actually contains and
-nothing for the rest, and each extra layer that has something to draw adds
-exactly one filament. That applies to the base colors too — a wilderness map
-with no water, roads, or buildings asks for none of the three — and to every
-other file in the download: a tray asks for its rim, contour, and label
-colors, a wall-mount bracket for the one it prints in. Two features set to
-the same color share a slot, since no slicer merges them for you.
-
-A piece's side wall is a cut through the terrain, and it prints in the rock
-color to say so. The top of that wall is the exception: it carries the land
-cover from the surface directly above, so the terrain color bleeds over the rim
-and around the tabs rather than stopping dead at the top edge. Without it every
-piece wears a grey outline the moment the model is seen from anything but
-straight above, worst on hills, where the wall is tallest and faces you.
-"Edge color bleed" on the Surface tab sets how deep the band runs, from 0 to
-2 mm, and starts at 0.4 mm — two layers at the usual 0.2 mm layer height. Set
-it to a whole number of the layers you slice at, so the band ends on a layer
-boundary rather than part way through one. Zero turns it off and gives the
-plain rock wall. Where a wall is shorter than the bleed — a shallow piece over
-a deep wall mount — the surface color simply takes the whole of it.
 
 Mesh detail uses one budget across the assembled model, so adding puzzle pieces
 does not multiply the terrain density and solid terrain matches puzzle output.
@@ -431,31 +285,217 @@ Vector roads, waterways, and building edges add local points where they need
 them. Generated browser previews use up to 384 samples across the assembled
 map.
 
+The preview asks for a 64×64 real elevation sample after the location or ground
+span has been still for 450 ms. This gives the relief pane useful terrain
+before a full mesh job starts. It uses the same tile cache as generation. A
+completed job replaces it with the detailed generated preview. The preview is a
+lit 3D height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or
+use the plus and minus keys to zoom.
+
+## Land cover and color
+
+Color mode reads 10 m ESA WorldCover 2021 data through HTTP range requests. It
+maps tree cover, bare ground, snow or ice, and permanent water to editable
+forest, rock, snow, and water colors. Terrain class borders are smoothed by
+default: forest, rock, and water edges bend into curves drawn from the source
+pixels on their true 10 m lattice. Smoothing gates itself by scale and runs
+only where the model samples each 10 m cell at least one and a half times — the
+close views where single cells show as blocks. Wider views sample the land
+cover more coarsely than the source does, so smoothing there would blur real
+data; it stays off and the map keeps the source resolution, which the listed
+data sources say outright. Switch the setting to blocky to keep the native 10 m
+cells at every span. Expert sliders set how far smoothed borders bend (in 10 m
+cells) and how strongly staircase noise is damped at the cost of single-cell
+detail. Color mode also keeps forest off steep rock and snow off sheer faces by
+default, since WorldCover bleeds tree cover and snow onto cliff walls: forest
+above an adjustable limit (55° to start) prints as rock — or as snow above the
+snowline, if chosen — and snow above its own limit (65° to start) prints as
+rock, even snow the forest gate just made.
+
+An Output-tab style picker sets how the 3MF states its colors; see [Printing in
+color](#printing-in-color) for which style suits which slicer and how each
+import goes.
+
+## Roads and water
+
+Color mode also reads routes from OpenStreetMap through Overpass and draws them
+as smooth, print-safe vector lines. Route detail can stop at major roads, add
+minor roads, add local streets, or include paths and trails. Automatic mode
+includes more classes as the ground span shrinks, including streets, paths, and
+trails at 2 km or less. If no selected road crosses the area, it still uses
+paths and trails as a fallback.
+
+Roads also rise by one configurable print-layer height, which defaults to 0.2
+mm. Road width starts at 0.7 mm and can thin automatically in dense road
+networks without dropping any selected road class. Roads tagged as bridges in
+OpenStreetMap interpolate a deck between their DEM-height abutments instead of
+dropping into the ravine or water below. Untagged roads still follow the
+terrain, and `layer=*` is not treated as a height. STL files stay single-color
+but retain the raised road geometry.
+
+Rivers, streams, canals, and mapped water areas use the same vector path so
+they stay smooth and flush with the terrain. OpenStreetMap water can be
+disabled without hiding WorldCover water. The waterway coverage cutoff always
+keeps rivers and canals, then keeps the longest streams until their estimated
+printed area reaches the chosen share of the model. Set it to 0% for major
+waterways only or 100% for every mapped stream. Mapped water areas do not use
+this cutoff.
+
+## Railways, lifts, and ferries
+
+### The layers
+
+Railways, aerial lifts, and ferries are separate layers, each with its own
+Overpass query and its own cache, so switching one never re-downloads roads and
+never re-downloads the others. The railway layer covers heavy rail, light rail,
+metros, trams, narrow gauge, funiculars, monorails, and miniature and preserved
+lines; the aerialway layer covers cable cars, gondolas, mixed lifts, chair
+lifts, drag lifts, T-bars, platters, rope tows, and magic carpets. A chairlift
+up a ski slope and a mainline railway are different features, so a ski map can
+print the lifts without the trains and a city map the trains without the lifts.
+Line width scales with the type, from a full-width mainline formation down to a
+rope-tow cable. Tunnels vanish, as they should, and that takes most metros with
+them; railway bridges and viaducts get the same interpolated deck as road
+bridges.
+
+By default both layers draw in a color of their own — a steel blue-grey for
+railways, a signal violet for lifts — because a railway is not a road and a
+chair lift is neither, and the map is worth more when it says so. Each costs
+exactly one filament slot, and only when the mapped area actually has that kind
+of line: the 3MF emits colors for the features the model really contains, so a
+city with no cable cars is never asked for a cable-car spool, and nothing is
+ever reserved for a layer that draws nothing.
+
+### Sharing a color
+
+If you would rather spend the spools elsewhere, either layer can be folded in
+instead. "Draw with roads" paints it in the route color at the route width, so
+it still shows up without adding a filament. The lift layer has a third choice,
+"Draw with railways", which folds lifts into the railway layer so the two share
+one color; with the railway layer switched off, that falls back to the road
+color rather than making an enabled layer disappear.
+
+### Ferries
+
+Ferries are a third layer of the same shape: every way OpenStreetMap tags
+`route=ferry`, drawn across the water as a raised line like a road, in a deep
+teal of its own or folded into the roads. It is on by default and, like the
+others, costs a filament only where the map really has a crossing — an inland
+map never sees it. Ferries carry none of the rail family's other machinery:
+there is no width-by-type, because a crossing has no gauge, and no history
+setting, because OpenStreetMap has no convention of disused ferry routes. Nor
+are there bridges or tunnels to interpolate; a crossing is on the water for its
+whole length.
+
+### Lines out of service
+
+Out-of-service lines are a setting, not a rule. "Operational" is the default
+and draws running lines only. "Disused" adds track and lift lines still in
+place but out of use — the rails, ties, ballast, cable, and pylons are all
+still there. "Abandoned" adds those plus lines whose rails have been lifted but
+whose formation is still the most legible thing in the landscape: embankments,
+cuttings, a dead-straight trackbed, the cleared swath of an old lift line.
+Out-of-service lines print thinner than running ones, and lifted formations
+thinner again — a scar, not a track. Both encodings OpenStreetMap uses are
+read, whether the lifecycle tag sits beside the railway tag or replaces it.
+Lines tagged razed, dismantled, demolished, removed, or historic are never
+drawn at any setting, because nothing is left on the ground to print; neither
+are proposed or under-construction lines, because nothing is there yet. The
+setting is part of the download cache key, so asking for abandoned lines
+fetches them rather than serving a filtered download. One setting covers both
+layers.
+
+### Controls and the legend
+
+The Surface tab switches railways and lifts on and off on their own, apart from
+roads and from each other: streets can print without rails, and rails without
+streets. Each toggle carries its own style picker, and both start on "Own
+color": railways choose between that and "Draw with roads", lifts add "Draw
+with railways". The color swatch and width slider show under "Own color" and
+hide when a layer is folded into another, since that layer's values apply
+instead. One "Railway and lift history" picker sits below both toggles and
+governs both, and shows whenever either layer is on. The 3D legend names
+whatever the model actually shows: a layer drawn in its own color gets its own
+entry, and a layer that borrowed another's color is named by that entry instead
+— so lifts following separately colored railways appear under Rail, and either
+layer drawn with roads appears under Route, whether or not roads themselves are
+switched on.
+
+## Imported trails
+
+Hikers can import their own routes from GPX or KML files on the Surface tab.
+Each track, route, LineString, or gx:Track becomes one trail, named from the
+file, drawn on the model as a raised vector line like a road, and printed in
+its own seventh color (a high-vis magenta to start). Trail width has its own
+slider, trails show on the map preview and in the 3D legend, and they live in
+the model spec, so saved setups and exported setup files carry them. Files are
+parsed in the browser; tracks longer than 20,000 points are thinned on import,
+and a model holds up to 20 trails.
+
+## Filament slots and printed edges
+
+Filament slots are packed, not reserved: the 3MF carries a color for each
+feature the model actually contains and nothing for the rest, and each extra
+layer that has something to draw adds exactly one filament. That applies to the
+base colors too — a wilderness map with no water, roads, or buildings asks for
+none of the three — and to every other file in the download: a tray asks for
+its rim, contour, and label colors, a wall-mount bracket for the one it prints
+in. Two features set to the same color share a slot, since no slicer merges
+them for you.
+
+A piece's side wall is a cut through the terrain, and it prints in the rock
+color to say so. The top of that wall is the exception: it carries the land
+cover from the surface directly above, so the terrain color bleeds over the rim
+and around the tabs rather than stopping dead at the top edge. Without it every
+piece wears a grey outline the moment the model is seen from anything but
+straight above, worst on hills, where the wall is tallest and faces you. "Edge
+color bleed" on the Surface tab sets how deep the band runs, from 0 to 2 mm,
+and starts at 0.4 mm — two layers at the usual 0.2 mm layer height. Set it to a
+whole number of the layers you slice at, so the band ends on a layer boundary
+rather than part way through one. Zero turns it off and gives the plain rock
+wall. Where a wall is shorter than the bleed — a shallow piece over a deep wall
+mount — the surface color simply takes the whole of it.
+
+## Buildings
+
 Building mode reads OpenStreetMap footprints and raises them above the terrain.
 It uses tagged height first, then floor count, then an 8 m default. Its own Z
 scale controls vertical exaggeration against the map's plan scale, and that
 exaggeration eases back to true height as the ground span narrows: the plan
 scale itself grows as the view closes in, so a multiplier that makes a 100 m
-tower a readable 5 mm across 18 km would make a 200 m tower 72 mm across
-2.5 km — taller than the whole terrain relief. Close in, buildings are tall
-enough to read without help. Buildings can run with or without surface color
-output. In color output, roofs and walls
-use their own editable building material instead of inheriting the land-cover
-color beneath each footprint.
+tower a readable 5 mm across 18 km would make a 200 m tower 72 mm across 2.5 km
+— taller than the whole terrain relief. Close in, buildings are tall enough to
+read without help. Buildings can run with or without surface color output. In
+color output, roofs and walls use their own editable building material instead
+of inheriting the land-cover color beneath each footprint.
+
+Building footprints keep their straight mapped edges, with dense local mesh
+detail along each wall instead of a blocky whole-map sampling edge.
+
+## Map data, caching, and search
+
+The service caches elevation, ESA WorldCover, and OpenStreetMap input under the
+operating system's user cache directory. OpenStreetMap entries keep the raw
+response, so width, density, color, and visibility changes reuse the same
+download.
+
+For uncached requests, the service tries a second public Overpass instance when
+the first rejects or cannot serve the request. If both fail, generation
+continues without that OSM layer. WorldCover water and terrain output remain
+available. Concurrent jobs share each cache fill, and the service tries the
+last working public instance first on its next request. It retries a failed
+fetch once and rejects HTTP 200 responses that contain an Overpass timeout
+remark, so it never caches a partial building set. Set `OVERPASS_BASE_URL` to
+use one specific Overpass instance.
 
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
 are limited to one per second. Set `TOPOSAIC_GEOCODER_URL` to use another
-compatible service. Review the
-[public service policy](https://operations.osmfoundation.org/policies/nominatim/)
-before wider or commercial use.
+compatible service. Review the [public service
+policy](https://operations.osmfoundation.org/policies/nominatim/) before wider
+or commercial use.
 
-The preview asks for a 64×64 real elevation sample after the location or ground
-span has been still for 450 ms. This gives the relief pane useful terrain before
-a full mesh job starts. It uses the same tile cache as generation. A completed
-job replaces it with the detailed generated preview. The preview is a lit 3D
-height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or use the
-plus and minus keys to zoom.
+## Performance
 
 Mesh generation uses Rayon to build separate puzzle pieces and their STL files
 in parallel. It keeps 3MF archive writes, downloads, cache writes, and SQLite
