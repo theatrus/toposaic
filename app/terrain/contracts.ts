@@ -109,6 +109,7 @@ export type GenerationSpec = {
     enabled: boolean;
     individual_tiles: boolean;
     contours_enabled: boolean;
+    label_enabled: boolean;
     tray_color: string;
     contour_color: string;
     label_color: string;

@@ -152,9 +152,13 @@ road, and building materials ready for a color print. See
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
 flat well shows smooth, continuous equal-height contour lines as fine color
 inlays. Raised text on the front top lip shows the chosen place name, latitude,
-and longitude in smooth vector letterforms. Controls set the tray clearance,
-rim, floor, line count, text font, text height, text position, and three print
-colors; contour lines can also be left out for a simpler tray. Bundled Atkinson
+and longitude in smooth vector letterforms. The coordinates carry no more
+precision than the map they name can support — no finer than a twentieth of
+its width, so an eighty-kilometre view reads 46.85N and a two-kilometre one
+46.8523N rather than putting eleven metres of false precision on every base.
+Controls set the tray clearance, rim, floor, line count, text font, text
+height, text position, and three print colors; the label and the contour lines
+can each be left out for a plainer tray. Bundled Atkinson
 Hyperlegible, Noto Sans CJK, and B612 Mono fonts provide clear sans, Noto sans,
 and technical mono choices. They keep labels stable on every OS, preserve case,
 and support Japanese as well as Latin, Cyrillic, and Vietnamese text. All three

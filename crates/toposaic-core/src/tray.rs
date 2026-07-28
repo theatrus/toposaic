@@ -115,7 +115,11 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         .copied()
         .filter(|y| *y >= inner_y1)
         .collect::<Vec<_>>();
-    let label = tray_label(spec, outer_width, tray.rim_width_mm)?;
+    let label = if tray.label_enabled {
+        Some(tray_label(spec, outer_width, tray.rim_width_mm)?)
+    } else {
+        None
+    };
     let z_coordinates = [0.0, rim_z];
 
     let height_range = height_range_for_spec(spec, height_field);
@@ -336,7 +340,9 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
             );
         }
     }
-    label.add_embossed_shapes(&mut mesh, rim_z)?;
+    if let Some(label) = label {
+        label.add_embossed_shapes(&mut mesh, rim_z)?;
+    }
 
     Ok(mesh.finish("terrain-tray"))
 }
@@ -528,7 +534,7 @@ fn build_tray_segment(
         }
     }
 
-    if row == 0 {
+    if row == 0 && tray.label_enabled {
         let segment_width = maximum_x - minimum_x;
         let label_margin = 8.0_f32.min(segment_width * 0.2);
         let mut label = tray_label(
@@ -1421,8 +1427,9 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<Embos
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let latitude = coordinate_label(spec.center_lat, 'N', 'S');
-    let longitude = coordinate_label(spec.center_lon, 'E', 'W');
+    let decimals = coordinate_decimals(spec.ground_span_km);
+    let latitude = coordinate_label(spec.center_lat, decimals, 'N', 'S');
+    let longitude = coordinate_label(spec.center_lon, decimals, 'E', 'W');
     let text = format!("{place}  {latitude} {longitude}");
     let fonts = embossing_fonts(spec.tray.label_font)?;
     let metrics = text_metrics(&fonts, &text)?;
@@ -1449,12 +1456,31 @@ fn tray_label(spec: &GenerationSpec, width: f32, lip_depth: f32) -> Result<Embos
     })
 }
 
-fn coordinate_label(value: f64, positive: char, negative: char) -> String {
+fn coordinate_label(value: f64, decimals: usize, positive: char, negative: char) -> String {
     format!(
-        "{:.4}{}",
+        "{:.*}{}",
+        decimals,
         value.abs(),
         if value >= 0.0 { positive } else { negative }
     )
+}
+
+/// How many decimals a coordinate on the base is worth printing.
+///
+/// A fixed four put roughly eleven metres of precision on every base,
+/// whatever it showed — digits an eighty-kilometre map cannot support and
+/// nobody reads off a printed rim. The label is cut to no finer than a
+/// twentieth of the map's own width, which still names the centre well
+/// inside the model, and rounded to whole decimal places so the number
+/// stays a number a person can read back.
+fn coordinate_decimals(ground_span_km: f64) -> usize {
+    /// Metres per degree of latitude. Longitude narrows toward the poles,
+    /// but both halves of the label share one precision: a coordinate pair
+    /// written to two different widths reads as a mistake.
+    const METRES_PER_DEGREE: f64 = 111_320.0;
+    let tolerance_m = (ground_span_km * 1_000.0 * 0.05).max(f64::MIN_POSITIVE);
+    let decimals = (METRES_PER_DEGREE / tolerance_m).log10().ceil();
+    (decimals as i64).clamp(1, 4) as usize
 }
 
 #[cfg(test)]
@@ -2098,5 +2124,69 @@ mod tests {
             .map(|pair| pair[1] - pair[0])
             .fold(0.0, f32::max);
         assert!(largest <= 0.351);
+    }
+
+    /// A base's label is read off a printed rim, so it carries no more
+    /// precision than the map it names can support.
+    #[test]
+    fn base_coordinates_are_cut_to_the_scale_of_the_map() {
+        // A twentieth of the map's width, in whole decimal places.
+        assert_eq!(coordinate_decimals(80.0), 2);
+        assert_eq!(coordinate_decimals(18.0), 3);
+        assert_eq!(coordinate_decimals(2.0), 4);
+        // Never finer than four, however close the view.
+        assert_eq!(coordinate_decimals(0.25), 4);
+        assert_eq!(coordinate_decimals(0.01), 4);
+        // Never coarser as the map widens, and never below one place.
+        let mut previous = 5;
+        for span in [0.25, 1.0, 2.0, 6.0, 18.0, 40.0, 80.0, 500.0] {
+            let decimals = coordinate_decimals(span);
+            assert!(decimals <= previous, "{span} km rose to {decimals}");
+            assert!(decimals >= 1, "{span} km fell to {decimals}");
+            previous = decimals;
+        }
+
+        let mut spec = GenerationSpec {
+            width_mm: 180.0,
+            ground_span_km: 18.0,
+            ..GenerationSpec::default()
+        };
+        spec.tray.enabled = true;
+        let wide = tray_label(&spec, 180.0, 10.0).unwrap();
+        assert!(wide.text.contains("46.852N"), "{}", wide.text);
+        assert!(!wide.text.contains("46.8523N"), "{}", wide.text);
+
+        spec.ground_span_km = 2.0;
+        let close = tray_label(&spec, 180.0, 10.0).unwrap();
+        assert!(close.text.contains("46.8523N"), "{}", close.text);
+    }
+
+    /// A base can be left plain: with the label off nothing is embossed on
+    /// its rim, and the base is still watertight without it.
+    #[test]
+    fn a_base_can_be_printed_without_its_label() {
+        let mut spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        spec.tray.enabled = true;
+        // Contours are not what this is about, and they have their own
+        // watertightness trouble on a synthetic height field.
+        spec.tray.contours_enabled = false;
+        spec.place_name = "Mount Rainier".into();
+
+        let labelled = build_tray(&spec, None).unwrap();
+        spec.tray.label_enabled = false;
+        let plain = build_tray(&spec, None).unwrap();
+
+        assert!(
+            plain.triangles.len() < labelled.triangles.len(),
+            "the label's geometry should be gone: {} vs {}",
+            plain.triangles.len(),
+            labelled.triangles.len()
+        );
+        assert_watertight(&plain);
     }
 }

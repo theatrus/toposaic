@@ -1,9 +1,6 @@
 import type { GenerationSpec } from "../contracts";
 import { limitPlaceName } from "../config";
-import type {
-  UpdateGenerationSpec,
-  UpdateTray,
-} from "./mounting-types";
+import type { UpdateGenerationSpec, UpdateTray } from "./mounting-types";
 import { LabelFontSelect } from "./label-font-select";
 import { RangeField } from "./range-field";
 
@@ -48,43 +45,69 @@ export function DisplayBaseControls({
               }
             />
             <small>
-              Up to 48 characters. The tray adds the coordinates after this
-              name. Letter case and Japanese text are preserved.
+              Up to 48 characters. Letter case and Japanese text are preserved.
+              With the label on, the base carries this name and the coordinates
+              after it.
             </small>
           </label>
-          <LabelFontSelect
-            note="Bundled fonts keep the result the same on every OS."
-            onChange={(font) => updateTray("label_font", font)}
-            value={spec.tray.label_font}
-          />
-          <RangeField
-            label="Label height"
-            value={spec.tray.label_height_mm}
-            unit=" mm"
-            min={1.5}
-            max={10}
-            step={0.1}
-            onChange={(value) => updateTray("label_height_mm", value)}
-            note="Long labels shrink to fit the front lip."
-          />
-          <label className="tray-label-position-field">
-            <span>Label position</span>
-            <select
-              aria-label="Label position"
-              value={spec.tray.label_position}
+          <label className="option-toggle">
+            <input
+              aria-label="Emboss the label on the base"
+              type="checkbox"
+              checked={spec.tray.label_enabled}
               onChange={(event) =>
-                updateTray(
-                  "label_position",
-                  event.target.value as GenerationSpec["tray"]["label_position"],
-                )
+                updateTray("label_enabled", event.target.checked)
               }
-            >
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
-            <small>Place the full name and coordinate line on the lip.</small>
+            />
+            <span>
+              <strong>Embossed label</strong>
+              <small>
+                Raise the place name and its coordinates on the front lip. The
+                coordinates carry as many digits as the map&apos;s span
+                supports, and no more.
+              </small>
+            </span>
           </label>
+          {spec.tray.label_enabled && (
+            <>
+              <LabelFontSelect
+                note="Bundled fonts keep the result the same on every OS."
+                onChange={(font) => updateTray("label_font", font)}
+                value={spec.tray.label_font}
+              />
+              <RangeField
+                label="Label height"
+                value={spec.tray.label_height_mm}
+                unit=" mm"
+                min={1.5}
+                max={10}
+                step={0.1}
+                onChange={(value) => updateTray("label_height_mm", value)}
+                note="Long labels shrink to fit the front lip."
+              />
+              <label className="tray-label-position-field">
+                <span>Label position</span>
+                <select
+                  aria-label="Label position"
+                  value={spec.tray.label_position}
+                  onChange={(event) =>
+                    updateTray(
+                      "label_position",
+                      event.target
+                        .value as GenerationSpec["tray"]["label_position"],
+                    )
+                  }
+                >
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
+                <small>
+                  Place the full name and coordinate line on the lip.
+                </small>
+              </label>
+            </>
+          )}
           <label className="option-toggle">
             <input
               aria-label="Draw contour lines on tray"
@@ -158,16 +181,18 @@ export function DisplayBaseControls({
               <span>
                 <strong>Separate framed trays</strong>
                 <small>
-                  Make one complete tray per terrain tile instead of one
-                  joined mosaic tray.
+                  Make one complete tray per terrain tile instead of one joined
+                  mosaic tray.
                 </small>
               </span>
             </label>
           )}
           <p className="color-note">
-            The color 3MF prints the chosen tray details and the place name,
-            latitude, and longitude as raised shapes on the top front lip.
-            Mosaic trays follow the terrain grid and its shared-edge setting.
+            The color 3MF prints the chosen tray details
+            {spec.tray.label_enabled
+              ? ", and the place name, latitude, and longitude as raised shapes on the top front lip"
+              : ""}
+            . Mosaic trays follow the terrain grid and its shared-edge setting.
             The job also includes a plain STL.
           </p>
         </>
