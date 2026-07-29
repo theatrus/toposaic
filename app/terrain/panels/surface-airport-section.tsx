@@ -37,8 +37,29 @@ export function SurfaceAirportSection({
       </div>
       {aviation.aviation_enabled && (
         <>
+          <label className="road-detail-field">
+            Airport surface style
+            <select
+              aria-label="Airport surface style"
+              value={aviation.aviation_style}
+              onChange={(event) =>
+                updateColor(
+                  "aviation_style",
+                  event.target
+                    .value as GenerationSpec["color_output"]["aviation_style"],
+                )
+              }
+            >
+              <option value="separate">Own color</option>
+              <option value="follow_roads">Draw with roads</option>
+            </select>
+            <small>
+              A separate color uses a filament slot only where the map really
+              has pavement. Drawing with roads adds no slot.
+            </small>
+          </label>
           <div
-            className="road-options"
+            className="road-options bridge-options airport-groups"
             role="group"
             aria-label="Airport feature groups"
           >
@@ -51,7 +72,7 @@ export function SurfaceAirportSection({
                   updateColor("aviation_runways_enabled", event.target.checked)
                 }
               />
-              <span>Runways and airstrips</span>
+              <span>Runways</span>
             </label>
             <label className="color-toggle">
               <input
@@ -61,7 +82,7 @@ export function SurfaceAirportSection({
                   updateColor("aviation_taxiways_enabled", event.target.checked)
                 }
               />
-              <span>Taxiways and taxilanes</span>
+              <span>Taxiways</span>
             </label>
             <label className="color-toggle">
               <input
@@ -84,31 +105,11 @@ export function SurfaceAirportSection({
               <span>Helipads</span>
             </label>
             <small>
+              Runways cover airstrips and stopways, taxiways cover taxilanes.
               Each group is fetched only when it is on, and all of them share
               one color and one filament slot.
             </small>
           </div>
-          <label className="road-detail-field">
-            Airport surface style
-            <select
-              aria-label="Airport surface style"
-              value={aviation.aviation_style}
-              onChange={(event) =>
-                updateColor(
-                  "aviation_style",
-                  event.target
-                    .value as GenerationSpec["color_output"]["aviation_style"],
-                )
-              }
-            >
-              <option value="separate">Own color</option>
-              <option value="follow_roads">Draw with roads</option>
-            </select>
-            <small>
-              A separate color uses a filament slot only where the map really
-              has pavement. Drawing with roads adds no slot.
-            </small>
-          </label>
           <RangeField
             label="Airport surface height"
             value={aviation.aviation_height_mm}
@@ -142,7 +143,7 @@ export function SurfaceAirportSection({
             note="Ground span past which helipads are dropped before they are even requested."
           />
           {denseDetailDropped && aviation.aviation_helipads_enabled && (
-            <small className="road-options">
+            <small className="control-hint airport-note">
               This map spans {spec.ground_span_km} km, so helipads are being
               left out. Raise the cutoff to draw them anyway.
             </small>

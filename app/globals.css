@@ -2267,6 +2267,26 @@ fieldset.control-section .road-options {
   grid-column: 1 / -1;
 }
 
+/* Four aeroway toggles do not fit a third of the panel: the labels wrap
+   mid-phrase and the hint beside them is squeezed to a column of single
+   words. The group takes the whole row and lays the toggles out across it. */
+.surface-group > .airport-groups {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(120px, max-content));
+}
+
+.surface-group > .airport-groups > strong,
+.surface-group > .airport-groups > small {
+  grid-column: 1 / -1;
+}
+
+/* The cutoff notice belongs under the row it explains, not in the cell
+   beside the slider, where it reads as a fourth control. */
+.surface-group > .airport-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .surface-group-heading strong {
   display: block;
   font-size: 11px;

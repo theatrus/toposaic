@@ -30,24 +30,17 @@ test("airport surfaces are off until asked for, then reach the submitted spec", 
   });
   await expect(master).not.toBeChecked();
   expect(
-    await page.getByRole("checkbox", { name: "Runways and airstrips" }).count(),
+    await page.getByRole("checkbox", { name: "Runways" }).count(),
   ).toBe(0);
 
   await master.check();
-  for (const group of [
-    "Runways and airstrips",
-    "Taxiways and taxilanes",
-    "Aprons",
-    "Helipads",
-  ]) {
+  for (const group of ["Runways", "Taxiways", "Aprons", "Helipads"]) {
     await expect(page.getByRole("checkbox", { name: group })).toBeChecked();
   }
 
   // Each group switches independently.
   await page.getByRole("checkbox", { name: "Aprons" }).uncheck();
-  await expect(
-    page.getByRole("checkbox", { name: "Runways and airstrips" }),
-  ).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Runways" })).toBeChecked();
 
   // The Colors tab carries the pavement color and its filament slot.
   await page.getByRole("tab", { name: "Colors" }).click();
