@@ -265,24 +265,21 @@ earlier tiles must be regenerated.
 
 ### Vertical scale
 
-Two ways to say how tall the terrain prints, on the Model tab. **Overall
-height** — the default — fits the area's relief into the height you set, so the
-model fills its budget whatever the ground does. Two areas then print the same
-height, which hides how different they are, and two separately generated
-neighbours can step at the seam. **Multiplier** instead holds one vertical
-exaggeration and lets the height follow the terrain: a flat delta prints low, a
-mountain prints tall, and any two models made at the same multiplier are
-directly comparable — separately generated tiles included. Switching between
-them translates the value, so the model does not move; the panel shows whatever
-the current setting comes to in the other. Note that a whole mountain across a
-wide span is usually *compressed*, not exaggerated: Mount Rainier over 18 km at
+The Model tab sets how tall the terrain prints, two ways. **Overall height**,
+the default, fits the area's relief into the height you choose, so every area
+prints the same height whatever the ground does — and two tiles generated
+separately can step at the seam. **Multiplier** holds one vertical exaggeration
+instead and lets the height follow the terrain: a flat delta prints low, a
+mountain prints tall, and models made at the same multiplier compare directly,
+separate tiles included. Switching translates the value, so the model does not
+move, and each mode shows what the other would give. A mountain across a wide
+span is usually compressed rather than exaggerated: Mount Rainier over 18 km at
 28 mm of relief is about 0.8×.
 
-Height is measured from the area's lowest ground by default, which spends the
-whole height on the relief that is there. Sea level is the alternative every
-model shares without coordinating, and a set elevation names its own. No datum
-ever cuts terrain off below the base — one above the ground drops to the real
-minimum instead. A super-tile measures from the lowest ground across all its
+Height is measured from the area's lowest ground by default, which gives the
+relief the whole height. Sea level is shared by every model, and a set
+elevation names its own. No datum cuts terrain off below the base — one above
+the ground drops to the real minimum. A super-tile measures across all its
 tiles, as it always has.
 
 ## Elevation and mesh detail

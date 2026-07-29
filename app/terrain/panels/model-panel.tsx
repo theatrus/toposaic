@@ -371,7 +371,7 @@ export function ModelPanel({
                     }. The super-tile shares one height frame.`
                   : spec.height_mode === "multiplier"
                     ? "A fixed multiplier already matches separately generated neighbors."
-                    : "Auto height fits one tile; manual neighbors may form a step. A multiplier, or a locked height, keeps them level."}
+                    : "Auto height fits one tile; manual neighbors may form a step. A multiplier or locked height keeps them level."}
           </p>
           {adjacentMessage && (
             <p className="adjacent-message">{adjacentMessage}</p>
@@ -516,10 +516,9 @@ export function ModelPanel({
           <option value="multiplier">Multiplier · fixed exaggeration</option>
         </select>
         <small>
-          Fitting the height fills the model whatever the terrain does, so
-          two areas print the same height. A multiplier holds one vertical
-          scale instead and lets the height follow the ground, so separate
-          areas — and separately generated tiles — stay comparable.
+          Overall height prints every area the same height. A multiplier
+          holds one scale and lets the height follow the ground, so areas
+          and separate tiles compare.
         </small>
       </label>
       {spec.height_mode === "overall_height" ? (
@@ -550,10 +549,10 @@ export function ModelPanel({
             heightScaleReadout
               ? `This area prints about ${heightScaleReadout.height.toFixed(1)} mm tall.${
                   heightScaleReadout.height > 80
-                    ? " Taller than the usual 80 mm limit — check it fits your printer."
+                    ? " Past the usual 80 mm — check your printer fits it."
                     : ""
                 }`
-              : "The model's height follows the terrain; the height slider does not apply."
+              : "The height follows the terrain, so the height slider does not apply."
           }
         />
       )}
@@ -573,10 +572,9 @@ export function ModelPanel({
           <option value="custom">A set elevation</option>
         </select>
         <small>
-          Where the print&apos;s zero sits. The area&apos;s lowest ground
-          spends the whole height on the relief that is there; sea level is
-          shared by every model without coordinating. A super-tile measures
-          from the lowest ground across all its tiles.
+          Where the print&apos;s zero sits. The lowest ground gives the
+          relief the whole height; sea level is shared by every model. A
+          super-tile measures across all its tiles.
         </small>
       </label>
       {spec.datum_reference === "custom" && (
@@ -588,7 +586,7 @@ export function ModelPanel({
           max={5000}
           step={10}
           onChange={(value) => update("custom_datum_m", value)}
-          note="Ground below this keeps its relief — the datum drops to the real minimum rather than cutting terrain off under the base."
+          note="Ground below this keeps its relief: the datum drops to the real minimum instead of cutting terrain off."
         />
       )}
       <RangeField

@@ -331,6 +331,13 @@ impl DespikeReport {
 pub struct HeightFrame {
     pub datum_m: f32,
     pub metres_per_mm: f32,
+    /// The ground metres the print's relief covers. Carried rather than
+    /// recomputed as `metres_per_mm * relief_mm`: dividing to get the
+    /// scale and multiplying back does not round-trip exactly in f32, and
+    /// this is the number a setup saved years ago normalized against.
+    /// Keeping it verbatim is what makes an old spec regenerate to the
+    /// same bits.
+    span_m: f32,
 }
 
 impl HeightFrame {
@@ -343,10 +350,9 @@ impl HeightFrame {
         ((maximum_elevation_m - self.datum_m) / self.metres_per_mm).max(0.0)
     }
 
-    /// The span this frame occupies for a given print relief, which is
-    /// what the normalizer divides by.
-    fn span_for(&self, relief_mm: f32) -> f32 {
-        self.metres_per_mm * relief_mm
+    /// The span the normalizer divides by.
+    fn span(&self) -> f32 {
+        self.span_m
     }
 }
 
@@ -389,6 +395,7 @@ pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> Heigh
         return HeightFrame {
             datum_m,
             metres_per_mm,
+            span_m: metres_per_mm * spec.relief_mm,
         };
     }
     let (minimum, maximum) = field.elevation_bounds();
@@ -399,15 +406,24 @@ pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> Heigh
         DatumReference::SeaLevel => 0.0_f32.min(minimum),
         DatumReference::Custom => spec.height_scale.custom_datum_m.min(minimum),
     };
-    let metres_per_mm = match spec.height_scale.height_mode {
-        HeightMode::OverallHeight => (maximum - datum_m).max(1.0) / spec.relief_mm,
+    let (metres_per_mm, span_m) = match spec.height_scale.height_mode {
+        // The span is the primary quantity here — it is exactly what the
+        // auto-fit path has always normalized against — and the scale
+        // follows from it.
+        HeightMode::OverallHeight => {
+            let span_m = (maximum - datum_m).max(1.0);
+            (span_m / spec.relief_mm, span_m)
+        }
         HeightMode::Multiplier => {
-            metres_per_mm_for_exaggeration(spec, spec.height_scale.vertical_exaggeration)
+            let metres_per_mm =
+                metres_per_mm_for_exaggeration(spec, spec.height_scale.vertical_exaggeration);
+            (metres_per_mm, metres_per_mm * spec.relief_mm)
         }
     };
     HeightFrame {
         datum_m,
         metres_per_mm: metres_per_mm.max(f32::MIN_POSITIVE),
+        span_m,
     }
 }
 
@@ -417,7 +433,7 @@ pub(crate) fn height_range_for_spec(
 ) -> Option<(f32, f32)> {
     height_field.map(|field| {
         let frame = resolve_height_frame(spec, field);
-        (frame.datum_m, frame.span_for(spec.relief_mm))
+        (frame.datum_m, frame.span())
     })
 }
 
@@ -529,6 +545,35 @@ mod tests {
         assert!((held.metres_per_mm - fitted.metres_per_mm).abs() < 1e-4);
         assert_eq!(held.datum_m, fitted.datum_m);
         assert!((held.printed_relief_mm(40.0) - spec.relief_mm).abs() < 0.01);
+    }
+
+    /// The default frame must reproduce the old auto-fit span BIT for
+    /// bit, not merely to within a rounding error: a setup saved before
+    /// the height modes existed has to regenerate the same mesh. Dividing
+    /// by the relief to get a scale and multiplying it back does not
+    /// round-trip in f32 — 7 of these 80 combinations drift by an ulp —
+    /// so the frame carries the span it computed instead of recomputing
+    /// it.
+    #[test]
+    fn the_default_frame_reproduces_the_old_span_exactly() {
+        for relief_mm in [3.0f32, 7.0, 12.5, 28.0, 33.0, 47.0, 60.0, 80.0] {
+            for rise in [1.0f32, 2.5, 40.0, 137.3, 500.0, 1234.5, 3792.0, 8848.0] {
+                let spec = GenerationSpec {
+                    relief_mm,
+                    ..GenerationSpec::default()
+                };
+                let field = HeightField::new(2, 2, vec![0.0, rise, 0.0, rise], "t").unwrap();
+                let (old_minimum, old_span) = field.range();
+                let (minimum, span) =
+                    height_range_for_spec(&spec, Some(&field)).expect("a field was given");
+                assert_eq!(minimum, old_minimum, "datum moved at relief {relief_mm}");
+                assert_eq!(
+                    span.to_bits(),
+                    old_span.to_bits(),
+                    "span drifted at relief {relief_mm}, rise {rise}"
+                );
+            }
+        }
     }
 
     /// A whole mountain across a wide span prints COMPRESSED — Mount
