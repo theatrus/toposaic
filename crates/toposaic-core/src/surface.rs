@@ -110,6 +110,8 @@ pub struct SlopeGates {
     /// Demote snow steeper than this many degrees to rock. Applies after
     /// the forest gate, so it also gates forest just demoted to snow.
     pub snow_limit_degrees: Option<f32>,
+    /// Demote land-cover water steeper than this many degrees to rock.
+    pub water_limit_degrees: Option<f32>,
 }
 
 /// How many samples the steep-slope gates reclassified, split by the class
@@ -119,11 +121,12 @@ pub struct SlopeGateDemotion {
     pub forest_to_rock: usize,
     pub forest_to_snow: usize,
     pub snow_to_rock: usize,
+    pub water_to_rock: usize,
 }
 
 impl SlopeGateDemotion {
     pub fn total(self) -> usize {
-        self.forest_to_rock + self.forest_to_snow + self.snow_to_rock
+        self.forest_to_rock + self.forest_to_snow + self.snow_to_rock + self.water_to_rock
     }
 
     fn add(self, other: Self) -> Self {
@@ -131,6 +134,7 @@ impl SlopeGateDemotion {
             forest_to_rock: self.forest_to_rock + other.forest_to_rock,
             forest_to_snow: self.forest_to_snow + other.forest_to_snow,
             snow_to_rock: self.snow_to_rock + other.snow_to_rock,
+            water_to_rock: self.water_to_rock + other.water_to_rock,
         }
     }
 }
@@ -312,7 +316,10 @@ impl SurfaceField {
         if !ground_span_m.is_finite() || ground_span_m <= 0.0 {
             return SlopeGateDemotion::default();
         }
-        if gates.forest_limit_degrees.is_none() && gates.snow_limit_degrees.is_none() {
+        if gates.forest_limit_degrees.is_none()
+            && gates.snow_limit_degrees.is_none()
+            && gates.water_limit_degrees.is_none()
+        {
             return SlopeGateDemotion::default();
         }
         // The snowline comes from the classes before any demotion, so the
@@ -326,6 +333,9 @@ impl SurfaceField {
             .map(|degrees| degrees.to_radians().tan());
         let tan_snow_limit = gates
             .snow_limit_degrees
+            .map(|degrees| degrees.to_radians().tan());
+        let tan_water_limit = gates
+            .water_limit_degrees
             .map(|degrees| degrees.to_radians().tan());
         let width = self.width;
         let du = 1.0 / (width - 1) as f32;
@@ -346,6 +356,7 @@ impl SurfaceField {
                     let gated = match *class {
                         SurfaceClass::Forest => tan_forest_limit.is_some(),
                         SurfaceClass::Snow => tan_snow_limit.is_some(),
+                        SurfaceClass::Water => tan_water_limit.is_some(),
                         _ => false,
                     };
                     if !gated {
@@ -382,6 +393,16 @@ impl SurfaceField {
                         && tan_snow_limit.is_some_and(|limit| gradient > limit)
                     {
                         demoted.snow_to_rock += 1;
+                        *class = SurfaceClass::Rock;
+                    }
+                    // Water cannot climb a cliff. A sea is level and a lake
+                    // surface is flat, so a water sample on a steep face is
+                    // land cover spilling over a shoreline rather than any
+                    // water that is really there.
+                    if *class == SurfaceClass::Water
+                        && tan_water_limit.is_some_and(|limit| gradient > limit)
+                    {
+                        demoted.water_to_rock += 1;
                         *class = SurfaceClass::Rock;
                     }
                 }
@@ -2005,6 +2026,7 @@ mod tests {
             forest_limit_degrees: Some(limit_degrees),
             steep_forest_target: target,
             snow_limit_degrees: None,
+            water_limit_degrees: None,
         }
     }
 
@@ -2021,6 +2043,78 @@ mod tests {
             })
             .collect();
         HeightField::new(size, size, values, "cliff").unwrap()
+    }
+
+    fn water_gate(limit_degrees: f32) -> SlopeGates {
+        SlopeGates {
+            forest_limit_degrees: None,
+            steep_forest_target: SteepForestTarget::Rock,
+            snow_limit_degrees: None,
+            water_limit_degrees: Some(limit_degrees),
+        }
+    }
+
+    /// Standing water has no slope, so a water sample on a wall is land
+    /// cover spilling over a shoreline — a seawall, a harbour edge — and
+    /// printing it climbs the wall in blue.
+    #[test]
+    fn the_water_gate_takes_water_off_a_wall_and_leaves_the_flat_alone() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        let demoted = field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+
+        assert!(demoted.water_to_rock > 0, "the wall kept its water");
+        assert_eq!(demoted.forest_to_rock, 0);
+        assert_eq!(demoted.snow_to_rock, 0);
+        // The wall is rock; the flat either side of it is still water.
+        assert_eq!(field.terrain_at(0.5, 0.5), SurfaceClass::Rock);
+        assert_eq!(field.terrain_at(0.1, 0.5), SurfaceClass::Water);
+        assert_eq!(field.terrain_at(0.9, 0.5), SurfaceClass::Water);
+        assert_eq!(field.base_classes, field.classes);
+    }
+
+    /// A real shoreline is not a wall. A gentle beach or an estuary read at
+    /// coarse resolution shows a slope, and gating that would eat genuine
+    /// coastal water rather than the bleed it is aimed at.
+    #[test]
+    fn the_water_gate_keeps_water_on_a_gentle_shore() {
+        let size = 33;
+        // 300 m over 1 km is under 17 degrees.
+        let values = (0..size * size)
+            .map(|index| (index % size) as f32 / (size - 1) as f32 * 300.0)
+            .collect();
+        let height_field = HeightField::new(size, size, values, "shore").unwrap();
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        let demoted = field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+        assert_eq!(demoted.water_to_rock, 0);
+        assert!(field.classes.iter().all(|c| *c == SurfaceClass::Water));
+    }
+
+    /// The gate only ever reads the land-cover raster. Every other class is
+    /// left where it is, which is what lets the three gates share one pass.
+    #[test]
+    fn the_water_gate_leaves_every_other_class_alone() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        for class in [
+            SurfaceClass::Rock,
+            SurfaceClass::Forest,
+            SurfaceClass::Snow,
+            SurfaceClass::Road,
+        ] {
+            let mut field =
+                SurfaceField::new(size, size, vec![class; size * size], "test").unwrap();
+            let demoted = field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+            assert_eq!(
+                demoted.total(),
+                0,
+                "{class:?} was demoted by the water gate"
+            );
+            assert!(field.classes.iter().all(|found| *found == class));
+        }
     }
 
     #[test]
@@ -2084,6 +2178,7 @@ mod tests {
                 forest_limit_degrees: None,
                 steep_forest_target: SteepForestTarget::Rock,
                 snow_limit_degrees: Some(65.0),
+                water_limit_degrees: None,
             },
         );
         assert!(demoted.snow_to_rock > 0);
@@ -2198,6 +2293,7 @@ mod tests {
                 forest_limit_degrees: Some(55.0),
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: Some(65.0),
+                water_limit_degrees: None,
             },
         );
         assert!(demoted.forest_to_snow > 0);
@@ -2239,6 +2335,7 @@ mod tests {
                 forest_limit_degrees: None,
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: None,
+                water_limit_degrees: None,
             },
         );
         assert_eq!(demoted, SlopeGateDemotion::default());
