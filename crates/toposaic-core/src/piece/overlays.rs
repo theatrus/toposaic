@@ -1010,16 +1010,12 @@ fn bridge_line_z(
     }
 }
 
-/// Stations sampled along an aeroway centre line when grading it. Enough to
-/// follow a real gradient change, few enough that the smoothing below still
-/// spans a useful distance.
-const AVIATION_PROFILE_STATIONS: usize = 64;
-/// Half-width of the moving average, in stations. Runway gradients change
-/// over hundreds of metres while DEM noise changes sample to sample, so a
-/// window this wide removes the noise and leaves the slope.
-const AVIATION_PROFILE_SMOOTHING: usize = 4;
-/// How far beyond its own ribbon a graded profile keeps any say over the
-/// height, in mm of print.
+/// Stations sampled along an aeroway centre line when following it. Dense
+/// enough that the ground between two of them cannot rise through the
+/// pavement laid across them.
+const AVIATION_PROFILE_STATIONS: usize = 256;
+/// How far beyond its own ribbon a centre-line profile keeps any say over
+/// the height, in mm of print.
 ///
 /// A profile is measured along one strip and is only true near it. Letting
 /// the nearest one own the whole layer puts an apron a kilometre away at
@@ -1029,15 +1025,18 @@ const AVIATION_PROFILE_SMOOTHING: usize = 4;
 /// meets it without a step.
 const AVIATION_GRADE_FADE_MM: f32 = 4.0;
 
-/// A graded elevation profile along one aeroway centre line.
+/// The elevation along one aeroway centre line.
 ///
-/// Airport pavement is built, not draped: a runway is graded to a steady
-/// gradient and is level across its width. Sampling the DEM per mesh vertex
-/// gives neither — the ribbon corrugates along its length and tilts side to
-/// side wherever two coarse samples disagree. So the terrain is read once
-/// along the centre line, smoothed, and every point of the ribbon takes the
-/// height of its own station. Points across the width share a station, which
-/// is what makes the cross-section level.
+/// A runway is flat across its width and not along its length: it rises and
+/// falls with the ground it is laid on, but a section cut across it is
+/// level. Sampling the terrain per mesh vertex gives the opposite — the
+/// ribbon tilts side to side wherever two coarse samples disagree.
+///
+/// So the ground is read along the centre line, and every point of the
+/// ribbon takes the height of its own station. Points across the width
+/// share a station, which is what makes the cross-section level; stations
+/// along the length follow the terrain, which is what stops the pavement
+/// burying itself in a hill it should be climbing.
 struct AviationProfile<'lines> {
     line: &'lines VectorSurfaceLine,
     /// Print z at evenly spaced stations from the line's start to its end.
@@ -1076,7 +1075,7 @@ fn aviation_profiles<'lines>(
     lines
         .par_iter()
         .map(|line| {
-            let raw = (0..=AVIATION_PROFILE_STATIONS)
+            let stations = (0..=AVIATION_PROFILE_STATIONS)
                 .map(|station| {
                     let progress = station as f32 / AVIATION_PROFILE_STATIONS as f32;
                     let point = polyline_point_at_progress(&line.points_mm, progress);
@@ -1085,18 +1084,6 @@ fn aviation_profiles<'lines>(
                     terrain_z_at(spec, height_field, height_range, u, v)
                 })
                 .collect::<Vec<_>>();
-            // A plain moving average, shrunk at the ends so the two
-            // thresholds stay put: a runway's touchdown heights are real
-            // and a window that ran off the end would drag them inward.
-            let stations = (0..raw.len())
-                .map(|index| {
-                    let reach = AVIATION_PROFILE_SMOOTHING
-                        .min(index)
-                        .min(raw.len() - 1 - index);
-                    let window = &raw[index - reach..=index + reach];
-                    window.iter().sum::<f32>() / window.len() as f32
-                })
-                .collect();
             let margin = line.width_mm * 0.5 + AVIATION_GRADE_FADE_MM;
             let mut reach = [
                 f32::INFINITY,

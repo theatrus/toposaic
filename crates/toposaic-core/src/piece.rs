@@ -1733,38 +1733,31 @@ mod tests {
         );
     }
 
-    /// A runway is graded, not draped. Across its width it must be level,
-    /// and along its length it must keep the real slope while losing the
-    /// DEM's sample-to-sample noise — draping gives neither, and prints a
-    /// corrugated ribbon that tilts wherever two coarse samples disagree.
+    /// A runway is flat across its width and not along its length. It
+    /// rises and falls with the ground it is laid on — a runway that held
+    /// one height would bury itself in the first hill it crossed — but a
+    /// section cut across it is level, rather than draped over whichever
+    /// two coarse samples happen to sit either side of it.
     #[test]
-    fn a_runway_is_level_across_its_width_and_smooth_along_its_length() {
-        // Terrain that rises west to east under a ripple running the same
-        // way. The ripple is four samples long so it survives the DEM's own
-        // interpolation and really reaches the profile — a one-sample tooth
-        // is averaged away before grading ever sees it, which is what made
-        // an earlier version of this test pass with smoothing switched off.
+    fn a_runway_is_level_across_its_width_and_follows_the_ground_along_it() {
+        // Ground that ripples along the strip and falls away across it.
         let samples = 32;
         let values_m = (0..samples)
             .flat_map(|y| {
                 (0..samples).map(move |x| {
-                    let slope = x as f32 / (samples - 1) as f32 * 300.0;
-                    let ripple = if (x / 2) % 2 == 0 { 90.0 } else { 0.0 };
-                    // A ridge across the strip as well, so a draped
-                    // cross-section would visibly tilt.
-                    let ridge = (y as f32 / (samples - 1) as f32 - 0.5).abs() * 120.0;
-                    slope + ripple + ridge
+                    let u = x as f32 / (samples - 1) as f32;
+                    let v = y as f32 / (samples - 1) as f32;
+                    500.0 * (u * std::f32::consts::TAU * 1.5).sin() + 400.0 * v
                 })
             })
             .collect();
-        let height_field = HeightField::new(samples, samples, values_m, "graded").unwrap();
+        let height_field = HeightField::new(samples, samples, values_m, "rolling").unwrap();
 
         let mut spec = GenerationSpec {
             width_mm: 120.0,
             rows: 2,
             columns: 2,
             samples_per_piece: 48,
-            solid_model: false,
             color_output: crate::spec::ColorOutputSpec {
                 enabled: true,
                 ..crate::spec::ColorOutputSpec::default()
@@ -1775,10 +1768,9 @@ mod tests {
         spec.validate().unwrap();
 
         let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
-        // A wide runway straight across the map, so its ribbon spans many
-        // terrain samples in both directions.
+        // Well inside the first piece, so the whole width is on one tile.
         field.paint_polyline(
-            &[[0.0, 0.5], [1.0, 0.5]],
+            &[[0.0, 0.25], [1.0, 0.25]],
             120.0,
             4.0,
             SurfaceClass::Aviation,
@@ -1786,37 +1778,39 @@ mod tests {
 
         let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
 
-        // The shell has a top and a bottom at every position, and only the
-        // top is graded — the bottom follows the ground so the solid is
-        // never inside out. So take the highest vertex in each column.
+        // Only the top of the shell is laid flat; the bottom follows the
+        // ground so the solid is never inside out.
         let mut columns = HashMap::<(i32, i32), f32>::new();
         for vertex in mesh
             .triangles
             .iter()
             .zip(&mesh.materials)
             .filter(|(_, material)| **material == SurfaceClass::Aviation)
-            .flat_map(|(triangle, _)| triangle.iter())
-            .map(|index| mesh.vertices[*index as usize])
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
         {
             let key = (
-                (vertex[0] * 100.0).round() as i32,
-                (vertex[1] * 100.0).round() as i32,
+                (vertex[0] * 500.0).round() as i32,
+                (vertex[1] * 500.0).round() as i32,
             );
             let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
             *top = top.max(vertex[2]);
         }
         let mut tops = columns
             .into_iter()
-            .map(|((x, y), z)| [x as f32 / 100.0, y as f32 / 100.0, z])
+            .map(|((x, y), z)| [x as f32 / 500.0, y as f32 / 500.0, z])
             .collect::<Vec<_>>();
         tops.sort_by(|a, b| a[0].total_cmp(&b[0]));
-        assert!(tops.len() > 20, "not enough pavement to judge");
+        assert!(
+            tops.len() > 8,
+            "not enough pavement to judge: {}",
+            tops.len()
+        );
 
-        // Across the width: vertices at the same station must share a
-        // height. Grouped by x, since the runway runs along x.
-        let mut worst_tilt: f32 = 0.0;
-        for window in tops.chunk_by(|a, b| (a[0] - b[0]).abs() < 0.05) {
+        // Across the width, every point at one station shares a height.
+        let mut worst_tilt = 0.0_f32;
+        for window in tops.chunk_by(|a, b| (a[0] - b[0]).abs() < 0.002) {
             if window.len() < 2 {
                 continue;
             }
@@ -1832,35 +1826,36 @@ mod tests {
             "cross-section should be level, tilts by {worst_tilt} mm"
         );
 
-        // Along the length: the real slope survives...
-        let west = tops.first().expect("pavement")[2];
-        let east = tops.last().expect("pavement")[2];
+        // Along the length it tracks the ground, one surface height above
+        // it, rather than holding a level of its own. A triangulated ribbon
+        // carries its vertices on its edges rather than down the middle, so
+        // each is judged against the ground at the centre line for its own
+        // station — which is exactly the height a flat cross-section takes.
+        let centre_y = spec.height_mm() * 0.25;
+        let mut worst_drift = 0.0_f32;
+        for top in &tops {
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                top[0] / spec.width_mm,
+                centre_y / spec.height_mm(),
+            ) + spec.color_output.aviation.aviation_height_mm;
+            worst_drift = worst_drift.max((top[2] - ground).abs());
+        }
         assert!(
-            (east - west).abs() > 1.0,
-            "the runway's real gradient was flattened away: {west} to {east}"
+            worst_drift < 0.2,
+            "the runway drifts {worst_drift} mm from the ground under its centre line"
         );
 
-        // ...while the tooth of DEM noise does not. The terrain rises
-        // steadily apart from that tooth, so a draped ribbon runs up, down,
-        // up, down all the way along and a graded one only climbs. Counting
-        // reversals asks that directly, and unlike a threshold on the step
-        // size it cannot be satisfied by simply flattening the runway —
-        // which the gradient check above already forbids.
-        let mut station = tops.clone();
-        station.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.05);
-        let reversals = station
-            .windows(3)
-            .filter(|steps| {
-                let first = steps[1][2] - steps[0][2];
-                let second = steps[2][2] - steps[1][2];
-                // Ignore steps below print resolution either side of flat.
-                first.abs() > 0.01 && second.abs() > 0.01 && first.signum() != second.signum()
-            })
-            .count();
+        // And it really does rise and fall: a runway pinned at one height
+        // would pass the drift check only if the ground were flat, which
+        // this one is not.
+        let high = tops.iter().map(|t| t[2]).fold(f32::NEG_INFINITY, f32::max);
+        let low = tops.iter().map(|t| t[2]).fold(f32::INFINITY, f32::min);
         assert!(
-            reversals <= 1,
-            "DEM noise survived grading: the runway changes direction              {reversals} times over {} stations",
-            station.len()
+            high - low > 2.0,
+            "the runway held one level across rolling ground: {low} to {high}"
         );
     }
 
@@ -2023,6 +2018,91 @@ mod tests {
             "grading a hundred-way airport took {elapsed:?}"
         );
         println!("grading a 102-way airport: {elapsed:?}");
+    }
+
+    /// A runway is not a flat slab dropped on a hill: real ones follow the
+    /// ground. Any pavement whose top sits below the terrain under it has
+    /// been buried — it clips into the tile and simply is not there to see.
+    #[test]
+    fn airport_pavement_never_sinks_into_the_terrain() {
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let u = x as f32 / (samples - 1) as f32;
+                    let v = y as f32 / (samples - 1) as f32;
+                    // A ridge across the middle, so any surface that does
+                    // not follow the ground dives straight through it.
+                    400.0 * (u * std::f32::consts::TAU).sin() + 300.0 * (v - 0.5).abs()
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "ridge").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 40,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        field.paint_polyline(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_surface_area(
+            &[[0.10, 0.10], [0.40, 0.10], [0.40, 0.35], [0.10, 0.35]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        // The highest pavement in each column, against the ground there.
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 20.0).round() as i32,
+                (vertex[1] * 20.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(!columns.is_empty(), "no pavement to judge");
+
+        let mut worst_buried = 0.0_f32;
+        for ((x, y), top) in &columns {
+            let point = [*x as f32 / 20.0, *y as f32 / 20.0];
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                point[0] / spec.width_mm,
+                point[1] / spec.height_mm(),
+            );
+            worst_buried = worst_buried.max(ground - top);
+        }
+        assert!(
+            worst_buried < 0.05,
+            "pavement is buried {worst_buried} mm under the terrain it crosses"
+        );
     }
 
     /// The pavement stands at its own height, not the road layer's.
