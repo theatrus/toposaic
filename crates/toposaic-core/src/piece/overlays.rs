@@ -18,7 +18,9 @@ use crate::mesh::{
 };
 use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{BridgeStructure, GenerationSpec, MarkerKind, SurfaceClass};
-use crate::surface::{ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_line_progress};
+use crate::surface::{
+    ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_area_bounds, surface_line_progress,
+};
 
 use super::{
     MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM, OVERLAY_TERRAIN_EMBED_MM, SurfaceField,
@@ -741,10 +743,35 @@ fn aviation_area_footprint(
         }
         LineString::new(coords)
     };
+    // Only the aprons this piece could touch. Unioning every one of them
+    // for every piece is work a hundred-piece puzzle does a hundred times
+    // over, and the bounds test is the same one buildings use.
+    let piece_bounds = {
+        let bounds = piece_polygon.exterior();
+        bounds.coords().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |box_, point| {
+                let u = (point.x as f32 + origin_x) / assembled_width;
+                let v = (point.y as f32 + origin_y) / assembled_height;
+                [
+                    box_[0].min(u),
+                    box_[1].min(v),
+                    box_[2].max(u),
+                    box_[3].max(v),
+                ]
+            },
+        )
+    };
     let outlines = field
         .vector_areas
         .iter()
         .filter(|area| area.class == Some(SurfaceClass::Aviation) && area.points.len() >= 3)
+        .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
         .map(|area| {
             Polygon::new(
                 ring(&area.points),

@@ -1215,7 +1215,7 @@ fn paint_aviation_elements(
                 .iter()
                 .map(|ring| normalized_ring(ring, transform))
                 .collect::<Vec<_>>();
-            for (index, ring) in outer_rings.iter().enumerate() {
+            for ring in &outer_rings {
                 // Islands each stand on their own; the holes belong to
                 // whichever island encloses them, and a hole outside every
                 // island simply never matches.
@@ -1230,7 +1230,6 @@ fn paint_aviation_elements(
                     shell,
                     holes: owned,
                 });
-                let _ = index;
             }
             continue;
         }
@@ -1276,6 +1275,14 @@ fn paint_aviation_elements(
         // An explicit outline already covers this pavement at its true
         // shape, so the centre line through it would paint the same surface
         // a second time at a guessed width.
+        //
+        // Every point has to be covered, deliberately. A looser rule would
+        // catch the case where a mapper drew the outline a little tighter
+        // than the line, but it would also delete a taxiway that merely runs
+        // most of its length across an apron. Failing to suppress costs a
+        // ribbon of the wrong width showing through pavement that is cut
+        // back around it — visible, but nothing is lost; deleting a real
+        // taxiway loses it outright.
         let covered = points.iter().all(|point| {
             areas.iter().any(|area| {
                 point_inside_ring(&area.shell, *point)
