@@ -14,7 +14,8 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 use crate::heightfield::{HeightField, normalized_height};
 use crate::mesh::{
-    Mesh, MeshBuilder, distance_squared, quantize_export_coordinate, triangulate_constraints,
+    Mesh, MeshBuilder, distance_squared, point_in_polygon, quantize_export_coordinate,
+    triangulate_constraints,
 };
 use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{BridgeStructure, GenerationSpec, MarkerKind, SurfaceClass};
@@ -123,6 +124,7 @@ pub(super) fn append_dot_geometry(
                 polygon,
                 |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
                 |point| surface_z(point) + DOT_OVERLAY_HEIGHT_MM,
+                None,
                 None,
                 SurfaceClass::Marker,
                 "triangulate vector marker dot",
@@ -681,6 +683,7 @@ pub(super) fn append_road_geometry(
             "triangulate airport surface ribbon",
             &aviation_regular,
             spec.color_output.aviation.aviation_height_mm,
+            Some(aviation_interior_step_mm(spec)),
             &aviation_base,
             &clip_ribbon,
             &claimed,
@@ -714,6 +717,7 @@ pub(super) fn append_road_geometry(
             "triangulate airport surface outline",
             aviation_outlines,
             spec.color_output.aviation.aviation_height_mm,
+            Some(aviation_interior_step_mm(spec)),
             &aviation_base,
             &claimed,
             &decks,
@@ -837,6 +841,7 @@ fn append_overlay_geometry(
         error_context,
         lines,
         spec.color_output.road_height_mm,
+        None,
         &terrain_base,
         clip_ribbon,
         claimed,
@@ -860,6 +865,7 @@ fn append_overlay_geometry_at_height(
     error_context: &'static str,
     lines: &[&VectorSurfaceLine],
     height_mm: f32,
+    interior_step_mm: Option<f32>,
     base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
     clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
     claimed: &[MultiPolygon<f64>],
@@ -882,6 +888,7 @@ fn append_overlay_geometry_at_height(
         error_context,
         unary_union(clips.iter()),
         height_mm,
+        interior_step_mm,
         base_z,
         claimed,
         decks,
@@ -911,6 +918,9 @@ fn append_overlay_footprint(
     error_context: &'static str,
     footprint: MultiPolygon<f64>,
     height_mm: f32,
+    // Spacing of the points scattered inside the footprint so its top can
+    // follow the ground rather than span it.
+    interior_step_mm: Option<f32>,
     // The surface the overlay is laid on, given a piece-local point. Every
     // layer but airport pavement passes the terrain itself; a runway passes
     // its own graded profile, which is what makes its cross-section level
@@ -988,6 +998,7 @@ fn append_overlay_footprint(
                 |point| base_z(point).min(surface_z(point)) - OVERLAY_TERRAIN_EMBED_MM,
                 |point| base_z(point) + height_mm,
                 None,
+                interior_step_mm,
                 material,
                 error_context,
             )
@@ -1036,6 +1047,15 @@ const AVIATION_PROFILE_STATIONS: usize = 256;
 /// the height function continuous, so an apron abutting a taxiway still
 /// meets it without a step.
 const AVIATION_GRADE_FADE_MM: f32 = 4.0;
+
+/// Spacing of the points scattered inside airport pavement, in mm of
+/// print, matched to the terrain's own sample spacing. Finer buys nothing,
+/// because the ground carries no more detail than that; coarser lets the
+/// ground rise through the surface between them.
+fn aviation_interior_step_mm(spec: &GenerationSpec) -> f32 {
+    let samples = spec.assembled_overlay_samples().max(1) as f32;
+    (spec.width_mm / samples).clamp(0.1, 2.0)
+}
 
 /// How many samples across the ribbon each station takes to find the
 /// ground it must clear.
@@ -1313,9 +1333,20 @@ fn build_road_polygon_shell_with_embed(
         bottom,
         top,
         boundary_step_mm,
+        None,
         material,
         "triangulate vector road ribbon",
     )
+}
+
+/// Distance from a point to the nearest edge of a closed ring.
+fn ring_clearance(ring: &[[f32; 2]], point: [f32; 2]) -> f32 {
+    let open = polyline_distance_squared(ring, point);
+    let closing = match (ring.first(), ring.last()) {
+        (Some(first), Some(last)) => polyline_distance_squared(&[*last, *first], point),
+        _ => f32::INFINITY,
+    };
+    open.min(closing).sqrt()
 }
 
 pub(super) fn build_polygon_shell(
@@ -1323,6 +1354,16 @@ pub(super) fn build_polygon_shell(
     bottom: impl Fn([f32; 2]) -> f32,
     top: impl Fn([f32; 2]) -> f32,
     boundary_step_mm: Option<f32>,
+    // Spacing of extra points scattered through the inside of the
+    // footprint. `None` triangulates from the outline alone, which is what
+    // every thin overlay has always done and is right for them.
+    //
+    // A wide footprint needs more. Triangulated from its outline, a runway
+    // is a handful of triangles stretched over its whole area, so the
+    // height computed for it only lands at the corners and the ground in
+    // between rises straight through the surface. Points inside give that
+    // surface somewhere to follow the ground.
+    interior_step_mm: Option<f32>,
     material: SurfaceClass,
     error_context: &'static str,
 ) -> Result<MeshBuilder> {
@@ -1355,6 +1396,46 @@ pub(super) fn build_polygon_shell(
         .collect::<Vec<_>>();
     let mut points = Vec::new();
     let mut constraints = Vec::new();
+    if let Some(step) = interior_step_mm.filter(|step| *step > 0.0) {
+        let bounds = rings.iter().flatten().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |box_, point| {
+                [
+                    box_[0].min(point[0]),
+                    box_[1].min(point[1]),
+                    box_[2].max(point[0]),
+                    box_[3].max(point[1]),
+                ]
+            },
+        );
+        let columns = (((bounds[2] - bounds[0]) / step).ceil() as usize).min(2048);
+        let rows = (((bounds[3] - bounds[1]) / step).ceil() as usize).min(2048);
+        for row in 1..rows {
+            for column in 1..columns {
+                let point = [
+                    quantize_export_coordinate(bounds[0] + column as f32 * step),
+                    quantize_export_coordinate(bounds[1] + row as f32 * step),
+                ];
+                // Inside the outline, outside every hole, and clear of both:
+                // a point landing on a constraint edge splits it and leaves
+                // a crack down the seam.
+                let inside = point_in_polygon(point, &rings[0])
+                    && !rings[1..].iter().any(|hole| point_in_polygon(point, hole));
+                if inside
+                    && rings
+                        .iter()
+                        .all(|ring| ring_clearance(ring, point) > step * 0.25)
+                {
+                    points.push(Point2::new(f64::from(point[0]), f64::from(point[1])));
+                }
+            }
+        }
+    }
     for ring in &rings {
         let start = points.len();
         points.extend(
@@ -2092,6 +2173,7 @@ mod tests {
             &polygon,
             |_| 1.0,
             |_| 1.2,
+            None,
             None,
             SurfaceClass::Road,
             "test repeated boundary",
