@@ -369,49 +369,6 @@ pub fn fetch_surface_field(
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gates = &spec.color_output.slope_gates;
-        if gates.forest_slope_gate || gates.snow_slope_gate {
-            // One call gates both classes so the slope per sample is
-            // computed once, whichever gates are on.
-            let demoted = field.demote_steep_classes(
-                height_field,
-                ground_span_m,
-                SlopeGates {
-                    forest_limit_degrees: gates
-                        .forest_slope_gate
-                        .then_some(gates.forest_slope_limit_degrees),
-                    steep_forest_target: gates.steep_forest_target,
-                    snow_limit_degrees: gates
-                        .snow_slope_gate
-                        .then_some(gates.snow_slope_limit_degrees),
-                },
-            );
-            if demoted.total() > 0 {
-                let mut parts = Vec::new();
-                if demoted.forest_to_rock > 0 {
-                    parts.push(format!(
-                        "{} forest samples steeper than {:.0} degrees reclassified as rock",
-                        demoted.forest_to_rock, gates.forest_slope_limit_degrees
-                    ));
-                }
-                if demoted.forest_to_snow > 0 {
-                    parts.push(format!(
-                        "{} forest samples steeper than {:.0} degrees reclassified as snow above the snowline",
-                        demoted.forest_to_snow, gates.forest_slope_limit_degrees
-                    ));
-                }
-                if demoted.snow_to_rock > 0 {
-                    parts.push(format!(
-                        "{} snow samples steeper than {:.0} degrees reclassified as rock",
-                        demoted.snow_to_rock, gates.snow_slope_limit_degrees
-                    ));
-                }
-                append_source(
-                    &mut field.source,
-                    format!("steep-slope gates: {}", parts.join("; ")),
-                );
-            }
-        }
-        field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if spec.color_output.borders.class_borders == ClassBorders::Smooth {
             // Smoothing is the default, so the scale gate decides whether it
             // runs: only a raster that samples each 10 m cell often enough
@@ -484,6 +441,75 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        // The gates run AFTER border smoothing on purpose: smoothing
+        // re-derives class borders from the native 10 m grid, and a gate
+        // acts exactly at borders — run first, its demotions along the
+        // shoreline would be smoothed straight back into existence.
+        if gates.forest_slope_gate
+            || gates.snow_slope_gate
+            || gates.water_slope_gate
+            || gates.osm_water_slope_gate
+        {
+            // One call gates every class so the slope per sample is
+            // computed once, whichever gates are on.
+            let demoted = field.demote_steep_classes(
+                height_field,
+                ground_span_m,
+                SlopeGates {
+                    forest_limit_degrees: gates
+                        .forest_slope_gate
+                        .then_some(gates.forest_slope_limit_degrees),
+                    steep_forest_target: gates.steep_forest_target,
+                    snow_limit_degrees: gates
+                        .snow_slope_gate
+                        .then_some(gates.snow_slope_limit_degrees),
+                    water_limit_degrees: gates
+                        .water_slope_gate
+                        .then_some(gates.water_slope_limit_degrees),
+                    osm_water_limit_degrees: gates
+                        .osm_water_slope_gate
+                        .then_some(gates.osm_water_slope_limit_degrees),
+                    water_vertical_exaggeration: print_vertical_exaggeration(spec, height_field),
+                },
+            );
+            if demoted.total() > 0 {
+                let mut parts = Vec::new();
+                if demoted.forest_to_rock > 0 {
+                    parts.push(format!(
+                        "{} forest samples steeper than {:.0} degrees reclassified as rock",
+                        demoted.forest_to_rock, gates.forest_slope_limit_degrees
+                    ));
+                }
+                if demoted.forest_to_snow > 0 {
+                    parts.push(format!(
+                        "{} forest samples steeper than {:.0} degrees reclassified as snow above the snowline",
+                        demoted.forest_to_snow, gates.forest_slope_limit_degrees
+                    ));
+                }
+                if demoted.water_to_rock > 0 {
+                    parts.push(format!(
+                        "{} land-cover water samples steeper than {:.0} printed degrees reclassified as rock",
+                        demoted.water_to_rock, gates.water_slope_limit_degrees
+                    ));
+                }
+                if demoted.snow_to_rock > 0 {
+                    parts.push(format!(
+                        "{} snow samples steeper than {:.0} degrees reclassified as rock",
+                        demoted.snow_to_rock, gates.snow_slope_limit_degrees
+                    ));
+                }
+                append_source(
+                    &mut field.source,
+                    format!("steep-slope gates: {}", parts.join("; ")),
+                );
+            }
+        }
+        // After the gates, not before: the water gate speckles open water
+        // with single-sample rock wherever exaggerated bathymetry noise
+        // crosses the limit, and the patch filter is what sweeps that up.
+        // The demoted shoreline band survives it — a coast-long band is no
+        // small patch.
+        field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if let Some(edges) = &source_edges {
             field.restore_raster_edge_classes(edges)?;
         }
@@ -697,6 +723,39 @@ fn normalized_osm_points(way: &OverpassWay, transform: GeoTransform) -> Vec<[f32
         .iter()
         .map(|point| normalized_map_point(point.lat, point.lon, transform))
         .collect()
+}
+
+/// How much steeper the print is than the ground: vertical mm-per-m over
+/// horizontal mm-per-m. The water slope gate compares its limit against
+/// PRINTED angles — vertical exaggeration turns a two-degree shoreline
+/// into a forty-degree face, and that face is the wall the blue climbs.
+fn print_vertical_exaggeration(spec: &GenerationSpec, height_field: &HeightField) -> f32 {
+    let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
+    let horizontal_mm_per_m = spec.width_mm / ground_span_m;
+    let vertical_mm_per_m = match spec.elevation_m_per_mm {
+        // A super-tile set prints on a fixed shared scale rather than one
+        // stretched to this tile's own relief.
+        Some(m_per_mm) if m_per_mm > 0.0 => 1.0 / m_per_mm,
+        _ => {
+            let (low, high) = height_field
+                .values_m
+                .iter()
+                .filter(|value| value.is_finite())
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), value| {
+                    (low.min(*value), high.max(*value))
+                });
+            if high <= low {
+                return 1.0;
+            }
+            spec.relief_mm / (high - low)
+        }
+    };
+    let ratio = vertical_mm_per_m / horizontal_mm_per_m;
+    if ratio.is_finite() && ratio > 0.0 {
+        ratio
+    } else {
+        1.0
+    }
 }
 
 fn paint_water(
@@ -2732,6 +2791,36 @@ mod tests {
         assert_eq!(world_cover_tile(-121.7603, 46.8523), "N45W123");
         assert_eq!(world_cover_tile(138.7274, 35.3606), "N33E138");
         assert_eq!(world_cover_tile(-1.0, -1.0), "S03W003");
+    }
+
+    /// The water gates judge printed angles, and this ratio is what turns
+    /// a ground gradient into a printed one: vertical mm-per-m over
+    /// horizontal mm-per-m.
+    #[test]
+    fn print_vertical_exaggeration_reads_the_spec_and_the_relief() {
+        // 40 m of relief drawn at 28 mm over 4.5 km at 180 mm — the SFO
+        // shape: (28/40) / (180/4500) = 17.5.
+        let spec = GenerationSpec {
+            ground_span_km: 4.5,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            ..GenerationSpec::default()
+        };
+        let field = HeightField::new(2, 2, vec![0.0, 40.0, 0.0, 40.0], "test").unwrap();
+        assert!((print_vertical_exaggeration(&spec, &field) - 17.5).abs() < 0.01);
+
+        // A locked super-tile scale overrides the relief-derived one:
+        // 1 m/mm of print is 1.0 mm-per-m over 0.04 = 25.
+        let locked = GenerationSpec {
+            elevation_datum_m: Some(0.0),
+            elevation_m_per_mm: Some(1.0),
+            ..spec.clone()
+        };
+        assert!((print_vertical_exaggeration(&locked, &field) - 25.0).abs() < 0.01);
+
+        // Flat ground has no honest ratio and answers true scale.
+        let flat = HeightField::new(2, 2, vec![5.0; 4], "flat").unwrap();
+        assert_eq!(print_vertical_exaggeration(&spec, &flat), 1.0);
     }
 
     #[test]

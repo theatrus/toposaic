@@ -226,6 +226,10 @@ export type GenerationSpec = {
     forest_slope_limit_degrees: number;
     steep_forest_target: "rock" | "snow";
     snow_slope_gate: boolean;
+    water_slope_gate: boolean;
+    water_slope_limit_degrees: number;
+    osm_water_slope_gate: boolean;
+    osm_water_slope_limit_degrees: number;
     snow_slope_limit_degrees: number;
   };
   trails: TrailRoute[];

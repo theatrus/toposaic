@@ -306,11 +306,29 @@ data; it stays off and the map keeps the source resolution, which the listed
 data sources say outright. Switch the setting to blocky to keep the native 10 m
 cells at every span. Expert sliders set how far smoothed borders bend (in 10 m
 cells) and how strongly staircase noise is damped at the cost of single-cell
-detail. Color mode also keeps forest off steep rock and snow off sheer faces by
-default, since WorldCover bleeds tree cover and snow onto cliff walls: forest
-above an adjustable limit (55° to start) prints as rock — or as snow above the
-snowline, if chosen — and snow above its own limit (65° to start) prints as
-rock, even snow the forest gate just made.
+detail. Color mode also keeps forest off steep rock, snow off sheer faces, and
+water off cliffs by default, since WorldCover bleeds all three onto ground that
+cannot hold them: forest above an adjustable limit (55° to start) prints as
+rock — or as snow above the snowline, if chosen — and snow above its own limit
+(65° to start) prints as rock, even snow the forest gate just made.
+
+Standing water has no slope. A sea is level and a lake surface is flat whatever
+the hill around it does, so water climbing a face is a shoreline bleeding up a
+seawall or a harbour edge, and the print shows it in blue. Water above its
+limit (30° to start) prints as rock — and unlike the forest and snow gates,
+the angle judged is the PRINTED one. Trees answer to real ground, but water on
+a wall is a defect of the artifact: vertical exaggeration turns a two-degree
+shoreline into a forty-degree printed face, and that face is what the limit is
+held against. Both kinds of water get a gate of their own, each with its own
+switch and limit: one for the land-cover raster, one for mapped OpenStreetMap
+water polygons — which are painted afterwards but consult the pass's verdict.
+Split because the sources err differently: WorldCover bleeds 10 m pixels over
+shorelines, while a mapped polygon is usually exact and climbs a wall only
+where the elevation data and the mapping disagree. Mapped rivers and
+waterfalls keep their class everywhere under either gate;
+those really do run downhill. Separately, ground under mapped airport pavement
+is never water: a runway that WorldCover reads as bay — parts of SFO qualify —
+stands on land, because pavement is built on it.
 
 An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each
