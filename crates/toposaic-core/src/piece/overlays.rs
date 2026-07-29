@@ -228,7 +228,19 @@ pub(super) fn append_road_geometry(
         .filter(|line| line.class == SurfaceClass::Trail)
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
-    if road_and_rail.is_empty() && trail_lines.is_empty() {
+    // Airport outlines are areas, not lines, so a field holding nothing but
+    // aprons and helipads still has geometry to place. Computed before the
+    // guard for exactly that reason: an airport whose runways are switched
+    // off is still an airport.
+    let aviation_outlines = aviation_area_footprint(
+        surface_field,
+        &piece_polygon,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    );
+    if road_and_rail.is_empty() && trail_lines.is_empty() && aviation_outlines.0.is_empty() {
         return Ok(());
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
@@ -645,14 +657,18 @@ pub(super) fn append_road_geometry(
         )?;
         claimed.push(aviation_area);
     }
-    let aviation_outlines = aviation_area_footprint(
-        surface_field,
-        &piece_polygon,
-        origin_x,
-        origin_y,
-        assembled_width,
-        assembled_height,
-    );
+    // Outlines keep clear of buildings and markers exactly as ribbons do.
+    // An apron is often drawn right up to the terminal standing in it, and
+    // where the apron's ring and the building's outline share coordinates
+    // the two shells leave coincident faces for a slicer's weld to fuse
+    // into non-manifold edges.
+    let mut aviation_outlines = aviation_outlines;
+    if let Some(obstacles) = &obstacles {
+        aviation_outlines = aviation_outlines.difference(obstacles);
+    }
+    if let Some(marker_obstacles) = &marker_obstacles {
+        aviation_outlines = aviation_outlines.difference(marker_obstacles);
+    }
     if !aviation_outlines.0.is_empty() {
         append_overlay_footprint(
             mesh,

@@ -622,7 +622,10 @@ pub(crate) fn build_piece_with_height_range(
     }
     if ((spec.color_output.enabled && spec.color_output.roads_enabled)
         || spec.uses_trails()
-        || spec.uses_rail_or_aerial())
+        || spec.uses_rail_or_aerial()
+        // Airport pavement is drawn by the same pass, and an airfield with
+        // its roads switched off is still an airfield.
+        || spec.uses_aviation())
         && let Some(field) = surface_field
     {
         append_road_geometry(
@@ -1572,6 +1575,161 @@ mod tests {
         assert!(
             !covered_by_pavement(at(0.45, 0.45)),
             "pavement covered the hole in the apron"
+        );
+    }
+
+    /// Terminals and hangars carry `building=*` and go through the building
+    /// pipeline. The aviation query never asks for them, so the only way
+    /// they could be duplicated is by the apron swallowing them — and an
+    /// apron is pavement everywhere except where a building stands.
+    #[test]
+    fn airport_buildings_keep_their_own_material_under_an_apron() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            buildings: crate::spec::BuildingSpec {
+                enabled: true,
+                z_scale: 1.0,
+            },
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // An apron with the terminal's footprint cut out of it, and the
+        // terminal itself standing in that gap.
+        let terminal = [[0.15, 0.15], [0.3, 0.15], [0.3, 0.3], [0.15, 0.3]];
+        field.paint_surface_area_with_holes(
+            &[[0.05, 0.05], [0.45, 0.05], [0.45, 0.45], [0.05, 0.45]],
+            &[terminal.to_vec()],
+            SurfaceClass::Aviation,
+        );
+        field.paint_building(&terminal, 14.0);
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let building_faces = mesh
+            .materials
+            .iter()
+            .filter(|material| **material == SurfaceClass::Building)
+            .count();
+        assert!(
+            building_faces > 0,
+            "the terminal lost its building material to the pavement"
+        );
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "the apron itself should still be there"
+        );
+    }
+
+    /// Every tile of a super-tile grid must treat the same pavement the same
+    /// way: clipped to its own edge, watertight on both sides of the seam,
+    /// and drawn in the same material.
+    #[test]
+    fn every_super_tile_part_clips_the_same_pavement_the_same_way() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A runway straight across the middle, so it crosses every seam.
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Aviation);
+        // And an apron spanning the same seam.
+        field.paint_surface_area(
+            &[[0.3, 0.35], [0.7, 0.35], [0.7, 0.65], [0.3, 0.65]],
+            SurfaceClass::Aviation,
+        );
+
+        let mut paved_parts = 0;
+        for row in 0..spec.rows {
+            for column in 0..spec.columns {
+                let mesh = build_piece(&spec, None, Some(&field), row, column).unwrap();
+                assert_watertight(&mesh);
+                let paved = mesh
+                    .materials
+                    .iter()
+                    .filter(|material| **material == SurfaceClass::Aviation)
+                    .count();
+                if paved > 0 {
+                    paved_parts += 1;
+                }
+                // Nothing may hang outside the part it belongs to.
+                let width = spec.width_mm / spec.columns as f32;
+                let height = spec.height_mm() / spec.rows as f32;
+                for vertex in &mesh.vertices {
+                    assert!(
+                        vertex[0] >= -width * 0.6 && vertex[0] <= width * 1.6,
+                        "a vertex escaped its tile in x: {vertex:?}"
+                    );
+                    assert!(
+                        vertex[1] >= -height * 0.6 && vertex[1] <= height * 1.6,
+                        "a vertex escaped its tile in y: {vertex:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            paved_parts, 4,
+            "the runway and apron cross every tile, so every tile is paved"
+        );
+    }
+
+    /// An airport can be all apron: a helipad on a hospital roof, a small
+    /// field with unpaved strips OSM never drew as ways. The overlay pass
+    /// used to return early whenever a piece held no road, rail, or trail
+    /// LINE, which skipped areas with it — so that airport rendered nothing
+    /// at all.
+    #[test]
+    fn an_airport_with_no_lines_still_draws_its_aprons() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                // No roads either, so the piece really has no lines at all.
+                roads_enabled: false,
+                rail_enabled: false,
+                aerial_enabled: false,
+                ferry_enabled: false,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        field.paint_surface_area(
+            &[[0.05, 0.05], [0.45, 0.05], [0.45, 0.45], [0.05, 0.45]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "an apron with no line beside it still has to reach the mesh"
         );
     }
 
