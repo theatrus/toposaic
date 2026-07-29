@@ -596,6 +596,34 @@ pub(super) fn append_road_geometry(
     // line, or crossing over it keeps the ground it already had. Within the
     // layer the strips go down before the aprons, which is why a runway
     // drawn across an apron reads as runway.
+    // Grading is shared by the ribbons and the outlines: one height
+    // function over the whole layer, so a taxiway meeting a runway and an
+    // apron meeting both arrive at the same z where they touch, and the
+    // joins cannot crack.
+    let profiles = aviation_profiles(
+        spec,
+        &aviation_regular,
+        height_field,
+        height_range,
+        assembled_width,
+        assembled_height,
+    );
+    let aviation_base = |point: [f32; 2]| {
+        let assembled = [point[0] + origin_x, point[1] + origin_y];
+        let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
+        let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
+        let terrain = terrain_z_at(spec, height_field, height_range, u, v);
+        // The nearest graded line owns the point. Away from every line —
+        // out in an apron — the terrain is what is left.
+        let mut nearest = None::<(f32, f32)>;
+        for profile in &profiles {
+            let distance = polyline_distance_squared(&profile.line.points_mm, assembled);
+            if nearest.is_none_or(|(best, _)| distance < best) {
+                nearest = Some((distance, profile.z_at(u, v)));
+            }
+        }
+        nearest.map_or(terrain, |(_, z)| z)
+    };
     if !aviation_regular.is_empty() {
         let aviation_area = append_overlay_geometry_at_height(
             mesh,
@@ -604,6 +632,7 @@ pub(super) fn append_road_geometry(
             "triangulate airport surface ribbon",
             &aviation_regular,
             spec.color_output.aviation.aviation_height_mm,
+            &aviation_base,
             &clip_ribbon,
             &claimed,
             &decks,
@@ -632,6 +661,7 @@ pub(super) fn append_road_geometry(
             "triangulate airport surface outline",
             aviation_outlines,
             spec.color_output.aviation.aviation_height_mm,
+            &aviation_base,
             &claimed,
             &decks,
             height_field,
@@ -717,6 +747,11 @@ fn append_overlay_geometry(
     assembled_width: f32,
     assembled_height: f32,
 ) -> Result<MultiPolygon<f64>> {
+    let terrain_base = |point: [f32; 2]| {
+        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+        terrain_z_at(spec, height_field, height_range, u, v)
+    };
     append_overlay_geometry_at_height(
         mesh,
         spec,
@@ -724,6 +759,7 @@ fn append_overlay_geometry(
         error_context,
         lines,
         spec.color_output.road_height_mm,
+        &terrain_base,
         clip_ribbon,
         claimed,
         decks,
@@ -746,6 +782,7 @@ fn append_overlay_geometry_at_height(
     error_context: &'static str,
     lines: &[&VectorSurfaceLine],
     height_mm: f32,
+    base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
     clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
     claimed: &[MultiPolygon<f64>],
     decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
@@ -767,6 +804,7 @@ fn append_overlay_geometry_at_height(
         error_context,
         unary_union(clips.iter()),
         height_mm,
+        base_z,
         claimed,
         decks,
         height_field,
@@ -795,6 +833,11 @@ fn append_overlay_footprint(
     error_context: &'static str,
     footprint: MultiPolygon<f64>,
     height_mm: f32,
+    // The surface the overlay is laid on, given a piece-local point. Every
+    // layer but airport pavement passes the terrain itself; a runway passes
+    // its own graded profile, which is what makes its cross-section level
+    // instead of draped over two separate DEM samples.
+    base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
     claimed: &[MultiPolygon<f64>],
     decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
     height_field: Option<&HeightField>,
@@ -861,8 +904,11 @@ fn append_overlay_footprint(
         .map(|polygon| {
             build_polygon_shell(
                 polygon,
-                |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
-                |point| surface_z(point) + height_mm,
+                // Where a graded surface cuts below the ground it crosses,
+                // the shell's bottom follows the ground instead, or the
+                // solid would be inside out.
+                |point| base_z(point).min(surface_z(point)) - OVERLAY_TERRAIN_EMBED_MM,
+                |point| base_z(point) + height_mm,
                 None,
                 material,
                 error_context,
@@ -896,6 +942,117 @@ fn bridge_line_z(
     } else {
         terrain_z_at(spec, height_field, height_range, u, v)
     }
+}
+
+/// Stations sampled along an aeroway centre line when grading it. Enough to
+/// follow a real gradient change, few enough that the smoothing below still
+/// spans a useful distance.
+const AVIATION_PROFILE_STATIONS: usize = 64;
+/// Half-width of the moving average, in stations. Runway gradients change
+/// over hundreds of metres while DEM noise changes sample to sample, so a
+/// window this wide removes the noise and leaves the slope.
+const AVIATION_PROFILE_SMOOTHING: usize = 4;
+
+/// A graded elevation profile along one aeroway centre line.
+///
+/// Airport pavement is built, not draped: a runway is graded to a steady
+/// gradient and is level across its width. Sampling the DEM per mesh vertex
+/// gives neither — the ribbon corrugates along its length and tilts side to
+/// side wherever two coarse samples disagree. So the terrain is read once
+/// along the centre line, smoothed, and every point of the ribbon takes the
+/// height of its own station. Points across the width share a station, which
+/// is what makes the cross-section level.
+struct AviationProfile<'lines> {
+    line: &'lines VectorSurfaceLine,
+    /// Print z at evenly spaced stations from the line's start to its end.
+    stations: Vec<f32>,
+}
+
+impl AviationProfile<'_> {
+    /// Print z where an assembled-mm point projects onto this line.
+    fn z_at(&self, u: f32, v: f32) -> f32 {
+        let progress = surface_line_progress(self.line, u, v).clamp(0.0, 1.0);
+        let last = self.stations.len() - 1;
+        let position = progress * last as f32;
+        let index = (position.floor() as usize).min(last);
+        let next = (index + 1).min(last);
+        let fraction = position - index as f32;
+        self.stations[index] + (self.stations[next] - self.stations[index]) * fraction
+    }
+}
+
+/// Grades every aeroway line: reads the terrain along it, then smooths.
+fn aviation_profiles<'lines>(
+    spec: &GenerationSpec,
+    lines: &[&'lines VectorSurfaceLine],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Vec<AviationProfile<'lines>> {
+    lines
+        .par_iter()
+        .map(|line| {
+            let raw = (0..=AVIATION_PROFILE_STATIONS)
+                .map(|station| {
+                    let progress = station as f32 / AVIATION_PROFILE_STATIONS as f32;
+                    let point = polyline_point_at_progress(&line.points_mm, progress);
+                    let u = (point[0] / assembled_width).clamp(0.0, 1.0);
+                    let v = (point[1] / assembled_height).clamp(0.0, 1.0);
+                    terrain_z_at(spec, height_field, height_range, u, v)
+                })
+                .collect::<Vec<_>>();
+            // A plain moving average, shrunk at the ends so the two
+            // thresholds stay put: a runway's touchdown heights are real
+            // and a window that ran off the end would drag them inward.
+            let stations = (0..raw.len())
+                .map(|index| {
+                    let reach = AVIATION_PROFILE_SMOOTHING
+                        .min(index)
+                        .min(raw.len() - 1 - index);
+                    let window = &raw[index - reach..=index + reach];
+                    window.iter().sum::<f32>() / window.len() as f32
+                })
+                .collect();
+            AviationProfile { line, stations }
+        })
+        .collect()
+}
+
+/// The point a fraction of the way along a polyline, by arc length.
+fn polyline_point_at_progress(points: &[[f32; 2]], progress: f32) -> [f32; 2] {
+    let Some(first) = points.first().copied() else {
+        return [0.0, 0.0];
+    };
+    let total: f32 = points
+        .windows(2)
+        .map(|segment| distance(segment[0], segment[1]))
+        .sum();
+    if total <= f32::EPSILON {
+        return first;
+    }
+    let target = progress.clamp(0.0, 1.0) * total;
+    let mut travelled = 0.0;
+    for segment in points.windows(2) {
+        let length = distance(segment[0], segment[1]);
+        if travelled + length >= target {
+            let fraction = if length <= f32::EPSILON {
+                0.0
+            } else {
+                (target - travelled) / length
+            };
+            return [
+                segment[0][0] + (segment[1][0] - segment[0][0]) * fraction,
+                segment[0][1] + (segment[1][1] - segment[0][1]) * fraction,
+            ];
+        }
+        travelled += length;
+    }
+    points.last().copied().unwrap_or(first)
+}
+
+fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
 }
 
 /// Line of a merged deck group nearest to an assembled-mm point.

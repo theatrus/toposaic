@@ -1575,41 +1575,181 @@ mod tests {
         );
     }
 
-    /// The pavement stands at its own height, not the road layer's.
+    /// A runway is graded, not draped. Across its width it must be level,
+    /// and along its length it must keep the real slope while losing the
+    /// DEM's sample-to-sample noise — draping gives neither, and prints a
+    /// corrugated ribbon that tilts wherever two coarse samples disagree.
     #[test]
-    fn airport_pavement_uses_its_own_surface_height() {
+    fn a_runway_is_level_across_its_width_and_smooth_along_its_length() {
+        // Terrain that rises west to east under a ripple running the same
+        // way. The ripple is four samples long so it survives the DEM's own
+        // interpolation and really reaches the profile — a one-sample tooth
+        // is averaged away before grading ever sees it, which is what made
+        // an earlier version of this test pass with smoothing switched off.
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let slope = x as f32 / (samples - 1) as f32 * 300.0;
+                    let ripple = if (x / 2) % 2 == 0 { 90.0 } else { 0.0 };
+                    // A ridge across the strip as well, so a draped
+                    // cross-section would visibly tilt.
+                    let ridge = (y as f32 / (samples - 1) as f32 - 0.5).abs() * 120.0;
+                    slope + ripple + ridge
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "graded").unwrap();
+
         let mut spec = GenerationSpec {
-            width_mm: 60.0,
+            width_mm: 120.0,
             rows: 2,
             columns: 2,
-            samples_per_piece: 24,
+            samples_per_piece: 48,
+            solid_model: false,
             color_output: crate::spec::ColorOutputSpec {
                 enabled: true,
-                road_height_mm: 0.2,
                 ..crate::spec::ColorOutputSpec::default()
             },
             ..GenerationSpec::default()
         };
         spec.color_output.aviation.aviation_enabled = true;
-        spec.color_output.aviation.aviation_height_mm = 0.6;
         spec.validate().unwrap();
 
         let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
-        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
-        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        // A wide runway straight across the map, so its ribbon spans many
+        // terrain samples in both directions.
+        field.paint_polyline(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            120.0,
+            4.0,
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
 
-        let highest = mesh
+        // The shell has a top and a bottom at every position, and only the
+        // top is graded — the bottom follows the ground so the solid is
+        // never inside out. So take the highest vertex in each column.
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
             .triangles
             .iter()
             .zip(&mesh.materials)
             .filter(|(_, material)| **material == SurfaceClass::Aviation)
-            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize][2]))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let terrain_top = spec.base_mm + spec.relief_mm;
+            .flat_map(|(triangle, _)| triangle.iter())
+            .map(|index| mesh.vertices[*index as usize])
+        {
+            let key = (
+                (vertex[0] * 100.0).round() as i32,
+                (vertex[1] * 100.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        let mut tops = columns
+            .into_iter()
+            .map(|((x, y), z)| [x as f32 / 100.0, y as f32 / 100.0, z])
+            .collect::<Vec<_>>();
+        tops.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        assert!(tops.len() > 20, "not enough pavement to judge");
+
+        // Across the width: vertices at the same station must share a
+        // height. Grouped by x, since the runway runs along x.
+        let mut worst_tilt: f32 = 0.0;
+        for window in tops.chunk_by(|a, b| (a[0] - b[0]).abs() < 0.05) {
+            if window.len() < 2 {
+                continue;
+            }
+            let high = window
+                .iter()
+                .map(|v| v[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let low = window.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min);
+            worst_tilt = worst_tilt.max(high - low);
+        }
         assert!(
-            highest > terrain_top + 0.4,
-            "pavement should stand 0.6 mm proud, reached {highest} over {terrain_top}"
+            worst_tilt < 0.02,
+            "cross-section should be level, tilts by {worst_tilt} mm"
+        );
+
+        // Along the length: the real slope survives...
+        let west = tops.first().expect("pavement")[2];
+        let east = tops.last().expect("pavement")[2];
+        assert!(
+            (east - west).abs() > 1.0,
+            "the runway's real gradient was flattened away: {west} to {east}"
+        );
+
+        // ...while the tooth of DEM noise does not. The terrain rises
+        // steadily apart from that tooth, so a draped ribbon runs up, down,
+        // up, down all the way along and a graded one only climbs. Counting
+        // reversals asks that directly, and unlike a threshold on the step
+        // size it cannot be satisfied by simply flattening the runway —
+        // which the gradient check above already forbids.
+        let mut station = tops.clone();
+        station.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.05);
+        let reversals = station
+            .windows(3)
+            .filter(|steps| {
+                let first = steps[1][2] - steps[0][2];
+                let second = steps[2][2] - steps[1][2];
+                // Ignore steps below print resolution either side of flat.
+                first.abs() > 0.01 && second.abs() > 0.01 && first.signum() != second.signum()
+            })
+            .count();
+        assert!(
+            reversals <= 1,
+            "DEM noise survived grading: the runway changes direction              {reversals} times over {} stations",
+            station.len()
+        );
+    }
+
+    /// The pavement stands at its own height, not the road layer's.
+    ///
+    /// Measured as the difference between two runs rather than against the
+    /// terrain's maximum: a graded runway deliberately does not follow the
+    /// ground under it, so "higher than the tallest terrain" would be
+    /// asking the wrong question.
+    #[test]
+    fn airport_pavement_uses_its_own_surface_height() {
+        let pavement_top = |aviation_height_mm: f32| {
+            let mut spec = GenerationSpec {
+                width_mm: 60.0,
+                rows: 2,
+                columns: 2,
+                samples_per_piece: 24,
+                color_output: crate::spec::ColorOutputSpec {
+                    enabled: true,
+                    road_height_mm: 0.2,
+                    ..crate::spec::ColorOutputSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            spec.color_output.aviation.aviation_enabled = true;
+            spec.color_output.aviation.aviation_height_mm = aviation_height_mm;
+            spec.validate().unwrap();
+
+            let mut field =
+                SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+            field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
+            let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+            assert_watertight(&mesh);
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Aviation)
+                .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize][2]))
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+
+        let thin = pavement_top(0.2);
+        let thick = pavement_top(0.6);
+        assert!(
+            (thick - thin - 0.4).abs() < 0.01,
+            "0.4 mm more pavement height should raise the top 0.4 mm; \
+             {thin} became {thick}"
         );
     }
 
