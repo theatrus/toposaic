@@ -76,8 +76,20 @@ pub(crate) struct VectorSurfaceLine {
 #[derive(Debug, Clone)]
 pub(crate) struct VectorSurfaceArea {
     pub(crate) points: Vec<[f32; 2]>,
+    /// Rings cut out of `points` — a terminal standing in an apron, a
+    /// grass island inside a taxiway loop. Empty for every area that has
+    /// none, which is most of them.
+    pub(crate) holes: Vec<Vec<[f32; 2]>>,
     pub(crate) class: Option<SurfaceClass>,
     pub(crate) building_height_m: f32,
+}
+
+impl VectorSurfaceArea {
+    /// Whether the area covers this point, holes excluded.
+    pub(crate) fn covers(&self, point: [f32; 2]) -> bool {
+        point_in_polygon(point, &self.points)
+            && !self.holes.iter().any(|hole| point_in_polygon(point, hole))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -759,6 +771,7 @@ impl SurfaceField {
         }
         let area = VectorSurfaceArea {
             points: points.to_vec(),
+            holes: Vec::new(),
             class: (class != SurfaceClass::Building).then_some(class),
             building_height_m: height_m,
         };
@@ -772,11 +785,31 @@ impl SurfaceField {
     }
 
     pub fn paint_surface_area(&mut self, points: &[[f32; 2]], class: SurfaceClass) {
+        self.paint_surface_area_with_holes(points, &[], class);
+    }
+
+    /// Paints an area that may have rings cut out of it.
+    ///
+    /// A multipolygon's holes are part of its shape, not decoration: an
+    /// apron drawn around a terminal building is apron everywhere except
+    /// where the terminal stands, and filling that in would bury the
+    /// building under pavement.
+    pub fn paint_surface_area_with_holes(
+        &mut self,
+        points: &[[f32; 2]],
+        holes: &[Vec<[f32; 2]>],
+        class: SurfaceClass,
+    ) {
         if points.len() < 3 {
             return;
         }
         let area = VectorSurfaceArea {
             points: points.to_vec(),
+            holes: holes
+                .iter()
+                .filter(|hole| hole.len() >= 3)
+                .cloned()
+                .collect(),
             class: Some(class),
             building_height_m: 0.0,
         };
@@ -786,11 +819,29 @@ impl SurfaceField {
             surface_area_bounds(&area.points),
             area_index,
         );
+        self.rasterize_area(points, &area.holes, class);
         self.vector_areas.push(area);
-        self.rasterize_area(points, class);
     }
 
-    fn rasterize_area(&mut self, points: &[[f32; 2]], class: SurfaceClass) {
+    fn rasterize_area(
+        &mut self,
+        points: &[[f32; 2]],
+        holes: &[Vec<[f32; 2]>],
+        class: SurfaceClass,
+    ) {
+        let hole_pixels = holes
+            .iter()
+            .map(|hole| {
+                hole.iter()
+                    .map(|point| {
+                        [
+                            point[0] * (self.width - 1) as f32,
+                            point[1] * (self.height - 1) as f32,
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         let pixels = points
             .iter()
             .map(|point| {
@@ -829,7 +880,10 @@ impl SurfaceField {
         let max_y = polygon_max_y.ceil().min((self.height - 1) as f32) as usize;
         for y in min_y..=max_y {
             for x in min_x..=max_x {
-                if point_in_polygon([x as f32, y as f32], &pixels) {
+                let pixel = [x as f32, y as f32];
+                if point_in_polygon(pixel, &pixels)
+                    && !hole_pixels.iter().any(|hole| point_in_polygon(pixel, hole))
+                {
                     self.classes[y * self.width + x] = class;
                 }
             }
@@ -959,7 +1013,7 @@ impl SurfaceField {
             .any(|area| {
                 area.building_height_m == 0.0
                     && area.class == Some(SurfaceClass::Marker)
-                    && point_in_polygon([u, v], &area.points)
+                    && area.covers([u, v])
             });
         if has_marker {
             return SurfaceSample {
@@ -1053,14 +1107,37 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        // Airport pavement sits under roads and rail — a service road
+        // crossing an apron is the feature worth reading — and above the
+        // areas below, so a runway drawn over an apron reads as runway.
+        // Gated like the overlays above it: the TERRAIN sampler must answer
+        // with the ground the pavement is laid on, or the mesh paints its
+        // terrain triangles in the aviation material and then raises the
+        // pavement on top of them.
+        let has_aviation_line = include_roads
+            && line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Aviation
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            });
+        if has_aviation_line {
+            return SurfaceSample {
+                class: SurfaceClass::Aviation,
+                building_height_m,
+            };
+        }
         if let Some(class) = self.vector_area_buckets[bucket]
             .iter()
             .rev()
             .filter_map(|index| {
                 let area = &self.vector_areas[*index];
-                area.class.map(|class| (area, class))
+                area.class
+                    // Apron and helipad areas are overlays too, and hide
+                    // from the terrain sampler for the same reason.
+                    .filter(|class| include_roads || *class != SurfaceClass::Aviation)
+                    .map(|class| (area, class))
             })
-            .find(|(area, _)| point_in_polygon([u, v], &area.points))
+            .find(|(area, _)| area.covers([u, v]))
             .map(|(_, class)| class)
         {
             return SurfaceSample {
@@ -1080,6 +1157,7 @@ impl SurfaceField {
                         | SurfaceClass::Rail
                         | SurfaceClass::Aerial
                         | SurfaceClass::Ferry
+                        | SurfaceClass::Aviation
                 )
             })
             .find(|(line, entry)| line_segment_ranges_contain(line, &entry.segment_ranges, u, v))
@@ -1106,7 +1184,7 @@ impl SurfaceField {
             .iter()
             .map(|index| &self.vector_areas[*index])
             .filter(|area| area.building_height_m > 0.0)
-            .filter(|area| point_in_polygon([u, v], &area.points))
+            .filter(|area| area.covers([u, v]))
             .map(|area| area.building_height_m)
             .fold(0.0, f32::max)
     }
@@ -2230,6 +2308,56 @@ mod tests {
         // And the coverage histogram, which reads the overlay sampler, still
         // counts it, so the preview legend can show the layer.
         assert!(field.coverage()[SurfaceClass::Ferry.material_index() as usize] > 0.0);
+    }
+
+    /// Airport pavement is an overlay laid on the ground, so the terrain
+    /// sampler must still answer with the ground. Otherwise the mesh paints
+    /// its terrain triangles in the aviation material and then raises the
+    /// pavement on top of them, in the same color, twice over.
+    #[test]
+    fn airport_pavement_stays_out_of_the_terrain_sampler() {
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Forest; 81], "aeroway").unwrap();
+        field.paint_surface_area(
+            &[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]],
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Aviation);
+
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Aviation);
+        assert_eq!(
+            field.terrain_at(0.5, 0.5),
+            SurfaceClass::Forest,
+            "the ground under a runway is still ground"
+        );
+        // An apron away from the centre line, so the area path is covered
+        // as well as the line path.
+        assert_eq!(field.class_at(0.3, 0.3), SurfaceClass::Aviation);
+        assert_eq!(field.terrain_at(0.3, 0.3), SurfaceClass::Forest);
+        assert!(field.coverage()[SurfaceClass::Aviation.material_index() as usize] > 0.0);
+    }
+
+    /// A road crossing an apron is the feature worth reading, and a runway
+    /// drawn over an apron reads as runway — the order the issue sets out.
+    #[test]
+    fn roads_outrank_pavement_and_strips_outrank_aprons() {
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "aeroway").unwrap();
+        field.paint_surface_area(
+            &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Aviation);
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Aviation,
+            "a runway over an apron is still pavement"
+        );
+
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Road);
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Road,
+            "a service road crossing the apron reads as road"
+        );
     }
 
     /// Where a crossing meets the road at its terminal, the crossing is the
