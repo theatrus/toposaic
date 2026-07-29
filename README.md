@@ -377,7 +377,7 @@ and a distant station carries its own caveat. Super-tiles share one plane by
 construction, and shared edges decide their ring samples from shared data
 alone so seams stay equal.
 
-### Satellite ground colors (in progress)
+### Satellite ground colors
 
 The Surface tab's Terrain section holds this, under **Ground colors**: mapped
 classes, satellite shades inside the classes, or the satellite palette alone.
@@ -398,10 +398,21 @@ uniform forest covers more ground. Discovery is deterministic — the same area
 always yields the same palette in the same order — and every sample the imagery
 cannot cover falls back to its mapped class color. The resolved palette, the
 stretch, and the Copernicus attribution go into the project's data sources.
-The controls and the discovery are in place, and a job records what it found.
-The printed model does not use it yet: the mesh, the preview, and the 3MF still
-take their ground color from the mapped classes, and wiring those up is the
-rest of this work.
+
+Each discovered color takes a filament slot of its own, so the mesh, the
+preview, and the 3MF all print from the palette. A discovered color equal to a
+class color shares that slot instead of asking for a second spool of the same
+filament. Only land cover hands over: roads, buildings, railways, ferries, and
+airport pavement are drawn from the map on top of the ground, and a road taking
+the color of the dirt beside it would stop reading as a road. Expect some of
+the model to stay on its mapped class color where the composite is masked — on
+Mount Rainier the summit is, so about a fifth of that model prints mapped snow.
+
+A finished job pins the palette it discovered into its setup, so running the
+same setup again reproduces those colors rather than discovering a fresh set.
+That is also the super-tile contract: the first tile discovers, and every later
+tile is assigned to what it found, so no seam changes filament for no reason on
+the ground.
 
 ## Roads and water
 
@@ -579,7 +590,9 @@ base colors too — a wilderness map with no water, roads, or buildings asks for
 none of the three — and to every other file in the download: a tray asks for
 its rim, contour, and label colors, a wall-mount bracket for the one it prints
 in. Two features set to the same color share a slot, since no slicer merges
-them for you.
+them for you. A discovered satellite ground color is packed the same way: one
+slot each, an entry no piece paints costs nothing, and one that matches a class
+color shares that class's slot.
 
 A piece's side wall is a cut through the terrain, and it prints in the rock
 color to say so. The top of that wall is the exception: it carries the land
