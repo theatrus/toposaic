@@ -21,7 +21,7 @@ use toposaic_core::{
 use tracing::warn;
 
 use crate::{
-    cache,
+    cache, datum,
     geo::{GeoBounds, GeoTransform, normalize_longitude},
     http,
 };
@@ -780,7 +780,25 @@ pub fn apply_marine_water(
     if spec.marine.geometry != MarineGeometry::FlatSurface || !spec.color_output.enabled {
         return;
     }
-    let resolved = resolve_marine_level(&spec.marine, height_field.vertical_reference);
+    // The tide presets are the only levels that need a regional source;
+    // MSL and custom stay off the network entirely.
+    let tides = matches!(
+        spec.marine.level,
+        toposaic_core::MarineLevel::LowTide | toposaic_core::MarineLevel::HighTide
+    )
+    .then(|| {
+        datum::fetch_tidal_offsets(
+            spec.center_lat,
+            spec.center_lon,
+            &map_cache_dir.join("datum"),
+        )
+    })
+    .flatten();
+    let resolved = resolve_marine_level(
+        &spec.marine,
+        height_field.vertical_reference,
+        tides.as_ref(),
+    );
     let (ocean, ocean_note) = fetch_ocean_extent(spec, map_cache_dir);
     // The frozen ring rule keeps shared super-tile edges deciding each
     // ring sample from shared data alone; the plane itself is the same for

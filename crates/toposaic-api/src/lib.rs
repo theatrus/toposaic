@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 mod cache;
 mod database;
+mod datum;
 mod elevation;
 mod geo;
 mod geocoding;

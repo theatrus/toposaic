@@ -92,9 +92,10 @@ export function SurfaceWaterSection({
               <option value="custom">Custom offset</option>
             </select>
             <small>
-              Low and high tide need a regional datum source that is not
-              wired in yet; until then they use mean sea level and the data
-              sources say so.
+              Low and high tide use the nearest NOAA tide station's datums
+              (MLLW and MHHW), which cover United States coasts. Elsewhere
+              they fall back to mean sea level, and the data sources name
+              the station or say why not.
             </small>
           </label>
           {spec.marine.level === "custom" && (

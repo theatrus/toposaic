@@ -344,10 +344,13 @@ offset in metres; the elevation source's vertical reference (EGM96 for
 Mapzen, EGM2008 for Mapterhorn's global base) is recorded with the resolved
 level in the data sources. A custom level below zero dries out the foreshore
 between the two planes; a level above zero covers sea-connected land below
-it. Low and high tide presets exist but resolve to mean sea level with a
-recorded warning until a regional tidal datum source (NOAA VDatum) is wired
-in; super-tiles share one plane by construction, and shared edges decide
-their ring samples from shared data alone so seams stay equal.
+it. The low and high tide presets resolve through the nearest NOAA tide
+station's published datums — MLLW and MHHW as offsets from local mean sea
+level, applied about the provider's zero — which covers United States
+coasts; elsewhere they fall back to mean sea level with a recorded warning,
+and a distant station carries its own caveat. Super-tiles share one plane by
+construction, and shared edges decide their ring samples from shared data
+alone so seams stay equal.
 
 An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each

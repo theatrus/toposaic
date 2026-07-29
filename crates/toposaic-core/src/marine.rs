@@ -7,10 +7,11 @@
 //! covers, and flattens the height field there, so the print shows a water
 //! surface instead of seabed noise.
 //!
-//! Only the manual and provider-zero modes resolve here. Regional tidal
-//! datums (MLLW, MHHW via NOAA VDatum) come later; until then the low and
-//! high presets resolve to mean sea level with a recorded warning instead
-//! of a guessed regional value.
+//! The low and high tide presets resolve through regional tidal datums
+//! when the caller sources them — NOAA CO-OPS station datum sheets, for
+//! United States coasts — applied as offsets about the provider's zero.
+//! Without a source in reach they resolve to mean sea level with a
+//! recorded warning instead of a guessed regional value.
 
 use crate::coastline::OceanExtent;
 use crate::heightfield::{HeightField, VerticalReference};
@@ -34,13 +35,32 @@ pub struct ResolvedMarineLevel {
     pub warning: Option<String>,
 }
 
+/// Regional tidal datums as offsets from local mean sea level, sourced by
+/// the caller — NOAA CO-OPS station datum sheets today. Offsets rather
+/// than absolute levels on purpose: the difference MLLW−MSL is a pure
+/// tidal quantity that needs no vertical-datum transformation, so it can
+/// be applied around whatever surface stands in for mean sea level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TidalOffsets {
+    /// MLLW minus local MSL, metres. Negative: low water sits below mean.
+    pub low_minus_msl_m: f32,
+    /// MHHW minus local MSL, metres. Positive: high water sits above mean.
+    pub high_minus_msl_m: f32,
+    /// Where the offsets come from, station and epoch included.
+    pub source: String,
+    /// A caveat the source carries, like a distant station.
+    pub caveat: Option<String>,
+}
+
 /// Resolves the spec's marine level against what the elevation source
-/// knows about its own zero. Never guesses: a level that cannot be
-/// verified resolves anyway — refusing to generate would help no one —
-/// but carries the warning that says exactly what it is.
+/// knows about its own zero and whatever regional tidal datums the caller
+/// sourced. Never guesses: a level that cannot be verified resolves
+/// anyway — refusing to generate would help no one — but carries the
+/// warning that says exactly what it is.
 pub fn resolve_marine_level(
     spec: &MarineSpec,
     reference: VerticalReference,
+    tides: Option<&TidalOffsets>,
 ) -> ResolvedMarineLevel {
     let unknown_reference = (reference == VerticalReference::Unknown).then(|| {
         "the elevation source's vertical reference is unknown; this level is the provider's \
@@ -62,22 +82,57 @@ pub fn resolve_marine_level(
             source: format!("provider zero ({})", reference.label()),
             warning: unknown_reference,
         },
-        MarineLevel::LowTide | MarineLevel::HighTide => {
-            let (datum, name) = if spec.level == MarineLevel::LowTide {
-                ("MLLW (requested)", "low tide")
-            } else {
-                ("MHHW (requested)", "high tide")
-            };
-            ResolvedMarineLevel {
-                datum,
-                elevation_m: 0.0,
-                source: format!("provider zero ({})", reference.label()),
-                warning: Some(format!(
-                    "no regional tidal datum source is wired in yet; {name} resolves to mean \
-                     sea level"
-                )),
+        MarineLevel::LowTide | MarineLevel::HighTide => match tides {
+            Some(tides) => {
+                let (datum, offset) = if spec.level == MarineLevel::LowTide {
+                    ("MLLW", tides.low_minus_msl_m)
+                } else {
+                    ("MHHW", tides.high_minus_msl_m)
+                };
+                ResolvedMarineLevel {
+                    datum,
+                    // The tidal offset rides on the best mean sea level in
+                    // hand: the provider's geoid zero. The residual — mean
+                    // dynamic topography, local MSL against the geoid —
+                    // stays in the warning rather than being guessed.
+                    elevation_m: offset,
+                    source: format!(
+                        "{}; applied about provider zero ({})",
+                        tides.source,
+                        reference.label()
+                    ),
+                    warning: Some(tides.caveat.clone().map_or_else(
+                        || {
+                            "local mean sea level is approximated by the elevation source's \
+                             geoid zero"
+                                .to_string()
+                        },
+                        |caveat| {
+                            format!(
+                                "{caveat}; local mean sea level is approximated by the \
+                                 elevation source's geoid zero"
+                            )
+                        },
+                    )),
+                }
             }
-        }
+            None => {
+                let (datum, name) = if spec.level == MarineLevel::LowTide {
+                    ("MLLW (requested)", "low tide")
+                } else {
+                    ("MHHW (requested)", "high tide")
+                };
+                ResolvedMarineLevel {
+                    datum,
+                    elevation_m: 0.0,
+                    source: format!("provider zero ({})", reference.label()),
+                    warning: Some(format!(
+                        "no regional tidal datum is available here; {name} resolves to mean \
+                         sea level"
+                    )),
+                }
+            }
+        },
     }
 }
 
@@ -502,13 +557,14 @@ mod tests {
 
     #[test]
     fn levels_resolve_with_honest_provenance() {
-        let msl = resolve_marine_level(&MarineSpec::default(), VerticalReference::Egm2008);
+        let msl = resolve_marine_level(&MarineSpec::default(), VerticalReference::Egm2008, None);
         assert_eq!(msl.datum, "MSL");
         assert_eq!(msl.elevation_m, 0.0);
         assert!(msl.source.contains("EGM2008"));
         assert!(msl.warning.is_none());
 
-        let unknown = resolve_marine_level(&MarineSpec::default(), VerticalReference::Unknown);
+        let unknown =
+            resolve_marine_level(&MarineSpec::default(), VerticalReference::Unknown, None);
         assert!(unknown.warning.as_deref().unwrap().contains("unknown"));
 
         let custom = MarineSpec {
@@ -516,7 +572,7 @@ mod tests {
             custom_offset_m: -2.5,
             ..MarineSpec::default()
         };
-        let custom = resolve_marine_level(&custom, VerticalReference::Egm96);
+        let custom = resolve_marine_level(&custom, VerticalReference::Egm96, None);
         assert_eq!(custom.elevation_m, -2.5);
         assert!(custom.source.contains("EGM96"));
         // The note layer prints the level itself; the source must not
@@ -527,9 +583,64 @@ mod tests {
             level: MarineLevel::LowTide,
             ..MarineSpec::default()
         };
-        let low = resolve_marine_level(&low, VerticalReference::Egm96);
+        let low = resolve_marine_level(&low, VerticalReference::Egm96, None);
         assert_eq!(low.datum, "MLLW (requested)");
         assert_eq!(low.elevation_m, 0.0);
         assert!(low.warning.as_deref().unwrap().contains("low tide"));
+    }
+
+    /// With sourced tidal datums the presets stop apologising and resolve
+    /// to real offsets about the provider's zero, naming the station and
+    /// keeping the one approximation — geoid zero standing in for local
+    /// mean sea level — in the warning.
+    #[test]
+    fn sourced_tidal_datums_resolve_the_tide_presets() {
+        let tides = TidalOffsets {
+            low_minus_msl_m: -0.951,
+            high_minus_msl_m: 0.829,
+            source: "NOAA CO-OPS station 9414290 San Francisco (22 km away), epoch 1983-2001"
+                .into(),
+            caveat: None,
+        };
+        let low = MarineSpec {
+            level: MarineLevel::LowTide,
+            ..MarineSpec::default()
+        };
+        let low = resolve_marine_level(&low, VerticalReference::Egm96, Some(&tides));
+        assert_eq!(low.datum, "MLLW");
+        assert!((low.elevation_m + 0.951).abs() < 1e-6);
+        assert!(low.source.contains("San Francisco"));
+        assert!(low.source.contains("EGM96"));
+        assert!(low.warning.as_deref().unwrap().contains("geoid zero"));
+
+        let high = MarineSpec {
+            level: MarineLevel::HighTide,
+            ..MarineSpec::default()
+        };
+        let high = resolve_marine_level(&high, VerticalReference::Egm2008, Some(&tides));
+        assert_eq!(high.datum, "MHHW");
+        assert!((high.elevation_m - 0.829).abs() < 1e-6);
+
+        // A source caveat — a distant station — rides ahead of the
+        // standing approximation note.
+        let distant = TidalOffsets {
+            caveat: Some("the nearest tide station is 87 km away".into()),
+            ..tides.clone()
+        };
+        let low_spec = MarineSpec {
+            level: MarineLevel::LowTide,
+            ..MarineSpec::default()
+        };
+        let warned = resolve_marine_level(&low_spec, VerticalReference::Egm96, Some(&distant));
+        assert!(warned.warning.as_deref().unwrap().contains("87 km"));
+
+        // MSL and custom ignore tides: they claim nothing tidal.
+        let msl = resolve_marine_level(
+            &MarineSpec::default(),
+            VerticalReference::Egm96,
+            Some(&tides),
+        );
+        assert_eq!(msl.elevation_m, 0.0);
+        assert_eq!(msl.datum, "MSL");
     }
 }

@@ -2,7 +2,7 @@
 //! the source notes, an east-west elevation transect before and after the
 //! flatten, and a PPM of the final classes.
 //!
-//! Usage: marine_probe <setup.json> <out.ppm> [level_m] [v]
+//! Usage: marine_probe <setup.json> <out.ppm> [level_m|low|high] [v]
 
 use std::{env, fs};
 
@@ -34,18 +34,21 @@ fn class_color(class: SurfaceClass) -> [u8; 3] {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let setup = env::args().nth(1).expect("setup json path");
     let output = env::args().nth(2).expect("output ppm path");
-    let level_m = env::args()
-        .nth(3)
-        .map(|value| value.parse::<f32>().expect("level in metres"));
+    let level_argument = env::args().nth(3);
     let v = env::args()
         .nth(4)
         .map(|value| value.parse::<f32>().expect("transect v"))
         .unwrap_or(0.5);
     let mut spec: GenerationSpec = serde_json::from_str(&fs::read_to_string(setup)?)?;
     spec.marine.geometry = MarineGeometry::FlatSurface;
-    if let Some(level_m) = level_m {
-        spec.marine.level = MarineLevel::Custom;
-        spec.marine.custom_offset_m = level_m;
+    match level_argument.as_deref() {
+        Some("low") => spec.marine.level = MarineLevel::LowTide,
+        Some("high") => spec.marine.level = MarineLevel::HighTide,
+        Some(value) => {
+            spec.marine.level = MarineLevel::Custom;
+            spec.marine.custom_offset_m = value.parse::<f32>().expect("level in metres");
+        }
+        None => {}
     }
     spec.validate()?;
     let cache_dir = map_cache_root()?;

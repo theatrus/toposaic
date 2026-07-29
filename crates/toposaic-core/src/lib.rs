@@ -23,7 +23,8 @@ pub use coastline::{OceanExtent, assemble_ocean};
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
 pub use heightfield::{DespikeReport, HeightField, VerticalReference};
 pub use marine::{
-    MarineOutcome, ResolvedMarineLevel, apply_flat_marine_surface, resolve_marine_level,
+    MarineOutcome, ResolvedMarineLevel, TidalOffsets, apply_flat_marine_surface,
+    resolve_marine_level,
 };
 pub use preview::build_height_preview;
 pub use project::{

@@ -17,6 +17,7 @@ const CACHE_CATEGORY_NAMES: Record<CacheCategoryKey, string> = {
   elevation: "Elevation tiles",
   world_cover: "Land cover",
   osm: "OpenStreetMap",
+  datum: "Tide datums",
   places: "Place search",
 };
 

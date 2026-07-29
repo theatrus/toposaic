@@ -77,10 +77,11 @@ pub fn store_reader(path: &Path, mut reader: impl Read) -> Result<()> {
 /// elevation category covers its mapterhorn subdirectory. The jobs
 /// directory and the jobs table are user data, not cache, and are never in
 /// scope here.
-const FILE_CATEGORIES: [(&str, &str); 3] = [
+const FILE_CATEGORIES: [(&str, &str); 4] = [
     ("elevation", "elevation"),
     ("world_cover", "world-cover"),
     ("osm", "osm"),
+    ("datum", "datum"),
 ];
 
 #[derive(Debug, Serialize)]
@@ -437,7 +438,7 @@ mod tests {
         let (state, _directory) = isolated_state();
         let summary = summary(&state).await;
         assert_eq!(summary.total_bytes, 0);
-        assert_eq!(summary.categories.len(), 4);
+        assert_eq!(summary.categories.len(), 5);
         assert!(
             summary
                 .categories
@@ -454,16 +455,18 @@ mod tests {
         write_file(&cache_dir.join("elevation/mapterhorn/8/1/2.webp"), &[0; 20]);
         write_file(&cache_dir.join("world-cover/tile-a.tif"), &[0; 7]);
         write_file(&cache_dir.join("osm/.roads-v2-a.json.abc.part"), &[0; 5]);
+        write_file(&cache_dir.join("datum/coops-stations-v1.json"), &[0; 9]);
         let job_file = state.jobs_dir.join("job-1/model.3mf");
         write_file(&job_file, &[0; 999]);
         insert_place_row(&state, "rainier", "12345678", Utc::now());
 
         let cleared = clear(&state, None).await;
-        assert_eq!(cleared.removed_bytes, 10 + 20 + 7 + 5 + 8);
-        assert_eq!(cleared.removed_entries, 5);
+        assert_eq!(cleared.removed_bytes, 10 + 20 + 7 + 5 + 9 + 8);
+        assert_eq!(cleared.removed_entries, 6);
         assert!(!cache_dir.join("elevation").exists(), "empty dirs pruned");
         assert!(!cache_dir.join("world-cover").exists());
         assert!(!cache_dir.join("osm").exists());
+        assert!(!cache_dir.join("datum").exists());
         assert!(job_file.exists(), "jobs are user data, not cache");
         assert!(place_queries(&state).is_empty());
         assert_eq!(summary(&state).await.total_bytes, 0);
