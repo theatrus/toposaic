@@ -2196,6 +2196,9 @@ pub struct ColorOutputSpec {
     /// Steep-slope reclassification gates. Flattened like `borders`.
     #[serde(flatten)]
     pub slope_gates: SlopeGateSpec,
+    /// Satellite-derived ground colors. Flattened like the other groups.
+    #[serde(flatten)]
+    pub ground_palette: GroundPaletteSpec,
 }
 
 /// Controls how mapped transport lines change width as the view closes in.
@@ -2398,6 +2401,104 @@ impl SlopeGateSpec {
     }
 }
 
+/// Where ground colors come from: the fixed per-class map colors, or a
+/// small palette discovered from Sentinel-2 imagery of the selected area.
+///
+/// Serialized flattened into [`ColorOutputSpec`], so this grouping never
+/// shows up on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GroundPaletteSpec {
+    /// The ground color mode. `Mapped` — the default, and the only behavior
+    /// that existed before this group — paints every class its one spec
+    /// color and never touches imagery.
+    pub ground_colors: GroundColorMode,
+    /// How many ground colors discovery may keep. A printed model loads a
+    /// few materials, not a photograph's millions. Hybrid mode guarantees
+    /// every present class an entry of its own, so an area with all four
+    /// classes can exceed a requested two or three by up to that many.
+    pub ground_color_count: u32,
+    /// Smallest surface share a discovered color may keep; rarer colors
+    /// dissolve into their nearest neighbour rather than waste a slot.
+    pub ground_color_minimum_share: f32,
+    /// How strongly terrain shadows are flattened before clustering, from
+    /// 0 to 1. At 0 a shadowed hillside can become its own darker color —
+    /// which pure satellite mode may even want as an appearance.
+    pub ground_shadow_normalization: f32,
+    /// A resolved palette to reuse instead of discovering one: the
+    /// super-tile and adjacent-job path, where every tile must map imagery
+    /// to the same colors it did not itself discover. `None` — always, for
+    /// specs saved before this group existed — discovers from the area.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_ground_palette: Option<Vec<String>>,
+}
+
+/// The three ground color modes of issue #69: today's mapped classes, a
+/// palette discovered from imagery alone, and the hybrid that discovers
+/// shades inside the mapped classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroundColorMode {
+    #[default]
+    Mapped,
+    Satellite,
+    Hybrid,
+}
+
+impl Default for GroundPaletteSpec {
+    fn default() -> Self {
+        Self {
+            ground_colors: GroundColorMode::default(),
+            // Four colors covers the common mix — two greens, a ground
+            // tone, a water tone — without crowding the overlay materials
+            // out of the printer.
+            ground_color_count: 4,
+            // Two percent of the surface is roughly the smallest area a
+            // filament change still reads on at print scale.
+            ground_color_minimum_share: 0.02,
+            // Off by default: flattening is a choice about appearance, and
+            // the hybrid mode's per-class grouping already keeps shadows
+            // from crossing class lines.
+            ground_shadow_normalization: 0.0,
+            locked_ground_palette: None,
+        }
+    }
+}
+
+impl GroundPaletteSpec {
+    fn validate(&self) -> Result<()> {
+        if !(2..=crate::palette::MAXIMUM_PALETTE_ENTRIES as u32).contains(&self.ground_color_count)
+        {
+            bail!(
+                "ground color count must be between 2 and {}",
+                crate::palette::MAXIMUM_PALETTE_ENTRIES
+            );
+        }
+        // Past a quarter of the surface the floor starts dissolving colors
+        // a viewer plainly sees.
+        if !(0.0..=0.25).contains(&self.ground_color_minimum_share) {
+            bail!("ground color minimum share must be between 0 and 0.25");
+        }
+        if !(0.0..=1.0).contains(&self.ground_shadow_normalization) {
+            bail!("ground shadow normalization must be between 0 and 1");
+        }
+        if let Some(colors) = &self.locked_ground_palette {
+            if colors.is_empty() || colors.len() > crate::palette::MAXIMUM_PALETTE_ENTRIES {
+                bail!(
+                    "a locked ground palette must hold 1 to {} colors",
+                    crate::palette::MAXIMUM_PALETTE_ENTRIES
+                );
+            }
+            for color in colors {
+                if !valid_hex_color(color) {
+                    bail!("locked ground palette colors must use #RRGGBB");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Default for ColorOutputSpec {
     fn default() -> Self {
         Self {
@@ -2452,6 +2553,7 @@ impl Default for ColorOutputSpec {
             aviation: AviationSpec::default(),
             borders: BorderSpec::default(),
             slope_gates: SlopeGateSpec::default(),
+            ground_palette: GroundPaletteSpec::default(),
         }
     }
 }
@@ -2517,6 +2619,7 @@ impl ColorOutputSpec {
         self.slope_gates.validate()?;
         self.borders.validate()?;
         self.line_scaling.validate()?;
+        self.ground_palette.validate()?;
         Ok(())
     }
 }
@@ -2723,7 +2826,7 @@ mod tests {
     /// key flat, every key in the old order.
     #[test]
     fn default_spec_serializes_to_the_exact_flat_wire_format() {
-        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"aviation_enabled":false,"aviation_runways_enabled":true,"aviation_taxiways_enabled":true,"aviation_aprons_enabled":true,"aviation_helipads_enabled":true,"aviation_style":"separate","aviation_color":"#4A4E54","aviation_height_mm":0.2,"maximum_aviation_width_mm":3.0,"aviation_detail_span_km":12.0,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0,"water_slope_gate":true,"water_slope_limit_degrees":30.0,"osm_water_slope_gate":true,"osm_water_slope_limit_degrees":30.0},"trails":[]}"##;
+        let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"aviation_enabled":false,"aviation_runways_enabled":true,"aviation_taxiways_enabled":true,"aviation_aprons_enabled":true,"aviation_helipads_enabled":true,"aviation_style":"separate","aviation_color":"#4A4E54","aviation_height_mm":0.2,"maximum_aviation_width_mm":3.0,"aviation_detail_span_km":12.0,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0,"water_slope_gate":true,"water_slope_limit_degrees":30.0,"osm_water_slope_gate":true,"osm_water_slope_limit_degrees":30.0,"ground_colors":"mapped","ground_color_count":4,"ground_color_minimum_share":0.02,"ground_shadow_normalization":0.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
@@ -2972,7 +3075,12 @@ mod tests {
                 "osm_water_slope_gate": false,
                 "osm_water_slope_limit_degrees": 45.0,
                 "snow_slope_gate": false,
-                "snow_slope_limit_degrees": 70.0
+                "snow_slope_limit_degrees": 70.0,
+                "ground_colors": "hybrid",
+                "ground_color_count": 6,
+                "ground_color_minimum_share": 0.125,
+                "ground_shadow_normalization": 0.5,
+                "locked_ground_palette": ["#AA3311", "#EEDDCC"]
             },
             "trails": [
                 {

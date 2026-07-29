@@ -83,6 +83,68 @@ export function SurfaceTerrainSection({
           />
         </>
       )}
+      <label className="road-detail-field">
+        Ground colors
+        <select
+          value={spec.color_output.ground_colors}
+          onChange={(event) =>
+            updateColor(
+              "ground_colors",
+              event.target
+                .value as GenerationSpec["color_output"]["ground_colors"],
+            )
+          }
+        >
+          <option value="mapped">Mapped classes · fixed colors</option>
+          <option value="hybrid">Satellite shades inside classes</option>
+          <option value="satellite">Satellite palette · imagery alone</option>
+        </select>
+        <small>
+          The mapped classes each print one fixed color. The satellite modes
+          discover a small palette from Sentinel-2 imagery of this area:
+          hybrid keeps forest, ground, snow, and water apart and finds local
+          shades inside each; pure satellite clusters the imagery alone. The
+          discovered swatches appear in the generated job&apos;s data sources.
+        </small>
+      </label>
+      {spec.color_output.ground_colors !== "mapped" && (
+        <>
+          <RangeField
+            label="Ground color count"
+            value={spec.color_output.ground_color_count}
+            unit=" colors"
+            min={2}
+            max={8}
+            step={1}
+            onChange={(value) => updateColor("ground_color_count", value)}
+            note="How many ground colors discovery may keep. Hybrid guarantees every present class an entry, so four classes can exceed a request of two or three."
+          />
+          <RangeField
+            label="Smallest color share"
+            value={spec.color_output.ground_color_minimum_share * 100}
+            unit="%"
+            min={0}
+            max={25}
+            step={1}
+            onChange={(value) =>
+              updateColor("ground_color_minimum_share", value / 100)
+            }
+            note="Colors covering less of the surface than this dissolve into their nearest neighbour instead of taking a filament slot."
+          />
+          <RangeField
+            label="Shadow flattening"
+            value={spec.color_output.ground_shadow_normalization}
+            unit=""
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(value) =>
+              updateColor("ground_shadow_normalization", value)
+            }
+            note="How strongly terrain shadows are evened out before colors are chosen. At zero a shadowed hillside can become its own darker color."
+          />
+        </>
+      )}
       <div className="road-options">
         <label className="color-toggle">
           <input

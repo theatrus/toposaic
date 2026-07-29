@@ -8,6 +8,7 @@ mod marker;
 mod mesh;
 mod mount;
 mod mount_layout;
+mod palette;
 mod piece;
 mod planar_mesh;
 mod preview;
@@ -19,6 +20,10 @@ mod tray;
 
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
 pub use heightfield::{DespikeReport, HeightField};
+pub use palette::{
+    GroundImagery, GroundPalette, GroundPaletteEntry, GroundPaletteOptions,
+    MAXIMUM_PALETTE_ENTRIES, NO_GROUND_MATERIAL, assign_locked_palette, discover_ground_palette,
+};
 pub use preview::build_height_preview;
 pub use project::{
     Artifact, ProjectManifest, artifact_path, generate_marker_artifacts, generate_project,
@@ -27,10 +32,11 @@ pub use project::{
 };
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
-    DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec, LabelFont,
-    LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec,
-    PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec,
-    SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont,
-    TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec, GroundColorMode,
+    GroundPaletteSpec, LabelFont, LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker,
+    MarkerKind, MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail,
+    RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
+    TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle,
+    WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};
