@@ -2793,6 +2793,36 @@ mod tests {
         assert_eq!(world_cover_tile(-1.0, -1.0), "S03W003");
     }
 
+    /// The water gates judge printed angles, and this ratio is what turns
+    /// a ground gradient into a printed one: vertical mm-per-m over
+    /// horizontal mm-per-m.
+    #[test]
+    fn print_vertical_exaggeration_reads_the_spec_and_the_relief() {
+        // 40 m of relief drawn at 28 mm over 4.5 km at 180 mm — the SFO
+        // shape: (28/40) / (180/4500) = 17.5.
+        let spec = GenerationSpec {
+            ground_span_km: 4.5,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            ..GenerationSpec::default()
+        };
+        let field = HeightField::new(2, 2, vec![0.0, 40.0, 0.0, 40.0], "test").unwrap();
+        assert!((print_vertical_exaggeration(&spec, &field) - 17.5).abs() < 0.01);
+
+        // A locked super-tile scale overrides the relief-derived one:
+        // 1 m/mm of print is 1.0 mm-per-m over 0.04 = 25.
+        let locked = GenerationSpec {
+            elevation_datum_m: Some(0.0),
+            elevation_m_per_mm: Some(1.0),
+            ..spec.clone()
+        };
+        assert!((print_vertical_exaggeration(&locked, &field) - 25.0).abs() < 0.01);
+
+        // Flat ground has no honest ratio and answers true scale.
+        let flat = HeightField::new(2, 2, vec![5.0; 4], "flat").unwrap();
+        assert_eq!(print_vertical_exaggeration(&spec, &flat), 1.0);
+    }
+
     #[test]
     fn maps_world_cover_classes_to_print_colors() {
         assert_eq!(classify_world_cover(10), SurfaceClass::Forest);

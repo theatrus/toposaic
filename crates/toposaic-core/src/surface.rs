@@ -302,6 +302,15 @@ impl SurfaceField {
         let index = row * self.width + column;
         self.classes[index] = class;
         self.base_classes[index] = class;
+        // The frozen ring exists so both sides of a super-tile seam sample
+        // the same value — and the steep-water mask must honour that too.
+        // Edge slopes are one-sided guesses the neighbouring tile computes
+        // differently from its own side, so a mask verdict on the ring
+        // could gate a water polygon on one tile and not the other,
+        // splitting the sea's colour along the seam. The ring never masks.
+        if let Some(mask) = &mut self.steep_water {
+            mask[index] = false;
+        }
     }
 
     pub fn filter_small_patches(&mut self, print_width_mm: f32, minimum_patch_mm: f32) {
@@ -325,10 +334,16 @@ impl SurfaceField {
     /// becomes rock; the snow gate runs after the forest gate, so a face
     /// steeper than both limits ends as rock even with the snow target.
     /// The snowline always comes from the pre-demotion snow samples, and
-    /// each sample's slope is computed once and shared by both gates.
+    /// each sample's slope is computed once and shared by every gate.
     /// Applies to both the working and the base class rasters, so call it
     /// before painting vector overlays. Returns how many samples were
     /// reclassified, split by the class they left and became.
+    ///
+    /// Cost note: with the mapped-water gate on — the default — the slope
+    /// is computed at EVERY sample, not only the gated classes, because
+    /// the mask must cover the rock walls a polygon would climb. That is
+    /// four height interpolations per raster sample, once per generation;
+    /// measured harmless beside the fetches and meshing around it.
     pub fn demote_steep_classes(
         &mut self,
         height_field: &HeightField,
@@ -2282,6 +2297,41 @@ mod tests {
             field.class_at(0.5, 0.5),
             SurfaceClass::Water,
             "the gate dammed a river on the wall"
+        );
+    }
+
+    /// The frozen edge ring keeps super-tile seams equal, and the
+    /// steep-water mask must honour it: edge slopes are one-sided guesses
+    /// the neighbouring tile computes differently from its own side, so a
+    /// ring verdict could gate a water polygon on one tile and not the
+    /// other, splitting the sea's colour along the seam. After the ring is
+    /// restored, polygon water reaches it again; the interior wall stays
+    /// gated.
+    #[test]
+    fn restoring_the_edge_ring_clears_the_steep_water_mask_on_it() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Rock; size * size], "test").unwrap();
+        let edges = field.raster_edge_classes();
+        field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+        field.restore_raster_edge_classes(&edges).unwrap();
+        field.paint_surface_area(
+            &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            SurfaceClass::Water,
+        );
+        // The wall crosses the top ring at u=0.5: the ring sample defers to
+        // the seam and keeps the polygon's water; the same wall one row in
+        // is interior and stays gated.
+        assert_eq!(
+            field.class_at(0.5, 0.0),
+            SurfaceClass::Water,
+            "the frozen ring gated polygon water"
+        );
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Rock,
+            "the interior wall lost its gate"
         );
     }
 
