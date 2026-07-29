@@ -625,16 +625,39 @@ pub(super) fn append_road_geometry(
         let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
         let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
         let terrain = terrain_z_at(spec, height_field, height_range, u, v);
-        // The nearest graded line owns the point. Away from every line —
-        // out in an apron — the terrain is what is left.
-        let mut nearest = None::<(f32, f32)>;
+        // The nearest graded line owns the point, but only near itself:
+        // inside its own ribbon the grading is the whole answer, and its
+        // say fades to nothing over the band beyond. Out in an apron away
+        // from every strip, the ground is what is left.
+        let mut nearest = None::<(f32, f32, f32)>;
         for profile in &profiles {
+            if assembled[0] < profile.reach[0]
+                || assembled[0] > profile.reach[2]
+                || assembled[1] < profile.reach[1]
+                || assembled[1] > profile.reach[3]
+            {
+                continue;
+            }
             let distance = polyline_distance_squared(&profile.line.points_mm, assembled);
-            if nearest.is_none_or(|(best, _)| distance < best) {
-                nearest = Some((distance, profile.z_at(u, v)));
+            if nearest.is_none_or(|(best, _, _)| distance < best) {
+                nearest = Some((distance, profile.z_at(u, v), profile.line.width_mm * 0.5));
             }
         }
-        nearest.map_or(terrain, |(_, z)| z)
+        let Some((distance_squared, graded, half_width)) = nearest else {
+            return terrain;
+        };
+        let distance = distance_squared.sqrt();
+        let fade_end = half_width + AVIATION_GRADE_FADE_MM;
+        let share = if distance <= half_width {
+            1.0
+        } else if distance >= fade_end {
+            0.0
+        } else {
+            1.0 - (distance - half_width) / AVIATION_GRADE_FADE_MM
+        };
+        // Smoothstep, so the join carries no crease for a slicer to find.
+        let share = share * share * (3.0 - 2.0 * share);
+        terrain + (graded - terrain) * share
     };
     if !aviation_regular.is_empty() {
         let aviation_area = append_overlay_geometry_at_height(
@@ -968,6 +991,16 @@ const AVIATION_PROFILE_STATIONS: usize = 64;
 /// over hundreds of metres while DEM noise changes sample to sample, so a
 /// window this wide removes the noise and leaves the slope.
 const AVIATION_PROFILE_SMOOTHING: usize = 4;
+/// How far beyond its own ribbon a graded profile keeps any say over the
+/// height, in mm of print.
+///
+/// A profile is measured along one strip and is only true near it. Letting
+/// the nearest one own the whole layer puts an apron a kilometre away at
+/// the runway's height, which on sloping ground sinks it into the hill or
+/// floats it over one. Easing back to the ground over a short band keeps
+/// the height function continuous, so an apron abutting a taxiway still
+/// meets it without a step.
+const AVIATION_GRADE_FADE_MM: f32 = 4.0;
 
 /// A graded elevation profile along one aeroway centre line.
 ///
@@ -982,6 +1015,13 @@ struct AviationProfile<'lines> {
     line: &'lines VectorSurfaceLine,
     /// Print z at evenly spaced stations from the line's start to its end.
     stations: Vec<f32>,
+    /// Assembled-mm box beyond which this profile has no say, being its
+    /// ribbon grown by the fade band. Every point of the layer asks every
+    /// profile how far away it is, so a busy airport would otherwise walk
+    /// hundreds of polylines per vertex. Skipping a profile whose box
+    /// misses the point changes no answer — past the fade its share is
+    /// zero — it just stops asking.
+    reach: [f32; 4],
 }
 
 impl AviationProfile<'_> {
@@ -1030,7 +1070,24 @@ fn aviation_profiles<'lines>(
                     window.iter().sum::<f32>() / window.len() as f32
                 })
                 .collect();
-            AviationProfile { line, stations }
+            let margin = line.width_mm * 0.5 + AVIATION_GRADE_FADE_MM;
+            let mut reach = [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ];
+            for point in &line.points_mm {
+                reach[0] = reach[0].min(point[0] - margin);
+                reach[1] = reach[1].min(point[1] - margin);
+                reach[2] = reach[2].max(point[0] + margin);
+                reach[3] = reach[3].max(point[1] + margin);
+            }
+            AviationProfile {
+                line,
+                stations,
+                reach,
+            }
         })
         .collect()
 }

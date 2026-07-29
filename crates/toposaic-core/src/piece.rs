@@ -1864,6 +1864,167 @@ mod tests {
         );
     }
 
+    /// An apron far from any runway must sit on its own ground. The graded
+    /// profile belongs to the strip it was measured along; letting it own
+    /// the whole map floats a distant apron above the terrain, or sinks it
+    /// under, by whatever the elevation differs by.
+    #[test]
+    fn a_distant_apron_follows_its_own_ground_not_a_far_off_runway() {
+        // Ground that climbs hard from west to east.
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let _ = y;
+                    x as f32 / (samples - 1) as f32 * 600.0
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "slope").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 32,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A short runway hard against the low western edge...
+        field.paint_polyline(
+            &[[0.02, 0.1], [0.02, 0.4]],
+            120.0,
+            2.0,
+            SurfaceClass::Aviation,
+        );
+        // ...and an apron away east, where the ground is hundreds of
+        // metres higher.
+        field.paint_surface_area(
+            &[[0.30, 0.10], [0.45, 0.10], [0.45, 0.40], [0.30, 0.40]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        // The ground climbs across the apron, so every point is judged
+        // against the terrain under it rather than one figure for the lot.
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+            // Only the apron, well east of the runway.
+            .filter(|vertex| vertex[0] > spec.width_mm * 0.25)
+        {
+            let key = (
+                (vertex[0] * 50.0).round() as i32,
+                (vertex[1] * 50.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(
+            !columns.is_empty(),
+            "the apron never reached the mesh, so this proves nothing"
+        );
+
+        let mut worst = 0.0_f32;
+        let mut worst_at = (0.0, 0.0);
+        for ((x, y), top) in &columns {
+            let point = [*x as f32 / 50.0, *y as f32 / 50.0];
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                point[0] / spec.width_mm,
+                point[1] / spec.height_mm(),
+            ) + spec.color_output.aviation.aviation_height_mm;
+            if (top - ground).abs() > worst {
+                worst = (top - ground).abs();
+                worst_at = (*top, ground);
+            }
+        }
+        assert!(
+            worst < 0.5,
+            "the apron stands {worst} mm off its own ground ({} against {}) — it \
+             took a far-off runway's graded height instead",
+            worst_at.0,
+            worst_at.1
+        );
+    }
+
+    /// Guards the cost of grading. Every mesh vertex of the layer asks every
+    /// aeroway line how far away it is, so a busy airport multiplies out. A
+    /// real one — Heathrow has on the order of a hundred taxiway ways — must
+    /// not turn a piece into a stall.
+    #[test]
+    fn grading_a_busy_airport_stays_quick() {
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 48,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A hundred taxiways in a grid, plus two runways across them.
+        for index in 0..100 {
+            let t = index as f32 / 99.0;
+            field.paint_polyline(
+                &[[0.05, 0.05 + t * 0.9], [0.95, 0.05 + t * 0.9]],
+                120.0,
+                0.6,
+                SurfaceClass::Aviation,
+            );
+        }
+        field.paint_polyline(
+            &[[0.1, 0.3], [0.9, 0.3]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(
+            &[[0.1, 0.7], [0.9, 0.7]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+
+        let started = std::time::Instant::now();
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        let elapsed = started.elapsed();
+        assert_watertight(&mesh);
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "the airport should have reached the mesh"
+        );
+        // Generous: this runs in a debug build on shared CI. It is here to
+        // catch an order-of-magnitude regression, not to hold a budget.
+        assert!(
+            elapsed.as_secs() < 60,
+            "grading a hundred-way airport took {elapsed:?}"
+        );
+        println!("grading a 102-way airport: {elapsed:?}");
+    }
+
     /// The pavement stands at its own height, not the road layer's.
     ///
     /// Measured as the difference between two runs rather than against the
