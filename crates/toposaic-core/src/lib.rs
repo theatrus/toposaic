@@ -24,7 +24,7 @@ pub use coastline::{OceanExtent, assemble_ocean};
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
 pub use heightfield::{
     DespikeReport, HeightField, HeightFrame, VerticalReference, exaggeration_for_metres_per_mm,
-    metres_per_mm_for_exaggeration, resolve_height_frame,
+    height_frame_for_bounds, metres_per_mm_for_exaggeration, resolve_height_frame,
 };
 pub use marine::{
     MarineOutcome, ResolvedMarineLevel, TidalOffsets, apply_flat_marine_surface,

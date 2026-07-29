@@ -595,19 +595,36 @@ export function heightForExaggeration(
   return rise / Math.max(1e-6, metresPerMm);
 }
 
+/**
+ * Freezes the current vertical scale into an explicit datum and m/mm pair,
+ * the form separately generated tiles share. It follows whatever the spec
+ * already chose — locking while a multiplier is set keeps that multiplier,
+ * rather than quietly refitting the model to its height.
+ *
+ * A terrain-derived datum drops a small margin below the lowest ground so
+ * a later tile that runs slightly lower still sits above it. An absolute
+ * datum needs no such room and is taken as it stands.
+ */
 export function deriveHeightFrame(
+  spec: GenerationSpec,
   sampled: { minimum_elevation_m: number; maximum_elevation_m: number },
-  reliefMm: number,
 ) {
+  const reference = resolveDatumM(spec, sampled);
   const sampledRange = Math.max(
     1,
     sampled.maximum_elevation_m - sampled.minimum_elevation_m,
   );
   const margin = Math.max(2, sampledRange * 0.02);
-  const datum = Math.floor((sampled.minimum_elevation_m - margin) * 10) / 10;
-  const metresPerMm = Math.max(
-    0.1,
-    (sampled.maximum_elevation_m - datum) / reliefMm,
-  );
+  const datum =
+    reference === sampled.minimum_elevation_m
+      ? Math.floor((reference - margin) * 10) / 10
+      : reference;
+  const metresPerMm =
+    spec.height_mode === "multiplier"
+      ? 1 / Math.max(1e-9, spec.vertical_exaggeration * horizontalMmPerM(spec))
+      : Math.max(
+          0.1,
+          Math.max(1, sampled.maximum_elevation_m - datum) / spec.relief_mm,
+        );
   return { datum, metresPerMm };
 }

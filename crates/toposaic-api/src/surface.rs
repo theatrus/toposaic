@@ -17,7 +17,8 @@ use toposaic_core::{
     ClassBorders, GenerationSpec, GroundColorMode, GroundImagery, GroundPaletteOptions,
     HeightField, LineStyle, MarineGeometry, MarkerKind, NativeClassGrid, RailLifecycle,
     ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField, apply_flat_marine_surface,
-    assign_locked_palette, discover_ground_palette, resolve_marine_level,
+    assign_locked_palette, discover_ground_palette, exaggeration_for_metres_per_mm,
+    resolve_height_frame, resolve_marine_level,
 };
 use tracing::warn;
 
@@ -986,27 +987,17 @@ fn normalized_osm_points(way: &OverpassWay, transform: GeoTransform) -> Vec<[f32
 /// PRINTED angles — vertical exaggeration turns a two-degree shoreline
 /// into a forty-degree face, and that face is the wall the blue climbs.
 fn print_vertical_exaggeration(spec: &GenerationSpec, height_field: &HeightField) -> f32 {
-    let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
-    let horizontal_mm_per_m = spec.width_mm / ground_span_m;
-    let vertical_mm_per_m = match spec.elevation_m_per_mm {
-        // A super-tile set prints on a fixed shared scale rather than one
-        // stretched to this tile's own relief.
-        Some(m_per_mm) if m_per_mm > 0.0 => 1.0 / m_per_mm,
-        _ => {
-            let (low, high) = height_field
-                .values_m
-                .iter()
-                .filter(|value| value.is_finite())
-                .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), value| {
-                    (low.min(*value), high.max(*value))
-                });
-            if high <= low {
-                return 1.0;
-            }
-            spec.relief_mm / (high - low)
-        }
-    };
-    let ratio = vertical_mm_per_m / horizontal_mm_per_m;
+    // Flat ground has no shoreline to judge and no honest ratio.
+    let (low, high) = height_field.elevation_bounds();
+    if high <= low {
+        return 1.0;
+    }
+    // Ask the resolver the mesh will use rather than assume a fitted
+    // relief. A multiplier, or a datum other than the area minimum,
+    // changes the printed steepness this gate measures; guessing strips
+    // blue off gentle shorelines.
+    let frame = resolve_height_frame(spec, height_field);
+    let ratio = exaggeration_for_metres_per_mm(spec, frame.metres_per_mm);
     if ratio.is_finite() && ratio > 0.0 {
         ratio
     } else {

@@ -22,9 +22,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, DatumReference, FlagMarkerStyle, GenerationSpec, HeightMode, MarkerKind,
-    artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
-    generate_tray_artifacts, metres_per_mm_for_exaggeration,
+    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, artifact_path,
+    generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
+    height_frame_for_bounds,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -542,12 +542,10 @@ fn run_adjacent_grid_job(
         height_fields.push(height_field);
     }
 
-    // Every part of a super-tile prints on one frame, so it is resolved
-    // here — across the whole footprint — rather than per tile. The
-    // chosen datum reference and height mode decide it exactly as they do
-    // for a lone tile; the only difference is that "the area" means all
-    // the tiles together, so the shared minimum and maximum are the
-    // grid's, not any one part's.
+    // Every part of a super-tile prints on one frame, so it resolves here
+    // across the whole footprint rather than per tile. The datum reference
+    // and height mode decide it as they do for a lone tile; "the area"
+    // just means all the tiles together.
     if spec.elevation_datum_m.is_none() {
         let (minimum, maximum) = height_fields.iter().fold(
             (f32::INFINITY, f32::NEG_INFINITY),
@@ -556,20 +554,10 @@ fn run_adjacent_grid_job(
                 (minimum.min(field_minimum), maximum.max(field_maximum))
             },
         );
-        let datum = match spec.height_scale.datum_reference {
-            DatumReference::AreaMinimum => minimum,
-            DatumReference::SeaLevel => 0.0_f32.min(minimum),
-            DatumReference::Custom => spec.height_scale.custom_datum_m.min(minimum),
-        };
-        let metres_per_mm = match spec.height_scale.height_mode {
-            HeightMode::OverallHeight => (maximum - datum).max(1.0) / spec.relief_mm,
-            HeightMode::Multiplier => {
-                metres_per_mm_for_exaggeration(spec, spec.height_scale.vertical_exaggeration)
-            }
-        };
+        let frame = height_frame_for_bounds(spec, minimum, maximum);
         for tile in &mut tiles {
-            tile.elevation_datum_m = Some(datum);
-            tile.elevation_m_per_mm = Some(metres_per_mm);
+            tile.elevation_datum_m = Some(frame.datum_m);
+            tile.elevation_m_per_mm = Some(frame.metres_per_mm);
         }
     }
 

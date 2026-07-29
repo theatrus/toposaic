@@ -331,21 +331,16 @@ impl DespikeReport {
 pub struct HeightFrame {
     pub datum_m: f32,
     pub metres_per_mm: f32,
-    /// The ground metres the print's relief covers. Carried rather than
-    /// recomputed as `metres_per_mm * relief_mm`: dividing to get the
-    /// scale and multiplying back does not round-trip exactly in f32, and
-    /// this is the number a setup saved years ago normalized against.
-    /// Keeping it verbatim is what makes an old spec regenerate to the
-    /// same bits.
+    /// The ground metres the relief covers. Stored, not recomputed from
+    /// `metres_per_mm * relief_mm`: that divide and multiply does not
+    /// round-trip in f32, and old setups normalized against this exact
+    /// number.
     span_m: f32,
 }
 
 impl HeightFrame {
-    /// How tall the terrain prints under this frame, in millimetres above
-    /// the base. The geometry places every sample at
-    /// `base_mm + (elevation - datum) / metres_per_mm`, so this is the
-    /// model's actual relief — which under a multiplier follows the
-    /// terrain rather than any setting.
+    /// How tall the terrain prints, in millimetres above the base. Under a
+    /// multiplier this follows the terrain rather than any setting.
     pub fn printed_relief_mm(&self, maximum_elevation_m: f32) -> f32 {
         ((maximum_elevation_m - self.datum_m) / self.metres_per_mm).max(0.0)
     }
@@ -356,22 +351,19 @@ impl HeightFrame {
     }
 }
 
-/// Ground metres per printed millimetre at a given vertical exaggeration.
-/// Exaggeration is vertical print-millimetres per ground metre over the
-/// horizontal ones, so inverting it against the horizontal scale gives the
-/// vertical scale directly.
+/// Ground metres per printed millimetre at a given exaggeration.
+/// Exaggeration is the vertical print scale over the horizontal one, so
+/// inverting it against the horizontal scale gives the vertical.
 pub fn metres_per_mm_for_exaggeration(spec: &GenerationSpec, exaggeration: f32) -> f32 {
     let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
     let horizontal_mm_per_m = spec.width_mm / ground_span_m;
-    // Both factors are validated well away from zero, but a degenerate
-    // spec must not divide by one.
+    // Validation keeps both factors above zero; this guards the rest.
     let denominator = (exaggeration * horizontal_mm_per_m).max(f32::MIN_POSITIVE);
     1.0 / denominator
 }
 
-/// The exaggeration a frame amounts to: the inverse of the above, and the
-/// number the UI shows when the user pins the model's overall height
-/// instead.
+/// The exaggeration a frame amounts to. The inverse of the above, and what
+/// the panel shows when the user sets an overall height instead.
 pub fn exaggeration_for_metres_per_mm(spec: &GenerationSpec, metres_per_mm: f32) -> f32 {
     let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
     let horizontal_mm_per_m = spec.width_mm / ground_span_m;
@@ -381,15 +373,23 @@ pub fn exaggeration_for_metres_per_mm(spec: &GenerationSpec, metres_per_mm: f32)
 
 /// Resolves the vertical frame for a spec and the terrain it will print.
 ///
-/// An explicit `elevation_datum_m` and `elevation_m_per_mm` pair still
-/// wins over everything: that is the locked frame a super-tile writes so
-/// its parts agree, and honouring it keeps every setup saved before the
-/// height modes existed printing exactly as before.
+/// An explicit `elevation_datum_m` and `elevation_m_per_mm` pair wins over
+/// everything. That is the locked frame a super-tile writes so its parts
+/// agree, and it keeps older setups printing as before.
 ///
-/// Otherwise the datum comes from the chosen reference and the scale from
-/// the chosen mode — either fitting the area's relief into `relief_mm`,
-/// or holding a fixed exaggeration and letting the height follow.
+/// Otherwise the datum comes from the chosen reference, and the scale from
+/// the chosen mode: fit the relief into `relief_mm`, or hold a fixed
+/// exaggeration and let the height follow.
 pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> HeightFrame {
+    let (minimum, maximum) = field.elevation_bounds();
+    height_frame_for_bounds(spec, minimum, maximum)
+}
+
+/// The same resolution against bounds the caller already holds. A
+/// super-tile resolves one frame across every tile at once, so it passes
+/// the combined minimum and maximum. Sharing this keeps the two paths in
+/// step.
+pub fn height_frame_for_bounds(spec: &GenerationSpec, minimum: f32, maximum: f32) -> HeightFrame {
     if let (Some(datum_m), Some(metres_per_mm)) = (spec.elevation_datum_m, spec.elevation_m_per_mm)
     {
         return HeightFrame {
@@ -398,7 +398,6 @@ pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> Heigh
             span_m: metres_per_mm * spec.relief_mm,
         };
     }
-    let (minimum, maximum) = field.elevation_bounds();
     let datum_m = match spec.height_scale.datum_reference {
         DatumReference::AreaMinimum => minimum,
         // Terrain below zero keeps its relief rather than being cut off:
@@ -407,9 +406,8 @@ pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> Heigh
         DatumReference::Custom => spec.height_scale.custom_datum_m.min(minimum),
     };
     let (metres_per_mm, span_m) = match spec.height_scale.height_mode {
-        // The span is the primary quantity here — it is exactly what the
-        // auto-fit path has always normalized against — and the scale
-        // follows from it.
+        // The span comes first here: it is what the auto-fit path has
+        // always normalized against. The scale follows from it.
         HeightMode::OverallHeight => {
             let span_m = (maximum - datum_m).max(1.0);
             (span_m / spec.relief_mm, span_m)

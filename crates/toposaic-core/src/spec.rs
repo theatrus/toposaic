@@ -96,12 +96,11 @@ pub struct GenerationSpec {
     pub relief_mm: f32,
     pub elevation_datum_m: Option<f32>,
     pub elevation_m_per_mm: Option<f32>,
-    /// How the vertical scale is chosen: by the model's overall height —
-    /// the default, and what `relief_mm` has always meant — or by a fixed
-    /// multiplier that makes separate areas and separately generated tiles
-    /// print comparably. Flattened, so the keys sit at the spec's own
-    /// level, and defaulted, so every setup saved before it existed keeps
-    /// today's behavior.
+    /// How the vertical scale is chosen: by the model's overall height,
+    /// the default and what `relief_mm` has always meant, or by a fixed
+    /// multiplier that makes separate areas and tiles print comparably.
+    /// Flattened to keep the keys at the spec's own level, and defaulted
+    /// so older setups keep today's behavior.
     #[serde(flatten, default)]
     pub height_scale: HeightScaleSpec,
     pub adjacent_columns: u32,
@@ -1368,8 +1367,8 @@ impl BuildingSpec {
 
 /// How the model's vertical scale is chosen, and what its zero is.
 ///
-/// The printed frame is always a pair — a datum, and metres of ground per
-/// millimetre of print. This group says how to arrive at that pair.
+/// The printed frame is always a pair: a datum, and metres of ground per
+/// millimetre of print. This group says how to reach that pair.
 /// Serialized flattened into [`GenerationSpec`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1377,11 +1376,10 @@ pub struct HeightScaleSpec {
     pub height_mode: HeightMode,
     /// Ground metres per printed millimetre when `height_mode` is
     /// `Multiplier`, expressed as vertical exaggeration: how many times
-    /// steeper the print is than the ground. 1 is true scale. A small area
-    /// needs several times that before its relief reads at all, but a
-    /// whole mountain across a wide span is the other way round — Mount
-    /// Rainier over 18 km at 28 mm of relief comes to about 0.8, genuinely
-    /// compressed — so values below 1 are ordinary, not a mistake.
+    /// steeper the print is than the ground. 1 is true scale. A flat delta
+    /// needs hundreds before its relief reads at all. A mountain across a
+    /// wide span goes the other way: Mount Rainier over 18 km at 28 mm of
+    /// relief is about 0.8, compressed. Values below 1 are ordinary.
     pub vertical_exaggeration: f32,
     pub datum_reference: DatumReference,
     /// The datum in metres when `datum_reference` is `Custom`.
@@ -1394,15 +1392,13 @@ pub struct HeightScaleSpec {
 pub enum HeightMode {
     /// Fit the area's relief into `relief_mm` of print. The multiplier
     /// then follows from the terrain, so two areas of different relief
-    /// print at different vertical scales — the right answer when the
-    /// model should fill its height budget, and what TopoSaic has always
-    /// done.
+    /// print at different scales. Right when the model should fill its
+    /// height, and what TopoSaic has always done.
     #[default]
     OverallHeight,
-    /// Print at a fixed vertical exaggeration. The model's height then
-    /// follows from the terrain, so a flat area prints short and a
-    /// mountain prints tall — the right answer when models must be
-    /// comparable, or when separately generated tiles must agree.
+    /// Print at a fixed exaggeration. The height then follows from the
+    /// terrain, so a flat area prints short and a mountain prints tall.
+    /// Right when models must compare, or separate tiles must agree.
     Multiplier,
 }
 
@@ -1410,17 +1406,15 @@ pub enum HeightMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DatumReference {
-    /// The lowest ground in the area, less a small margin: the whole
-    /// height budget goes to the relief that is actually there. For a
-    /// super-tile this is the lowest ground across every tile, so the
-    /// parts share one zero. The default, and what the locked frame has
-    /// always computed.
+    /// The lowest ground in the area, less a small margin, so the whole
+    /// height goes to the relief that is there. A super-tile takes the
+    /// lowest ground across every tile, so its parts share one zero. The
+    /// default, and what the locked frame has always computed.
     #[default]
     AreaMinimum,
-    /// Zero metres. An absolute reference every model shares without any
-    /// coordination, and the one that puts a flat marine surface at the
-    /// same printed height everywhere. Areas that dip below it keep their
-    /// relief; the terrain simply starts above the base.
+    /// Zero metres. Every model shares it without coordinating, and it
+    /// puts a flat sea at the same printed height everywhere. Areas that
+    /// dip below it keep their relief.
     SeaLevel,
     /// A datum the user names, in metres.
     Custom,
@@ -1430,9 +1424,8 @@ impl Default for HeightScaleSpec {
     fn default() -> Self {
         Self {
             height_mode: HeightMode::default(),
-            // A middling exaggeration for the moment the mode is switched
-            // on without a translated value; the UI overwrites this with
-            // whatever the current height already implies.
+            // Stands in only until the panel translates the current
+            // height, which it does as soon as an area is sampled.
             vertical_exaggeration: 10.0,
             datum_reference: DatumReference::default(),
             custom_datum_m: 0.0,
@@ -1442,13 +1435,15 @@ impl Default for HeightScaleSpec {
 
 impl HeightScaleSpec {
     fn validate(&self) -> Result<()> {
-        // The bounds keep the arithmetic sane rather than judging a
-        // scale: the range has to cover everything the overall-height mode
-        // can produce, or switching modes would move a model it promised
-        // to leave alone. A tall range at the minimum relief implies
-        // roughly 0.08.
-        if !(0.05..=200.0).contains(&self.vertical_exaggeration) {
-            bail!("vertical exaggeration must be between 0.05 and 200");
+        // The bounds keep the arithmetic sane, not the scale sensible, so
+        // they cover everything the overall-height mode can imply.
+        // Narrower bounds would move a model on switching modes. The span
+        // is wide: a flat delta at 80 mm of relief works out past 300000,
+        // and Everest at minimum relief on a small area under 0.001.
+        if !self.vertical_exaggeration.is_finite()
+            || !(0.0001..=1_000_000.0).contains(&self.vertical_exaggeration)
+        {
+            bail!("vertical exaggeration must be between 0.0001 and 1000000");
         }
         if !self.custom_datum_m.is_finite()
             || !(-12_000.0..=12_000.0).contains(&self.custom_datum_m)

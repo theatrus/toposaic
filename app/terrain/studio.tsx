@@ -545,12 +545,15 @@ export function TerrainStudio() {
           return {
             ...current,
             height_mode: mode,
+            // Rounded for a readable field, not clamped to a slider:
+            // narrowing here would silently flatten every low-relief area
+            // the moment the mode changed.
             vertical_exaggeration: Math.min(
-              200,
+              1_000_000,
               Math.max(
-                0.05,
+                0.0001,
                 Number(
-                  exaggerationForHeight(current, heightSample).toFixed(2),
+                  exaggerationForHeight(current, heightSample).toPrecision(4),
                 ),
               ),
             ),
@@ -909,13 +912,10 @@ export function TerrainStudio() {
       );
       return false;
     }
-    const { datum, metresPerMm } = deriveHeightFrame(
-      {
-        minimum_elevation_m: sampled.minimum_elevation_m,
-        maximum_elevation_m: sampled.maximum_elevation_m,
-      },
-      spec.relief_mm,
-    );
+    const { datum, metresPerMm } = deriveHeightFrame(spec, {
+      minimum_elevation_m: sampled.minimum_elevation_m,
+      maximum_elevation_m: sampled.maximum_elevation_m,
+    });
     setSpec((current) => ({
       ...current,
       elevation_datum_m: datum,
@@ -954,13 +954,10 @@ export function TerrainStudio() {
           );
           return;
         }
-        const derived = deriveHeightFrame(
-          {
-            minimum_elevation_m: sampled.minimum_elevation_m,
-            maximum_elevation_m: sampled.maximum_elevation_m,
-          },
-          spec.relief_mm,
-        );
+        const derived = deriveHeightFrame(spec, {
+          minimum_elevation_m: sampled.minimum_elevation_m,
+          maximum_elevation_m: sampled.maximum_elevation_m,
+        });
         datum = derived.datum;
         metresPerMm = Number(derived.metresPerMm.toFixed(4));
       }
@@ -1015,6 +1012,13 @@ export function TerrainStudio() {
         despike_terrain: spec.despike_terrain,
         elevation_datum_m: spec.elevation_datum_m,
         elevation_m_per_mm: spec.elevation_m_per_mm,
+        // The preview normalizes through the same frame the print does,
+        // so the fields that choose one belong here too — without them a
+        // multiplier or a sea-level datum shows the old fitted model.
+        height_mode: spec.height_mode,
+        vertical_exaggeration: spec.vertical_exaggeration,
+        datum_reference: spec.datum_reference,
+        custom_datum_m: spec.custom_datum_m,
         color_output: {
           ...initialSpec.color_output,
           enabled: false,
@@ -1046,6 +1050,10 @@ export function TerrainStudio() {
     spec.center_lon,
     spec.elevation_datum_m,
     spec.elevation_m_per_mm,
+    spec.height_mode,
+    spec.vertical_exaggeration,
+    spec.datum_reference,
+    spec.custom_datum_m,
     spec.despike_terrain,
     spec.elevation_source,
     spec.fine_dem_detail,

@@ -369,9 +369,12 @@ export function ModelPanel({
                         ? "grid center"
                         : "top-left tile"
                     }. The super-tile shares one height frame.`
-                  : spec.height_mode === "multiplier"
-                    ? "A fixed multiplier already matches separately generated neighbors."
-                    : "Auto height fits one tile; manual neighbors may form a step. A multiplier or locked height keeps them level."}
+                  : spec.height_mode === "multiplier" &&
+                      spec.datum_reference !== "area_minimum"
+                    ? "A fixed multiplier and a shared datum already match separately generated neighbors."
+                    : spec.height_mode === "multiplier"
+                      ? "The multiplier is shared, but each tile still measures from its own lowest ground. Measure from sea level to line neighbors up."
+                      : "Auto height fits one tile; manual neighbors may form a step. A locked height, or a multiplier measured from sea level, keeps them level."}
           </p>
           {adjacentMessage && (
             <p className="adjacent-message">{adjacentMessage}</p>
@@ -537,24 +540,31 @@ export function ModelPanel({
           }
         />
       ) : (
-        <RangeField
-          label="Vertical multiplier"
-          value={spec.vertical_exaggeration}
-          unit="×"
-          min={0.05}
-          max={200}
-          step={0.05}
-          onChange={(value) => update("vertical_exaggeration", value)}
-          note={
-            heightScaleReadout
+        <label className="road-detail-field">
+          Vertical multiplier
+          <input
+            type="number"
+            min="0.0001"
+            max="1000000"
+            step="any"
+            value={spec.vertical_exaggeration}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value) && value >= 0.0001 && value <= 1_000_000) {
+                update("vertical_exaggeration", value);
+              }
+            }}
+          />
+          <small>
+            {heightScaleReadout
               ? `This area prints about ${heightScaleReadout.height.toFixed(1)} mm tall.${
                   heightScaleReadout.height > 80
                     ? " Past the usual 80 mm — check your printer fits it."
                     : ""
                 }`
-              : "The height follows the terrain, so the height slider does not apply."
-          }
-        />
+              : "The height follows the terrain, so the height slider does not apply."}
+          </small>
+        </label>
       )}
       <label className="road-detail-field">
         Height measured from
@@ -583,7 +593,7 @@ export function ModelPanel({
           value={spec.custom_datum_m}
           unit=" m"
           min={-500}
-          max={5000}
+          max={9000}
           step={10}
           onChange={(value) => update("custom_datum_m", value)}
           note="Ground below this keeps its relief: the datum drops to the real minimum instead of cutting terrain off."
