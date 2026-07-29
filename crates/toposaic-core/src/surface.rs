@@ -110,8 +110,6 @@ pub struct SlopeGates {
     /// Demote snow steeper than this many degrees to rock. Applies after
     /// the forest gate, so it also gates forest just demoted to snow.
     pub snow_limit_degrees: Option<f32>,
-    /// Demote land-cover water steeper than this many degrees to rock.
-    pub water_limit_degrees: Option<f32>,
 }
 
 /// How many samples the steep-slope gates reclassified, split by the class
@@ -121,12 +119,11 @@ pub struct SlopeGateDemotion {
     pub forest_to_rock: usize,
     pub forest_to_snow: usize,
     pub snow_to_rock: usize,
-    pub water_to_rock: usize,
 }
 
 impl SlopeGateDemotion {
     pub fn total(self) -> usize {
-        self.forest_to_rock + self.forest_to_snow + self.snow_to_rock + self.water_to_rock
+        self.forest_to_rock + self.forest_to_snow + self.snow_to_rock
     }
 
     fn add(self, other: Self) -> Self {
@@ -134,7 +131,6 @@ impl SlopeGateDemotion {
             forest_to_rock: self.forest_to_rock + other.forest_to_rock,
             forest_to_snow: self.forest_to_snow + other.forest_to_snow,
             snow_to_rock: self.snow_to_rock + other.snow_to_rock,
-            water_to_rock: self.water_to_rock + other.water_to_rock,
         }
     }
 }
@@ -316,10 +312,7 @@ impl SurfaceField {
         if !ground_span_m.is_finite() || ground_span_m <= 0.0 {
             return SlopeGateDemotion::default();
         }
-        if gates.forest_limit_degrees.is_none()
-            && gates.snow_limit_degrees.is_none()
-            && gates.water_limit_degrees.is_none()
-        {
+        if gates.forest_limit_degrees.is_none() && gates.snow_limit_degrees.is_none() {
             return SlopeGateDemotion::default();
         }
         // The snowline comes from the classes before any demotion, so the
@@ -333,9 +326,6 @@ impl SurfaceField {
             .map(|degrees| degrees.to_radians().tan());
         let tan_snow_limit = gates
             .snow_limit_degrees
-            .map(|degrees| degrees.to_radians().tan());
-        let tan_water_limit = gates
-            .water_limit_degrees
             .map(|degrees| degrees.to_radians().tan());
         let width = self.width;
         let du = 1.0 / (width - 1) as f32;
@@ -356,7 +346,6 @@ impl SurfaceField {
                     let gated = match *class {
                         SurfaceClass::Forest => tan_forest_limit.is_some(),
                         SurfaceClass::Snow => tan_snow_limit.is_some(),
-                        SurfaceClass::Water => tan_water_limit.is_some(),
                         _ => false,
                     };
                     if !gated {
@@ -393,16 +382,6 @@ impl SurfaceField {
                         && tan_snow_limit.is_some_and(|limit| gradient > limit)
                     {
                         demoted.snow_to_rock += 1;
-                        *class = SurfaceClass::Rock;
-                    }
-                    // Water cannot climb a cliff. A sea is level and a lake
-                    // surface is flat, so a water sample on a steep face is
-                    // land cover spilling over a shoreline rather than any
-                    // water that is really there.
-                    if *class == SurfaceClass::Water
-                        && tan_water_limit.is_some_and(|limit| gradient > limit)
-                    {
-                        demoted.water_to_rock += 1;
                         *class = SurfaceClass::Rock;
                     }
                 }
@@ -2026,7 +2005,6 @@ mod tests {
             forest_limit_degrees: Some(limit_degrees),
             steep_forest_target: target,
             snow_limit_degrees: None,
-            water_limit_degrees: None,
         }
     }
 
@@ -2106,7 +2084,6 @@ mod tests {
                 forest_limit_degrees: None,
                 steep_forest_target: SteepForestTarget::Rock,
                 snow_limit_degrees: Some(65.0),
-                water_limit_degrees: None,
             },
         );
         assert!(demoted.snow_to_rock > 0);
@@ -2221,7 +2198,6 @@ mod tests {
                 forest_limit_degrees: Some(55.0),
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: Some(65.0),
-                water_limit_degrees: None,
             },
         );
         assert!(demoted.forest_to_snow > 0);
@@ -2263,7 +2239,6 @@ mod tests {
                 forest_limit_degrees: None,
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: None,
-                water_limit_degrees: None,
             },
         );
         assert_eq!(demoted, SlopeGateDemotion::default());

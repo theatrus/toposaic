@@ -135,34 +135,6 @@ export function SurfaceTerrainSection({
         <label className="color-toggle">
           <input
             type="checkbox"
-            checked={spec.color_output.water_slope_gate}
-            onChange={(event) =>
-              updateColor("water_slope_gate", event.target.checked)
-            }
-          />
-          <span>Keep water off cliffs</span>
-        </label>
-        <small>
-          A sea is level and a lake surface is flat, so land-cover water on a
-          steep face is a shoreline bleeding up a seawall. Mapped rivers and
-          waterfalls are untouched — those really do run downhill.
-        </small>
-      </div>
-      {spec.color_output.water_slope_gate && (
-        <RangeField
-          label="Water slope limit"
-          value={spec.color_output.water_slope_limit_degrees}
-          unit="°"
-          min={5}
-          max={85}
-          step={1}
-          onChange={(value) => updateColor("water_slope_limit_degrees", value)}
-        />
-      )}
-      <div className="road-options">
-        <label className="color-toggle">
-          <input
-            type="checkbox"
             checked={spec.color_output.snow_slope_gate}
             onChange={(event) =>
               updateColor("snow_slope_gate", event.target.checked)
