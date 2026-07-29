@@ -104,7 +104,7 @@ export function SurfaceTerrainSection({
           discover a small palette from Sentinel-2 imagery of this area:
           hybrid keeps forest, ground, snow, and water apart and finds local
           shades inside each; pure satellite clusters the imagery alone. The
-          discovered swatches appear in the generated job's data sources.
+          discovered swatches appear in the generated job&apos;s data sources.
         </small>
       </label>
       {spec.color_output.ground_colors !== "mapped" && (
