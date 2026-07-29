@@ -659,7 +659,19 @@ pub(super) fn append_road_geometry(
         };
         // Smoothstep, so the join carries no crease for a slicer to find.
         let share = share * share * (3.0 - 2.0 * share);
-        terrain + (graded - terrain) * share
+        // Never below the ground at this exact point, whatever the profile
+        // says. Reading the high side across a strip only clears the ground
+        // under that strip: where strips run close together, as they do all
+        // over a real airfield, the nearest centre line is often not the one
+        // whose ribbon the point is in, and its profile can sit under the
+        // ground here. The same goes for terrain noise between two stations,
+        // which on a flat airport at full relief is millimetres tall.
+        //
+        // So the clearance is a floor rather than an outcome: the surface is
+        // flat where the profile stands above the ground and follows the
+        // ground where it would not. Buried pavement is a hole in the model,
+        // and no amount of sampling makes that acceptable.
+        terrain + ((graded - terrain) * share).max(0.0)
     };
     if !aviation_regular.is_empty() {
         let aviation_area = append_overlay_geometry_at_height(

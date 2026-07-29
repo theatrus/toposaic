@@ -2192,6 +2192,110 @@ mod tests {
         );
     }
 
+    /// The case a real airport is: flat ground, a small elevation range,
+    /// and the full relief height spent on it, so a metre of DEM noise
+    /// becomes millimetres of print — many times the pavement's own 0.2 mm.
+    /// Strips run close together too, so the nearest centre line to a point
+    /// is often not the one whose ribbon it lies in. Neither may bury it.
+    ///
+    /// Numbers taken from the saved San Francisco setup: 4.5 km across
+    /// 180 mm, 28 mm of relief over ground that barely moves.
+    #[test]
+    fn a_flat_noisy_airfield_at_full_relief_buries_nothing() {
+        let samples = 64;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    // Airfield ground: a couple of metres of relief, and
+                    // sample-to-sample noise of about a metre on top.
+                    let drift = (x as f32 / samples as f32) * 3.0;
+                    let noise = if (x * 7 + y * 13) % 5 < 2 { 1.2 } else { 0.0 };
+                    drift + noise
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "airfield").unwrap();
+
+        let mut spec = GenerationSpec {
+            center_lat: 37.61847,
+            center_lon: -122.37651,
+            ground_span_km: 4.5,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            base_mm: 3.2,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 64,
+            despike_terrain: true,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // Parallel strips close together, wide and narrow, the way an
+        // airfield lays them out, plus a taxiway crossing them all.
+        for (offset, width) in [(0.20, 3.0), (0.26, 0.8), (0.32, 3.0), (0.36, 0.8)] {
+            field.paint_polyline(
+                &[[0.02, offset], [0.98, offset]],
+                180.0,
+                width,
+                SurfaceClass::Aviation,
+            );
+        }
+        field.paint_polyline(
+            &[[0.50, 0.15], [0.50, 0.42]],
+            180.0,
+            0.8,
+            SurfaceClass::Aviation,
+        );
+        field.paint_surface_area(
+            &[[0.60, 0.16], [0.90, 0.16], [0.90, 0.40], [0.60, 0.40]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 200.0).round() as i32,
+                (vertex[1] * 200.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(columns.len() > 50, "not enough pavement: {}", columns.len());
+
+        let mut worst_buried = 0.0_f32;
+        for ((x, y), top) in &columns {
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                *x as f32 / 200.0 / spec.width_mm,
+                *y as f32 / 200.0 / spec.height_mm(),
+            );
+            worst_buried = worst_buried.max(ground - top);
+        }
+        assert!(
+            worst_buried < 0.02,
+            "pavement is buried {worst_buried} mm under a flat airfield's own noise"
+        );
+    }
+
     /// The pavement stands at its own height, not the road layer's.
     ///
     /// Measured as the difference between two runs rather than against the
