@@ -474,13 +474,10 @@ pub(super) fn append_road_geometry(
             OVERLAY_TERRAIN_EMBED_MM + ((ordinal % 64) as f32 + 1.0) * 0.000_05,
         );
         // Groups merge purely on overlap and deck level, never on class, so
-        // that two same-level ribbons can never leave coincident faces. In
-        // the vanishingly rare case a rail viaduct and a road bridge merge,
-        // the group takes the first line's material — a color compromise,
-        // not a manifold one.
-        let material = group_lines
-            .first()
-            .map_or(SurfaceClass::Road, |line| line.class);
+        // that two same-level ribbons can never leave coincident faces. The
+        // shell stays whole, while each face takes the material of its
+        // nearest bridge line. A rail viaduct crossing a road bridge can
+        // therefore keep its color without making two overlapping shells.
         let deck_area = sanitize_footprint_group(deck_area.clone(), true);
         let group_shells = deck_area
             .0
@@ -498,7 +495,7 @@ pub(super) fn append_road_geometry(
                     assembled_width,
                     assembled_height,
                     embed_mm,
-                    material,
+                    SurfaceClass::Road,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1334,13 +1331,16 @@ fn build_road_polygon_shell_with_embed(
     let boundary_step_mm = (is_bridge
         && spec.color_output.bridge_structure == BridgeStructure::Supported)
         .then_some(ROAD_VECTOR_STEP_MM);
-    build_polygon_shell(
+    build_polygon_shell_with_material(
         polygon,
         bottom,
         top,
         boundary_step_mm,
         None,
-        material,
+        |point| {
+            let assembled = [point[0] + origin_x, point[1] + origin_y];
+            nearest_deck_line(deck_lines, assembled).map_or(material, |line| line.class)
+        },
         "triangulate vector road ribbon",
     )
 }
@@ -1371,6 +1371,26 @@ pub(super) fn build_polygon_shell(
     // surface somewhere to follow the ground.
     interior_step_mm: Option<f32>,
     material: SurfaceClass,
+    error_context: &'static str,
+) -> Result<MeshBuilder> {
+    build_polygon_shell_with_material(
+        polygon,
+        bottom,
+        top,
+        boundary_step_mm,
+        interior_step_mm,
+        |_| material,
+        error_context,
+    )
+}
+
+fn build_polygon_shell_with_material(
+    polygon: &Polygon<f64>,
+    bottom: impl Fn([f32; 2]) -> f32,
+    top: impl Fn([f32; 2]) -> f32,
+    boundary_step_mm: Option<f32>,
+    interior_step_mm: Option<f32>,
+    material_at: impl Fn([f32; 2]) -> SurfaceClass,
     error_context: &'static str,
 ) -> Result<MeshBuilder> {
     let rings = std::iter::once(polygon.exterior())
@@ -1493,6 +1513,11 @@ pub(super) fn build_polygon_shell(
             let entry = edge_uses.entry(key).or_insert((0, directed));
             entry.0 += 1;
         }
+        let centroid = [
+            (ordered[0][0] + ordered[1][0] + ordered[2][0]) / 3.0,
+            (ordered[0][1] + ordered[1][1] + ordered[2][1]) / 3.0,
+        ];
+        let material = material_at(centroid);
         output.triangle(
             [ordered[0][0], ordered[0][1], top(ordered[0])],
             [ordered[1][0], ordered[1][1], top(ordered[1])],
@@ -1516,6 +1541,7 @@ pub(super) fn build_polygon_shell(
     for [from, to] in boundary_edges {
         let start = vertex_positions[&from];
         let end = vertex_positions[&to];
+        let material = material_at([(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5]);
         output.quad(
             [start[0], start[1], bottom(start)],
             [end[0], end[1], bottom(end)],
@@ -2085,6 +2111,52 @@ mod tests {
         // the valley floor, like a road bridge.
         assert!((maximum - minimum - spec.color_output.bridge_thickness_mm).abs() < 0.001);
         assert!(minimum > spec.base_mm + spec.relief_mm - 1.1);
+        assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn touching_road_and_rail_bridges_keep_both_materials() {
+        use crate::spec::RailStyle;
+
+        let height_field = HeightField::new(3, 3, vec![0.0; 9], "crossing").unwrap();
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "crossing").unwrap();
+        // Roads paint first in the API. At SFO, later BART bridge ribbons
+        // cross those road bridges at a height close enough that their
+        // footprints form one manifold deck group.
+        field.paint_bridge_polyline_as(
+            &[[0.1, 0.5], [0.9, 0.5]],
+            60.0,
+            1.4,
+            [0.0, 0.0],
+            SurfaceClass::Road,
+        );
+        field.paint_bridge_polyline_as(
+            &[[0.5, 0.1], [0.5, 0.9]],
+            60.0,
+            0.8,
+            [0.0, 0.0],
+            SurfaceClass::Rail,
+        );
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            solid_model: true,
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                rail_enabled: true,
+                rail_style: RailStyle::Separate,
+                bridge_structure: BridgeStructure::Floating,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Rail),
+            "the joined deck must not take only the first bridge line's color"
+        );
         assert_watertight(&mesh);
     }
 

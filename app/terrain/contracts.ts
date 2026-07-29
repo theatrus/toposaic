@@ -240,6 +240,11 @@ export type GenerationSpec = {
     osm_water_slope_gate: boolean;
     osm_water_slope_limit_degrees: number;
     snow_slope_limit_degrees: number;
+    ground_colors: "mapped" | "satellite" | "hybrid";
+    ground_color_count: number;
+    ground_color_minimum_share: number;
+    ground_shadow_normalization: number;
+    locked_ground_palette?: string[];
   };
   trails: TrailRoute[];
   markers: MapMarker[];
@@ -256,6 +261,7 @@ export type CacheCategoryKey =
   | "elevation"
   | "world_cover"
   | "osm"
+  | "imagery"
   | "datum"
   | "places";
 

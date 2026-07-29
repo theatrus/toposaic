@@ -22,6 +22,7 @@ mod geo;
 mod geocoding;
 mod grid;
 mod http;
+mod imagery;
 mod jobs;
 mod settings;
 mod setups;

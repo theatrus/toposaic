@@ -356,6 +356,24 @@ An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each
 import goes.
 
+### Satellite ground colors (in progress)
+
+The generator can also discover a small ground palette from the area itself
+instead of the fixed class colors. It samples the ESA WorldCover Sentinel-2
+annual composites — cloud-masked 10 m reflectance on the land-cover lattice —
+through HTTP range reads, stretches reflectance to display color the same way
+every time, and clusters the samples in OKLab into a chosen number of printable
+colors. The hybrid mode clusters inside the mapped classes, so a bay grey and
+an asphalt grey stay separate materials; the pure satellite mode clusters the
+imagery alone. Spare colors beyond one per class follow color diversity, not
+area: a two-tone desert keeps its red rock and its white rock even when a
+uniform forest covers more ground. Discovery is deterministic — the same area
+always yields the same palette in the same order — and every sample the imagery
+cannot cover falls back to its mapped class color. The resolved palette, the
+stretch, and the Copernicus attribution go into the project's data sources.
+This is the first slice of the satellite palette work: the palette resolves
+and records itself, and the coloring, export, and controls follow.
+
 ## Roads and water
 
 Color mode also reads routes from OpenStreetMap through Overpass and draws them
