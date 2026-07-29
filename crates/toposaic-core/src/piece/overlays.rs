@@ -997,7 +997,13 @@ fn append_overlay_footprint(
                 // solid would be inside out.
                 |point| base_z(point).min(surface_z(point)) - OVERLAY_TERRAIN_EMBED_MM,
                 |point| base_z(point) + height_mm,
-                None,
+                // The outline is densified to match. A dense interior
+                // beside a sparse edge is not enough: the band between the
+                // last row of interior points and the outline is still
+                // spanned by triangles reaching between whatever boundary
+                // vertices happen to exist, and the ground rises through
+                // those exactly as it did before.
+                interior_step_mm,
                 interior_step_mm,
                 material,
                 error_context,
