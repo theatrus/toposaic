@@ -92,7 +92,7 @@ export function SurfaceWaterSection({
               <option value="custom">Custom offset</option>
             </select>
             <small>
-              Low and high tide use the nearest NOAA tide station's datums
+              Low and high tide use the nearest NOAA tide station&apos;s datums
               (MLLW and MHHW), which cover United States coasts. Elsewhere
               they fall back to mean sea level, and the data sources name
               the station or say why not.
