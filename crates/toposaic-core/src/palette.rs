@@ -182,6 +182,12 @@ pub fn discover_ground_palette(
 /// palette instead of discovering one: the super-tile and adjacent-job path,
 /// where every tile must agree on the palette it did not discover. Shares
 /// are recomputed for this tile's samples.
+///
+/// With `shadow_normalization` above zero the lightness mean is this
+/// tile's own, so two tiles can normalize the same color differently near
+/// a cluster boundary. At the default of zero assignment is exact and
+/// tiles agree everywhere; the super-tile wiring must either keep it at
+/// zero or share the mean along with the palette.
 pub fn assign_locked_palette(
     imagery: &GroundImagery,
     colors: &[String],
@@ -430,10 +436,17 @@ fn group_variance(points: &[Point], group: Option<SurfaceClass>) -> f64 {
 /// as the full set.
 const MAXIMUM_FITTING_POINTS: usize = 262_144;
 
-/// Deterministic k-means over one group's points. Seeds are lightness
-/// quantiles of the sorted points — no randomness anywhere — and ties in
-/// assignment go to the lower cluster index, so the fixed iteration order
-/// fixes the result.
+/// Deterministic k-means over one group's points. Seeds spread over the
+/// DISTINCT sorted colors, endpoints included — no randomness anywhere —
+/// and ties in assignment go to the lower cluster index, so the fixed
+/// iteration order fixes the result. Distinct values matter: population
+/// quantiles land several seeds on the same value wherever one color
+/// dominates the sorted order — a flat sea is exactly that. Coinciding
+/// seeds usually recover, but only through an accident of the update rule
+/// (a starved cluster's stale centroid can recapture its color later);
+/// spacing over distinct values cannot collide in the first place, and
+/// when the data holds fewer distinct colors than asked for, each becomes
+/// its own seed.
 fn cluster_group(members: &[&Point], count: usize, group: Option<SurfaceClass>) -> Vec<Cluster> {
     if members.is_empty() || count == 0 {
         return Vec::new();
@@ -450,10 +463,17 @@ fn cluster_group(members: &[&Point], count: usize, group: Option<SurfaceClass>) 
             .then(a[1].total_cmp(&b[1]))
             .then(a[2].total_cmp(&b[2]))
     });
+    sorted.dedup();
     let count = count.min(sorted.len());
-    let mut centroids = (0..count)
-        .map(|index| sorted[(index * 2 + 1) * (sorted.len() - 1) / (count * 2).max(1)])
-        .collect::<Vec<_>>();
+    let mut centroids = if count == 1 {
+        vec![sorted[(sorted.len() - 1) / 2]]
+    } else {
+        // Strictly increasing indices whenever count <= distinct values:
+        // the step (len-1)/(count-1) never floors below one.
+        (0..count)
+            .map(|index| sorted[index * (sorted.len() - 1) / (count - 1)])
+            .collect::<Vec<_>>()
+    };
     let mut assignment = vec![usize::MAX; fitting.len()];
     for _ in 0..32 {
         let mut changed = false;
@@ -901,6 +921,35 @@ mod tests {
             .count();
         assert_eq!(forest_entries, 2);
         assert_ne!(assignments[0], assignments[40]);
+    }
+
+    #[test]
+    fn a_dominant_flat_sea_cannot_starve_the_land_of_its_colors() {
+        // 70 identical sea samples put the same value under two of three
+        // population quantiles; distinct-color seeding must still give
+        // every block its own entry, by construction rather than by the
+        // stale-centroid accident the doc on `cluster_group` describes.
+        let (rgbn, valid) = synthetic(&[(DEEP_BLUE, 70), (DARK_GREEN, 15), (BRIGHT_SAND, 15)]);
+        let imagery = GroundImagery {
+            width: 10,
+            height: 10,
+            rgbn: &rgbn,
+            valid: &valid,
+        };
+        let (palette, assignments) = discover_ground_palette(&imagery, None, &options(3)).unwrap();
+        assert_eq!(palette.entries.len(), 3);
+        assert_ne!(assignments[70], assignments[85]);
+
+        // Fewer distinct colors than asked for: each keeps its own entry.
+        let (rgbn, valid) = synthetic(&[(DEEP_BLUE, 50), (BRIGHT_SAND, 50)]);
+        let imagery = GroundImagery {
+            width: 10,
+            height: 10,
+            rgbn: &rgbn,
+            valid: &valid,
+        };
+        let (palette, _) = discover_ground_palette(&imagery, None, &options(4)).unwrap();
+        assert_eq!(palette.entries.len(), 2);
     }
 
     #[test]
