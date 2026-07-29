@@ -96,6 +96,13 @@ pub struct GenerationSpec {
     pub relief_mm: f32,
     pub elevation_datum_m: Option<f32>,
     pub elevation_m_per_mm: Option<f32>,
+    /// How the vertical scale is chosen: by the model's overall height,
+    /// the default and what `relief_mm` has always meant, or by a fixed
+    /// multiplier that makes separate areas and tiles print comparably.
+    /// Flattened to keep the keys at the spec's own level, and defaulted
+    /// so older setups keep today's behavior.
+    #[serde(flatten, default)]
+    pub height_scale: HeightScaleSpec,
     pub adjacent_columns: u32,
     pub adjacent_rows: u32,
     pub super_tile_anchor: SuperTileAnchor,
@@ -163,6 +170,7 @@ impl Default for GenerationSpec {
             relief_mm: 28.0,
             elevation_datum_m: None,
             elevation_m_per_mm: None,
+            height_scale: HeightScaleSpec::default(),
             adjacent_columns: 1,
             adjacent_rows: 1,
             super_tile_anchor: SuperTileAnchor::TopLeft,
@@ -339,6 +347,7 @@ impl GenerationSpec {
                 "puzzle retention cannot share the terrain back with wall mounting; mount the tray instead"
             );
         }
+        self.height_scale.validate()?;
         self.buildings.validate()?;
         self.marine.validate()?;
         self.color_output.validate()?;
@@ -1351,6 +1360,95 @@ impl BuildingSpec {
     fn validate(&self) -> Result<()> {
         if !(0.5..=30.0).contains(&self.z_scale) {
             bail!("building Z scale must be between 0.5 and 30");
+        }
+        Ok(())
+    }
+}
+
+/// How the model's vertical scale is chosen, and what its zero is.
+///
+/// The printed frame is always a pair: a datum, and metres of ground per
+/// millimetre of print. This group says how to reach that pair.
+/// Serialized flattened into [`GenerationSpec`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeightScaleSpec {
+    pub height_mode: HeightMode,
+    /// Ground metres per printed millimetre when `height_mode` is
+    /// `Multiplier`, expressed as vertical exaggeration: how many times
+    /// steeper the print is than the ground. 1 is true scale. A flat delta
+    /// needs hundreds before its relief reads at all. A mountain across a
+    /// wide span goes the other way: Mount Rainier over 18 km at 28 mm of
+    /// relief is about 0.8, compressed. Values below 1 are ordinary.
+    pub vertical_exaggeration: f32,
+    pub datum_reference: DatumReference,
+    /// The datum in metres when `datum_reference` is `Custom`.
+    pub custom_datum_m: f32,
+}
+
+/// Which quantity the user pins, leaving the other derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HeightMode {
+    /// Fit the area's relief into `relief_mm` of print. The multiplier
+    /// then follows from the terrain, so two areas of different relief
+    /// print at different scales. Right when the model should fill its
+    /// height, and what TopoSaic has always done.
+    #[default]
+    OverallHeight,
+    /// Print at a fixed exaggeration. The height then follows from the
+    /// terrain, so a flat area prints short and a mountain prints tall.
+    /// Right when models must compare, or separate tiles must agree.
+    Multiplier,
+}
+
+/// What the printed zero means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DatumReference {
+    /// The lowest ground in the area, less a small margin, so the whole
+    /// height goes to the relief that is there. A super-tile takes the
+    /// lowest ground across every tile, so its parts share one zero. The
+    /// default, and what the locked frame has always computed.
+    #[default]
+    AreaMinimum,
+    /// Zero metres. Every model shares it without coordinating, and it
+    /// puts a flat sea at the same printed height everywhere. Areas that
+    /// dip below it keep their relief.
+    SeaLevel,
+    /// A datum the user names, in metres.
+    Custom,
+}
+
+impl Default for HeightScaleSpec {
+    fn default() -> Self {
+        Self {
+            height_mode: HeightMode::default(),
+            // Stands in only until the panel translates the current
+            // height, which it does as soon as an area is sampled.
+            vertical_exaggeration: 10.0,
+            datum_reference: DatumReference::default(),
+            custom_datum_m: 0.0,
+        }
+    }
+}
+
+impl HeightScaleSpec {
+    fn validate(&self) -> Result<()> {
+        // The bounds keep the arithmetic sane, not the scale sensible, so
+        // they cover everything the overall-height mode can imply.
+        // Narrower bounds would move a model on switching modes. The span
+        // is wide: a flat delta at 80 mm of relief works out past 300000,
+        // and Everest at minimum relief on a small area under 0.001.
+        if !self.vertical_exaggeration.is_finite()
+            || !(0.0001..=1_000_000.0).contains(&self.vertical_exaggeration)
+        {
+            bail!("vertical exaggeration must be between 0.0001 and 1000000");
+        }
+        if !self.custom_datum_m.is_finite()
+            || !(-12_000.0..=12_000.0).contains(&self.custom_datum_m)
+        {
+            bail!("custom elevation datum must be between -12000 and 12000 m");
         }
         Ok(())
     }
@@ -2917,6 +3015,10 @@ mod tests {
             "\"ground_span_km\":18.0,\"terrain_rotation_degrees\":0.0,",
         );
         let expected = expected.replace(
+            "\"elevation_m_per_mm\":null,",
+            "\"elevation_m_per_mm\":null,\"height_mode\":\"overall_height\",\"vertical_exaggeration\":10.0,\"datum_reference\":\"area_minimum\",\"custom_datum_m\":0.0,",
+        );
+        let expected = expected.replace(
             "\"adjacent_tile_row\":0,",
             "\"adjacent_tile_row\":0,\"puzzle_seed\":0,\"puzzle_tile_column\":0,\"puzzle_tile_row\":0,",
         );
@@ -2989,6 +3091,44 @@ mod tests {
         assert_eq!(flat.marine.geometry, MarineGeometry::FlatSurface);
     }
 
+    /// A setup saved before the height-scale group existed keeps the
+    /// vertical scale it was created with. Two shapes matter: an ordinary
+    /// setup, which fits its relief into `relief_mm` against the area
+    /// minimum, and one carrying a locked frame from the old super-tile
+    /// workflow, whose explicit datum and scale must still win.
+    #[test]
+    fn setups_written_before_height_modes_keep_their_vertical_scale() {
+        let mut document = serde_json::to_value(GenerationSpec::default()).unwrap();
+        let object = document.as_object_mut().expect("spec object");
+        for key in [
+            "height_mode",
+            "vertical_exaggeration",
+            "datum_reference",
+            "custom_datum_m",
+        ] {
+            object.remove(key).expect("the group serializes flat");
+        }
+        let spec: GenerationSpec = serde_json::from_value(document.clone()).unwrap();
+        spec.validate().unwrap();
+        assert_eq!(spec.height_scale.height_mode, HeightMode::OverallHeight);
+        assert_eq!(
+            spec.height_scale.datum_reference,
+            DatumReference::AreaMinimum
+        );
+
+        // The old locked frame still overrides everything: an explicit
+        // datum and scale are what the super-tile workflow wrote, and a
+        // regenerated tile must land on the same millimetres.
+        let object = document.as_object_mut().unwrap();
+        object.insert("elevation_datum_m".into(), serde_json::json!(1200.0));
+        object.insert("elevation_m_per_mm".into(), serde_json::json!(40.0));
+        let locked: GenerationSpec = serde_json::from_value(document).unwrap();
+        locked.validate().unwrap();
+        assert_eq!(locked.elevation_datum_m, Some(1200.0));
+        assert_eq!(locked.elevation_m_per_mm, Some(40.0));
+        assert_eq!(locked.height_scale.height_mode, HeightMode::OverallHeight);
+    }
+
     /// Airport pavement is one class however many aeroway groups are drawn,
     /// and costs a filament only when it asks for its own color.
     #[test]
@@ -3055,6 +3195,10 @@ mod tests {
             "relief_mm": 20.0,
             "elevation_datum_m": 1200.0,
             "elevation_m_per_mm": 40.0,
+            "height_mode": "multiplier",
+            "vertical_exaggeration": 6.5,
+            "datum_reference": "sea_level",
+            "custom_datum_m": -12.5,
             "adjacent_columns": 3,
             "adjacent_rows": 3,
             "super_tile_anchor": "center",

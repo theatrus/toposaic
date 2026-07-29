@@ -33,6 +33,8 @@ import {
   MAX_ASSEMBLED_SAMPLES,
   MAX_SUPER_TILE_SIDE,
   deriveHeightFrame,
+  exaggerationForHeight,
+  heightForExaggeration,
   initialSpec,
   isMapLabel,
   markerNeedsSurfaceData,
@@ -502,6 +504,83 @@ export function TerrainStudio() {
         samples === MAX_ASSEMBLED_SAMPLES ? false : current.fine_dem_detail,
     }));
   }, []);
+  // The sampled area, for translating between the two ways of naming a
+  // vertical scale and for showing what the current one comes to.
+  const heightSample = useMemo(() => {
+    const sampled = generatedPreview ?? elevationPreview;
+    if (
+      sampled?.minimum_elevation_m === undefined ||
+      sampled.maximum_elevation_m === undefined
+    ) {
+      return null;
+    }
+    return {
+      minimum_elevation_m: sampled.minimum_elevation_m,
+      maximum_elevation_m: sampled.maximum_elevation_m,
+    };
+  }, [generatedPreview, elevationPreview]);
+
+  const heightScaleReadout = useMemo(() => {
+    if (!heightSample) return null;
+    return {
+      exaggeration: exaggerationForHeight(spec, heightSample),
+      height: heightForExaggeration(
+        spec,
+        heightSample,
+        spec.vertical_exaggeration,
+      ),
+    };
+  }, [spec, heightSample]);
+
+  // Switching modes must not move the model: the incoming field is filled
+  // with whatever the outgoing one already amounts to. Without a sampled
+  // area there is nothing to translate from, so the mode changes alone.
+  const setHeightMode = useCallback(
+    (mode: GenerationSpec["height_mode"]) => {
+      setGeneratedPreview(null);
+      setSpec((current) => {
+        if (current.height_mode === mode) return current;
+        if (!heightSample) return { ...current, height_mode: mode };
+        if (mode === "multiplier") {
+          return {
+            ...current,
+            height_mode: mode,
+            // Rounded for a readable field, not clamped to a slider:
+            // narrowing here would silently flatten every low-relief area
+            // the moment the mode changed.
+            vertical_exaggeration: Math.min(
+              1_000_000,
+              Math.max(
+                0.0001,
+                Number(
+                  exaggerationForHeight(current, heightSample).toPrecision(4),
+                ),
+              ),
+            ),
+          };
+        }
+        return {
+          ...current,
+          height_mode: mode,
+          relief_mm: Math.min(
+            80,
+            Math.max(
+              3,
+              Number(
+                heightForExaggeration(
+                  current,
+                  heightSample,
+                  current.vertical_exaggeration,
+                ).toFixed(1),
+              ),
+            ),
+          ),
+        };
+      });
+    },
+    [heightSample],
+  );
+
   const updateColor = useCallback(
     <Key extends keyof GenerationSpec["color_output"]>(
       key: Key,
@@ -833,13 +912,10 @@ export function TerrainStudio() {
       );
       return false;
     }
-    const { datum, metresPerMm } = deriveHeightFrame(
-      {
-        minimum_elevation_m: sampled.minimum_elevation_m,
-        maximum_elevation_m: sampled.maximum_elevation_m,
-      },
-      spec.relief_mm,
-    );
+    const { datum, metresPerMm } = deriveHeightFrame(spec, {
+      minimum_elevation_m: sampled.minimum_elevation_m,
+      maximum_elevation_m: sampled.maximum_elevation_m,
+    });
     setSpec((current) => ({
       ...current,
       elevation_datum_m: datum,
@@ -878,13 +954,10 @@ export function TerrainStudio() {
           );
           return;
         }
-        const derived = deriveHeightFrame(
-          {
-            minimum_elevation_m: sampled.minimum_elevation_m,
-            maximum_elevation_m: sampled.maximum_elevation_m,
-          },
-          spec.relief_mm,
-        );
+        const derived = deriveHeightFrame(spec, {
+          minimum_elevation_m: sampled.minimum_elevation_m,
+          maximum_elevation_m: sampled.maximum_elevation_m,
+        });
         datum = derived.datum;
         metresPerMm = Number(derived.metresPerMm.toFixed(4));
       }
@@ -939,6 +1012,13 @@ export function TerrainStudio() {
         despike_terrain: spec.despike_terrain,
         elevation_datum_m: spec.elevation_datum_m,
         elevation_m_per_mm: spec.elevation_m_per_mm,
+        // The preview normalizes through the same frame the print does,
+        // so the fields that choose one belong here too — without them a
+        // multiplier or a sea-level datum shows the old fitted model.
+        height_mode: spec.height_mode,
+        vertical_exaggeration: spec.vertical_exaggeration,
+        datum_reference: spec.datum_reference,
+        custom_datum_m: spec.custom_datum_m,
         color_output: {
           ...initialSpec.color_output,
           enabled: false,
@@ -970,6 +1050,10 @@ export function TerrainStudio() {
     spec.center_lon,
     spec.elevation_datum_m,
     spec.elevation_m_per_mm,
+    spec.height_mode,
+    spec.vertical_exaggeration,
+    spec.datum_reference,
+    spec.custom_datum_m,
     spec.despike_terrain,
     spec.elevation_source,
     spec.fine_dem_detail,
@@ -2292,6 +2376,8 @@ export function TerrainStudio() {
             placeResults={placeResults}
             searchPlaces={searchPlaces}
             searchingPlaces={searchingPlaces}
+            heightScaleReadout={heightScaleReadout}
+            setHeightMode={setHeightMode}
             setMeshQuality={setMeshQuality}
             setPlaceQuery={setPlaceQuery}
             setSuperTileAnchor={setSuperTileAnchor}

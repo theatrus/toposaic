@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use toposaic_core::{
     Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, artifact_path,
     generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
+    height_frame_for_bounds,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -541,6 +542,10 @@ fn run_adjacent_grid_job(
         height_fields.push(height_field);
     }
 
+    // Every part of a super-tile prints on one frame, so it resolves here
+    // across the whole footprint rather than per tile. The datum reference
+    // and height mode decide it as they do for a lone tile; "the area"
+    // just means all the tiles together.
     if spec.elevation_datum_m.is_none() {
         let (minimum, maximum) = height_fields.iter().fold(
             (f32::INFINITY, f32::NEG_INFINITY),
@@ -549,10 +554,10 @@ fn run_adjacent_grid_job(
                 (minimum.min(field_minimum), maximum.max(field_maximum))
             },
         );
-        let metres_per_mm = (maximum - minimum).max(1.0) / spec.relief_mm;
+        let frame = height_frame_for_bounds(spec, minimum, maximum);
         for tile in &mut tiles {
-            tile.elevation_datum_m = Some(minimum);
-            tile.elevation_m_per_mm = Some(metres_per_mm);
+            tile.elevation_datum_m = Some(frame.datum_m);
+            tile.elevation_m_per_mm = Some(frame.metres_per_mm);
         }
     }
 

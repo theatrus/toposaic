@@ -14,9 +14,12 @@ import {
 import {
   aerialLineClass,
   assembledMeshSamples,
+  deriveHeightFrame,
   effectiveMeshSamples,
+  exaggerationForHeight,
   formatBytes,
   groundMeshSpacing,
+  heightForExaggeration,
   initialSpec,
   limitMarkerName,
   limitPlaceName,
@@ -751,4 +754,58 @@ test("starts the preview camera south of the terrain", () => {
   const [, cameraY, cameraZ] = previewInitialCameraPosition(2, 0.4);
   assert.ok(cameraY > 0.4);
   assert.ok(cameraZ < 0);
+});
+
+// Rainier's defaults: 18 km across 180 mm with 28 mm of relief.
+const rainier = { minimum_elevation_m: 600, maximum_elevation_m: 4392 };
+
+test("switching to a multiplier and back keeps the same printed height", () => {
+  const exaggeration = exaggerationForHeight(initialSpec, rainier);
+  // A whole mountain over a wide span is compressed, not exaggerated.
+  assert.ok(exaggeration < 1, `expected under true scale, got ${exaggeration}`);
+  const height = heightForExaggeration(
+    { ...initialSpec, height_mode: "multiplier" },
+    rainier,
+    exaggeration,
+  );
+  assert.ok(Math.abs(height - initialSpec.relief_mm) < 0.05);
+});
+
+test("a low-relief area survives the switch instead of being clamped", () => {
+  // A delta with 8 m of relief implies 350x — far past the old 200 cap,
+  // which used to silently cut such a model down to 16 mm.
+  const delta = { minimum_elevation_m: 2, maximum_elevation_m: 10 };
+  const exaggeration = exaggerationForHeight(initialSpec, delta);
+  assert.ok(exaggeration > 200, `expected past the old cap, got ${exaggeration}`);
+  const height = heightForExaggeration(
+    { ...initialSpec, height_mode: "multiplier" },
+    delta,
+    exaggeration,
+  );
+  assert.ok(
+    Math.abs(height - initialSpec.relief_mm) < 0.05,
+    `height moved to ${height}`,
+  );
+});
+
+test("locking a height frame keeps the multiplier it was set to", () => {
+  const spec = {
+    ...initialSpec,
+    height_mode: "multiplier",
+    vertical_exaggeration: 3,
+  };
+  const { metresPerMm } = deriveHeightFrame(spec, rainier);
+  // 3x over 18 km at 180 mm is 1 / (3 * 0.01) m per mm.
+  assert.ok(Math.abs(metresPerMm - 1 / (3 * (180 / 18000))) < 1e-6);
+
+  // Fitting the height instead gives the area's own scale, as before.
+  const fitted = deriveHeightFrame(initialSpec, rainier);
+  assert.ok(fitted.metresPerMm > metresPerMm);
+});
+
+test("a sea-level datum locks to sea level, not the terrain minimum", () => {
+  const spec = { ...initialSpec, datum_reference: "sea_level" };
+  assert.equal(deriveHeightFrame(spec, rainier).datum, 0);
+  // The area minimum keeps its safety margin below the lowest ground.
+  assert.ok(deriveHeightFrame(initialSpec, rainier).datum < 600);
 });

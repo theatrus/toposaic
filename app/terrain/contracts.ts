@@ -74,6 +74,16 @@ export type GenerationSpec = {
   relief_mm: number;
   elevation_datum_m: number | null;
   elevation_m_per_mm: number | null;
+  // How the vertical scale is chosen. "overall_height" fits the area's
+  // relief into relief_mm — the default, and what relief_mm has always
+  // meant. "multiplier" holds a fixed exaggeration instead and lets the
+  // model's height follow the terrain, so separate areas and separately
+  // generated tiles print comparably. A locked elevation_datum_m +
+  // elevation_m_per_mm pair still overrides both.
+  height_mode: "overall_height" | "multiplier";
+  vertical_exaggeration: number;
+  datum_reference: "area_minimum" | "sea_level" | "custom";
+  custom_datum_m: number;
   adjacent_columns: number;
   adjacent_rows: number;
   super_tile_anchor: "top_left" | "center";

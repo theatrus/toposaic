@@ -22,7 +22,10 @@ mod tray;
 
 pub use coastline::{OceanExtent, assemble_ocean};
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
-pub use heightfield::{DespikeReport, HeightField, VerticalReference};
+pub use heightfield::{
+    DespikeReport, HeightField, HeightFrame, VerticalReference, exaggeration_for_metres_per_mm,
+    height_frame_for_bounds, metres_per_mm_for_exaggeration, resolve_height_frame,
+};
 pub use marine::{
     MarineOutcome, ResolvedMarineLevel, TidalOffsets, apply_flat_marine_surface,
     resolve_marine_level,
@@ -39,11 +42,12 @@ pub use project::{
 };
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
-    DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec, GroundColorMode,
-    GroundPaletteSpec, LabelFont, LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker,
-    MarineGeometry, MarineLevel, MarineSpec, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
-    RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
-    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
-    TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    DatumReference, DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec,
+    GroundColorMode, GroundPaletteSpec, HeightMode, HeightScaleSpec, LabelFont, LineScaleSpec,
+    LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel, MarineSpec,
+    MarkerKind, MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail,
+    RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
+    TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle,
+    WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

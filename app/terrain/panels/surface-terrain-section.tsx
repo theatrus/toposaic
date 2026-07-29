@@ -129,7 +129,7 @@ export function SurfaceTerrainSection({
             onChange={(value) =>
               updateColor("ground_color_minimum_share", value / 100)
             }
-            note="Colors covering less of the surface than this dissolve into their nearest neighbour instead of taking a filament slot."
+            note="Colors covering less than this merge into the nearest one instead of taking a filament slot."
           />
           <RangeField
             label="Shadow flattening"

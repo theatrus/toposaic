@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rayon::prelude::*;
 
-use crate::spec::GenerationSpec;
+use crate::spec::{DatumReference, GenerationSpec, HeightMode};
 
 /// The vertical reference the elevation values are heights above. Metadata
 /// only — no code applies a geoid correction, and none may be applied
@@ -85,6 +85,10 @@ impl HeightField {
         bottom * (1.0 - ty) + top * ty
     }
 
+    /// The auto-fit span, kept for the tests that assert against it
+    /// directly. [`resolve_height_frame`] is the real path and reproduces
+    /// exactly this for an area-minimum, overall-height frame.
+    #[cfg(test)]
     pub(crate) fn range(&self) -> (f32, f32) {
         let (minimum, maximum) = self.elevation_bounds();
         (minimum, (maximum - minimum).max(1.0))
@@ -321,15 +325,113 @@ impl DespikeReport {
     }
 }
 
+/// A resolved vertical frame: where the print's zero sits, and how many
+/// ground metres one printed millimetre carries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeightFrame {
+    pub datum_m: f32,
+    pub metres_per_mm: f32,
+    /// The ground metres the relief covers. Stored, not recomputed from
+    /// `metres_per_mm * relief_mm`: that divide and multiply does not
+    /// round-trip in f32, and old setups normalized against this exact
+    /// number.
+    span_m: f32,
+}
+
+impl HeightFrame {
+    /// How tall the terrain prints, in millimetres above the base. Under a
+    /// multiplier this follows the terrain rather than any setting.
+    pub fn printed_relief_mm(&self, maximum_elevation_m: f32) -> f32 {
+        ((maximum_elevation_m - self.datum_m) / self.metres_per_mm).max(0.0)
+    }
+
+    /// The span the normalizer divides by.
+    fn span(&self) -> f32 {
+        self.span_m
+    }
+}
+
+/// Ground metres per printed millimetre at a given exaggeration.
+/// Exaggeration is the vertical print scale over the horizontal one, so
+/// inverting it against the horizontal scale gives the vertical.
+pub fn metres_per_mm_for_exaggeration(spec: &GenerationSpec, exaggeration: f32) -> f32 {
+    let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
+    let horizontal_mm_per_m = spec.width_mm / ground_span_m;
+    // Validation keeps both factors above zero; this guards the rest.
+    let denominator = (exaggeration * horizontal_mm_per_m).max(f32::MIN_POSITIVE);
+    1.0 / denominator
+}
+
+/// The exaggeration a frame amounts to. The inverse of the above, and what
+/// the panel shows when the user sets an overall height instead.
+pub fn exaggeration_for_metres_per_mm(spec: &GenerationSpec, metres_per_mm: f32) -> f32 {
+    let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
+    let horizontal_mm_per_m = spec.width_mm / ground_span_m;
+    let vertical_mm_per_m = 1.0 / metres_per_mm.max(f32::MIN_POSITIVE);
+    vertical_mm_per_m / horizontal_mm_per_m.max(f32::MIN_POSITIVE)
+}
+
+/// Resolves the vertical frame for a spec and the terrain it will print.
+///
+/// An explicit `elevation_datum_m` and `elevation_m_per_mm` pair wins over
+/// everything. That is the locked frame a super-tile writes so its parts
+/// agree, and it keeps older setups printing as before.
+///
+/// Otherwise the datum comes from the chosen reference, and the scale from
+/// the chosen mode: fit the relief into `relief_mm`, or hold a fixed
+/// exaggeration and let the height follow.
+pub fn resolve_height_frame(spec: &GenerationSpec, field: &HeightField) -> HeightFrame {
+    let (minimum, maximum) = field.elevation_bounds();
+    height_frame_for_bounds(spec, minimum, maximum)
+}
+
+/// The same resolution against bounds the caller already holds. A
+/// super-tile resolves one frame across every tile at once, so it passes
+/// the combined minimum and maximum. Sharing this keeps the two paths in
+/// step.
+pub fn height_frame_for_bounds(spec: &GenerationSpec, minimum: f32, maximum: f32) -> HeightFrame {
+    if let (Some(datum_m), Some(metres_per_mm)) = (spec.elevation_datum_m, spec.elevation_m_per_mm)
+    {
+        return HeightFrame {
+            datum_m,
+            metres_per_mm,
+            span_m: metres_per_mm * spec.relief_mm,
+        };
+    }
+    let datum_m = match spec.height_scale.datum_reference {
+        DatumReference::AreaMinimum => minimum,
+        // Terrain below zero keeps its relief rather than being cut off:
+        // the frame falls back to the ground it actually has.
+        DatumReference::SeaLevel => 0.0_f32.min(minimum),
+        DatumReference::Custom => spec.height_scale.custom_datum_m.min(minimum),
+    };
+    let (metres_per_mm, span_m) = match spec.height_scale.height_mode {
+        // The span comes first here: it is what the auto-fit path has
+        // always normalized against. The scale follows from it.
+        HeightMode::OverallHeight => {
+            let span_m = (maximum - datum_m).max(1.0);
+            (span_m / spec.relief_mm, span_m)
+        }
+        HeightMode::Multiplier => {
+            let metres_per_mm =
+                metres_per_mm_for_exaggeration(spec, spec.height_scale.vertical_exaggeration);
+            (metres_per_mm, metres_per_mm * spec.relief_mm)
+        }
+    };
+    HeightFrame {
+        datum_m,
+        metres_per_mm: metres_per_mm.max(f32::MIN_POSITIVE),
+        span_m,
+    }
+}
+
 pub(crate) fn height_range_for_spec(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
 ) -> Option<(f32, f32)> {
     height_field.map(|field| {
-        spec.elevation_datum_m
-            .zip(spec.elevation_m_per_mm)
-            .map(|(datum, metres_per_mm)| (datum, metres_per_mm * spec.relief_mm))
-            .unwrap_or_else(|| field.range())
+        let frame = resolve_height_frame(spec, field);
+        (frame.datum_m, frame.span())
     })
 }
 
@@ -382,6 +484,7 @@ pub(crate) fn normalized_height(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::HeightScaleSpec;
 
     #[test]
     fn shared_height_frame_reports_a_tile_below_its_datum() {
@@ -397,6 +500,191 @@ mod tests {
 
         assert!(error.contains("above this tile's minimum elevation 90.0 m"));
         assert!(error.contains("regenerate the earlier super-tile parts"));
+    }
+
+    /// The SFO shape from the water-gate work: 4.5 km across 180 mm, with
+    /// 40 m of relief. Its overall-height frame is a known 17.5x.
+    fn sfo_shape() -> (GenerationSpec, HeightField) {
+        let spec = GenerationSpec {
+            ground_span_km: 4.5,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            ..GenerationSpec::default()
+        };
+        let field = HeightField::new(2, 2, vec![0.0, 40.0, 0.0, 40.0], "test").unwrap();
+        (spec, field)
+    }
+
+    /// The two ways of naming a vertical scale are one relationship read
+    /// from either end, so a height converts to a multiplier and back
+    /// without drift. This is what lets the UI switch modes without
+    /// moving the model.
+    #[test]
+    fn overall_height_and_multiplier_translate_without_drift() {
+        let (spec, field) = sfo_shape();
+        let fitted = resolve_height_frame(&spec, &field);
+        let exaggeration = exaggeration_for_metres_per_mm(&spec, fitted.metres_per_mm);
+        assert!(
+            (exaggeration - 17.5).abs() < 0.01,
+            "expected the known SFO 17.5x, got {exaggeration}"
+        );
+
+        // Feeding that multiplier back in reproduces the same frame, so
+        // the print does not move when the mode flips.
+        let switched = GenerationSpec {
+            height_scale: HeightScaleSpec {
+                height_mode: HeightMode::Multiplier,
+                vertical_exaggeration: exaggeration,
+                ..HeightScaleSpec::default()
+            },
+            ..spec.clone()
+        };
+        let held = resolve_height_frame(&switched, &field);
+        assert!((held.metres_per_mm - fitted.metres_per_mm).abs() < 1e-4);
+        assert_eq!(held.datum_m, fitted.datum_m);
+        assert!((held.printed_relief_mm(40.0) - spec.relief_mm).abs() < 0.01);
+    }
+
+    /// The default frame must reproduce the old auto-fit span BIT for
+    /// bit, not merely to within a rounding error: a setup saved before
+    /// the height modes existed has to regenerate the same mesh. Dividing
+    /// by the relief to get a scale and multiplying it back does not
+    /// round-trip in f32 — 7 of these 80 combinations drift by an ulp —
+    /// so the frame carries the span it computed instead of recomputing
+    /// it.
+    #[test]
+    fn the_default_frame_reproduces_the_old_span_exactly() {
+        for relief_mm in [3.0f32, 7.0, 12.5, 28.0, 33.0, 47.0, 60.0, 80.0] {
+            for rise in [1.0f32, 2.5, 40.0, 137.3, 500.0, 1234.5, 3792.0, 8848.0] {
+                let spec = GenerationSpec {
+                    relief_mm,
+                    ..GenerationSpec::default()
+                };
+                let field = HeightField::new(2, 2, vec![0.0, rise, 0.0, rise], "t").unwrap();
+                let (old_minimum, old_span) = field.range();
+                let (minimum, span) =
+                    height_range_for_spec(&spec, Some(&field)).expect("a field was given");
+                assert_eq!(minimum, old_minimum, "datum moved at relief {relief_mm}");
+                assert_eq!(
+                    span.to_bits(),
+                    old_span.to_bits(),
+                    "span drifted at relief {relief_mm}, rise {rise}"
+                );
+            }
+        }
+    }
+
+    /// A whole mountain across a wide span prints COMPRESSED — Mount
+    /// Rainier over 18 km at 28 mm comes to about 0.8x — so the round trip
+    /// has to hold below true scale too. The bounds exist to keep the
+    /// arithmetic sane, not to insist a print be exaggerated; a floor of 1
+    /// here would silently steepen the model the moment the mode changed.
+    #[test]
+    fn a_compressed_mountain_scale_survives_the_round_trip() {
+        let spec = GenerationSpec {
+            ground_span_km: 18.0,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            ..GenerationSpec::default()
+        };
+        // Roughly Rainier: 600 m of valley floor to a 4392 m summit.
+        let field = HeightField::new(2, 2, vec![600.0, 4392.0, 600.0, 4392.0], "t").unwrap();
+        let fitted = resolve_height_frame(&spec, &field);
+        let exaggeration = exaggeration_for_metres_per_mm(&spec, fitted.metres_per_mm);
+        assert!(
+            exaggeration < 1.0,
+            "a mountain over 18 km should compress, got {exaggeration}x"
+        );
+        assert!((exaggeration - 0.74).abs() < 0.02, "got {exaggeration}");
+
+        // The spec must accept it, or switching modes could not keep it.
+        let switched = GenerationSpec {
+            height_scale: HeightScaleSpec {
+                height_mode: HeightMode::Multiplier,
+                vertical_exaggeration: exaggeration,
+                ..HeightScaleSpec::default()
+            },
+            ..spec.clone()
+        };
+        switched.validate().expect("a compressed scale is valid");
+        let held = resolve_height_frame(&switched, &field);
+        assert!((held.metres_per_mm - fitted.metres_per_mm).abs() < 1e-3);
+        assert!((held.printed_relief_mm(4392.0) - 28.0).abs() < 0.05);
+    }
+
+    /// The point of the multiplier: two areas of different relief print at
+    /// one scale, so their models are comparable — where fitting the
+    /// height makes them both the same height and hides the difference.
+    #[test]
+    fn a_multiplier_prints_a_taller_area_taller() {
+        let (mut spec, gentle) = sfo_shape();
+        let dramatic = HeightField::new(2, 2, vec![0.0, 400.0, 0.0, 400.0], "test").unwrap();
+
+        // Fitting the height: both areas fill the same 28 mm.
+        let fitted_gentle = resolve_height_frame(&spec, &gentle).printed_relief_mm(40.0);
+        let fitted_dramatic = resolve_height_frame(&spec, &dramatic).printed_relief_mm(400.0);
+        assert!((fitted_gentle - 28.0).abs() < 0.01);
+        assert!((fitted_dramatic - 28.0).abs() < 0.01);
+
+        // One multiplier: the ten-times-taller area prints ten times taller.
+        spec.height_scale.height_mode = HeightMode::Multiplier;
+        spec.height_scale.vertical_exaggeration = 17.5;
+        let held_gentle = resolve_height_frame(&spec, &gentle).printed_relief_mm(40.0);
+        let held_dramatic = resolve_height_frame(&spec, &dramatic).printed_relief_mm(400.0);
+        assert!((held_gentle - 28.0).abs() < 0.01);
+        assert!((held_dramatic - 280.0).abs() < 0.1, "got {held_dramatic}");
+    }
+
+    /// The datum reference decides the print's zero. Sea level is the
+    /// absolute one; the area minimum spends the whole budget on the
+    /// relief that is there; a custom datum names its own. None of them
+    /// may cut terrain off below the base, so each falls back to the
+    /// ground actually present.
+    #[test]
+    fn the_datum_reference_moves_the_zero_without_clipping_terrain() {
+        let mut spec = GenerationSpec {
+            relief_mm: 28.0,
+            ..GenerationSpec::default()
+        };
+        // Ground from 1200 m to 1240 m: a plateau far above sea level.
+        let plateau = HeightField::new(2, 2, vec![1200.0, 1240.0, 1200.0, 1240.0], "t").unwrap();
+
+        spec.height_scale.datum_reference = DatumReference::AreaMinimum;
+        assert_eq!(resolve_height_frame(&spec, &plateau).datum_m, 1200.0);
+
+        spec.height_scale.datum_reference = DatumReference::SeaLevel;
+        assert_eq!(resolve_height_frame(&spec, &plateau).datum_m, 0.0);
+
+        spec.height_scale.datum_reference = DatumReference::Custom;
+        spec.height_scale.custom_datum_m = 1000.0;
+        assert_eq!(resolve_height_frame(&spec, &plateau).datum_m, 1000.0);
+
+        // A datum above the ground would push terrain below the base and
+        // clip it; the frame drops to the real minimum instead.
+        spec.height_scale.custom_datum_m = 1300.0;
+        assert_eq!(resolve_height_frame(&spec, &plateau).datum_m, 1200.0);
+
+        // Sea level under a below-sea-level basin does the same.
+        let basin = HeightField::new(2, 2, vec![-50.0, -10.0, -50.0, -10.0], "t").unwrap();
+        spec.height_scale.datum_reference = DatumReference::SeaLevel;
+        assert_eq!(resolve_height_frame(&spec, &basin).datum_m, -50.0);
+    }
+
+    /// A locked frame outranks the modes. It is what the super-tile
+    /// workflow writes so its parts agree, and what every setup saved
+    /// before the modes existed carries.
+    #[test]
+    fn an_explicit_locked_frame_still_wins() {
+        let (mut spec, field) = sfo_shape();
+        spec.height_scale.height_mode = HeightMode::Multiplier;
+        spec.height_scale.vertical_exaggeration = 50.0;
+        spec.height_scale.datum_reference = DatumReference::SeaLevel;
+        spec.elevation_datum_m = Some(-5.0);
+        spec.elevation_m_per_mm = Some(2.0);
+
+        let frame = resolve_height_frame(&spec, &field);
+        assert_eq!(frame.datum_m, -5.0);
+        assert_eq!(frame.metres_per_mm, 2.0);
     }
 
     /// A field of gentle ground at the given size, tilted so no two samples
