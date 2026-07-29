@@ -42,7 +42,9 @@ pub struct GroundImagery<'a> {
 pub struct GroundPaletteOptions {
     /// Target palette size. Discovery may return fewer entries when the
     /// area holds fewer distinguishable colors or the share floor merges
-    /// some away, never more.
+    /// some away. It exceeds the target in exactly one case: hybrid
+    /// grouping guarantees every present semantic group an entry, so four
+    /// groups can outgrow a requested two or three.
     pub color_count: usize,
     /// Smallest surface share an entry may keep. Entries below it are
     /// dissolved into their nearest surviving neighbour: a color too rare
@@ -133,9 +135,10 @@ pub fn discover_ground_palette(
     dissolve_small_clusters(&mut clusters, &points, options.minimum_share);
 
     // Final order: semantic group first, brightest last inside a group, so
-    // "forest 1" is always the darkest forest whatever the area. Sorting
-    // by the quantized display color, not the raw centroid, keeps the
-    // order and the printed color in agreement.
+    // "forest 1" is always the darkest forest whatever the area. The raw
+    // centroid is the sort key — stable and unquantized; the display
+    // quantum can tie neighbours but the duplicate-hex merge above has
+    // already collapsed any pair the print could not tell apart.
     clusters.sort_by(|a, b| {
         group_rank(a.group)
             .cmp(&group_rank(b.group))
@@ -333,12 +336,25 @@ fn normalize_lightness(points: &mut [Point], strength: f32) {
         if lightness <= f32::EPSILON {
             continue;
         }
-        let factor = 1.0 + strength * (mean / lightness - 1.0);
+        // The cap keeps the correction inside what shading can explain.
+        // Uncapped, a near-black noise pixel brightened to the mean scales
+        // its whole vector tens of times over — a and b included — and the
+        // manufactured neon color claims a palette slot no real ground
+        // ever showed.
+        let factor = (1.0 + strength * (mean / lightness - 1.0))
+            .clamp(1.0 / MAXIMUM_SHADING_CORRECTION, MAXIMUM_SHADING_CORRECTION);
         for axis in &mut point.oklab {
             *axis *= factor;
         }
     }
 }
+
+/// The largest OKLab scale the shadow normalization may apply in either
+/// direction. Shading scales the OKLab vector by the cube root of the
+/// illumination factor, so 2 undoes an eightfold difference in light —
+/// past any real hillside shadow. A pixel needing more is noise or a
+/// different material, not shade.
+const MAXIMUM_SHADING_CORRECTION: f32 = 2.0;
 
 /// Splits `total` palette entries over the groups present in `points`.
 /// Every group keeps at least one; the spares go by color diversity — the
@@ -358,14 +374,13 @@ fn allocate_counts(points: &[Point], total: usize) -> Vec<(Option<SurfaceClass>,
     }
     shares.sort_by_key(|(group, _)| group_rank(*group));
     if shares.len() >= total {
-        // More groups than colors: the largest groups take one each.
-        let mut by_size = shares.clone();
-        by_size.sort_by(|a, b| b.1.cmp(&a.1).then(group_rank(a.0).cmp(&group_rank(b.0))));
-        return by_size
-            .into_iter()
-            .take(total)
-            .map(|(group, _)| (group, 1))
-            .collect();
+        // More groups than colors: every present group still keeps one
+        // entry, even past the requested count. Dropping the smallest
+        // group here would silently print its class in another class's
+        // color — snow in rock grey — which is the one thing hybrid
+        // grouping promises never happens. Four groups exist at most, so
+        // the overrun is bounded and the spec documents it.
+        return shares.into_iter().map(|(group, _)| (group, 1)).collect();
     }
     let weights = shares
         .iter()
@@ -542,8 +557,11 @@ const INDISTINGUISHABLE_OKLAB_DISTANCE: f32 = 0.01;
 /// Merges clusters whose centroids are visually the same color into one,
 /// share-weighted, closest pair first. Asking for k colors of an area that
 /// only has fewer must return fewer, not near-duplicates that waste
-/// filament slots. Hybrid groups are kept apart: a water grey and an
-/// asphalt grey stay two entries on purpose.
+/// filament slots. Two centroids that quantize to the identical hex merge
+/// whatever their OKLab distance: out-of-gamut centroids can sit far
+/// apart in OKLab and still clamp to the same display bytes, and the
+/// printed color is the one that matters. Hybrid groups are kept apart:
+/// a water grey and an asphalt grey stay two entries on purpose.
 fn merge_indistinguishable_clusters(clusters: &mut Vec<Cluster>, points: &[Point]) {
     let limit = INDISTINGUISHABLE_OKLAB_DISTANCE * INDISTINGUISHABLE_OKLAB_DISTANCE;
     loop {
@@ -556,7 +574,12 @@ fn merge_indistinguishable_clusters(clusters: &mut Vec<Cluster>, points: &[Point
                 }
                 let distance =
                     oklab_distance_squared(clusters[first].centroid, clusters[second].centroid);
-                if distance < limit && best.is_none_or(|(_, _, held)| distance < held) {
+                let same_print = distance >= limit
+                    && oklab_to_hex(clusters[first].centroid)
+                        == oklab_to_hex(clusters[second].centroid);
+                if (distance < limit || same_print)
+                    && best.is_none_or(|(_, _, held)| distance < held)
+                {
                     best = Some((first, second, distance));
                 }
             }
@@ -1019,6 +1042,129 @@ mod tests {
         assert_eq!(assignments2[0], assignments2[99]);
         assert_eq!(palette.entries.len(), 1);
         let _ = assignments;
+    }
+
+    /// The shadow correction is capped at what shading can explain. A few
+    /// near-black noise pixels brightened toward the mean must not have
+    /// their chroma amplified into neon colors no ground ever showed —
+    /// uncapped, ten such pixels put #B483FF-class entries in the palette.
+    #[test]
+    fn dark_noise_cannot_become_a_neon_palette_entry() {
+        let chroma = |color: &str| {
+            let lab = hex_to_oklab(color).unwrap();
+            (lab[1] * lab[1] + lab[2] * lab[2]).sqrt()
+        };
+        let mut blocks = vec![(BRIGHT_SAND, 90usize)];
+        blocks.push(([10, 5, 60, 0], 5));
+        blocks.push(([60, 5, 10, 0], 5));
+        let (rgbn, valid) = synthetic(&blocks);
+        let imagery = GroundImagery {
+            width: 10,
+            height: 10,
+            rgbn: &rgbn,
+            valid: &valid,
+        };
+        let normalized = GroundPaletteOptions {
+            shadow_normalization: 1.0,
+            ..options(4)
+        };
+        let (palette, _) = discover_ground_palette(&imagery, None, &normalized).unwrap();
+        let most_chromatic_input = rgbn
+            .iter()
+            .map(|&sample| {
+                let lab = reflectance_to_oklab(sample);
+                (lab[1] * lab[1] + lab[2] * lab[2]).sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        for entry in &palette.entries {
+            assert!(
+                chroma(&entry.color) < most_chromatic_input * MAXIMUM_SHADING_CORRECTION + 0.01,
+                "{} {} is more chromatic than any input allows",
+                entry.name,
+                entry.color
+            );
+        }
+    }
+
+    /// Hybrid grouping promises every present class its own entry. With
+    /// more classes than requested colors the palette grows past the
+    /// request rather than silently printing snow in rock grey.
+    #[test]
+    fn every_present_class_keeps_an_entry_even_past_the_requested_count() {
+        let snow_white = [2900, 2900, 2900, 1200];
+        let (rgbn, valid) = synthetic(&[
+            (DARK_GREEN, 40),
+            ([900, 880, 860, 2000], 30),
+            (snow_white, 20),
+            (DEEP_BLUE, 10),
+        ]);
+        let classes = [SurfaceClass::Forest; 40]
+            .into_iter()
+            .chain([SurfaceClass::Rock; 30])
+            .chain([SurfaceClass::Snow; 20])
+            .chain([SurfaceClass::Water; 10])
+            .collect::<Vec<_>>();
+        let imagery = GroundImagery {
+            width: 10,
+            height: 10,
+            rgbn: &rgbn,
+            valid: &valid,
+        };
+        let (palette, assignments) =
+            discover_ground_palette(&imagery, Some(&classes), &options(2)).unwrap();
+        assert_eq!(palette.entries.len(), 4);
+        for group in [
+            SurfaceClass::Forest,
+            SurfaceClass::Rock,
+            SurfaceClass::Snow,
+            SurfaceClass::Water,
+        ] {
+            assert!(
+                palette
+                    .entries
+                    .iter()
+                    .any(|entry| entry.group == Some(group)),
+                "{group:?} lost its entry"
+            );
+        }
+        let snow_entry = assignments[75] as usize;
+        assert_eq!(palette.entries[snow_entry].group, Some(SurfaceClass::Snow));
+    }
+
+    /// Out-of-gamut centroids can sit far apart in OKLab yet clamp to the
+    /// identical display hex; the merge must collapse them, because two
+    /// palette entries with one printed color is a wasted filament slot.
+    #[test]
+    fn clusters_that_print_the_same_hex_merge_whatever_their_distance() {
+        let mut clusters = vec![
+            Cluster {
+                centroid: [0.9, 0.8, 0.9],
+                group: None,
+            },
+            Cluster {
+                centroid: [0.9, 1.2, 1.4],
+                group: None,
+            },
+        ];
+        assert_eq!(
+            oklab_to_hex(clusters[0].centroid),
+            oklab_to_hex(clusters[1].centroid)
+        );
+        assert!(oklab_distance_squared(clusters[0].centroid, clusters[1].centroid) > 0.1);
+        let points = [
+            Point {
+                oklab: [0.9, 0.8, 0.9],
+                group: None,
+                raster_index: 0,
+            },
+            Point {
+                oklab: [0.9, 1.2, 1.4],
+                group: None,
+                raster_index: 1,
+            },
+        ];
+        merge_indistinguishable_clusters(&mut clusters, &points);
+        assert_eq!(clusters.len(), 1);
     }
 
     #[test]

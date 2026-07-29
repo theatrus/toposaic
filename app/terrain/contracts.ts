@@ -248,7 +248,12 @@ export type MapFrame = {
   origin_tile_row: number;
 };
 
-export type CacheCategoryKey = "elevation" | "world_cover" | "osm" | "places";
+export type CacheCategoryKey =
+  | "elevation"
+  | "world_cover"
+  | "osm"
+  | "imagery"
+  | "places";
 
 export type CacheCategory = {
   key: CacheCategoryKey;

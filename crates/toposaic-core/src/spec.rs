@@ -2414,7 +2414,9 @@ pub struct GroundPaletteSpec {
     /// color and never touches imagery.
     pub ground_colors: GroundColorMode,
     /// How many ground colors discovery may keep. A printed model loads a
-    /// few materials, not a photograph's millions.
+    /// few materials, not a photograph's millions. Hybrid mode guarantees
+    /// every present class an entry of its own, so an area with all four
+    /// classes can exceed a requested two or three by up to that many.
     pub ground_color_count: u32,
     /// Smallest surface share a discovered color may keep; rarer colors
     /// dissolve into their nearest neighbour rather than waste a slot.

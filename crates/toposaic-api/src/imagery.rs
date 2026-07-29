@@ -107,10 +107,14 @@ pub(crate) fn fetch_ground_imagery(
     let mut rgbn = vec![[0u16; 4]; width * height];
     let mut valid = vec![false; width * height];
     let mut missing_tiles = Vec::new();
+    // One client for every tile: a wide footprint reads dozens of tiles,
+    // and each fresh client pays TLS setup to the same host again.
+    let client =
+        http::blocking_client(Duration::from_secs(120)).context("build Sentinel-2 client")?;
     for (tile_name, points) in &tiles {
-        if let Err(error) =
-            sample_imagery_tile(tile_name, points, width, height, &mut rgbn, &mut valid)
-        {
+        if let Err(error) = sample_imagery_tile(
+            tile_name, points, width, height, &client, &mut rgbn, &mut valid,
+        ) {
             warn!(%error, tile = %tile_name, "Sentinel-2 composite tile unavailable");
             missing_tiles.push(tile_name.clone());
         }
@@ -154,6 +158,7 @@ fn sample_imagery_tile(
     points: &[SamplePoint],
     target_width: usize,
     target_height: usize,
+    client: &reqwest::blocking::Client,
     rgbn: &mut [[u16; 4]],
     valid: &mut [bool],
 ) -> Result<()> {
@@ -162,10 +167,7 @@ fn sample_imagery_tile(
         latitude_token(tile_name)
     );
     let options = HttpOpenOptions {
-        client: Some(
-            http::blocking_client(Duration::from_secs(120))
-                .context("build Sentinel-2 imagery client")?,
-        ),
+        client: Some(client.clone()),
         ..HttpOpenOptions::default()
     };
     let file = HttpGeoTiffFile::open_with_options(&url, options)
@@ -259,8 +261,10 @@ fn sample_imagery_tile(
         let mut sample = [0u16; 4];
         let mut complete = true;
         for (band, window) in windows.iter().enumerate() {
-            // A clipped edge can return a shorter window than requested; a
-            // missing pixel means the same as nodata.
+            // Pure defense: the window bounds are clamped in-range above
+            // and the reader errors rather than clips, so this is never
+            // `None` today. If a reader change ever shortens a window, a
+            // missing pixel degrades to nodata instead of a panic.
             match window.get([row - row_min, column - col_min]) {
                 Some(&value) => sample[band] = value,
                 None => complete = false,

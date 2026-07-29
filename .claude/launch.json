@@ -4,9 +4,23 @@
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3100,
       "url": "http://127.0.0.1:3100"
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-p",
+        "toposaic-api"
+      ],
+      "port": 8787,
+      "url": "http://127.0.0.1:8787"
     }
   ]
 }
