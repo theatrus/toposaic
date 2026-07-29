@@ -182,6 +182,26 @@ Piece layouts range from 2×2 to 16×16. The default 10×10 layout makes 100
 pieces with narrow-necked, round puzzle knobs like a standard jigsaw. The model
 controls also set the minimum solid thickness under the lowest terrain point.
 
+## Vertical scale
+
+The Model tab sets how tall the terrain prints, two ways. **Overall height**,
+the default, fits the area's relief into the height you choose, so every area
+prints the same height whatever the ground does — and two areas made separately
+do not compare. **Multiplier** holds one vertical exaggeration instead and lets
+the height follow the terrain: a flat delta prints low, a mountain prints tall,
+and models made at the same multiplier compare directly. Switching translates
+the value, so the model does not move, and each mode shows what the other would
+give. A mountain across a wide span is usually compressed rather than
+exaggerated: Mount Rainier over 18 km at 28 mm of relief is about 0.8×.
+
+Height is measured from the area's lowest ground by default, which gives the
+relief the whole height. Sea level is shared by every model, and a set
+elevation names its own. No datum cuts terrain off below the base — one above
+the ground drops to the real minimum.
+
+Both settings apply to any model. A super-tile shares one frame across its
+tiles either way, as it always has.
+
 ## Display tray
 
 An optional shallow tray exports as its own watertight STL and color 3MF. Its
@@ -261,26 +281,10 @@ North, south, east, and west buttons move the selection by one full tile. The
 first move locks the elevation datum and vertical scale, so the same real
 elevation prints at the same Z height on each tile. If a later tile drops below
 that datum, TopoSaic warns that the shared datum must move down and that
-earlier tiles must be regenerated.
-
-### Vertical scale
-
-The Model tab sets how tall the terrain prints, two ways. **Overall height**,
-the default, fits the area's relief into the height you choose, so every area
-prints the same height whatever the ground does — and two tiles generated
-separately can step at the seam. **Multiplier** holds one vertical exaggeration
-instead and lets the height follow the terrain: a flat delta prints low, a
-mountain prints tall, and models made at the same multiplier compare directly,
-separate tiles included. Switching translates the value, so the model does not
-move, and each mode shows what the other would give. A mountain across a wide
-span is usually compressed rather than exaggerated: Mount Rainier over 18 km at
-28 mm of relief is about 0.8×.
-
-Height is measured from the area's lowest ground by default, which gives the
-relief the whole height. Sea level is shared by every model, and a set
-elevation names its own. No datum cuts terrain off below the base — one above
-the ground drops to the real minimum. A super-tile measures across all its
-tiles, as it always has.
+earlier tiles must be regenerated. So start at the lowest ground you mean to
+print. The lock takes whatever [Vertical scale](#vertical-scale) resolves to;
+under the multiplier the scale itself no longer depends on which tile came
+first, though the datum check is the same.
 
 ## Elevation and mesh detail
 
@@ -349,7 +353,9 @@ those really do run downhill. Separately, ground under mapped airport pavement
 is never water: a runway that WorldCover reads as bay — parts of SFO qualify —
 stands on land, because pavement is built on it.
 
-### Marine water levels (in progress)
+### Marine water levels
+
+The Surface tab's Water section holds this, under **Sea surface**.
 
 A real sea is level, but the elevation provider samples whatever its source
 holds under it — with Mapzen an ocean cell can carry coarse ETOPO1 seabed,
@@ -371,11 +377,13 @@ and a distant station carries its own caveat. Super-tiles share one plane by
 construction, and shared edges decide their ring samples from shared data
 alone so seams stay equal.
 
-An Output-tab style picker sets how the 3MF states its colors; see [Printing in
-color](#printing-in-color) for which style suits which slicer and how each
-import goes.
-
 ### Satellite ground colors (in progress)
+
+The Surface tab's Terrain section holds this, under **Ground colors**: mapped
+classes, satellite shades inside the classes, or the satellite palette alone.
+Three sliders below set how many colors discovery may keep, the share below
+which a color merges into its neighbor, and how strongly shadows are evened out
+first.
 
 The generator can also discover a small ground palette from the area itself
 instead of the fixed class colors. It samples the ESA WorldCover Sentinel-2
@@ -390,8 +398,10 @@ uniform forest covers more ground. Discovery is deterministic — the same area
 always yields the same palette in the same order — and every sample the imagery
 cannot cover falls back to its mapped class color. The resolved palette, the
 stretch, and the Copernicus attribution go into the project's data sources.
-This is the first slice of the satellite palette work: the palette resolves
-and records itself, and the coloring, export, and controls follow.
+The controls and the discovery are in place, and a job records what it found.
+The printed model does not use it yet: the mesh, the preview, and the 3MF still
+take their ground color from the mapped classes, and wiring those up is the
+rest of this work.
 
 ## Roads and water
 
@@ -602,10 +612,11 @@ detail along each wall instead of a blocky whole-map sampling edge.
 
 ## Map data, caching, and search
 
-The service caches elevation, ESA WorldCover, and OpenStreetMap input under the
-operating system's user cache directory. OpenStreetMap entries keep the raw
-response, so width, density, color, and visibility changes reuse the same
-download.
+The service caches elevation, ESA WorldCover, Sentinel-2 imagery,
+OpenStreetMap, and NOAA tide-station input under the operating system's user
+cache directory. OpenStreetMap entries keep the raw response, so width,
+density, color, and visibility changes reuse the same download. The settings
+pane lists each kind on its own and clears by age or all at once.
 
 For uncached requests, the service tries a second public Overpass instance when
 the first rejects or cannot serve the request. If both fail, generation
