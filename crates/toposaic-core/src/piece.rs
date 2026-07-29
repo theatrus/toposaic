@@ -1497,6 +1497,122 @@ mod tests {
         WallMountStyle, WallMountTarget,
     };
 
+    /// Airport pavement reaches the mesh both ways — a ribbon down a runway
+    /// centre line and an outline around an apron — and the piece stays
+    /// closed with either or both on it.
+    #[test]
+    fn airport_pavement_meshes_watertight_as_lines_and_areas() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // An apron with a terminal cut out of it, and a runway across it.
+        field.paint_surface_area_with_holes(
+            &[[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            &[vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]],
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let pavement = mesh
+            .materials
+            .iter()
+            .filter(|material| **material == SurfaceClass::Aviation)
+            .count();
+        assert!(pavement > 0, "no airport pavement reached the mesh");
+
+        // Whether any pavement triangle actually covers a point, rather
+        // than merely passing near it. Asking for vertices "close to" a
+        // point proves nothing: a coarse triangle can straddle it with
+        // every corner far away.
+        let covered_by_pavement = |point: [f32; 2]| {
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Aviation)
+                .any(|(triangle, _)| {
+                    let corners = triangle.map(|index| {
+                        let vertex = mesh.vertices[index as usize];
+                        [vertex[0], vertex[1]]
+                    });
+                    let side = |a: [f32; 2], b: [f32; 2]| {
+                        (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+                    };
+                    let (first, second, third) = (
+                        side(corners[0], corners[1]),
+                        side(corners[1], corners[2]),
+                        side(corners[2], corners[0]),
+                    );
+                    (first >= 0.0 && second >= 0.0 && third >= 0.0)
+                        || (first <= 0.0 && second <= 0.0 && third <= 0.0)
+                })
+        };
+        // Piece (0, 0) of a 2x2 covers the map's first quarter, so both
+        // sample points fall inside it: one on the apron, one in the hole
+        // the terminal stands in.
+        let at = |u: f32, v: f32| [u * spec.width_mm, v * spec.height_mm()];
+        assert!(
+            covered_by_pavement(at(0.25, 0.25)),
+            "the apron itself should be paved"
+        );
+        assert!(
+            !covered_by_pavement(at(0.45, 0.45)),
+            "pavement covered the hole in the apron"
+        );
+    }
+
+    /// The pavement stands at its own height, not the road layer's.
+    #[test]
+    fn airport_pavement_uses_its_own_surface_height() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                road_height_mm: 0.2,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_height_mm = 0.6;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let highest = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize][2]))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let terrain_top = spec.base_mm + spec.relief_mm;
+        assert!(
+            highest > terrain_top + 0.4,
+            "pavement should stand 0.6 mm proud, reached {highest} over {terrain_top}"
+        );
+    }
+
     #[test]
     fn terrain_color_bleeds_over_the_piece_edge_before_the_rock_cut_face() {
         // Rolling terrain, so the piece's walls vary from shallow to steep

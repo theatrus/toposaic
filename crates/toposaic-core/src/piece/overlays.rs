@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use geo::orient::Direction;
 use geo::{
-    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Polygon, Simplify,
+    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Orient, Polygon, Simplify,
     unary_union,
 };
 use rayon::prelude::*;
@@ -214,6 +215,7 @@ pub(super) fn append_road_geometry(
                     | SurfaceClass::Aerial
                     | SurfaceClass::Ferry
                     | SurfaceClass::RouteTrail
+                    | SurfaceClass::Aviation
             )
         })
         .filter(overlaps_piece)
@@ -299,6 +301,9 @@ pub(super) fn append_road_geometry(
     let (ferry_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::Ferry);
+    let (aviation_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Aviation);
     let (route_trail_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::RouteTrail);
@@ -587,7 +592,102 @@ pub(super) fn append_road_geometry(
             assembled_height,
         )?;
     }
+    // Airport pavement is placed after every other overlay, so a road, rail
+    // line, or crossing over it keeps the ground it already had. Within the
+    // layer the strips go down before the aprons, which is why a runway
+    // drawn across an apron reads as runway.
+    if !aviation_regular.is_empty() {
+        let aviation_area = append_overlay_geometry_at_height(
+            mesh,
+            spec,
+            SurfaceClass::Aviation,
+            "triangulate airport surface ribbon",
+            &aviation_regular,
+            spec.color_output.aviation.aviation_height_mm,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(aviation_area);
+    }
+    let aviation_outlines = aviation_area_footprint(
+        surface_field,
+        &piece_polygon,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    );
+    if !aviation_outlines.0.is_empty() {
+        append_overlay_footprint(
+            mesh,
+            spec,
+            SurfaceClass::Aviation,
+            "triangulate airport surface outline",
+            aviation_outlines,
+            spec.color_output.aviation.aviation_height_mm,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+    }
     Ok(())
+}
+
+/// The piece's share of every aeroway area, holes kept.
+///
+/// Outlines arrive in normalized map space and in whatever winding their
+/// mapper drew; the piece wants millimetres in its own frame, so the ring
+/// order is normalized here rather than trusted. Clipping against the piece
+/// is what keeps an apron that crosses a seam watertight on both sides.
+fn aviation_area_footprint(
+    field: &SurfaceField,
+    piece_polygon: &Polygon<f64>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> MultiPolygon<f64> {
+    let ring = |points: &[[f32; 2]]| {
+        let mut coords = points
+            .iter()
+            .map(|point| Coord {
+                x: f64::from(point[0] * assembled_width - origin_x),
+                y: f64::from(point[1] * assembled_height - origin_y),
+            })
+            .collect::<Vec<_>>();
+        if let Some(first) = coords.first().copied() {
+            coords.push(first);
+        }
+        LineString::new(coords)
+    };
+    let outlines = field
+        .vector_areas
+        .iter()
+        .filter(|area| area.class == Some(SurfaceClass::Aviation) && area.points.len() >= 3)
+        .map(|area| {
+            Polygon::new(
+                ring(&area.points),
+                area.holes.iter().map(|hole| ring(hole)).collect(),
+            )
+            .orient(Direction::Default)
+        })
+        .collect::<Vec<_>>();
+    if outlines.is_empty() {
+        return MultiPolygon::new(Vec::new());
+    }
+    unary_union(outlines.iter()).intersection(piece_polygon)
 }
 
 /// Builds one secondary overlay's shells for a piece: terrain-following
@@ -617,11 +717,94 @@ fn append_overlay_geometry(
     assembled_width: f32,
     assembled_height: f32,
 ) -> Result<MultiPolygon<f64>> {
+    append_overlay_geometry_at_height(
+        mesh,
+        spec,
+        material,
+        error_context,
+        lines,
+        spec.color_output.road_height_mm,
+        clip_ribbon,
+        claimed,
+        decks,
+        height_field,
+        height_range,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    )
+}
+
+/// [`append_overlay_geometry`] for a layer that stands at its own height
+/// rather than the road layer's.
+#[allow(clippy::too_many_arguments)]
+fn append_overlay_geometry_at_height(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    material: SurfaceClass,
+    error_context: &'static str,
+    lines: &[&VectorSurfaceLine],
+    height_mm: f32,
+    clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
+    claimed: &[MultiPolygon<f64>],
+    decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<MultiPolygon<f64>> {
     let clips = lines
         .par_iter()
         .map(|line| clip_ribbon(line))
         .collect::<Vec<_>>();
-    let mut overlay_area = unary_union(clips.iter());
+    append_overlay_footprint(
+        mesh,
+        spec,
+        material,
+        error_context,
+        unary_union(clips.iter()),
+        height_mm,
+        claimed,
+        decks,
+        height_field,
+        height_range,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    )
+}
+
+/// Places one already-clipped overlay footprint: cuts it back against the
+/// layers claimed before it, drops the parts coincident with a terrain-level
+/// deck, and shells what is left onto the terrain.
+///
+/// Shared by every terrain-following overlay. Ribbons reach it as the union
+/// of their buffered centre lines; airport pavement drawn as an outline
+/// reaches it as that outline. Beyond how the footprint was arrived at
+/// there is nothing different to do, and having one path is what keeps a
+/// runway's edge behaving like a road's.
+#[allow(clippy::too_many_arguments)]
+fn append_overlay_footprint(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    material: SurfaceClass,
+    error_context: &'static str,
+    footprint: MultiPolygon<f64>,
+    height_mm: f32,
+    claimed: &[MultiPolygon<f64>],
+    decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<MultiPolygon<f64>> {
+    let mut overlay_area = footprint;
     let grown = |area: &MultiPolygon<f64>| {
         let buffered = area
             .0
@@ -679,7 +862,7 @@ fn append_overlay_geometry(
             build_polygon_shell(
                 polygon,
                 |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
-                |point| surface_z(point) + spec.color_output.road_height_mm,
+                |point| surface_z(point) + height_mm,
                 None,
                 material,
                 error_context,
