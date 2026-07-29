@@ -1025,6 +1025,10 @@ const AVIATION_PROFILE_STATIONS: usize = 256;
 /// meets it without a step.
 const AVIATION_GRADE_FADE_MM: f32 = 4.0;
 
+/// How many samples across the ribbon each station takes to find the
+/// ground it must clear.
+const AVIATION_CROSS_SAMPLES: usize = 5;
+
 /// The elevation along one aeroway centre line.
 ///
 /// A runway is flat across its width and not along its length: it rises and
@@ -1037,6 +1041,13 @@ const AVIATION_GRADE_FADE_MM: f32 = 4.0;
 /// share a station, which is what makes the cross-section level; stations
 /// along the length follow the terrain, which is what stops the pavement
 /// burying itself in a hill it should be climbing.
+///
+/// A station takes the HIGHEST ground across its own width, not the height
+/// under the centre line. A level surface set to the middle of a cross
+/// slope buries its uphill edge, and buried pavement is not pavement — it
+/// is a hole in the model where a runway should be. Taking the high side
+/// fills instead of cutting, which is what an airfield does to the ground
+/// anyway.
 struct AviationProfile<'lines> {
     line: &'lines VectorSurfaceLine,
     /// Print z at evenly spaced stations from the line's start to its end.
@@ -1075,13 +1086,27 @@ fn aviation_profiles<'lines>(
     lines
         .par_iter()
         .map(|line| {
+            let half_width = line.width_mm * 0.5;
             let stations = (0..=AVIATION_PROFILE_STATIONS)
                 .map(|station| {
                     let progress = station as f32 / AVIATION_PROFILE_STATIONS as f32;
                     let point = polyline_point_at_progress(&line.points_mm, progress);
-                    let u = (point[0] / assembled_width).clamp(0.0, 1.0);
-                    let v = (point[1] / assembled_height).clamp(0.0, 1.0);
-                    terrain_z_at(spec, height_field, height_range, u, v)
+                    let along = polyline_direction_at_progress(&line.points_mm, progress);
+                    // Perpendicular to the strip, so the samples cross it.
+                    let across = [-along[1], along[0]];
+                    (0..AVIATION_CROSS_SAMPLES)
+                        .map(|sample| {
+                            let offset = if AVIATION_CROSS_SAMPLES <= 1 {
+                                0.0
+                            } else {
+                                (sample as f32 / (AVIATION_CROSS_SAMPLES - 1) as f32 - 0.5) * 2.0
+                            } * half_width;
+                            let at = [point[0] + across[0] * offset, point[1] + across[1] * offset];
+                            let u = (at[0] / assembled_width).clamp(0.0, 1.0);
+                            let v = (at[1] / assembled_height).clamp(0.0, 1.0);
+                            terrain_z_at(spec, height_field, height_range, u, v)
+                        })
+                        .fold(f32::NEG_INFINITY, f32::max)
                 })
                 .collect::<Vec<_>>();
             let margin = line.width_mm * 0.5 + AVIATION_GRADE_FADE_MM;
@@ -1104,6 +1129,19 @@ fn aviation_profiles<'lines>(
             }
         })
         .collect()
+}
+
+/// The unit direction of a polyline a fraction of the way along it.
+fn polyline_direction_at_progress(points: &[[f32; 2]], progress: f32) -> [f32; 2] {
+    let ahead = polyline_point_at_progress(points, (progress + 0.005).min(1.0));
+    let behind = polyline_point_at_progress(points, (progress - 0.005).max(0.0));
+    let delta = [ahead[0] - behind[0], ahead[1] - behind[1]];
+    let length = delta[0].hypot(delta[1]);
+    if length <= f32::EPSILON {
+        [1.0, 0.0]
+    } else {
+        [delta[0] / length, delta[1] / length]
+    }
 }
 
 /// The point a fraction of the way along a polyline, by arc length.

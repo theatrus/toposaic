@@ -212,6 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     forest_limit_degrees: Some(55.0),
                     steep_forest_target: SteepForestTarget::Rock,
                     snow_limit_degrees: Some(65.0),
+                    water_limit_degrees: None,
                 },
             )
             .total();

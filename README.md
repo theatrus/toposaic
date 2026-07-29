@@ -306,11 +306,19 @@ data; it stays off and the map keeps the source resolution, which the listed
 data sources say outright. Switch the setting to blocky to keep the native 10 m
 cells at every span. Expert sliders set how far smoothed borders bend (in 10 m
 cells) and how strongly staircase noise is damped at the cost of single-cell
-detail. Color mode also keeps forest off steep rock and snow off sheer faces by
-default, since WorldCover bleeds tree cover and snow onto cliff walls: forest
-above an adjustable limit (55° to start) prints as rock — or as snow above the
-snowline, if chosen — and snow above its own limit (65° to start) prints as
-rock, even snow the forest gate just made.
+detail. Color mode also keeps forest off steep rock, snow off sheer faces, and
+water off cliffs by default, since WorldCover bleeds all three onto ground that
+cannot hold them: forest above an adjustable limit (55° to start) prints as
+rock — or as snow above the snowline, if chosen — and snow above its own limit
+(65° to start) prints as rock, even snow the forest gate just made.
+
+Standing water has no slope. A sea is level and a lake surface is flat whatever
+the hill around it does, so a land-cover water sample on a steep face is a
+shoreline bleeding up a seawall or a harbour edge, and printing it climbs the
+wall in blue. Water above its limit (30° to start) prints as rock. Only the
+land-cover raster is gated, and it is gated before any OpenStreetMap water is
+drawn, so mapped rivers and waterfalls keep their class — those really do run
+downhill.
 
 An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each

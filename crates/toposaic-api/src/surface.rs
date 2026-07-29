@@ -369,8 +369,8 @@ pub fn fetch_surface_field(
     if spec.color_output.enabled {
         let ground_span_m = (spec.ground_span_km * 1_000.0) as f32;
         let gates = &spec.color_output.slope_gates;
-        if gates.forest_slope_gate || gates.snow_slope_gate {
-            // One call gates both classes so the slope per sample is
+        if gates.forest_slope_gate || gates.snow_slope_gate || gates.water_slope_gate {
+            // One call gates every class so the slope per sample is
             // computed once, whichever gates are on.
             let demoted = field.demote_steep_classes(
                 height_field,
@@ -383,6 +383,9 @@ pub fn fetch_surface_field(
                     snow_limit_degrees: gates
                         .snow_slope_gate
                         .then_some(gates.snow_slope_limit_degrees),
+                    water_limit_degrees: gates
+                        .water_slope_gate
+                        .then_some(gates.water_slope_limit_degrees),
                 },
             );
             if demoted.total() > 0 {
@@ -397,6 +400,12 @@ pub fn fetch_surface_field(
                     parts.push(format!(
                         "{} forest samples steeper than {:.0} degrees reclassified as snow above the snowline",
                         demoted.forest_to_snow, gates.forest_slope_limit_degrees
+                    ));
+                }
+                if demoted.water_to_rock > 0 {
+                    parts.push(format!(
+                        "{} land-cover water samples steeper than {:.0} degrees reclassified as rock",
+                        demoted.water_to_rock, gates.water_slope_limit_degrees
                     ));
                 }
                 if demoted.snow_to_rock > 0 {

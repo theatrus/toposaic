@@ -2105,6 +2105,93 @@ mod tests {
         );
     }
 
+    /// Buried pavement is not pavement — it is a hole in the model where a
+    /// runway should be. A strip laid flat across a side slope buries its
+    /// uphill edge unless the level is taken from the high side, so this
+    /// runs a runway and a taxiway straight along a hillside, across the
+    /// fall line, which is the case that breaks it.
+    #[test]
+    fn nothing_airside_is_ever_buried_on_a_cross_slope() {
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let _ = x;
+                    // Ground that falls steadily across the strips.
+                    y as f32 / (samples - 1) as f32 * 900.0
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "side slope").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 48,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // A wide runway and a narrow taxiway, both along the contour, so
+        // every point of each has ground rising on one side of it.
+        field.paint_polyline(
+            &[[0.0, 0.2], [1.0, 0.2]],
+            120.0,
+            4.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(
+            &[[0.0, 0.35], [1.0, 0.35]],
+            120.0,
+            0.8,
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 100.0).round() as i32,
+                (vertex[1] * 100.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(columns.len() > 8, "no pavement to judge");
+
+        let mut worst_buried = 0.0_f32;
+        for ((x, y), top) in &columns {
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                *x as f32 / 100.0 / spec.width_mm,
+                *y as f32 / 100.0 / spec.height_mm(),
+            );
+            worst_buried = worst_buried.max(ground - top);
+        }
+        assert!(
+            worst_buried < 0.02,
+            "pavement is buried {worst_buried} mm under the hillside it crosses"
+        );
+    }
+
     /// The pavement stands at its own height, not the road layer's.
     ///
     /// Measured as the difference between two runs rather than against the
