@@ -313,14 +313,22 @@ rock — or as snow above the snowline, if chosen — and snow above its own lim
 (65° to start) prints as rock, even snow the forest gate just made.
 
 Standing water has no slope. A sea is level and a lake surface is flat whatever
-the hill around it does, so a land-cover water sample on a steep face is a
-shoreline bleeding up a seawall or a harbour edge, and printing it climbs the
-wall in blue. Water above its limit (30° to start) prints as rock. Only the
-land-cover raster is gated, and it is gated before any OpenStreetMap water is
-drawn, so mapped rivers and waterfalls keep their class — those really do run
-downhill. Coastal water that comes from a mapped OpenStreetMap polygon rather
-than from land cover is not yet gated; see the notes on that in the pull
-request that added this.
+the hill around it does, so water climbing a face is a shoreline bleeding up a
+seawall or a harbour edge, and the print shows it in blue. Water above its
+limit (30° to start) prints as rock — and unlike the forest and snow gates,
+the angle judged is the PRINTED one. Trees answer to real ground, but water on
+a wall is a defect of the artifact: vertical exaggeration turns a two-degree
+shoreline into a forty-degree printed face, and that face is what the limit is
+held against. Both kinds of water get a gate of their own, each with its own
+switch and limit: one for the land-cover raster, one for mapped OpenStreetMap
+water polygons — which are painted afterwards but consult the pass's verdict.
+Split because the sources err differently: WorldCover bleeds 10 m pixels over
+shorelines, while a mapped polygon is usually exact and climbs a wall only
+where the elevation data and the mapping disagree. Mapped rivers and
+waterfalls keep their class everywhere under either gate;
+those really do run downhill. Separately, ground under mapped airport pavement
+is never water: a runway that WorldCover reads as bay — parts of SFO qualify —
+stands on land, because pavement is built on it.
 
 An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each

@@ -47,6 +47,12 @@ pub struct SurfaceField {
     pub(crate) vector_areas: Vec<VectorSurfaceArea>,
     vector_line_buckets: Vec<Vec<LineBucketEntry>>,
     vector_area_buckets: Vec<Vec<usize>>,
+    /// Per-sample "too steep for standing water", written by the water
+    /// slope gate in `demote_steep_classes`. Water polygons painted after
+    /// the gate consult it — through `rasterize_area` and the sampler —
+    /// so mapped seas obey the same physics as land-cover water. Waterway
+    /// lines never consult it: rivers really do run downhill.
+    steep_water: Option<Vec<bool>>,
 }
 
 /// One line's presence in one bucket: only the segments whose padded
@@ -110,8 +116,23 @@ pub struct SlopeGates {
     /// Demote snow steeper than this many degrees to rock. Applies after
     /// the forest gate, so it also gates forest just demoted to snow.
     pub snow_limit_degrees: Option<f32>,
-    /// Demote land-cover water steeper than this many degrees to rock.
+    /// Demote land-cover water steeper than this many degrees to rock —
+    /// measured on the PRINTED surface, unlike the ground-slope gates
+    /// above. Trees grow on real ground, so the forest gate reads real
+    /// degrees; water climbing a wall is a defect of the artifact, and the
+    /// wall it climbs is the printed one. A 2-degree shoreline under heavy
+    /// vertical exaggeration prints as a 40-degree face, and that face is
+    /// what the limit is compared against.
     pub water_limit_degrees: Option<f32>,
+    /// The same printed-angle physics for mapped water polygons, painted
+    /// after this pass runs: the pass leaves a per-sample verdict at this
+    /// limit for them to consult. `None` lets mapped water climb anything.
+    pub osm_water_limit_degrees: Option<f32>,
+    /// How much steeper the print is than the ground: vertical mm-per-m
+    /// over horizontal mm-per-m. Multiplies the ground gradient before
+    /// either water limit is applied. 1.0 means the print preserves true
+    /// angles.
+    pub water_vertical_exaggeration: f32,
 }
 
 /// How many samples the steep-slope gates reclassified, split by the class
@@ -225,6 +246,7 @@ impl SurfaceField {
             vector_areas: Vec::new(),
             vector_line_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
             vector_area_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
+            steep_water: None,
         })
     }
 
@@ -319,6 +341,7 @@ impl SurfaceField {
         if gates.forest_limit_degrees.is_none()
             && gates.snow_limit_degrees.is_none()
             && gates.water_limit_degrees.is_none()
+            && gates.osm_water_limit_degrees.is_none()
         {
             return SlopeGateDemotion::default();
         }
@@ -337,28 +360,41 @@ impl SurfaceField {
         let tan_water_limit = gates
             .water_limit_degrees
             .map(|degrees| degrees.to_radians().tan());
+        let tan_osm_water_limit = gates
+            .osm_water_limit_degrees
+            .map(|degrees| degrees.to_radians().tan());
         let width = self.width;
         let du = 1.0 / (width - 1) as f32;
         let dv = 1.0 / (self.height - 1) as f32;
+        // The mapped-water gate is nothing but a per-sample mask that
+        // outlives this pass: water polygons painted later consult it, so
+        // a mapped sea stops at its own printed wall. The mask covers
+        // every sample whatever its class — the wall face a polygon would
+        // climb is usually classed rock, not water.
+        let mut steep_water = vec![false; self.classes.len()];
         let demoted = self
             .classes
             .par_chunks_mut(width)
+            .zip(steep_water.par_chunks_mut(width))
             .enumerate()
-            .map(|(y, row)| {
+            .map(|(y, (row, mask_row))| {
                 let v = y as f32 * dv;
                 let v0 = (v - dv).max(0.0);
                 let v1 = (v + dv).min(1.0);
                 let mut demoted = SlopeGateDemotion::default();
                 for (x, class) in row.iter_mut().enumerate() {
-                    // Only forest under the forest gate and snow under the
-                    // snow gate need a slope; everything else keeps its
-                    // class without touching the height field.
-                    let gated = match *class {
-                        SurfaceClass::Forest => tan_forest_limit.is_some(),
-                        SurfaceClass::Snow => tan_snow_limit.is_some(),
-                        SurfaceClass::Water => tan_water_limit.is_some(),
-                        _ => false,
-                    };
+                    // Only forest under the forest gate, snow under the
+                    // snow gate, and water under the land-cover water gate
+                    // need a slope; everything else keeps its class
+                    // without touching the height field. The mapped-water
+                    // gate needs the slope at every sample for its mask.
+                    let gated = tan_osm_water_limit.is_some()
+                        || match *class {
+                            SurfaceClass::Forest => tan_forest_limit.is_some(),
+                            SurfaceClass::Snow => tan_snow_limit.is_some(),
+                            SurfaceClass::Water => tan_water_limit.is_some(),
+                            _ => false,
+                        };
                     if !gated {
                         continue;
                     }
@@ -395,12 +431,17 @@ impl SurfaceField {
                         demoted.snow_to_rock += 1;
                         *class = SurfaceClass::Rock;
                     }
-                    // Water cannot climb a cliff. A sea is level and a lake
+                    // Water cannot climb a wall. A sea is level and a lake
                     // surface is flat, so a water sample on a steep face is
                     // land cover spilling over a shoreline rather than any
-                    // water that is really there.
+                    // water that is really there. The face that matters is
+                    // the PRINTED one: vertical exaggeration turns a gentle
+                    // shoreline into a wall, and the blue climbs that wall
+                    // on the artifact regardless of the true ground angle.
+                    let printed_gradient = gradient * gates.water_vertical_exaggeration;
+                    mask_row[x] = tan_osm_water_limit.is_some_and(|limit| printed_gradient > limit);
                     if *class == SurfaceClass::Water
-                        && tan_water_limit.is_some_and(|limit| gradient > limit)
+                        && tan_water_limit.is_some_and(|limit| printed_gradient > limit)
                     {
                         demoted.water_to_rock += 1;
                         *class = SurfaceClass::Rock;
@@ -409,6 +450,9 @@ impl SurfaceField {
                 demoted
             })
             .reduce(SlopeGateDemotion::default, SlopeGateDemotion::add);
+        if tan_osm_water_limit.is_some() {
+            self.steep_water = Some(steep_water);
+        }
         if demoted.total() > 0 {
             self.base_classes.clone_from(&self.classes);
         }
@@ -844,6 +888,18 @@ impl SurfaceField {
         self.vector_areas.push(area);
     }
 
+    /// Whether the water slope gate marked the nearest raster sample as too
+    /// steep for standing water on the printed surface. Always false when
+    /// the gate has not run.
+    fn steep_water_at(&self, u: f32, v: f32) -> bool {
+        let Some(mask) = &self.steep_water else {
+            return false;
+        };
+        let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
+        mask[y * self.width + x]
+    }
+
     fn rasterize_area(
         &mut self,
         points: &[[f32; 2]],
@@ -905,6 +961,17 @@ impl SurfaceField {
                 if point_in_polygon(pixel, &pixels)
                     && !hole_pixels.iter().any(|hole| point_in_polygon(pixel, hole))
                 {
+                    // A water polygon stops at the printed wall exactly as
+                    // land-cover water does — the slope gate ran before any
+                    // polygon arrived, so its verdict is consulted here.
+                    if class == SurfaceClass::Water
+                        && self
+                            .steep_water
+                            .as_ref()
+                            .is_some_and(|mask| mask[y * self.width + x])
+                    {
+                        continue;
+                    }
                     self.classes[y * self.width + x] = class;
                 }
             }
@@ -971,6 +1038,12 @@ impl SurfaceField {
     /// the class a generated artifact colors that spot.
     pub fn class_at(&self, u: f32, v: f32) -> SurfaceClass {
         self.at(u, v)
+    }
+
+    /// Surface class at a normalized position with the overlays hidden —
+    /// the class the terrain triangles under an overlay shell are painted.
+    pub fn terrain_class_at(&self, u: f32, v: f32) -> SurfaceClass {
+        self.terrain_at(u, v)
     }
 
     pub(crate) fn terrain_at(&self, u: f32, v: f32) -> SurfaceClass {
@@ -1147,6 +1220,26 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        // Two places refuse standing water below. Steepness: the water
+        // slope gate already took land-cover water off the printed wall,
+        // and a mapped water polygon obeys the same physics. Pavement:
+        // OpenStreetMap says a runway or apron stands here, and pavement
+        // is built on land — the more specific source wins the conflict.
+        // Waterway LINES consult neither: rivers run downhill, and a
+        // culvert under a taxiway still carries its stream.
+        let over_pavement = || {
+            line_entries.iter().any(|entry| {
+                let line = &self.vector_lines[entry.line_index];
+                line.class == SurfaceClass::Aviation
+                    && line_segment_ranges_contain(line, &entry.segment_ranges, u, v)
+            }) || self.vector_area_buckets[bucket]
+                .iter()
+                .map(|index| &self.vector_areas[*index])
+                .any(|area| area.class == Some(SurfaceClass::Aviation) && area.covers([u, v]))
+        };
+        let refuses_standing_water = |class: SurfaceClass| {
+            class == SurfaceClass::Water && (self.steep_water_at(u, v) || over_pavement())
+        };
         if let Some(class) = self.vector_area_buckets[bucket]
             .iter()
             .rev()
@@ -1158,7 +1251,7 @@ impl SurfaceField {
                     .filter(|class| include_roads || *class != SurfaceClass::Aviation)
                     .map(|class| (area, class))
             })
-            .find(|(area, _)| area.covers([u, v]))
+            .find(|(area, class)| area.covers([u, v]) && !refuses_standing_water(*class))
             .map(|(_, class)| class)
         {
             return SurfaceSample {
@@ -1189,8 +1282,17 @@ impl SurfaceField {
                 building_height_m,
             };
         }
+        let mut class = self.interpolated_base_class(u, v);
+        // The raster half of "pavement implies land": WorldCover can class
+        // a paved peninsula as open water — SFO's south-east apron stands
+        // in the bay by its reading — and the terrain under the pavement
+        // shell would print blue. The steep mask needs no counterpart here:
+        // the gate already demoted the raster itself.
+        if class == SurfaceClass::Water && over_pavement() {
+            class = SurfaceClass::Rock;
+        }
         SurfaceSample {
-            class: self.interpolated_base_class(u, v),
+            class,
             building_height_m,
         }
     }
@@ -2027,6 +2129,8 @@ mod tests {
             steep_forest_target: target,
             snow_limit_degrees: None,
             water_limit_degrees: None,
+            osm_water_limit_degrees: None,
+            water_vertical_exaggeration: 1.0,
         }
     }
 
@@ -2046,11 +2150,17 @@ mod tests {
     }
 
     fn water_gate(limit_degrees: f32) -> SlopeGates {
+        water_gate_exaggerated(limit_degrees, 1.0)
+    }
+
+    fn water_gate_exaggerated(limit_degrees: f32, exaggeration: f32) -> SlopeGates {
         SlopeGates {
             forest_limit_degrees: None,
             steep_forest_target: SteepForestTarget::Rock,
             snow_limit_degrees: None,
             water_limit_degrees: Some(limit_degrees),
+            osm_water_limit_degrees: Some(limit_degrees),
+            water_vertical_exaggeration: exaggeration,
         }
     }
 
@@ -2093,7 +2203,135 @@ mod tests {
         assert!(field.classes.iter().all(|c| *c == SurfaceClass::Water));
     }
 
-    /// The gate only ever reads the land-cover raster. Every other class is
+    /// The wall that matters is the printed one. Vertical exaggeration
+    /// steepens the artifact without moving a single sample of ground: a
+    /// seventeen-degree shore under three-fold exaggeration prints past
+    /// forty degrees, and the blue climbs that printed face. The same
+    /// shore at true scale keeps its water.
+    #[test]
+    fn the_water_gate_reads_the_printed_angle_not_the_ground_angle() {
+        let size = 33;
+        // 300 m over 1 km: under 17 ground degrees, so tan is about 0.3.
+        let values = (0..size * size)
+            .map(|index| (index % size) as f32 / (size - 1) as f32 * 300.0)
+            .collect::<Vec<f32>>();
+        let height_field = HeightField::new(size, size, values, "shore").unwrap();
+
+        let mut exaggerated =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        let demoted = exaggerated.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            water_gate_exaggerated(30.0, 3.0),
+        );
+        assert!(
+            demoted.water_to_rock > 0,
+            "a printed wall three times the ground angle kept its water"
+        );
+
+        let mut true_scale =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        let demoted = true_scale.demote_steep_classes(
+            &height_field,
+            1_000.0,
+            water_gate_exaggerated(30.0, 1.0),
+        );
+        assert_eq!(demoted.water_to_rock, 0, "a true-scale shore lost water");
+    }
+
+    /// A mapped water polygon obeys the same physics as land-cover water:
+    /// painted after the gate has run, it must still stop at the printed
+    /// wall. Both halves matter — the raster the polygon rasterizes into
+    /// and the vector area the sampler consults first.
+    #[test]
+    fn a_water_polygon_painted_after_the_gate_stops_at_the_wall() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Rock; size * size], "test").unwrap();
+        field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+
+        // The bay arrives as one polygon covering everything, wall included.
+        field.paint_surface_area(
+            &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            SurfaceClass::Water,
+        );
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Rock,
+            "the polygon climbed the printed wall"
+        );
+        assert_eq!(field.class_at(0.1, 0.5), SurfaceClass::Water);
+        assert_eq!(field.class_at(0.9, 0.5), SurfaceClass::Water);
+        // The terrain sampler agrees: the wall's ground is rock.
+        assert_eq!(field.terrain_class_at(0.5, 0.5), SurfaceClass::Rock);
+    }
+
+    /// Rivers and waterfalls really do run downhill. A waterway LINE
+    /// crossing the wall keeps its water; only polygons and land cover
+    /// answer to the gate.
+    #[test]
+    fn a_waterway_line_still_runs_down_the_wall() {
+        let size = 33;
+        let height_field = cliff_height_field(size);
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Rock; size * size], "test").unwrap();
+        field.demote_steep_classes(&height_field, 1_000.0, water_gate(30.0));
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 100.0, 1.5, SurfaceClass::Water);
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Water,
+            "the gate dammed a river on the wall"
+        );
+    }
+
+    /// Pavement is built on land. Where OpenStreetMap places an apron and
+    /// the land cover says open water — WorldCover reads SFO's south-east
+    /// apron as bay — the more specific source wins: the class sampler
+    /// answers pavement and the terrain sampler answers land, so the
+    /// ground under the pavement shell never prints blue.
+    #[test]
+    fn pavement_implies_land_where_the_land_cover_says_water() {
+        let size = 33;
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        field.paint_surface_area(
+            &[[0.2, 0.2], [0.6, 0.2], [0.6, 0.6], [0.2, 0.6]],
+            SurfaceClass::Aviation,
+        );
+        assert_eq!(field.class_at(0.4, 0.4), SurfaceClass::Aviation);
+        assert_eq!(
+            field.terrain_class_at(0.4, 0.4),
+            SurfaceClass::Rock,
+            "the ground under an apron stayed water"
+        );
+        // Clear of the pavement the bay is still the bay, in both samplers.
+        assert_eq!(field.class_at(0.8, 0.8), SurfaceClass::Water);
+        assert_eq!(field.terrain_class_at(0.8, 0.8), SurfaceClass::Water);
+    }
+
+    /// The runway drawn as a centre line gets the same ground as the apron
+    /// drawn as an outline.
+    #[test]
+    fn pavement_implies_land_under_a_runway_line_too() {
+        let size = 33;
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Water; size * size], "test").unwrap();
+        field.paint_polyline(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            100.0,
+            2.0,
+            SurfaceClass::Aviation,
+        );
+        assert_eq!(
+            field.terrain_class_at(0.5, 0.5),
+            SurfaceClass::Rock,
+            "the ground under a runway line stayed water"
+        );
+        assert_eq!(field.terrain_class_at(0.5, 0.9), SurfaceClass::Water);
+    }
+
+    /// The gate never reclassifies anything but water. Every other class is
     /// left where it is, which is what lets the three gates share one pass.
     #[test]
     fn the_water_gate_leaves_every_other_class_alone() {
@@ -2179,6 +2417,8 @@ mod tests {
                 steep_forest_target: SteepForestTarget::Rock,
                 snow_limit_degrees: Some(65.0),
                 water_limit_degrees: None,
+                osm_water_limit_degrees: None,
+                water_vertical_exaggeration: 1.0,
             },
         );
         assert!(demoted.snow_to_rock > 0);
@@ -2294,6 +2534,8 @@ mod tests {
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: Some(65.0),
                 water_limit_degrees: None,
+                osm_water_limit_degrees: None,
+                water_vertical_exaggeration: 1.0,
             },
         );
         assert!(demoted.forest_to_snow > 0);
@@ -2336,6 +2578,8 @@ mod tests {
                 steep_forest_target: SteepForestTarget::Snow,
                 snow_limit_degrees: None,
                 water_limit_degrees: None,
+                osm_water_limit_degrees: None,
+                water_vertical_exaggeration: 1.0,
             },
         );
         assert_eq!(demoted, SlopeGateDemotion::default());

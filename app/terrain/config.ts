@@ -250,6 +250,8 @@ export const initialSpec: GenerationSpec = {
     snow_slope_gate: true,
     water_slope_gate: true,
     water_slope_limit_degrees: 30,
+    osm_water_slope_gate: true,
+    osm_water_slope_limit_degrees: 30,
     snow_slope_limit_degrees: 65,
   },
   trails: [],

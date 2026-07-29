@@ -140,23 +140,47 @@ export function SurfaceTerrainSection({
               updateColor("water_slope_gate", event.target.checked)
             }
           />
-          <span>Keep water off cliffs</span>
+          <span>Keep land-cover water off walls</span>
         </label>
-        <small>
-          A sea is level and a lake surface is flat, so land-cover water on a
-          steep face is a shoreline bleeding up a seawall. Mapped rivers and
-          waterfalls are untouched — those really do run downhill.
-        </small>
+        <small>Takes satellite water off printed slopes it cannot hold.</small>
       </div>
       {spec.color_output.water_slope_gate && (
         <RangeField
-          label="Water slope limit"
+          label="Land-cover water slope limit"
           value={spec.color_output.water_slope_limit_degrees}
           unit="°"
           min={5}
           max={85}
           step={1}
           onChange={(value) => updateColor("water_slope_limit_degrees", value)}
+          note="Printed degrees, not ground degrees: a sea is level, so water climbing a face is a shoreline bleeding up a seawall, and vertical exaggeration is what builds the face it climbs. Rivers and waterfalls are untouched — those really do run downhill."
+        />
+      )}
+      <div className="road-options">
+        <label className="color-toggle">
+          <input
+            type="checkbox"
+            checked={spec.color_output.osm_water_slope_gate}
+            onChange={(event) =>
+              updateColor("osm_water_slope_gate", event.target.checked)
+            }
+          />
+          <span>Keep mapped water off walls</span>
+        </label>
+        <small>The same physics for OpenStreetMap seas and lakes.</small>
+      </div>
+      {spec.color_output.osm_water_slope_gate && (
+        <RangeField
+          label="Mapped water slope limit"
+          value={spec.color_output.osm_water_slope_limit_degrees}
+          unit="°"
+          min={5}
+          max={85}
+          step={1}
+          onChange={(value) =>
+            updateColor("osm_water_slope_limit_degrees", value)
+          }
+          note="Printed degrees, for the water polygons most coastlines are made of. Its own switch because the sources err differently: a mapped shoreline is usually exact, and climbs only where the elevation data and the mapping disagree."
         />
       )}
       <div className="road-options">
