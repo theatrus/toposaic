@@ -263,6 +263,28 @@ elevation prints at the same Z height on each tile. If a later tile drops below
 that datum, TopoSaic warns that the shared datum must move down and that
 earlier tiles must be regenerated.
 
+### Vertical scale
+
+Two ways to say how tall the terrain prints, on the Model tab. **Overall
+height** — the default — fits the area's relief into the height you set, so the
+model fills its budget whatever the ground does. Two areas then print the same
+height, which hides how different they are, and two separately generated
+neighbours can step at the seam. **Multiplier** instead holds one vertical
+exaggeration and lets the height follow the terrain: a flat delta prints low, a
+mountain prints tall, and any two models made at the same multiplier are
+directly comparable — separately generated tiles included. Switching between
+them translates the value, so the model does not move; the panel shows whatever
+the current setting comes to in the other. Note that a whole mountain across a
+wide span is usually *compressed*, not exaggerated: Mount Rainier over 18 km at
+28 mm of relief is about 0.8×.
+
+Height is measured from the area's lowest ground by default, which spends the
+whole height on the relief that is there. Sea level is the alternative every
+model shares without coordinating, and a set elevation names its own. No datum
+ever cuts terrain off below the base — one above the ground drops to the real
+minimum instead. A super-tile measures from the lowest ground across all its
+tiles, as it always has.
+
 ## Elevation and mesh detail
 
 The elevation provider reads Mapzen Terrarium tiles by default. A Mapterhorn

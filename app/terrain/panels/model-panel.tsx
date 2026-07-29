@@ -16,6 +16,7 @@ export function ModelPanel({
   choosePlace,
   heightFrameCompatible,
   heightFrameLocked,
+  heightScaleReadout,
   hidden,
   lockHeightFrame,
   moveToAdjacentTile,
@@ -26,6 +27,7 @@ export function ModelPanel({
   searchingPlaces,
   setMeshQuality,
   setPlaceQuery,
+  setHeightMode,
   setSuperTileAnchor,
   spec,
   superTileGridSizes,
@@ -46,8 +48,11 @@ export function ModelPanel({
   searchingPlaces: boolean;
   setMeshQuality: (samples: number) => void;
   setPlaceQuery: (value: string) => void;
+  setHeightMode: (mode: GenerationSpec["height_mode"]) => void;
   setSuperTileAnchor: (anchor: GenerationSpec["super_tile_anchor"]) => void;
   spec: GenerationSpec;
+  /** Sampled elevation bounds, for the derived scale readout. */
+  heightScaleReadout: { exaggeration: number; height: number } | null;
   superTileGridSizes: number[];
   unlockHeightFrame: () => void;
   update: <Key extends keyof GenerationSpec>(
@@ -364,7 +369,9 @@ export function ModelPanel({
                         ? "grid center"
                         : "top-left tile"
                     }. The super-tile shares one height frame.`
-                  : "Auto height fits one tile; manual neighbors may form a step."}
+                  : spec.height_mode === "multiplier"
+                    ? "A fixed multiplier already matches separately generated neighbors."
+                    : "Auto height fits one tile; manual neighbors may form a step. A multiplier, or a locked height, keeps them level."}
           </p>
           {adjacentMessage && (
             <p className="adjacent-message">{adjacentMessage}</p>
@@ -495,15 +502,95 @@ export function ModelPanel({
         step={5}
         onChange={(value) => update("width_mm", value)}
       />
-      <RangeField
-        label="Terrain height"
-        value={spec.relief_mm}
-        unit=" mm"
-        min={3}
-        max={80}
-        step={1}
-        onChange={(value) => update("relief_mm", value)}
-      />
+      <label className="road-detail-field">
+        Vertical scale
+        <select
+          value={spec.height_mode}
+          onChange={(event) =>
+            setHeightMode(
+              event.target.value as GenerationSpec["height_mode"],
+            )
+          }
+        >
+          <option value="overall_height">Overall height · fit this area</option>
+          <option value="multiplier">Multiplier · fixed exaggeration</option>
+        </select>
+        <small>
+          Fitting the height fills the model whatever the terrain does, so
+          two areas print the same height. A multiplier holds one vertical
+          scale instead and lets the height follow the ground, so separate
+          areas — and separately generated tiles — stay comparable.
+        </small>
+      </label>
+      {spec.height_mode === "overall_height" ? (
+        <RangeField
+          label="Terrain height"
+          value={spec.relief_mm}
+          unit=" mm"
+          min={3}
+          max={80}
+          step={1}
+          onChange={(value) => update("relief_mm", value)}
+          note={
+            heightScaleReadout
+              ? `About ${heightScaleReadout.exaggeration.toFixed(1)}× vertical exaggeration here.`
+              : undefined
+          }
+        />
+      ) : (
+        <RangeField
+          label="Vertical multiplier"
+          value={spec.vertical_exaggeration}
+          unit="×"
+          min={0.05}
+          max={200}
+          step={0.05}
+          onChange={(value) => update("vertical_exaggeration", value)}
+          note={
+            heightScaleReadout
+              ? `This area prints about ${heightScaleReadout.height.toFixed(1)} mm tall.${
+                  heightScaleReadout.height > 80
+                    ? " Taller than the usual 80 mm limit — check it fits your printer."
+                    : ""
+                }`
+              : "The model's height follows the terrain; the height slider does not apply."
+          }
+        />
+      )}
+      <label className="road-detail-field">
+        Height measured from
+        <select
+          value={spec.datum_reference}
+          onChange={(event) =>
+            update(
+              "datum_reference",
+              event.target.value as GenerationSpec["datum_reference"],
+            )
+          }
+        >
+          <option value="area_minimum">This area&apos;s lowest ground</option>
+          <option value="sea_level">Sea level</option>
+          <option value="custom">A set elevation</option>
+        </select>
+        <small>
+          Where the print&apos;s zero sits. The area&apos;s lowest ground
+          spends the whole height on the relief that is there; sea level is
+          shared by every model without coordinating. A super-tile measures
+          from the lowest ground across all its tiles.
+        </small>
+      </label>
+      {spec.datum_reference === "custom" && (
+        <RangeField
+          label="Datum elevation"
+          value={spec.custom_datum_m}
+          unit=" m"
+          min={-500}
+          max={5000}
+          step={10}
+          onChange={(value) => update("custom_datum_m", value)}
+          note="Ground below this keeps its relief — the datum drops to the real minimum rather than cutting terrain off under the base."
+        />
+      )}
       <RangeField
         label="Minimum piece height"
         value={spec.base_mm}

@@ -94,6 +94,10 @@ export const initialSpec: GenerationSpec = {
   relief_mm: 28,
   elevation_datum_m: null,
   elevation_m_per_mm: null,
+  height_mode: "overall_height",
+  vertical_exaggeration: 10,
+  datum_reference: "area_minimum",
+  custom_datum_m: 0,
   adjacent_columns: 1,
   adjacent_rows: 1,
   super_tile_anchor: "top_left",
@@ -533,6 +537,62 @@ export function formatBytes(bytes: number) {
         ? value.toFixed(0)
         : value.toFixed(1);
   return `${text} ${BYTE_UNITS[unit]}`;
+}
+
+/** Printed millimetres per ground metre across the model's width. */
+function horizontalMmPerM(spec: GenerationSpec) {
+  return spec.width_mm / Math.max(1, spec.ground_span_km * 1000);
+}
+
+/**
+ * The datum a spec's reference resolves to for a sampled area. Mirrors the
+ * backend's `resolve_height_frame`: no reference may sit above the ground
+ * it prints, or terrain would be cut off below the base.
+ */
+export function resolveDatumM(
+  spec: GenerationSpec,
+  sampled: { minimum_elevation_m: number },
+) {
+  switch (spec.datum_reference) {
+    case "sea_level":
+      return Math.min(0, sampled.minimum_elevation_m);
+    case "custom":
+      return Math.min(spec.custom_datum_m, sampled.minimum_elevation_m);
+    default:
+      return sampled.minimum_elevation_m;
+  }
+}
+
+/**
+ * The exaggeration an overall-height frame amounts to — what the multiplier
+ * field is pre-filled with when the mode is switched, so the model does not
+ * move. Vertical print-millimetres per ground metre over the horizontal
+ * ones, exactly as the backend reads it.
+ */
+export function exaggerationForHeight(
+  spec: GenerationSpec,
+  sampled: { minimum_elevation_m: number; maximum_elevation_m: number },
+) {
+  const datum = resolveDatumM(spec, sampled);
+  const rise = Math.max(1, sampled.maximum_elevation_m - datum);
+  const metresPerMm = rise / Math.max(0.1, spec.relief_mm);
+  return 1 / metresPerMm / horizontalMmPerM(spec);
+}
+
+/**
+ * How tall the model prints at a fixed exaggeration — the readout that
+ * replaces the height slider in multiplier mode, and the value the height
+ * field is pre-filled with when switching back.
+ */
+export function heightForExaggeration(
+  spec: GenerationSpec,
+  sampled: { minimum_elevation_m: number; maximum_elevation_m: number },
+  exaggeration: number,
+) {
+  const datum = resolveDatumM(spec, sampled);
+  const rise = Math.max(0, sampled.maximum_elevation_m - datum);
+  const metresPerMm = 1 / Math.max(1e-6, exaggeration * horizontalMmPerM(spec));
+  return rise / Math.max(1e-6, metresPerMm);
 }
 
 export function deriveHeightFrame(
