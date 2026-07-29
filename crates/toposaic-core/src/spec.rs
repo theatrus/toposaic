@@ -877,7 +877,45 @@ impl GenerationSpec {
                 });
             palette.slots[class.material_index() as usize] = Some(slot as u32);
         }
+        // The discovered ground colors, after the fixed classes so their
+        // filament numbers land past the ones people already know. A
+        // discovered color that matches a class color shares that slot
+        // rather than asking for a second spool of the same filament — the
+        // same rule two identical class colors already follow.
+        //
+        // They come off the spec's locked palette, which generation fills in
+        // once discovery has run. That keeps the export a pure function of
+        // the spec, and it is what makes every tile of a super-tile paint
+        // from one palette instead of each discovering its own.
+        for (entry, color) in self.locked_ground_colors().iter().enumerate() {
+            let entry = entry as u8;
+            if painted.paints_ground(entry) {
+                let slot = palette
+                    .colors
+                    .iter()
+                    .position(|existing| existing.eq_ignore_ascii_case(color))
+                    .unwrap_or_else(|| {
+                        palette.colors.push(color);
+                        palette.colors.len() - 1
+                    });
+                palette.slots[PrintMaterial::Ground(entry).material_index() as usize] =
+                    Some(slot as u32);
+            }
+        }
         palette
+    }
+
+    /// The resolved ground palette colors this spec prints from, empty when
+    /// the ground colors are the mapped classes or discovery has not run.
+    pub(crate) fn locked_ground_colors(&self) -> &[String] {
+        if self.color_output.ground_palette.ground_colors == GroundColorMode::Mapped {
+            return &[];
+        }
+        self.color_output
+            .ground_palette
+            .locked_ground_palette
+            .as_deref()
+            .unwrap_or_default()
     }
 
     /// Every surface class once, in the order they take filament slots:
@@ -977,18 +1015,18 @@ pub(crate) enum PaintedClasses {
     /// Exactly what a set of finished meshes paints, read off their material
     /// lists. Every archive whose meshes are built before it opens — trays,
     /// wall-mount hardware, flag templates — can say this much.
-    Exact([bool; SurfaceClass::ALL.len()]),
+    Exact([bool; MATERIAL_SLOTS]),
     /// What the meshes will read out of the surface data they are built
     /// from, for archives written as their meshes arrive. Classes a mesh
     /// builds in itself are not in here; the palette adds them from the
     /// settings.
-    Sampled([bool; SurfaceClass::ALL.len()]),
+    Sampled([bool; MATERIAL_SLOTS]),
 }
 
 impl PaintedClasses {
     /// The exact classes one finished mesh paints.
     pub(crate) fn of_mesh(mesh: &crate::mesh::Mesh) -> Self {
-        let mut present = [false; SurfaceClass::ALL.len()];
+        let mut present = [false; MATERIAL_SLOTS];
         for material in &mesh.materials {
             present[material.material_index() as usize] = true;
         }
@@ -1013,7 +1051,91 @@ impl PaintedClasses {
             }
         }
     }
+
+    /// Whether one discovered ground color belongs in this archive's
+    /// palette.
+    ///
+    /// An `Exact` set knows precisely which entries its finished meshes
+    /// paint, so a tray or a flag template — which paint none — never asks
+    /// for a satellite spool, and a piece holding three of eight discovered
+    /// colors asks for three. A `Sampled` set is written before its meshes
+    /// exist, so it admits every entry: the surface data it will sample is
+    /// the data the palette was discovered from.
+    fn paints_ground(self, entry: u8) -> bool {
+        match self {
+            Self::Exact(present) => present[PrintMaterial::Ground(entry).material_index() as usize],
+            Self::Sampled(_) => true,
+        }
+    }
 }
+
+/// What one triangle prints in.
+///
+/// Separate from [`SurfaceClass`], which stays a semantic judgement about the
+/// ground — forest, water, pavement — used by the slope gates, the marine
+/// flood, and border smoothing. A printed material is the narrower question
+/// of which filament a face takes, and a satellite-discovered ground color is
+/// one of those without being a land-cover class. Folding the discovered
+/// entries into `SurfaceClass` would have every `match` on land cover answer
+/// for colors it knows nothing about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintMaterial {
+    Class(SurfaceClass),
+    /// A discovered ground palette entry, by its index in the resolved
+    /// palette. Only ever produced when a satellite ground mode is on.
+    Ground(u8),
+}
+
+impl PrintMaterial {
+    /// Slot index into a [`MaterialPalette`]: the fixed classes first, in
+    /// their long-standing order, then the discovered ground entries.
+    pub(crate) fn material_index(self) -> u32 {
+        match self {
+            Self::Class(class) => class.material_index(),
+            Self::Ground(entry) => SurfaceClass::ALL.len() as u32 + u32::from(entry),
+        }
+    }
+
+    /// The land-cover class this material stands for, for the code that
+    /// still reasons semantically. A discovered entry reports the class it
+    /// was grouped inside, or rock when it was clustered from imagery alone.
+    pub fn class(self, palette: Option<&crate::palette::GroundPalette>) -> SurfaceClass {
+        match self {
+            Self::Class(class) => class,
+            Self::Ground(entry) => palette
+                .and_then(|palette| palette.entries.get(entry as usize))
+                .and_then(|entry| entry.group)
+                .unwrap_or(SurfaceClass::Rock),
+        }
+    }
+}
+
+/// Comparing a printed material to a land-cover class asks whether the face
+/// prints in that class's own color — so a discovered ground color is never
+/// equal to the class it was found inside. Two shades of forest are two
+/// filaments, and code checking "is this the forest color" wants no.
+impl PartialEq<SurfaceClass> for PrintMaterial {
+    fn eq(&self, other: &SurfaceClass) -> bool {
+        matches!(self, Self::Class(class) if class == other)
+    }
+}
+
+impl PartialEq<PrintMaterial> for SurfaceClass {
+    fn eq(&self, other: &PrintMaterial) -> bool {
+        other == self
+    }
+}
+
+impl From<SurfaceClass> for PrintMaterial {
+    fn from(class: SurfaceClass) -> Self {
+        Self::Class(class)
+    }
+}
+
+/// The widest material space a mesh can use: every land-cover class, plus
+/// one slot per discovered ground color.
+pub(crate) const MATERIAL_SLOTS: usize =
+    SurfaceClass::ALL.len() + crate::palette::MAXIMUM_PALETTE_ENTRIES;
 
 /// One archive's dense filament palette: the colors it emits, in slot order,
 /// and the slot each surface class was packed into.
@@ -1027,7 +1149,7 @@ impl PaintedClasses {
 #[derive(Debug, Default)]
 pub(crate) struct MaterialPalette<'spec> {
     colors: Vec<&'spec str>,
-    slots: [Option<u32>; SurfaceClass::ALL.len()],
+    slots: [Option<u32>; MATERIAL_SLOTS],
 }
 
 impl<'spec> MaterialPalette<'spec> {
@@ -1044,10 +1166,10 @@ impl<'spec> MaterialPalette<'spec> {
         self.colors.is_empty()
     }
 
-    /// The slot a class paints into, or `None` when the palette does not
+    /// The slot a material paints into, or `None` when the palette does not
     /// carry it. Callers that must not fail check membership first.
-    pub(crate) fn slot(&self, class: SurfaceClass) -> Option<u32> {
-        self.slots[class.material_index() as usize]
+    pub(crate) fn slot(&self, material: impl Into<PrintMaterial>) -> Option<u32> {
+        self.slots[material.into().material_index() as usize]
     }
 }
 
@@ -2800,7 +2922,7 @@ fn valid_hex_color(color: &str) -> bool {
         && color[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceClass {
     Rock,
@@ -2859,6 +2981,13 @@ impl SurfaceClass {
         Self::Aviation,
     ];
 
+    /// Whether a satellite-discovered ground color may stand in for this
+    /// class. Land cover yes; anything drawn from the map on top of the
+    /// ground, no — see `SurfaceField::print_material_at`.
+    pub fn takes_ground_color(self) -> bool {
+        matches!(self, Self::Rock | Self::Forest | Self::Snow | Self::Water)
+    }
+
     pub(crate) fn material_index(self) -> u32 {
         match self {
             Self::Rock => 0,
@@ -2885,7 +3014,7 @@ mod tests {
     /// Nothing ruled out by the data, so the settings alone decide the
     /// palette. Used to test what a spec CAN emit, apart from any map.
     fn any_class() -> PaintedClasses {
-        PaintedClasses::Exact([true; SurfaceClass::ALL.len()])
+        PaintedClasses::Exact([true; MATERIAL_SLOTS])
     }
 
     #[test]

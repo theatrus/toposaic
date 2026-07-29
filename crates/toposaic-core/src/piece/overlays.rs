@@ -1754,7 +1754,7 @@ mod tests {
         assert!(road_vertices.len() > 100);
         assert!((minimum_z - (spec.base_mm - OVERLAY_TERRAIN_EMBED_MM)).abs() < 0.001);
         assert!((maximum_z - (spec.base_mm + spec.color_output.road_height_mm)).abs() < 0.001);
-        assert!(!flat.materials.contains(&SurfaceClass::Road));
+        assert!(!flat.materials.contains(&SurfaceClass::Road.into()));
         assert_watertight(&raised);
     }
 
@@ -1834,7 +1834,7 @@ mod tests {
             .flat_map(|(triangle, _)| triangle)
             .map(|index| mesh.vertices[*index as usize])
             .collect::<Vec<_>>();
-        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(mesh.materials.contains(&SurfaceClass::Road.into()));
         assert!(trail_vertices.len() > 100);
         let minimum_z = trail_vertices
             .iter()
@@ -1857,7 +1857,7 @@ mod tests {
         road_only.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
         let plain =
             build_piece(&no_trail_spec, Some(&height_field), Some(&road_only), 0, 0).unwrap();
-        assert!(!plain.materials.contains(&SurfaceClass::Trail));
+        assert!(!plain.materials.contains(&SurfaceClass::Trail.into()));
     }
 
     #[test]
@@ -1900,8 +1900,8 @@ mod tests {
             .flat_map(|(triangle, _)| triangle)
             .map(|index| mesh.vertices[*index as usize])
             .collect::<Vec<_>>();
-        assert!(mesh.materials.contains(&SurfaceClass::Road));
-        assert!(mesh.materials.contains(&SurfaceClass::Trail));
+        assert!(mesh.materials.contains(&SurfaceClass::Road.into()));
+        assert!(mesh.materials.contains(&SurfaceClass::Trail.into()));
         assert!(rail_vertices.len() > 100);
         let minimum_z = rail_vertices
             .iter()
@@ -1924,8 +1924,8 @@ mod tests {
         road_class.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
         road_class.paint_polyline(&[[0.1, 0.2], [0.9, 0.8]], 60.0, 0.7, SurfaceClass::Road);
         let plain = build_piece(&with_roads, Some(&height_field), Some(&road_class), 0, 0).unwrap();
-        assert!(!plain.materials.contains(&SurfaceClass::Rail));
-        assert!(plain.materials.contains(&SurfaceClass::Road));
+        assert!(!plain.materials.contains(&SurfaceClass::Rail.into()));
+        assert!(plain.materials.contains(&SurfaceClass::Road.into()));
         assert_watertight(&plain);
     }
 
@@ -1966,7 +1966,7 @@ mod tests {
             .flat_map(|(triangle, _)| triangle)
             .map(|index| mesh.vertices[*index as usize])
             .collect::<Vec<_>>();
-        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(mesh.materials.contains(&SurfaceClass::Road.into()));
         assert!(ferry_vertices.len() > 100);
         let minimum_z = ferry_vertices
             .iter()
@@ -1988,8 +1988,8 @@ mod tests {
             SurfaceField::new(3, 3, vec![SurfaceClass::Water; 9], "ferry").unwrap();
         road_class.paint_polyline(&[[0.1, 0.5], [0.9, 0.5]], 60.0, 1.0, SurfaceClass::Road);
         let plain = build_piece(&with_roads, Some(&height_field), Some(&road_class), 0, 0).unwrap();
-        assert!(!plain.materials.contains(&SurfaceClass::Ferry));
-        assert!(plain.materials.contains(&SurfaceClass::Road));
+        assert!(!plain.materials.contains(&SurfaceClass::Ferry.into()));
+        assert!(plain.materials.contains(&SurfaceClass::Road.into()));
         assert_watertight(&plain);
     }
 
@@ -2058,7 +2058,7 @@ mod tests {
             0,
         )
         .unwrap();
-        assert!(!neither.materials.contains(&SurfaceClass::Road));
+        assert!(!neither.materials.contains(&SurfaceClass::Road.into()));
         assert_watertight(&neither);
     }
 
@@ -2104,7 +2104,7 @@ mod tests {
             .map(|index| mesh.vertices[*index as usize][2])
             .collect::<Vec<_>>();
         assert!(!rail_z.is_empty(), "the viaduct must carry the rail color");
-        assert!(!mesh.materials.contains(&SurfaceClass::Road));
+        assert!(!mesh.materials.contains(&SurfaceClass::Road.into()));
         let minimum = rail_z.iter().copied().fold(f32::INFINITY, f32::min);
         let maximum = rail_z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         // A floating deck is exactly its thickness tall and hangs high above
@@ -2152,9 +2152,9 @@ mod tests {
         };
 
         let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
-        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(mesh.materials.contains(&SurfaceClass::Road.into()));
         assert!(
-            mesh.materials.contains(&SurfaceClass::Rail),
+            mesh.materials.contains(&SurfaceClass::Rail.into()),
             "the joined deck must not take only the first bridge line's color"
         );
         assert_watertight(&mesh);

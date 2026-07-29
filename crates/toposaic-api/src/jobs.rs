@@ -22,7 +22,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, artifact_path,
+    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, SurfaceField, artifact_path,
     generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
     height_frame_for_bounds,
 };
@@ -161,6 +161,19 @@ pub(crate) async fn create_preview(
     .map_err(internal_error)?
     .map_err(internal_error)?;
     Ok(Json(preview))
+}
+
+/// The spec with its ground palette pinned to what discovery resolved, or
+/// the spec unchanged when no palette was discovered. Cloning is cheap
+/// against the generation that follows, and leaves the caller's spec — the
+/// one the job row stores — alone.
+fn locked_ground_spec(spec: &GenerationSpec, field: Option<&SurfaceField>) -> GenerationSpec {
+    let Some(colors) = field.and_then(surface::resolved_ground_colors) else {
+        return spec.clone();
+    };
+    let mut locked = spec.clone();
+    locked.color_output.ground_palette.locked_ground_palette = Some(colors);
+    locked
 }
 
 /// A set cancellation flag alone does not prove the job was canceled: the
@@ -472,6 +485,11 @@ fn run_job(
     if let Some(field) = surface_field.as_mut() {
         surface::apply_marine_water(spec, &mut height_field, field, &state.map_cache_dir);
     }
+    // Discovery happened against the imagery; the export builds its filament
+    // palette from the spec. Writing the resolved colors back is what joins
+    // the two, and it makes the recorded setup reproduce this exact palette
+    // rather than rediscover one.
+    let spec = &locked_ground_spec(spec, surface_field.as_ref());
     update_job(state, id, "running", 65, &[], None)?;
     let output_dir = state.jobs_dir.join(id);
     let phase_started = Instant::now();
@@ -567,6 +585,10 @@ fn run_adjacent_grid_job(
     let mut artifacts = Vec::new();
     let mut tile_manifest = Vec::with_capacity(tile_count);
     let mut mosaic_tray_names = Vec::new();
+    // Set from the first tile's discovery and handed to every tile after it,
+    // so the whole grid prints from one ground palette instead of each tile
+    // finding its own and changing filament at the seams.
+    let mut ground_palette_lock: Option<Vec<String>> = None;
     let mesh_progress = AtomicI64::new(40);
 
     for (index, ((tile_spec, height_field), tile_output)) in tiles
@@ -579,6 +601,17 @@ fn run_adjacent_grid_job(
         let row = tile_output.row;
         let column = tile_output.column;
         let tile_dir = output_dir.join(&tile_output.temporary_directory);
+        // Tile 0 discovers; every later tile is assigned to what it found.
+        let locked_tile_spec;
+        let tile_spec = match &ground_palette_lock {
+            Some(colors) => {
+                let mut locked = tile_spec.clone();
+                locked.color_output.ground_palette.locked_ground_palette = Some(colors.clone());
+                locked_tile_spec = locked;
+                &locked_tile_spec
+            }
+            None => tile_spec,
+        };
         let mut surface_field = if tile_spec.color_output.enabled
             || tile_spec.buildings.enabled
             || tile_spec.uses_trails()
@@ -596,6 +629,19 @@ fn run_adjacent_grid_job(
         // level; the frozen ring rule inside keeps the shared edges equal.
         if let Some(field) = surface_field.as_mut() {
             surface::apply_marine_water(tile_spec, height_field, field, &state.map_cache_dir);
+        }
+        // The first tile discovers a palette; the rest are assigned to it.
+        // Discovery per tile would give each its own colors, and a seam
+        // where two tiles meet would change filament for no reason on the
+        // ground. Written into every later tile's spec before its surface
+        // is fetched, which is why this loop sets it on `tiles` rather than
+        // on the tile spec in hand.
+        if index == 0
+            && let Some(colors) = surface_field
+                .as_ref()
+                .and_then(surface::resolved_ground_colors)
+        {
+            ground_palette_lock = Some(colors);
         }
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
         // A super-tile exports each requested flag once. Per-tile generation

@@ -1516,9 +1516,9 @@ mod tests {
         .unwrap();
         let mesh = build_tray(&spec, Some(&height)).unwrap();
         assert_watertight(&mesh);
-        assert!(mesh.materials.contains(&SurfaceClass::Rock));
-        assert!(mesh.materials.contains(&SurfaceClass::Forest));
-        assert!(mesh.materials.contains(&SurfaceClass::Snow));
+        assert!(mesh.materials.contains(&SurfaceClass::Rock.into()));
+        assert!(mesh.materials.contains(&SurfaceClass::Forest.into()));
+        assert!(mesh.materials.contains(&SurfaceClass::Snow.into()));
         let rim_z = spec.tray.floor_mm + spec.tray.rim_height_mm;
         let raised_label = mesh
             .triangles
@@ -1558,7 +1558,7 @@ mod tests {
         .unwrap();
         let mesh = build_tray(&spec, Some(&height)).unwrap();
         assert_watertight(&mesh);
-        assert!(!mesh.materials.contains(&SurfaceClass::Forest));
+        assert!(!mesh.materials.contains(&SurfaceClass::Forest.into()));
     }
 
     #[test]

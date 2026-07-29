@@ -41,7 +41,7 @@ use serde::Serialize;
 use crate::heightfield::{HeightField, height_range_for_spec};
 use crate::mesh::Mesh;
 use crate::piece::build_piece_with_height_range;
-use crate::spec::{GenerationSpec, SurfaceClass};
+use crate::spec::{GenerationSpec, PrintMaterial, SurfaceClass};
 use crate::surface::SurfaceField;
 use crate::tray::build_tray_segments;
 
@@ -130,15 +130,20 @@ fn triangle_feature(mesh: &Mesh, triangle_index: usize) -> String {
     } else {
         "wall"
     };
+    // Diagnostics name the overlay a face belongs to. A discovered ground
+    // color is terrain by definition, so it falls to the shape rules below
+    // like any land-cover face.
     match material {
-        SurfaceClass::Building => format!("building-shell {orientation}"),
-        SurfaceClass::Road => format!("road-shell {orientation}"),
-        SurfaceClass::Trail => format!("trail-shell {orientation}"),
-        SurfaceClass::Rail => format!("rail-shell {orientation}"),
-        SurfaceClass::Aerial => format!("aerialway-shell {orientation}"),
-        SurfaceClass::Ferry => format!("ferry-shell {orientation}"),
-        SurfaceClass::Marker => format!("marker {orientation}"),
-        SurfaceClass::RouteTrail => format!("mapped-trail-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Building) => format!("building-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Road) => format!("road-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Trail) => format!("trail-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Rail) => format!("rail-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Aerial) => format!("aerialway-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Ferry) => format!("ferry-shell {orientation}"),
+        PrintMaterial::Class(SurfaceClass::Marker) => format!("marker {orientation}"),
+        PrintMaterial::Class(SurfaceClass::RouteTrail) => {
+            format!("mapped-trail-shell {orientation}")
+        }
         _ => {
             let zeroes = corners
                 .iter()
@@ -727,11 +732,11 @@ mod tests {
             name: "piece".into(),
             vertices: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
             triangles: vec![[0, 1, 2]],
-            materials: vec![SurfaceClass::Trail],
+            materials: vec![SurfaceClass::Trail.into()],
             quantization_collisions: Vec::new(),
         };
         assert_eq!(triangle_feature(&mesh, 0), "trail-shell top");
-        mesh.materials[0] = SurfaceClass::Rail;
+        mesh.materials[0] = SurfaceClass::Rail.into();
         assert_eq!(triangle_feature(&mesh, 0), "rail-shell top");
         // A vertical face of the same shell reads as a wall, not terrain.
         mesh.vertices[2] = [0.0, 0.0, 2.0];
@@ -754,7 +759,7 @@ mod tests {
                 [1.0, 1.0, 0.0],
             ],
             triangles: vec![[0, 1, 2], [3, 5, 4]],
-            materials: vec![SurfaceClass::Rock; 2],
+            materials: vec![SurfaceClass::Rock.into(); 2],
             quantization_collisions: Vec::new(),
         };
         let report = analyze_mesh_views(&mesh);
@@ -777,7 +782,7 @@ mod tests {
                 [0.5, -1.0, 0.0],
             ],
             triangles: vec![[0, 1, 2], [0, 1, 3]],
-            materials: vec![SurfaceClass::Rock; 2],
+            materials: vec![SurfaceClass::Rock.into(); 2],
             quantization_collisions: Vec::new(),
         };
         let report = analyze_mesh_views(&mesh);
@@ -832,7 +837,7 @@ mod tests {
                 [0.000_002, 1.0, 0.0],
             ],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
-            materials: vec![SurfaceClass::Rock; 2],
+            materials: vec![SurfaceClass::Rock.into(); 2],
             quantization_collisions: Vec::new(),
         };
         let report = analyze_mesh_views(&mesh);

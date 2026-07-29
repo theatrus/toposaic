@@ -4,14 +4,14 @@ use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 
-use crate::spec::SurfaceClass;
+use crate::spec::PrintMaterial;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Mesh {
     pub(crate) name: String,
     pub(crate) vertices: Vec<[f32; 3]>,
     pub(crate) triangles: Vec<[u32; 3]>,
-    pub(crate) materials: Vec<SurfaceClass>,
+    pub(crate) materials: Vec<PrintMaterial>,
     /// Diagnostic trail only: `MeshBuilder::vertex` calls whose 1e-5
     /// quantization key matched an already-stored vertex at a *different*
     /// position (kept position, dropped position). Geometry is unchanged;
@@ -23,7 +23,7 @@ pub(crate) struct Mesh {
 pub(crate) struct MeshBuilder {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
-    materials: Vec<SurfaceClass>,
+    materials: Vec<PrintMaterial>,
     indices: HashMap<(i64, i64, i64), u32>,
     collisions: Vec<([f32; 3], [f32; 3])>,
 }
@@ -53,11 +53,11 @@ impl MeshBuilder {
         a: [f32; 3],
         b: [f32; 3],
         c: [f32; 3],
-        material: SurfaceClass,
+        material: impl Into<PrintMaterial>,
     ) {
         let triangle = [self.vertex(a), self.vertex(b), self.vertex(c)];
         self.triangles.push(triangle);
-        self.materials.push(material);
+        self.materials.push(material.into());
     }
 
     pub(crate) fn quad(
@@ -66,8 +66,9 @@ impl MeshBuilder {
         b: [f32; 3],
         c: [f32; 3],
         d: [f32; 3],
-        material: SurfaceClass,
+        material: impl Into<PrintMaterial>,
     ) {
+        let material = material.into();
         self.triangle(a, b, c, material);
         self.triangle(a, c, d, material);
     }
@@ -108,7 +109,7 @@ impl Mesh {
 fn append_isolated_parts(
     vertices: &mut Vec<[f32; 3]>,
     triangles: &mut Vec<[u32; 3]>,
-    materials: &mut Vec<SurfaceClass>,
+    materials: &mut Vec<PrintMaterial>,
     collisions: &mut Vec<([f32; 3], [f32; 3])>,
     other: MeshBuilder,
 ) {

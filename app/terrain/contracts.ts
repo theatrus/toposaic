@@ -356,6 +356,9 @@ export type PreviewData = {
   columns: number;
   solid_model?: boolean;
   surface_classes?: number[];
+  // Satellite-discovered ground colors, in palette order. A surface_classes
+  // index at or past the fixed class count names one of these.
+  ground_palette?: string[];
   surface_palette?: {
     rock: string;
     forest: string;

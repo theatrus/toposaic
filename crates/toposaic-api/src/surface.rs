@@ -809,16 +809,6 @@ fn resolve_ground_palette(
         &mut field.source,
         format!("ground palette ({mode}): {summary}"),
     );
-    // Palette discovery must not run independently per super-tile: each
-    // tile would resolve its own colors and the seams would disagree. The
-    // lock is the cross-tile contract; until the grid wires it through,
-    // say so where a seam reader will look first.
-    if spec.shares_tile_edges() && settings.locked_ground_palette.is_none() {
-        append_source(
-            &mut field.source,
-            "WARNING: ground palette discovered for this tile alone; lock a palette so adjacent tiles share one",
-        );
-    }
     if let Err(error) = field.set_ground_palette(palette, materials) {
         warn!(%error, "discovered ground palette did not fit its field");
         append_source(
@@ -877,6 +867,22 @@ fn fetch_ocean_extent(
             "coastline data did not close into an ocean; flood fill trusts land-cover water".into(),
         ),
     }
+}
+
+/// The discovered ground colors a resolved field prints from, in palette
+/// order. Generation writes these back into the spec it goes on to use, so
+/// the export's material palette — a pure function of the spec — can hand
+/// them filament slots, and so every tile of a super-tile paints from the
+/// first tile's palette instead of each discovering its own.
+pub fn resolved_ground_colors(field: &SurfaceField) -> Option<Vec<String>> {
+    let palette = field.ground_palette()?;
+    (!palette.entries.is_empty()).then(|| {
+        palette
+            .entries
+            .iter()
+            .map(|entry| entry.color.clone())
+            .collect()
+    })
 }
 
 /// Resolves the spec's marine level and flattens the sea to it, recording
