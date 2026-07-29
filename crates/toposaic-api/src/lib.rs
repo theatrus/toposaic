@@ -26,6 +26,7 @@ mod imagery;
 mod jobs;
 mod settings;
 mod setups;
+mod sources;
 mod surface;
 
 /// Internal hooks for the `manifold_report_real` diagnostics example only;
@@ -110,6 +111,19 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
             get(jobs::get_job).delete(jobs::cancel_job),
         )
         .route("/api/jobs/{id}/downloads/{name}", get(jobs::download))
+        .route("/api/jobs/{id}/sources", get(jobs::source_summary))
+        .route(
+            "/api/jobs/{id}/sources/build",
+            axum::routing::post(jobs::build_sources),
+        )
+        .route(
+            "/api/sources/import",
+            axum::routing::post(jobs::import_sources)
+                // The handler streams the upload to a temporary file and
+                // enforces its own cap; axum's 2 MB default would refuse
+                // every real bundle before the handler ever saw it.
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/setups",
             get(setups::list_setups).post(setups::save_setup),

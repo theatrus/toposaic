@@ -361,7 +361,7 @@ fn load_cached_raster(
     width: usize,
     height: usize,
 ) -> Option<(Vec<[u16; 4]>, Vec<bool>)> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = cache::read(path).ok()?;
     let samples = width * height;
     let expected = 4 + 8 + samples * 8 + samples.div_ceil(8);
     if bytes.len() != expected || &bytes[..4] != CACHE_MAGIC {

@@ -616,6 +616,31 @@ fetch once and rejects HTTP 200 responses that contain an Overpass timeout
 remark, so it never caches a partial building set. Set `OVERPASS_BASE_URL` to
 use one specific Overpass instance.
 
+### Source bundles
+
+A finished job can pack the map data it read into one zip: **Source data** on
+the Output tab, then save or download it like any other file. **Import source
+data**, in the setups menu, unpacks one and loads the setup that came with it.
+
+The point is a model that does not depend on the network or on the providers
+still being there. A generation records every cache file it touches, so the
+bundle holds exactly what that model used — no more, and nothing missing. Take
+it to a machine with no connection and the same model builds; keep it and you
+have the elevation, land cover, and map data the print came from, with the
+attribution beside it.
+
+Expect tens of megabytes. Most of it is the ESA WorldCover tile: an 8 km
+square of Mount Rainier packs 32 files and 65 MB, of which one WorldCover tile
+is 63 MB. The zip is stored, not compressed, because every part of it is
+already compressed. Bundles are built when asked for, never with the job.
+
+An import writes only into the elevation, land-cover, OpenStreetMap, imagery,
+and tide-datum caches, and never over a file already there — your own cache
+wins. Entries naming anywhere else are refused rather than cleaned up.
+Importing the same bundle twice changes nothing the second time.
+
+### Place search
+
 Place search uses explicit, user-submitted OpenStreetMap Nominatim queries
 through the Rust service. Results are cached in SQLite and outbound requests
 are limited to one per second. Set `TOPOSAIC_GEOCODER_URL` to use another
