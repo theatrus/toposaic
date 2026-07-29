@@ -1074,29 +1074,41 @@ fn repair_classification_pinches(
     }
 }
 
+/// Drops near-collinear ring points, one at a time, each judged against the
+/// neighbors it has at the moment it is dropped. An earlier version removed
+/// every qualifying point of a sweep at once, each judged against original
+/// neighbors that were themselves being removed: on a densely sampled smooth
+/// arc every interior point qualifies simultaneously, so whole arcs collapsed
+/// into single chords millimetres from the boundary they replaced — a bridge
+/// loop ramp became a filled quarter-disc. Removing sequentially keeps every
+/// drop within tolerance of the edge that actually replaces it: once removals
+/// stretch a chord far enough that its midpoint deviates past the tolerance,
+/// the survivors stay.
 fn simplify_closed_ring(mut points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
-    loop {
-        if points.len() <= 3 {
-            return points;
-        }
+    let mut index = 0;
+    let mut kept_in_a_row = 0;
+    while points.len() > 3 && kept_in_a_row < points.len() {
         let count = points.len();
-        let mut simplified = Vec::with_capacity(count);
-        for index in 0..count {
-            let previous = points[(index + count - 1) % count];
-            let point = points[index];
-            let next = points[(index + 1) % count];
-            let incoming = [point[0] - previous[0], point[1] - previous[1]];
-            let outgoing = [next[0] - point[0], next[1] - point[1]];
-            let continues_forward = incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0.0;
-            if !continues_forward || point_line_distance(point, previous, next) > 0.000_1 {
-                simplified.push(point);
+        let previous = points[(index + count - 1) % count];
+        let point = points[index];
+        let next = points[(index + 1) % count];
+        let incoming = [point[0] - previous[0], point[1] - previous[1]];
+        let outgoing = [next[0] - point[0], next[1] - point[1]];
+        let continues_forward = incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0.0;
+        if continues_forward && point_line_distance(point, previous, next) <= 0.000_1 {
+            points.remove(index);
+            // The removal changed the neighbors of the points on either
+            // side, so both get judged again before the sweep can settle.
+            kept_in_a_row = 0;
+            if index >= points.len() {
+                index = 0;
             }
+        } else {
+            kept_in_a_row += 1;
+            index = (index + 1) % points.len();
         }
-        if simplified.len() == points.len() || simplified.len() < 3 {
-            return points;
-        }
-        points = simplified;
     }
+    points
 }
 
 fn bounds_overlap(left: [f32; 4], right: [f32; 4]) -> bool {
@@ -1575,6 +1587,35 @@ mod tests {
         assert!(
             !covered_by_pavement(at(0.45, 0.45)),
             "pavement covered the hole in the apron"
+        );
+    }
+
+    /// A densely sampled smooth arc must survive simplification as an arc.
+    /// An earlier sweep judged every point against neighbors that were
+    /// themselves being removed in the same pass, so a whole arc could
+    /// vanish at once: at SFO a bridge loop ramp's boundary collapsed into
+    /// one 16 mm chord and the ground the loop enclosed flooded with deck.
+    /// The sharp notch here plays the ramp's junction — the survivor the
+    /// old sweep drew its chord from.
+    #[test]
+    fn simplifying_a_dense_arc_never_replaces_it_with_a_chord() {
+        let radius = 4.0_f32;
+        let step = 0.02_f32;
+        let count = (radius * std::f32::consts::TAU / step) as usize;
+        let mut ring = vec![[3.0, 0.0]];
+        ring.extend((1..count).map(|index| {
+            let angle = index as f32 / count as f32 * std::f32::consts::TAU;
+            [radius * angle.cos(), radius * angle.sin()]
+        }));
+        let area_before = ring_signed_area(&ring).abs();
+        let simplified = simplify_closed_ring(ring);
+        // Chord-collapse does not merely roughen the outline — it walks the
+        // boundary somewhere else entirely, so the enclosed area is the
+        // honest measure. The old sweep left a sliver of the disc.
+        let area_after = ring_signed_area(&simplified).abs();
+        assert!(
+            (area_before - area_after).abs() < 0.05,
+            "simplification moved the ring's area from {area_before} to {area_after} mm2"
         );
     }
 
