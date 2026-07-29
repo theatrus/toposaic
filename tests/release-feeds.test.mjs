@@ -20,7 +20,7 @@ test("normal desktop bundles include a valid updater configuration", async () =>
 
   assert.ok(config.plugins.updater.pubkey);
   assert.deepEqual(config.plugins.updater.endpoints, [
-    "https://toposaic.com/releases/updater.json",
+    "https://updates.toposaic.com/updater.json",
     "https://github.com/theatrus/toposaic/releases/latest/download/updater.json",
   ]);
   assert.equal(config.plugins.updater.windows.installMode, "passive");
