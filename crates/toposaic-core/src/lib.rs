@@ -1,5 +1,6 @@
 #[doc(hidden)]
 pub mod analysis;
+mod coastline;
 mod export;
 mod geography;
 mod heightfield;
@@ -18,6 +19,7 @@ mod surface;
 mod text;
 mod tray;
 
+pub use coastline::{OceanExtent, assemble_ocean};
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
 pub use heightfield::{DespikeReport, HeightField, VerticalReference};
 pub use marine::{

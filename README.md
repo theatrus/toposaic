@@ -334,12 +334,12 @@ stands on land, because pavement is built on it.
 
 A real sea is level, but the elevation provider samples whatever its source
 holds under it — with Mapzen an ocean cell can carry coarse ETOPO1 seabed,
-which used to print as blue bathymetric relief. New setups now default to a
-flat marine surface: the generator finds the water connected to the open sea
-at the map's edge, flattens the terrain there to the chosen level, and leaves
-every inland lake and depression at its own height. Setups saved before the
-setting existed keep their draped output under the explicit bathymetric
-choice. The level is mean sea level at the provider's zero, or a custom
+which prints as blue bathymetric relief. An opt-in flat marine surface fixes
+that: the generator finds the water connected to the open sea at the map's
+edge, flattens the terrain there to the chosen level, and leaves every
+inland lake and depression at its own height. The draped bathymetric output
+stays the default for every setup, new and old, until the mode is switched
+on. The level is mean sea level at the provider's zero, or a custom
 offset in metres; the elevation source's vertical reference (EGM96 for
 Mapzen, EGM2008 for Mapterhorn's global base) is recorded with the resolved
 level in the data sources. A custom level below zero dries out the foreshore

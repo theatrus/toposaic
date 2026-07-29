@@ -12,6 +12,7 @@
 //! high presets resolve to mean sea level with a recorded warning instead
 //! of a guessed regional value.
 
+use crate::coastline::OceanExtent;
 use crate::heightfield::{HeightField, VerticalReference};
 use crate::spec::{MarineLevel, MarineSpec, SurfaceClass};
 use crate::surface::SurfaceField;
@@ -114,6 +115,13 @@ impl MarineOutcome {
 /// keeps its own level whatever the sea does. A model with no border
 /// water — landlocked terrain — is untouched.
 ///
+/// `ocean`, when the map has coastline data, fact-checks the seeds: a
+/// border sample starts the flood only inside the mapped sea. Raster
+/// water cannot tell the ocean from a below-sea-level inland basin that
+/// happens to touch the map's edge — the Salton Sea is both below zero
+/// and no ocean — but `natural=coastline` can. Without coastline data
+/// the fill trusts the raster as before.
+///
 /// `freeze_edge_ring` is the super-tile contract: ring samples then join
 /// the sea only by the border rule (water at or below the plane), never
 /// by interior connectivity, so both sides of a shared edge decide each
@@ -122,6 +130,7 @@ pub fn apply_flat_marine_surface(
     field: &mut SurfaceField,
     heights: &mut HeightField,
     level_m: f32,
+    ocean: Option<&OceanExtent>,
     freeze_edge_ring: bool,
 ) -> MarineOutcome {
     let width = field.width;
@@ -146,11 +155,18 @@ pub fn apply_flat_marine_surface(
         let (x, y) = (index % width, index / width);
         x == 0 || y == 0 || x == width - 1 || y == height - 1
     };
-    // The sea enters at the border: water at or below the plane. Land
-    // below a raised plane spreads the flood inland but never starts it —
-    // a dry border depression is not the ocean.
+    // The sea enters at the border: water at or below the plane, inside
+    // the mapped ocean when a coastline says where that is. Land below a
+    // raised plane spreads the flood inland but never starts it — a dry
+    // border depression is not the ocean.
     let seed = |field: &SurfaceField, index: usize| {
-        on_ring(index) && is_water(field, index) && elevations[index] <= level_m
+        on_ring(index)
+            && is_water(field, index)
+            && elevations[index] <= level_m
+            && ocean.is_none_or(|extent| {
+                let (u, v) = uv(index % width, index / width);
+                extent.contains([u, v])
+            })
     };
     let spreadable = |field: &SurfaceField, index: usize| {
         elevations[index] <= level_m && (is_water(field, index) || level_m > 0.0)
@@ -330,7 +346,7 @@ mod tests {
     #[test]
     fn the_sea_flattens_to_the_plane_and_the_lake_keeps_its_own_level() {
         let (mut field, mut heights) = coast(17);
-        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, false);
+        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, None, false);
         assert!(outcome.flattened_heights > 0);
         // Sea samples sit exactly on the plane; the lake keeps its basin.
         assert_eq!(heights.values_m[8 * 17], 0.0, "west edge sea");
@@ -343,9 +359,10 @@ mod tests {
     #[test]
     fn low_water_never_covers_more_than_msl_and_reveals_the_foreshore() {
         let (mut msl_field, mut msl_heights) = coast(17);
-        apply_flat_marine_surface(&mut msl_field, &mut msl_heights, 0.0, false);
+        apply_flat_marine_surface(&mut msl_field, &mut msl_heights, 0.0, None, false);
         let (mut low_field, mut low_heights) = coast(17);
-        let outcome = apply_flat_marine_surface(&mut low_field, &mut low_heights, -3.0, false);
+        let outcome =
+            apply_flat_marine_surface(&mut low_field, &mut low_heights, -3.0, None, false);
         // The acceptance line: low tide never covers more coast than MSL.
         assert!(water_count(&low_field) < water_count(&msl_field));
         // The strip between -3 and 0 dried out and reads as ground.
@@ -367,7 +384,7 @@ mod tests {
         // higher land, so the sea cannot reach it.
         let basin = 14 * size + 14;
         heights.values_m[basin] = 1.0;
-        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 2.0, false);
+        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 2.0, None, false);
         assert!(outcome.flooded_land > 0);
         // Coastal land below +2 is covered and sits on the plane.
         let flooded = 8 * size + 9; // elevation -8+9=+1, sea-connected
@@ -379,7 +396,7 @@ mod tests {
         // MSL covers less than high water: the other half of the
         // acceptance line.
         let (mut msl_field, mut msl_heights) = coast(size);
-        apply_flat_marine_surface(&mut msl_field, &mut msl_heights, 0.0, false);
+        apply_flat_marine_surface(&mut msl_field, &mut msl_heights, 0.0, None, false);
         assert!(water_count(&msl_field) < water_count(&field));
     }
 
@@ -391,7 +408,7 @@ mod tests {
         // the gate answered to, so the sample returns to water.
         let demoted = 8 * 17 + 5; // elevation -3, sea-connected
         field.classes[demoted] = SurfaceClass::Rock;
-        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, false);
+        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, None, false);
         assert_eq!(outcome.restored_water, 1);
         assert_eq!(field.classes[demoted], SurfaceClass::Water);
     }
@@ -406,7 +423,7 @@ mod tests {
         values[4 * size + 4] = -5.0;
         let mut field = SurfaceField::new(size, size, classes, "test").unwrap();
         let mut heights = HeightField::new(size, size, values, "test").unwrap();
-        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, false);
+        let outcome = apply_flat_marine_surface(&mut field, &mut heights, 0.0, None, false);
         assert!(outcome.is_no_op());
         assert_eq!(heights.values_m[4 * size + 4], -5.0);
     }
@@ -420,7 +437,7 @@ mod tests {
         let (mut field, mut heights) = coast(size);
         let ring_land = 9; // top row, elevation -8+9=+1, below the +2 plane
         assert_eq!(field.classes[ring_land], SurfaceClass::Rock);
-        apply_flat_marine_surface(&mut field, &mut heights, 2.0, true);
+        apply_flat_marine_surface(&mut field, &mut heights, 2.0, None, true);
         assert_eq!(
             field.classes[ring_land],
             SurfaceClass::Rock,
@@ -430,8 +447,57 @@ mod tests {
         assert_eq!(heights.values_m[4], 2.0, "top-row sea sample");
         // Without the freeze the same sample floods.
         let (mut field, mut heights) = coast(size);
-        apply_flat_marine_surface(&mut field, &mut heights, 2.0, false);
+        apply_flat_marine_surface(&mut field, &mut heights, 2.0, None, false);
         assert_eq!(field.classes[ring_land], SurfaceClass::Water);
+    }
+
+    /// The coastline fact-check: border water below the plane seeds the
+    /// flood only inside the mapped ocean. A below-sea-level inland basin
+    /// touching the map's edge — the Salton Sea — is exactly the case the
+    /// raster alone gets wrong.
+    #[test]
+    fn the_coastline_fact_check_keeps_the_salton_sea_out_of_the_ocean() {
+        // An extent that puts the mapped sea entirely in the east — where
+        // the coast() fixture has land — so none of the west border water
+        // may seed.
+        let elsewhere = OceanExtent {
+            outers: vec![vec![[0.9, 0.0], [0.9, 1.0], [1.0, 1.0], [1.0, 0.0]]],
+            islands: Vec::new(),
+        };
+        let (mut field, mut heights) = coast(17);
+        let outcome =
+            apply_flat_marine_surface(&mut field, &mut heights, 0.0, Some(&elsewhere), false);
+        assert!(outcome.is_no_op(), "unmapped border water seeded the flood");
+        assert!(heights.values_m[8 * 17] < -7.0, "the basin kept its depth");
+
+        // An extent agreeing with the raster sea: everything flattens as
+        // without the check.
+        let west_sea = OceanExtent {
+            outers: vec![vec![[0.0, 0.0], [0.0, 1.0], [0.6, 1.0], [0.6, 0.0]]],
+            islands: Vec::new(),
+        };
+        let (mut field, mut heights) = coast(17);
+        let outcome =
+            apply_flat_marine_surface(&mut field, &mut heights, 0.0, Some(&west_sea), false);
+        assert!(outcome.flattened_heights > 0);
+        assert_eq!(heights.values_m[8 * 17], 0.0);
+        let _ = field;
+
+        // The check gates where the flood STARTS, not where it spreads: an
+        // extent covering only the southern border still floods the whole
+        // connected sea.
+        let south_only = OceanExtent {
+            outers: vec![vec![[0.0, 0.0], [0.0, 0.1], [0.6, 0.1], [0.6, 0.0]]],
+            islands: Vec::new(),
+        };
+        let (mut field, mut heights) = coast(17);
+        apply_flat_marine_surface(&mut field, &mut heights, 0.0, Some(&south_only), false);
+        assert_eq!(
+            heights.values_m[8 * 17],
+            0.0,
+            "the connected sea flooded from the checked seeds"
+        );
+        let _ = field;
     }
 
     #[test]

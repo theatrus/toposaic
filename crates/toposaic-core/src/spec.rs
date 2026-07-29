@@ -131,11 +131,9 @@ pub struct GenerationSpec {
     pub wall_mount: WallMountSpec,
     pub buildings: BuildingSpec,
     /// Marine water: what the sea's surface is, and at which level. The
-    /// serde default is NOT the type's default on purpose: a setup saved
-    /// before this group existed keeps today's draped output —
-    /// [`MarineGeometry::BathymetricRelief`] — while every newly created
-    /// setup starts on the flat surface.
-    #[serde(default = "MarineSpec::for_old_setups")]
+    /// default — for new setups and for files saved before the group
+    /// existed alike — is the draped bathymetric output; the flat sea is
+    /// opt-in while the feature grows into its issue.
     pub marine: MarineSpec,
     pub marker_settings: MarkerSpec,
     pub color_output: ColorOutputSpec,
@@ -1380,12 +1378,13 @@ pub struct MarineSpec {
 #[serde(rename_all = "snake_case")]
 pub enum MarineGeometry {
     /// One level surface at the resolved marine level: what a viewer sees.
-    /// The default for every newly created setup.
-    #[default]
+    /// Opt-in for now, while the feature grows into its issue.
     FlatSurface,
     /// Keep the elevation source's values under the water color: seabed
-    /// relief where the source has it, and today's exact output always.
-    /// The serde-default for setups saved before this group existed.
+    /// relief where the source has it. The default for every setup, new
+    /// and old alike — today's exact output until the user asks for the
+    /// flat sea.
+    #[default]
     BathymetricRelief,
 }
 
@@ -1414,15 +1413,6 @@ impl Default for MarineSpec {
 }
 
 impl MarineSpec {
-    /// The marine settings a setup saved before the group existed means:
-    /// the draped output it was created with, at mean sea level.
-    pub(crate) fn for_old_setups() -> Self {
-        Self {
-            geometry: MarineGeometry::BathymetricRelief,
-            ..Self::default()
-        }
-    }
-
     fn validate(&self) -> Result<()> {
         if !self.custom_offset_m.is_finite() || !(-100.0..=100.0).contains(&self.custom_offset_m) {
             bail!("marine custom level must be between -100 and 100 metres");
@@ -2753,18 +2743,11 @@ mod tests {
 
     #[test]
     fn old_color_specs_gain_new_default_colors() {
-        // An empty document is the default spec field for field, except the
-        // marine group: a document with no marine key is an old setup and
-        // keeps its draped sea, the one deliberate divergence between the
-        // serde default and the type's default.
+        // An empty document is the default spec, field for field.
         let empty: GenerationSpec = serde_json::from_str("{}").unwrap();
-        let old_defaults = GenerationSpec {
-            marine: MarineSpec::for_old_setups(),
-            ..GenerationSpec::default()
-        };
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            serde_json::to_value(&old_defaults).unwrap()
+            serde_json::to_value(GenerationSpec::default()).unwrap()
         );
 
         // A pre-color-era document that already sets some color_output keys
@@ -2779,10 +2762,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut expected = GenerationSpec {
-            marine: MarineSpec::for_old_setups(),
-            ..GenerationSpec::default()
-        };
+        let mut expected = GenerationSpec::default();
         expected.color_output.enabled = true;
         assert_eq!(
             serde_json::to_value(&spec).unwrap(),
@@ -2822,7 +2802,7 @@ mod tests {
         );
         let expected = expected.replace(
             "\"z_scale\":5.0},\"marker_settings\"",
-            "\"z_scale\":5.0},\"marine\":{\"geometry\":\"flat_surface\",\"level\":\"msl\",\"custom_offset_m\":0.0},\"marker_settings\"",
+            "\"z_scale\":5.0},\"marine\":{\"geometry\":\"bathymetric_relief\",\"level\":\"msl\",\"custom_offset_m\":0.0},\"marker_settings\"",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let expected = expected.replace(
@@ -2879,29 +2859,31 @@ mod tests {
     /// this is the pin that keeps them apart.
     #[test]
     fn setups_written_before_marine_water_keep_their_draped_sea() {
+        // The flat sea is opt-in everywhere: a file with no marine group,
+        // a partial one, and a fresh default all mean the draped
+        // bathymetric output. Only an explicit flat_surface changes a
+        // print.
         let mut document = serde_json::to_value(GenerationSpec::default()).unwrap();
         document
             .as_object_mut()
             .expect("spec object")
             .remove("marine")
             .expect("the marine group serializes");
-
         let spec: GenerationSpec = serde_json::from_value(document).unwrap();
         spec.validate().unwrap();
         assert_eq!(spec.marine.geometry, MarineGeometry::BathymetricRelief);
         assert_eq!(spec.marine.level, MarineLevel::Msl);
-
-        // A fresh spec starts flat: the issue's default for new setups.
         assert_eq!(
             GenerationSpec::default().marine.geometry,
-            MarineGeometry::FlatSurface
+            MarineGeometry::BathymetricRelief
         );
-
-        // A partial marine object is a new-era file and fills from the
-        // type's own default, not the old-setup one.
         let partial: GenerationSpec =
             serde_json::from_value(serde_json::json!({ "marine": {} })).unwrap();
-        assert_eq!(partial.marine.geometry, MarineGeometry::FlatSurface);
+        assert_eq!(partial.marine.geometry, MarineGeometry::BathymetricRelief);
+        let flat: GenerationSpec =
+            serde_json::from_value(serde_json::json!({ "marine": { "geometry": "flat_surface" } }))
+                .unwrap();
+        assert_eq!(flat.marine.geometry, MarineGeometry::FlatSurface);
     }
 
     /// Airport pavement is one class however many aeroway groups are drawn,

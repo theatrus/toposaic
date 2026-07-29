@@ -53,11 +53,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fetch_height_field_with_progress(&spec, &cache_dir.join("elevation"), |_| Ok(()))?;
     let mut field = fetch_surface_field(&spec, &height_field, &cache_dir)?;
     let before = height_field.clone();
-    apply_marine_water(&spec, &mut height_field, &mut field);
+    apply_marine_water(&spec, &mut height_field, &mut field, &cache_dir);
 
     println!("--- marine notes ---");
     for note in field.source.split("; ") {
-        if note.contains("marine") || note.contains("WARNING") {
+        if [
+            "marine",
+            "WARNING",
+            "flood fill",
+            "coastline",
+            "samples",
+            "plane",
+        ]
+        .iter()
+        .any(|key| note.contains(key))
+        {
             println!("  {note}");
         }
     }

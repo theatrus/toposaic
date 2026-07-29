@@ -469,7 +469,7 @@ fn run_job(
         None
     };
     if let Some(field) = surface_field.as_mut() {
-        surface::apply_marine_water(spec, &mut height_field, field);
+        surface::apply_marine_water(spec, &mut height_field, field, &state.map_cache_dir);
     }
     update_job(state, id, "running", 65, &[], None)?;
     let output_dir = state.jobs_dir.join(id);
@@ -590,7 +590,7 @@ fn run_adjacent_grid_job(
         // The plane is spec-constant, so every tile flattens to the same
         // level; the frozen ring rule inside keeps the shared edges equal.
         if let Some(field) = surface_field.as_mut() {
-            surface::apply_marine_water(tile_spec, height_field, field);
+            surface::apply_marine_water(tile_spec, height_field, field, &state.map_cache_dir);
         }
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
         // A super-tile exports each requested flag once. Per-tile generation
