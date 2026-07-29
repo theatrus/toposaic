@@ -959,12 +959,7 @@ mod tests {
     fn building_solids_clip_cleanly_at_piece_edges() {
         let mut field = SurfaceField::new(5, 5, vec![SurfaceClass::Rock; 25], "buildings").unwrap();
         field.paint_building(&[[0.45, 0.1], [0.55, 0.1], [0.55, 0.9], [0.45, 0.9]], 24.0);
-        let flat_height = HeightField {
-            width: 2,
-            height: 2,
-            values_m: vec![0.0; 4],
-            source: "flat".into(),
-        };
+        let flat_height = HeightField::new(2, 2, vec![0.0; 4], "flat").unwrap();
         let spec = GenerationSpec {
             width_mm: 100.0,
             ground_span_km: 1.0,

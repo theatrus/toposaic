@@ -428,7 +428,7 @@ fn run_job(
     update_job(state, id, "running", 8, &[], None)?;
     let phase_started = Instant::now();
     let mut last_elevation_progress = 8;
-    let height_field = elevation::fetch_height_field_with_progress(
+    let mut height_field = elevation::fetch_height_field_with_progress(
         spec,
         &state.map_cache_dir.join("elevation"),
         |fraction| {
@@ -449,7 +449,7 @@ fn run_job(
         "generation phase complete"
     );
     update_job(state, id, "running", 40, &[], None)?;
-    let surface_field = if spec.color_output.enabled
+    let mut surface_field = if spec.color_output.enabled
         || spec.buildings.enabled
         || spec.uses_trails()
         || spec.uses_building_markers()
@@ -468,6 +468,9 @@ fn run_job(
     } else {
         None
     };
+    if let Some(field) = surface_field.as_mut() {
+        surface::apply_marine_water(spec, &mut height_field, field);
+    }
     update_job(state, id, "running", 65, &[], None)?;
     let output_dir = state.jobs_dir.join(id);
     let phase_started = Instant::now();
@@ -563,7 +566,7 @@ fn run_adjacent_grid_job(
 
     for (index, ((tile_spec, height_field), tile_output)) in tiles
         .iter()
-        .zip(height_fields.iter())
+        .zip(height_fields.iter_mut())
         .zip(&output_plan.tiles)
         .enumerate()
     {
@@ -571,7 +574,7 @@ fn run_adjacent_grid_job(
         let row = tile_output.row;
         let column = tile_output.column;
         let tile_dir = output_dir.join(&tile_output.temporary_directory);
-        let surface_field = if tile_spec.color_output.enabled
+        let mut surface_field = if tile_spec.color_output.enabled
             || tile_spec.buildings.enabled
             || tile_spec.uses_trails()
             || tile_spec.uses_building_markers()
@@ -584,6 +587,11 @@ fn run_adjacent_grid_job(
         } else {
             None
         };
+        // The plane is spec-constant, so every tile flattens to the same
+        // level; the frozen ring rule inside keeps the shared edges equal.
+        if let Some(field) = surface_field.as_mut() {
+            surface::apply_marine_water(tile_spec, height_field, field);
+        }
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
         // A super-tile exports each requested flag once. Per-tile generation
         // would build and discard the same files in every temporary folder.

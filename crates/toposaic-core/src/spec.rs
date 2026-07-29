@@ -130,6 +130,13 @@ pub struct GenerationSpec {
     pub puzzle_retention: PuzzleRetentionSpec,
     pub wall_mount: WallMountSpec,
     pub buildings: BuildingSpec,
+    /// Marine water: what the sea's surface is, and at which level. The
+    /// serde default is NOT the type's default on purpose: a setup saved
+    /// before this group existed keeps today's draped output —
+    /// [`MarineGeometry::BathymetricRelief`] — while every newly created
+    /// setup starts on the flat surface.
+    #[serde(default = "MarineSpec::for_old_setups")]
+    pub marine: MarineSpec,
     pub marker_settings: MarkerSpec,
     pub color_output: ColorOutputSpec,
     /// Imported hiker trails (GPX/KML routes) drawn on the model in the
@@ -183,6 +190,7 @@ impl Default for GenerationSpec {
             puzzle_retention: PuzzleRetentionSpec::default(),
             wall_mount: WallMountSpec::default(),
             buildings: BuildingSpec::default(),
+            marine: MarineSpec::default(),
             marker_settings: MarkerSpec::default(),
             color_output: ColorOutputSpec::default(),
             trails: Vec::new(),
@@ -334,6 +342,7 @@ impl GenerationSpec {
             );
         }
         self.buildings.validate()?;
+        self.marine.validate()?;
         self.color_output.validate()?;
         if self.trails.len() > MAX_TRAILS {
             bail!("imported trail count must be at most {MAX_TRAILS}");
@@ -1344,6 +1353,79 @@ impl BuildingSpec {
     fn validate(&self) -> Result<()> {
         if !(0.5..=30.0).contains(&self.z_scale) {
             bail!("building Z scale must be between 0.5 and 30");
+        }
+        Ok(())
+    }
+}
+
+/// Marine water settings of issue #71: what the sea's printed surface IS,
+/// and which level it sits at.
+///
+/// The elevation provider samples whatever its source holds under the sea —
+/// coarse ETOPO1 bathymetry with Mapzen, a hydro-flattened surface
+/// elsewhere — and today's output drapes the water color straight over it.
+/// The flat mode replaces that with the one thing a sea always is: level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarineSpec {
+    pub geometry: MarineGeometry,
+    pub level: MarineLevel,
+    /// The custom level as metres above the elevation provider's zero.
+    /// Read only when `level` is `Custom`.
+    pub custom_offset_m: f32,
+}
+
+/// What the sea's printed surface is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MarineGeometry {
+    /// One level surface at the resolved marine level: what a viewer sees.
+    /// The default for every newly created setup.
+    #[default]
+    FlatSurface,
+    /// Keep the elevation source's values under the water color: seabed
+    /// relief where the source has it, and today's exact output always.
+    /// The serde-default for setups saved before this group existed.
+    BathymetricRelief,
+}
+
+/// Which level the marine surface sits at. `LowTide` and `HighTide` name
+/// the tidal datums the issue defines (MLLW and MHHW); until a regional
+/// datum source is wired in, they resolve to mean sea level with a
+/// recorded warning rather than a guessed regional value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MarineLevel {
+    #[default]
+    Msl,
+    LowTide,
+    HighTide,
+    Custom,
+}
+
+impl Default for MarineSpec {
+    fn default() -> Self {
+        Self {
+            geometry: MarineGeometry::default(),
+            level: MarineLevel::default(),
+            custom_offset_m: 0.0,
+        }
+    }
+}
+
+impl MarineSpec {
+    /// The marine settings a setup saved before the group existed means:
+    /// the draped output it was created with, at mean sea level.
+    pub(crate) fn for_old_setups() -> Self {
+        Self {
+            geometry: MarineGeometry::BathymetricRelief,
+            ..Self::default()
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if !self.custom_offset_m.is_finite() || !(-100.0..=100.0).contains(&self.custom_offset_m) {
+            bail!("marine custom level must be between -100 and 100 metres");
         }
         Ok(())
     }
@@ -2671,11 +2753,18 @@ mod tests {
 
     #[test]
     fn old_color_specs_gain_new_default_colors() {
-        // An empty document is the default spec, field for field.
+        // An empty document is the default spec field for field, except the
+        // marine group: a document with no marine key is an old setup and
+        // keeps its draped sea, the one deliberate divergence between the
+        // serde default and the type's default.
         let empty: GenerationSpec = serde_json::from_str("{}").unwrap();
+        let old_defaults = GenerationSpec {
+            marine: MarineSpec::for_old_setups(),
+            ..GenerationSpec::default()
+        };
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            serde_json::to_value(GenerationSpec::default()).unwrap()
+            serde_json::to_value(&old_defaults).unwrap()
         );
 
         // A pre-color-era document that already sets some color_output keys
@@ -2690,7 +2779,10 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut expected = GenerationSpec::default();
+        let mut expected = GenerationSpec {
+            marine: MarineSpec::for_old_setups(),
+            ..GenerationSpec::default()
+        };
         expected.color_output.enabled = true;
         assert_eq!(
             serde_json::to_value(&spec).unwrap(),
@@ -2727,6 +2819,10 @@ mod tests {
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
+        );
+        let expected = expected.replace(
+            "\"z_scale\":5.0},\"marker_settings\"",
+            "\"z_scale\":5.0},\"marine\":{\"geometry\":\"flat_surface\",\"level\":\"msl\",\"custom_offset_m\":0.0},\"marker_settings\"",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let expected = expected.replace(
@@ -2775,6 +2871,37 @@ mod tests {
         assert!(spec.color_output.aviation.aviation_runways_enabled);
         assert!(spec.color_output.aviation.aviation_aprons_enabled);
         assert_eq!(spec.color_output.aviation.aviation_height_mm, 0.2);
+    }
+
+    /// A setup saved before the marine group existed keeps the sea it was
+    /// created with — the draped, bathymetric output — while a fresh spec
+    /// starts on the flat surface. The two defaults differ on purpose, and
+    /// this is the pin that keeps them apart.
+    #[test]
+    fn setups_written_before_marine_water_keep_their_draped_sea() {
+        let mut document = serde_json::to_value(GenerationSpec::default()).unwrap();
+        document
+            .as_object_mut()
+            .expect("spec object")
+            .remove("marine")
+            .expect("the marine group serializes");
+
+        let spec: GenerationSpec = serde_json::from_value(document).unwrap();
+        spec.validate().unwrap();
+        assert_eq!(spec.marine.geometry, MarineGeometry::BathymetricRelief);
+        assert_eq!(spec.marine.level, MarineLevel::Msl);
+
+        // A fresh spec starts flat: the issue's default for new setups.
+        assert_eq!(
+            GenerationSpec::default().marine.geometry,
+            MarineGeometry::FlatSurface
+        );
+
+        // A partial marine object is a new-era file and fills from the
+        // type's own default, not the old-setup one.
+        let partial: GenerationSpec =
+            serde_json::from_value(serde_json::json!({ "marine": {} })).unwrap();
+        assert_eq!(partial.marine.geometry, MarineGeometry::FlatSurface);
     }
 
     /// Airport pavement is one class however many aeroway groups are drawn,
@@ -2908,6 +3035,11 @@ mod tests {
                 "wide_edge_screws": false
             },
             "buildings": { "enabled": true, "z_scale": 2.0 },
+            "marine": {
+                "geometry": "bathymetric_relief",
+                "level": "custom",
+                "custom_offset_m": -2.5
+            },
             "marker_settings": {
                 "color": "#E24A33"
             },

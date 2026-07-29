@@ -103,6 +103,16 @@ export type GenerationSpec = {
     enabled: boolean;
     z_scale: number;
   };
+  // Marine water: what the sea's printed surface is, and at which level.
+  // Setups saved before the group existed deserialize as
+  // bathymetric_relief — their draped output — while new setups start on
+  // the flat surface. low_tide/high_tide resolve to msl with a recorded
+  // warning until a regional tidal datum source lands.
+  marine: {
+    geometry: "flat_surface" | "bathymetric_relief";
+    level: "msl" | "low_tide" | "high_tide" | "custom";
+    custom_offset_m: number;
+  };
   marker_settings: {
     color: string;
   };

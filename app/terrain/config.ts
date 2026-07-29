@@ -119,6 +119,11 @@ export const initialSpec: GenerationSpec = {
     enabled: false,
     z_scale: 5,
   },
+  marine: {
+    geometry: "flat_surface",
+    level: "msl",
+    custom_offset_m: 0,
+  },
   marker_settings: {
     color: "#E24A33",
   },
@@ -339,6 +344,13 @@ export function mergeSpecDefaults(
     overlay_samples_across:
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
+    // Mirrors the backend's serde rule, not the new-setup default: a saved
+    // setup with no marine group predates it and keeps its draped sea.
+    marine: saved.marine ?? {
+      geometry: "bathymetric_relief",
+      level: "msl",
+      custom_offset_m: 0,
+    },
     marker_settings: {
       color: saved.marker_settings?.color ?? initialSpec.marker_settings.color,
     },

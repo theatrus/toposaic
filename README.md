@@ -330,6 +330,25 @@ those really do run downhill. Separately, ground under mapped airport pavement
 is never water: a runway that WorldCover reads as bay — parts of SFO qualify —
 stands on land, because pavement is built on it.
 
+### Marine water levels (in progress)
+
+A real sea is level, but the elevation provider samples whatever its source
+holds under it — with Mapzen an ocean cell can carry coarse ETOPO1 seabed,
+which used to print as blue bathymetric relief. New setups now default to a
+flat marine surface: the generator finds the water connected to the open sea
+at the map's edge, flattens the terrain there to the chosen level, and leaves
+every inland lake and depression at its own height. Setups saved before the
+setting existed keep their draped output under the explicit bathymetric
+choice. The level is mean sea level at the provider's zero, or a custom
+offset in metres; the elevation source's vertical reference (EGM96 for
+Mapzen, EGM2008 for Mapterhorn's global base) is recorded with the resolved
+level in the data sources. A custom level below zero dries out the foreshore
+between the two planes; a level above zero covers sea-connected land below
+it. Low and high tide presets exist but resolve to mean sea level with a
+recorded warning until a regional tidal datum source (NOAA VDatum) is wired
+in; super-tiles share one plane by construction, and shared edges decide
+their ring samples from shared data alone so seams stay equal.
+
 An Output-tab style picker sets how the 3MF states its colors; see [Printing in
 color](#printing-in-color) for which style suits which slicer and how each
 import goes.

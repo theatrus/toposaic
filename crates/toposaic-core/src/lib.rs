@@ -4,6 +4,7 @@ mod export;
 mod geography;
 mod heightfield;
 mod jigsaw;
+mod marine;
 mod marker;
 mod mesh;
 mod mount;
@@ -18,7 +19,10 @@ mod text;
 mod tray;
 
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
-pub use heightfield::{DespikeReport, HeightField};
+pub use heightfield::{DespikeReport, HeightField, VerticalReference};
+pub use marine::{
+    MarineOutcome, ResolvedMarineLevel, apply_flat_marine_surface, resolve_marine_level,
+};
 pub use preview::build_height_preview;
 pub use project::{
     Artifact, ProjectManifest, artifact_path, generate_marker_artifacts, generate_project,
@@ -28,9 +32,10 @@ pub use project::{
 pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec, LabelFont,
-    LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker, MarkerKind, MarkerSpec,
-    PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec,
-    SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont,
-    TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel,
+    MarineSpec, MarkerKind, MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle,
+    ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
+    SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec,
+    WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

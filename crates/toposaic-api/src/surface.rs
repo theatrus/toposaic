@@ -14,8 +14,9 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, LineStyle, MarkerKind, NativeClassGrid,
-    RailLifecycle, ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, HeightField, LineStyle, MarineGeometry, MarkerKind,
+    NativeClassGrid, RailLifecycle, ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
+    apply_flat_marine_surface, resolve_marine_level,
 };
 use tracing::warn;
 
@@ -708,6 +709,67 @@ fn append_source(source: &mut String, addition: impl AsRef<str>) {
         source.push_str("; ");
     }
     source.push_str(addition.as_ref());
+}
+
+/// Resolves the spec's marine level and flattens the sea to it, recording
+/// what happened in the data sources. Runs between the surface fetch and
+/// generation because it needs both fields at once; the bathymetric mode —
+/// and every setup saved before the marine group existed — returns without
+/// touching a sample or a source note, so old projects regenerate byte for
+/// byte.
+pub fn apply_marine_water(
+    spec: &GenerationSpec,
+    height_field: &mut HeightField,
+    field: &mut SurfaceField,
+) {
+    if spec.marine.geometry != MarineGeometry::FlatSurface || !spec.color_output.enabled {
+        return;
+    }
+    let resolved = resolve_marine_level(&spec.marine, height_field.vertical_reference);
+    // The frozen ring rule keeps shared super-tile edges deciding each
+    // ring sample from shared data alone; the plane itself is the same for
+    // every tile because nothing in the resolution reads this tile's
+    // heights.
+    let outcome = apply_flat_marine_surface(
+        field,
+        height_field,
+        resolved.elevation_m,
+        spec.shares_tile_edges(),
+    );
+    let mut note = format!(
+        "marine water: flat surface, {} at {:+.2} m from {}",
+        resolved.datum, resolved.elevation_m, resolved.source
+    );
+    if outcome.is_no_op() {
+        note.push_str("; no border sea in this area, nothing flattened");
+    } else {
+        note.push_str(&format!(
+            "; {} height samples set to the plane",
+            outcome.flattened_heights
+        ));
+        if outcome.restored_water > 0 {
+            note.push_str(&format!(
+                ", {} gate-demoted water samples restored",
+                outcome.restored_water
+            ));
+        }
+        if outcome.exposed_seabed > 0 {
+            note.push_str(&format!(
+                ", {} intertidal samples exposed as ground",
+                outcome.exposed_seabed
+            ));
+        }
+        if outcome.flooded_land > 0 {
+            note.push_str(&format!(
+                ", {} land samples covered by the raised plane",
+                outcome.flooded_land
+            ));
+        }
+    }
+    append_source(&mut field.source, note);
+    if let Some(warning) = &resolved.warning {
+        append_source(&mut field.source, format!("WARNING: {warning}"));
+    }
 }
 
 /// Maps one latitude/longitude pair into the model's normalized UV square,
