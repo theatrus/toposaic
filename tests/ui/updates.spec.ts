@@ -24,7 +24,7 @@ test("shows and dismisses a newer desktop release notice", async ({ page }) => {
     },
   );
   await page.route(
-    "https://toposaic.com/releases/notice.json",
+    "https://updates.toposaic.com/notice.json",
     async (route) => {
       await route.fulfill({
         contentType: "application/json",
@@ -86,7 +86,7 @@ test("prefers a newer valid TopoSaic site notice", async ({ page }) => {
     },
   );
   await page.route(
-    "https://toposaic.com/releases/notice.json",
+    "https://updates.toposaic.com/notice.json",
     async (route) => {
       await route.fulfill({
         contentType: "application/json",

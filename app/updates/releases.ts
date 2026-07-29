@@ -5,7 +5,7 @@ export const APP_VERSION = tauriConfig.version;
 export const GITHUB_RELEASE_API_URL =
   "https://api.github.com/repos/theatrus/toposaic/releases/latest";
 export const WEBSITE_NOTICE_URL =
-  "https://toposaic.com/releases/notice.json";
+  "https://updates.toposaic.com/notice.json";
 export const RELEASES_URL =
   "https://github.com/theatrus/toposaic/releases/latest";
 
