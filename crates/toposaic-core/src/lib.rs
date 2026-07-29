@@ -1,9 +1,11 @@
 #[doc(hidden)]
 pub mod analysis;
+mod coastline;
 mod export;
 mod geography;
 mod heightfield;
 mod jigsaw;
+mod marine;
 mod marker;
 mod mesh;
 mod mount;
@@ -18,8 +20,13 @@ mod surface;
 mod text;
 mod tray;
 
+pub use coastline::{OceanExtent, assemble_ocean};
 pub use geography::{GeoBounds, GeoTransform, normalize_longitude};
-pub use heightfield::{DespikeReport, HeightField};
+pub use heightfield::{DespikeReport, HeightField, VerticalReference};
+pub use marine::{
+    MarineOutcome, ResolvedMarineLevel, TidalOffsets, apply_flat_marine_surface,
+    resolve_marine_level,
+};
 pub use palette::{
     GroundImagery, GroundPalette, GroundPaletteEntry, GroundPaletteOptions,
     MAXIMUM_PALETTE_ENTRIES, NO_GROUND_MATERIAL, assign_locked_palette, discover_ground_palette,
@@ -34,9 +41,9 @@ pub use spec::{
     AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
     DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec, GroundColorMode,
     GroundPaletteSpec, LabelFont, LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker,
-    MarkerKind, MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail,
-    RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
-    TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle,
-    WallMountTarget,
+    MarineGeometry, MarineLevel, MarineSpec, MarkerKind, MarkerSpec, PuzzleRetentionSpec,
+    RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
+    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
+    TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

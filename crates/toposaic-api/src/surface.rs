@@ -15,13 +15,14 @@ use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
     ClassBorders, GenerationSpec, GroundColorMode, GroundImagery, GroundPaletteOptions,
-    HeightField, LineStyle, MarkerKind, NativeClassGrid, RailLifecycle, ResolvedRoadDetail,
-    SlopeGates, SurfaceClass, SurfaceField, assign_locked_palette, discover_ground_palette,
+    HeightField, LineStyle, MarineGeometry, MarkerKind, NativeClassGrid, RailLifecycle,
+    ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField, apply_flat_marine_surface,
+    assign_locked_palette, discover_ground_palette, resolve_marine_level,
 };
 use tracing::warn;
 
 use crate::{
-    cache,
+    cache, datum,
     geo::{GeoBounds, GeoTransform, normalize_longitude},
     http, imagery,
 };
@@ -115,6 +116,9 @@ const TAXILANE_FALLBACK_WIDTH_M: f32 = 10.5;
 /// Cache stem for the ferry layer. Its own, so switching ferries on never
 /// re-downloads a neighbouring layer.
 const FERRY_CACHE_PREFIX: &str = "ferry-v1";
+/// Cache stem for `natural=coastline` ways, the marine flood fill's
+/// fact-check. Its own for the same reason as the other layers.
+const COASTLINE_CACHE_PREFIX: &str = "coastline-v1";
 /// Working width for a railway whose OSM way has no explicit `width=*`.
 /// Standard gauge is 1.435 m; a representative 3.15 m loading envelope adds
 /// room for the vehicle around it. This is a print-width estimate, not a
@@ -823,6 +827,145 @@ fn resolve_ground_palette(
     }
 }
 
+/// Fetches `natural=coastline` ways over the model's bounds and assembles
+/// them into the mapped ocean's extent: the fact-check for where the
+/// marine flood fill may start. The second value is the note fragment
+/// describing what the check rests on.
+fn fetch_ocean_extent(
+    spec: &GenerationSpec,
+    map_cache_dir: &Path,
+) -> (Option<toposaic_core::OceanExtent>, String) {
+    let transform = transform_for(spec);
+    let bounds = transform.bounds();
+    let response = match fetch_osm_response(
+        &map_cache_dir.join("osm"),
+        COASTLINE_CACHE_PREFIX,
+        coastline_query(bounds),
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(%error, "OpenStreetMap coastline unavailable; flood fill trusts land cover");
+            return (
+                None,
+                "coastline unavailable; flood fill trusts land-cover water".into(),
+            );
+        }
+    };
+    let chains = response
+        .elements
+        .iter()
+        .filter(|way| way.geometry.len() >= 2)
+        .map(|way| normalized_osm_points(way, transform))
+        .collect::<Vec<_>>();
+    if chains.is_empty() {
+        return (
+            None,
+            "no coastline mapped here; flood fill trusts land-cover water".into(),
+        );
+    }
+    match toposaic_core::assemble_ocean(&chains) {
+        Some(extent) => (
+            Some(extent),
+            format!(
+                "flood fill checked against the ocean assembled from {} OpenStreetMap coastline ways",
+                chains.len()
+            ),
+        ),
+        None => (
+            None,
+            "coastline data did not close into an ocean; flood fill trusts land-cover water".into(),
+        ),
+    }
+}
+
+/// Resolves the spec's marine level and flattens the sea to it, recording
+/// what happened in the data sources. Runs between the surface fetch and
+/// generation because it needs both fields at once; the bathymetric mode —
+/// and every setup saved before the marine group existed — returns without
+/// touching a sample or a source note, so old projects regenerate byte for
+/// byte.
+pub fn apply_marine_water(
+    spec: &GenerationSpec,
+    height_field: &mut HeightField,
+    field: &mut SurfaceField,
+    map_cache_dir: &Path,
+) {
+    if spec.marine.geometry != MarineGeometry::FlatSurface || !spec.color_output.enabled {
+        return;
+    }
+    // The tide presets are the only levels that need a regional source;
+    // MSL and custom stay off the network entirely.
+    let tides = matches!(
+        spec.marine.level,
+        toposaic_core::MarineLevel::LowTide | toposaic_core::MarineLevel::HighTide
+    )
+    .then(|| {
+        datum::fetch_tidal_offsets(
+            spec.center_lat,
+            spec.center_lon,
+            &map_cache_dir.join("datum"),
+        )
+    })
+    .flatten();
+    let resolved = resolve_marine_level(
+        &spec.marine,
+        height_field.vertical_reference,
+        tides.as_ref(),
+    );
+    let (ocean, ocean_note) = fetch_ocean_extent(spec, map_cache_dir);
+    // The frozen ring rule keeps shared super-tile edges deciding each
+    // ring sample from shared data alone; the plane itself is the same for
+    // every tile because nothing in the resolution reads this tile's
+    // heights.
+    let outcome = apply_flat_marine_surface(
+        field,
+        height_field,
+        resolved.elevation_m,
+        ocean.as_ref(),
+        spec.shares_tile_edges(),
+    );
+    // A map with no water at all has no sea to explain; only a coastal
+    // map where the level touched nothing earns the "nothing flattened"
+    // note. Keeps every inland manifest free of marine noise.
+    if outcome.is_no_op() && !field.classes.contains(&SurfaceClass::Water) {
+        return;
+    }
+    let mut note = format!(
+        "marine water: flat surface, {} at {:+.2} m from {}; {ocean_note}",
+        resolved.datum, resolved.elevation_m, resolved.source
+    );
+    if outcome.is_no_op() {
+        note.push_str("; no border sea in this area, nothing flattened");
+    } else {
+        note.push_str(&format!(
+            "; {} height samples set to the plane",
+            outcome.flattened_heights
+        ));
+        if outcome.restored_water > 0 {
+            note.push_str(&format!(
+                ", {} gate-demoted water samples restored",
+                outcome.restored_water
+            ));
+        }
+        if outcome.exposed_seabed > 0 {
+            note.push_str(&format!(
+                ", {} intertidal samples exposed as ground",
+                outcome.exposed_seabed
+            ));
+        }
+        if outcome.flooded_land > 0 {
+            note.push_str(&format!(
+                ", {} land samples covered by the raised plane",
+                outcome.flooded_land
+            ));
+        }
+    }
+    append_source(&mut field.source, note);
+    if let Some(warning) = &resolved.warning {
+        append_source(&mut field.source, format!("WARNING: {warning}"));
+    }
+}
+
 /// Maps one latitude/longitude pair into the model's normalized UV square,
 /// unwrapping the longitude around the date line first. Every overlay —
 /// OpenStreetMap ways and imported trails alike — must share this mapping so
@@ -1527,6 +1670,27 @@ fn ferry_query(bounds: GeoBounds) -> String {
         .collect::<String>();
     // `out geom` rather than `out tags geom`: nothing here reads a ferry's
     // tags, so there is no reason to download them.
+    format!("[out:json][timeout:30];({ways});out geom;")
+}
+
+/// Query for `natural=coastline` ways. `out geom` returns each matching
+/// way's FULL geometry, beyond the bounds too — which the ocean assembly
+/// needs, since ways are stitched before they are clipped to the model
+/// square.
+fn coastline_query(bounds: GeoBounds) -> String {
+    let ways = bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|bounds| {
+            format!(
+                "way[\"natural\"=\"coastline\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                south = bounds.south,
+                west = bounds.west,
+                north = bounds.north,
+                east = bounds.east,
+            )
+        })
+        .collect::<String>();
     format!("[out:json][timeout:30];({ways});out geom;")
 }
 
@@ -2904,6 +3068,50 @@ mod tests {
         assert_eq!(world_cover_tile(-121.7603, 46.8523), "N45W123");
         assert_eq!(world_cover_tile(138.7274, 35.3606), "N33E138");
         assert_eq!(world_cover_tile(-1.0, -1.0), "S03W003");
+    }
+
+    /// Marine notes belong to maps with water in them. An inland map in
+    /// flat mode stays silent — no "nothing flattened" noise on every
+    /// mountain manifest — while a coastal one records what happened; and
+    /// the bathymetric mode, old setups included, never writes a word.
+    #[test]
+    fn marine_notes_stay_off_inland_and_bathymetric_manifests() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        // The flat sea is opt-in; the default bathymetric case is the
+        // third block below.
+        spec.marine.geometry = toposaic_core::MarineGeometry::FlatSurface;
+        // Pre-seed an empty coastline response so the ocean fact-check
+        // reads cache and the test never talks to Overpass.
+        let cache_root =
+            std::env::temp_dir().join(format!("toposaic-marine-note-test-{}", std::process::id()));
+        let osm_dir = cache_root.join("osm");
+        fs::create_dir_all(&osm_dir).unwrap();
+        let bounds = transform_for(&spec).bounds();
+        let cache_path = osm_cache_path(&osm_dir, COASTLINE_CACHE_PREFIX, &coastline_query(bounds));
+        fs::write(&cache_path, b"{\"elements\":[]}").unwrap();
+
+        let inland_classes = vec![SurfaceClass::Rock; 16];
+        let mut field = SurfaceField::new(4, 4, inland_classes.clone(), "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![100.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field, &cache_root);
+        assert!(field.source.is_empty(), "inland map gained a marine note");
+
+        let mut coastal_classes = vec![SurfaceClass::Rock; 16];
+        coastal_classes[0] = SurfaceClass::Water;
+        let mut field = SurfaceField::new(4, 4, coastal_classes.clone(), "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![-2.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field, &cache_root);
+        assert!(field.source.contains("marine water: flat surface"));
+        assert!(heights.values_m.contains(&0.0));
+
+        spec.marine.geometry = toposaic_core::MarineGeometry::BathymetricRelief;
+        let mut field = SurfaceField::new(4, 4, coastal_classes, "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![-2.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field, &cache_root);
+        assert!(field.source.is_empty(), "bathymetric mode wrote a note");
+        assert!(heights.values_m.iter().all(|&value| value == -2.0));
+        fs::remove_dir_all(&cache_root).ok();
     }
 
     /// The water gates judge printed angles, and this ratio is what turns

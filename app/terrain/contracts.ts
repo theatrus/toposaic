@@ -103,6 +103,15 @@ export type GenerationSpec = {
     enabled: boolean;
     z_scale: number;
   };
+  // Marine water: what the sea's printed surface is, and at which level.
+  // bathymetric_relief — the draped output every setup has today — is the
+  // default; the flat sea is opt-in. low_tide/high_tide resolve to msl
+  // with a recorded warning until a regional tidal datum source lands.
+  marine: {
+    geometry: "flat_surface" | "bathymetric_relief";
+    level: "msl" | "low_tide" | "high_tide" | "custom";
+    custom_offset_m: number;
+  };
   marker_settings: {
     color: string;
   };
@@ -253,6 +262,7 @@ export type CacheCategoryKey =
   | "world_cover"
   | "osm"
   | "imagery"
+  | "datum"
   | "places";
 
 export type CacheCategory = {

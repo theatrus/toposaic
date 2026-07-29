@@ -3,12 +3,41 @@ use rayon::prelude::*;
 
 use crate::spec::GenerationSpec;
 
+/// The vertical reference the elevation values are heights above. Metadata
+/// only — no code applies a geoid correction, and none may be applied
+/// twice — but a marine level is a claim about the sea, and a claim needs
+/// to name what its zero means. `Unknown` blocks nothing; it makes the
+/// resolved level say honestly that its reference is the provider's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerticalReference {
+    /// EGM96 orthometric heights: the SRTM lineage most Terrarium tiles
+    /// carry.
+    Egm96,
+    /// EGM2008 orthometric heights: the Copernicus GLO-30 lineage.
+    Egm2008,
+    #[default]
+    Unknown,
+}
+
+impl VerticalReference {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Egm96 => "EGM96 orthometric",
+            Self::Egm2008 => "EGM2008 orthometric",
+            Self::Unknown => "unknown vertical reference",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HeightField {
     pub width: usize,
     pub height: usize,
     pub values_m: Vec<f32>,
     pub source: String,
+    /// What the values are heights above. `Unknown` until the fetcher that
+    /// knows its provider tags it.
+    pub vertical_reference: VerticalReference,
 }
 
 impl HeightField {
@@ -32,6 +61,7 @@ impl HeightField {
             height,
             values_m,
             source: source.into(),
+            vertical_reference: VerticalReference::default(),
         })
     }
 

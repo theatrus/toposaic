@@ -119,6 +119,11 @@ export const initialSpec: GenerationSpec = {
     enabled: false,
     z_scale: 5,
   },
+  marine: {
+    geometry: "bathymetric_relief",
+    level: "msl",
+    custom_offset_m: 0,
+  },
   marker_settings: {
     color: "#E24A33",
   },
@@ -343,6 +348,7 @@ export function mergeSpecDefaults(
     overlay_samples_across:
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
     buildings: { ...initialSpec.buildings, ...saved.buildings },
+    marine: { ...initialSpec.marine, ...saved.marine },
     marker_settings: {
       color: saved.marker_settings?.color ?? initialSpec.marker_settings.color,
     },

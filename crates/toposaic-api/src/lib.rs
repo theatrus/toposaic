@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 mod cache;
 mod database;
+mod datum;
 mod elevation;
 mod geo;
 mod geocoding;
@@ -33,7 +34,7 @@ mod surface;
 pub mod diagnostics {
     pub use crate::cache::root as map_cache_root;
     pub use crate::elevation::fetch_height_field_with_progress;
-    pub use crate::surface::fetch_surface_field;
+    pub use crate::surface::{apply_marine_water, fetch_surface_field};
 }
 
 use database::migrate;

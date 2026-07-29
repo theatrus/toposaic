@@ -8,7 +8,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::{ImageFormat, RgbImage};
 use reqwest::{StatusCode, blocking::Client};
-use toposaic_core::{DespikeReport, ElevationSource, GenerationSpec, HeightField};
+use toposaic_core::{
+    DespikeReport, ElevationSource, GenerationSpec, HeightField, VerticalReference,
+};
 use tracing::warn;
 
 use crate::{cache, http};
@@ -59,6 +61,19 @@ impl ElevationProvider {
                 maximum_zoom: 17,
                 attribution_url: "https://mapterhorn.com/attribution",
             },
+        }
+    }
+
+    /// What the provider's elevations are heights above. Approximate but
+    /// honest: Terrarium blends SRTM, GMTED, and ETOPO1, all in the EGM96
+    /// lineage; Mapterhorn's global Copernicus GLO-30 base is EGM2008,
+    /// though its regional high-resolution sources have not all proven
+    /// their reference — the marine level's source line carries that
+    /// caveat rather than this label hiding it.
+    fn vertical_reference(self) -> VerticalReference {
+        match self.source {
+            ElevationSource::Mapzen => VerticalReference::Egm96,
+            ElevationSource::Mapterhorn => VerticalReference::Egm2008,
         }
     }
 
@@ -147,6 +162,7 @@ fn fetch_height_field_at_size(
     let source = provider.source_description(requested_zoom, &sampler.used_zooms);
     let repairs = sampler.repairs;
     let mut field = HeightField::new(sample_width, sample_height, values_m, source)?;
+    field.vertical_reference = provider.vertical_reference();
     if !repairs.is_empty() {
         field.source.push_str(&describe_tile_repairs(&repairs));
     }
@@ -713,6 +729,16 @@ mod tests {
             mapterhorn
                 .source_description(16, &used_zooms)
                 .contains("https://mapterhorn.com/attribution")
+        );
+        // The marine level's provenance depends on these labels; a height
+        // field built by any other path stays Unknown.
+        assert_eq!(mapzen.vertical_reference(), VerticalReference::Egm96);
+        assert_eq!(mapterhorn.vertical_reference(), VerticalReference::Egm2008);
+        assert_eq!(
+            HeightField::new(2, 2, vec![0.0; 4], "test")
+                .unwrap()
+                .vertical_reference,
+            VerticalReference::Unknown
         );
     }
 
