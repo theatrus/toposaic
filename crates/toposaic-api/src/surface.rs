@@ -736,6 +736,12 @@ pub fn apply_marine_water(
         resolved.elevation_m,
         spec.shares_tile_edges(),
     );
+    // A map with no water at all has no sea to explain; only a coastal
+    // map where the level touched nothing earns the "nothing flattened"
+    // note. Keeps every inland manifest free of marine noise.
+    if outcome.is_no_op() && !field.classes.contains(&SurfaceClass::Water) {
+        return;
+    }
     let mut note = format!(
         "marine water: flat surface, {} at {:+.2} m from {}",
         resolved.datum, resolved.elevation_m, resolved.source
@@ -2853,6 +2859,37 @@ mod tests {
         assert_eq!(world_cover_tile(-121.7603, 46.8523), "N45W123");
         assert_eq!(world_cover_tile(138.7274, 35.3606), "N33E138");
         assert_eq!(world_cover_tile(-1.0, -1.0), "S03W003");
+    }
+
+    /// Marine notes belong to maps with water in them. An inland map in
+    /// flat mode stays silent — no "nothing flattened" noise on every
+    /// mountain manifest — while a coastal one records what happened; and
+    /// the bathymetric mode, old setups included, never writes a word.
+    #[test]
+    fn marine_notes_stay_off_inland_and_bathymetric_manifests() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+
+        let inland_classes = vec![SurfaceClass::Rock; 16];
+        let mut field = SurfaceField::new(4, 4, inland_classes.clone(), "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![100.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field);
+        assert!(field.source.is_empty(), "inland map gained a marine note");
+
+        let mut coastal_classes = vec![SurfaceClass::Rock; 16];
+        coastal_classes[0] = SurfaceClass::Water;
+        let mut field = SurfaceField::new(4, 4, coastal_classes.clone(), "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![-2.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field);
+        assert!(field.source.contains("marine water: flat surface"));
+        assert!(heights.values_m.contains(&0.0));
+
+        spec.marine.geometry = toposaic_core::MarineGeometry::BathymetricRelief;
+        let mut field = SurfaceField::new(4, 4, coastal_classes, "").unwrap();
+        let mut heights = HeightField::new(4, 4, vec![-2.0; 16], "test").unwrap();
+        apply_marine_water(&spec, &mut heights, &mut field);
+        assert!(field.source.is_empty(), "bathymetric mode wrote a note");
+        assert!(heights.values_m.iter().all(|&value| value == -2.0));
     }
 
     /// The water gates judge printed angles, and this ratio is what turns
