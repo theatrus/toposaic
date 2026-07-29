@@ -56,7 +56,8 @@ pub(crate) fn build_preview(
                         && (spec.color_output.roads_enabled
                             || spec.color_output.rail_enabled
                             || spec.color_output.aerial_enabled
-                            || spec.color_output.ferry_enabled)
+                            || spec.color_output.ferry_enabled
+                            || spec.color_output.aviation.aviation_enabled)
                         && sample.class == SurfaceClass::Road)
                         || (spec.color_output.enabled
                             && spec.color_output.roads_enabled
@@ -65,6 +66,7 @@ pub(crate) fn build_preview(
                         || (spec.uses_rail_or_aerial() && sample.class == SurfaceClass::Rail)
                         || (spec.uses_aerial() && sample.class == SurfaceClass::Aerial)
                         || (spec.uses_ferry() && sample.class == SurfaceClass::Ferry)
+                        || (spec.uses_aviation() && sample.class == SurfaceClass::Aviation)
                 })
                 .map(|_| spec.color_output.road_height_mm)
                 .unwrap_or(0.0)
@@ -165,6 +167,12 @@ pub(crate) fn build_preview(
             preview["surface_palette"]["ferry"] = serde_json::json!(spec.color_output.ferry_color);
             preview["surface_coverage"]["ferry"] =
                 serde_json::json!(coverage[SurfaceClass::Ferry.material_index() as usize]);
+        }
+        if spec.uses_separate_aviation() {
+            preview["surface_palette"]["aviation"] =
+                serde_json::json!(spec.color_output.aviation.aviation_color);
+            preview["surface_coverage"]["aviation"] =
+                serde_json::json!(coverage[SurfaceClass::Aviation.material_index() as usize]);
         }
         preview["surface_source"] = serde_json::json!(field.source);
     }

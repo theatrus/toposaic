@@ -231,6 +231,16 @@ export const initialSpec: GenerationSpec = {
     bridge_thickness_mm: 1.2,
     minimum_patch_mm: 1.2,
     edge_bleed_mm: 0.4,
+    aviation_enabled: false,
+    aviation_runways_enabled: true,
+    aviation_taxiways_enabled: true,
+    aviation_aprons_enabled: true,
+    aviation_helipads_enabled: true,
+    aviation_style: "separate",
+    aviation_color: "#4A4E54",
+    aviation_height_mm: 0.2,
+    maximum_aviation_width_mm: 3,
+    aviation_detail_span_km: 12,
     class_borders: "smooth",
     border_smoothing_range_cells: 2.5,
     border_smoothing_nugget: 0.05,
@@ -374,7 +384,7 @@ export function automaticRoadDetail(groundSpanKm: number) {
 // Which class a drawn layer's lines land in. The surface classes the
 // preview reports are raw material indices, and several layers can share
 // one, so the legend has to resolve the same chain the backend does.
-export type LineClass = "road" | "rail" | "aerialway" | "ferry";
+export type LineClass = "road" | "rail" | "aerialway" | "ferry" | "aviation";
 
 // Mirrors GenerationSpec::rail_line_style in
 // crates/toposaic-core/src/spec.rs. It answers "how would railways look",
@@ -390,6 +400,14 @@ export function ferryLineClass(
   colorOutput: GenerationSpec["color_output"],
 ): LineClass {
   return colorOutput.ferry_style === "separate" ? "ferry" : "road";
+}
+
+// Mirrors GenerationSpec::aviation_line_style. Airport pavement either
+// takes its own color and slot, or prints as road and costs nothing.
+export function aviationLineClass(
+  colorOutput: GenerationSpec["color_output"],
+): LineClass {
+  return colorOutput.aviation_style === "separate" ? "aviation" : "road";
 }
 
 // Mirrors GenerationSpec::aerial_line_style. The chain is total: with

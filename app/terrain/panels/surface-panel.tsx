@@ -1,4 +1,5 @@
 import type { GenerationSpec } from "../contracts";
+import { SurfaceAirportSection } from "./surface-airport-section";
 import { SurfaceFerrySection } from "./surface-ferry-section";
 import { SurfaceRailSection } from "./surface-rail-section";
 import { SurfaceRoadSection } from "./surface-road-section";
@@ -49,6 +50,7 @@ export function SurfacePanel({
           <SurfaceRoadSection spec={spec} updateColor={updateColor} />
           <SurfaceRailSection spec={spec} updateColor={updateColor} />
           <SurfaceFerrySection spec={spec} updateColor={updateColor} />
+          <SurfaceAirportSection spec={spec} updateColor={updateColor} />
           <p className="color-note">
             WorldCover supplies land cover and permanent water. OpenStreetMap
             supplies waterways and transport lines. Snow is not live. Sides
