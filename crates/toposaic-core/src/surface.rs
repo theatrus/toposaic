@@ -53,6 +53,15 @@ pub struct SurfaceField {
     /// so mapped seas obey the same physics as land-cover water. Waterway
     /// lines never consult it: rivers really do run downhill.
     steep_water: Option<Vec<bool>>,
+    /// The resolved satellite ground palette and one material index per
+    /// raster sample into it, when a satellite ground mode discovered or
+    /// locked one. `None` — always, in mapped mode — leaves every consumer
+    /// on the class colors, byte for byte the pre-palette behavior. The
+    /// indices are raster-derived like the classes, so both sides of a
+    /// shared tile edge read the same lattice and agree without special
+    /// seam handling.
+    ground_palette: Option<crate::palette::GroundPalette>,
+    ground_materials: Option<Vec<u8>>,
 }
 
 /// One line's presence in one bucket: only the segments whose padded
@@ -247,7 +256,52 @@ impl SurfaceField {
             vector_line_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
             vector_area_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
             steep_water: None,
+            ground_palette: None,
+            ground_materials: None,
         })
+    }
+
+    /// Attaches a resolved ground palette and its per-sample material
+    /// indices. Indices point into the palette's entries;
+    /// [`crate::palette::NO_GROUND_MATERIAL`] marks samples without usable
+    /// imagery, which consumers paint with the mapped class color.
+    pub fn set_ground_palette(
+        &mut self,
+        palette: crate::palette::GroundPalette,
+        materials: Vec<u8>,
+    ) -> Result<()> {
+        if materials.len() != self.width * self.height {
+            bail!("ground material raster does not match the surface raster");
+        }
+        if let Some(out_of_range) = materials.iter().find(|&&index| {
+            index != crate::palette::NO_GROUND_MATERIAL
+                && usize::from(index) >= palette.entries.len()
+        }) {
+            bail!(
+                "ground material index {out_of_range} points outside the {}-entry palette",
+                palette.entries.len()
+            );
+        }
+        self.ground_palette = Some(palette);
+        self.ground_materials = Some(materials);
+        Ok(())
+    }
+
+    /// The resolved ground palette, when a satellite ground mode ran.
+    pub fn ground_palette(&self) -> Option<&crate::palette::GroundPalette> {
+        self.ground_palette.as_ref()
+    }
+
+    /// The ground material index of the nearest raster sample: `Some` index
+    /// into the palette's entries, or `None` when no palette ran or the
+    /// sample has no usable imagery — the callers' signal to fall back to
+    /// the mapped class color.
+    pub fn ground_material_at(&self, u: f32, v: f32) -> Option<u8> {
+        let materials = self.ground_materials.as_ref()?;
+        let x = (u.clamp(0.0, 1.0) * (self.width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (self.height - 1) as f32).round() as usize;
+        let index = materials[y * self.width + x];
+        (index != crate::palette::NO_GROUND_MATERIAL).then_some(index)
     }
 
     /// Captures the outer raster ring in clockwise order. Vector overlays are
@@ -2333,6 +2387,57 @@ mod tests {
             SurfaceClass::Rock,
             "the interior wall lost its gate"
         );
+    }
+
+    /// Ground materials answer by nearest raster sample, and samples the
+    /// imagery could not cover answer `None` so consumers fall back to the
+    /// mapped class color. A field that never saw a palette answers `None`
+    /// everywhere — the mapped mode's whole contract.
+    #[test]
+    fn ground_materials_read_by_nearest_sample_and_fall_back_where_imagery_is_missing() {
+        use crate::palette::{GroundPalette, GroundPaletteEntry, NO_GROUND_MATERIAL};
+        let size = 3;
+        let mut field =
+            SurfaceField::new(size, size, vec![SurfaceClass::Rock; size * size], "test").unwrap();
+        assert_eq!(field.ground_material_at(0.5, 0.5), None);
+        let palette = GroundPalette {
+            entries: vec![
+                GroundPaletteEntry {
+                    name: "ground 1".into(),
+                    color: "#AA3311".into(),
+                    share: 0.6,
+                    group: None,
+                },
+                GroundPaletteEntry {
+                    name: "ground 2".into(),
+                    color: "#EEDDCC".into(),
+                    share: 0.4,
+                    group: None,
+                },
+            ],
+            stretch: String::new(),
+        };
+        // Materials must match the raster and stay inside the palette.
+        assert!(
+            field
+                .clone()
+                .set_ground_palette(palette.clone(), vec![0; 4])
+                .is_err()
+        );
+        assert!(
+            field
+                .clone()
+                .set_ground_palette(palette.clone(), vec![2; size * size])
+                .is_err()
+        );
+        let mut materials = vec![0u8; size * size];
+        materials[4] = 1;
+        materials[8] = NO_GROUND_MATERIAL;
+        field.set_ground_palette(palette, materials).unwrap();
+        assert_eq!(field.ground_material_at(0.5, 0.5), Some(1));
+        assert_eq!(field.ground_material_at(0.0, 0.0), Some(0));
+        assert_eq!(field.ground_material_at(1.0, 1.0), None);
+        assert_eq!(field.ground_palette().unwrap().entries.len(), 2);
     }
 
     /// Pavement is built on land. Where OpenStreetMap places an apron and

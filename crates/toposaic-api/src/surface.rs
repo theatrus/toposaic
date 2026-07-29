@@ -14,15 +14,16 @@ use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
 use serde::Deserialize;
 use toposaic_core::{
-    ClassBorders, GenerationSpec, HeightField, LineStyle, MarkerKind, NativeClassGrid,
-    RailLifecycle, ResolvedRoadDetail, SlopeGates, SurfaceClass, SurfaceField,
+    ClassBorders, GenerationSpec, GroundColorMode, GroundImagery, GroundPaletteOptions,
+    HeightField, LineStyle, MarkerKind, NativeClassGrid, RailLifecycle, ResolvedRoadDetail,
+    SlopeGates, SurfaceClass, SurfaceField, assign_locked_palette, discover_ground_palette,
 };
 use tracing::warn;
 
 use crate::{
     cache,
     geo::{GeoBounds, GeoTransform, normalize_longitude},
-    http,
+    http, imagery,
 };
 
 const WORLD_COVER_BASE_URL: &str =
@@ -534,6 +535,12 @@ pub fn fetch_surface_field(
                 }
             }
         }
+        // After every raster pass: hybrid grouping reads the final classes,
+        // and imagery unavailability must degrade to exactly the mapped
+        // output above, so nothing after this point may depend on it.
+        if spec.color_output.ground_palette.ground_colors != GroundColorMode::Mapped {
+            resolve_ground_palette(spec, &transform, &mut field, map_cache_dir);
+        }
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
         match paint_roads_or_trails(
@@ -708,6 +715,112 @@ fn append_source(source: &mut String, addition: impl AsRef<str>) {
         source.push_str("; ");
     }
     source.push_str(addition.as_ref());
+}
+
+/// Discovers — or, when the spec locks one, assigns — the satellite ground
+/// palette and attaches it to the field. Every failure path leaves the
+/// field exactly as the mapped mode built it, with a source note saying
+/// why: a missing composite tile must never fail a generation the mapped
+/// classes can complete.
+fn resolve_ground_palette(
+    spec: &GenerationSpec,
+    transform: &GeoTransform,
+    field: &mut SurfaceField,
+    map_cache_dir: &Path,
+) {
+    let settings = &spec.color_output.ground_palette;
+    let raster = match imagery::fetch_ground_imagery(
+        transform,
+        field.width,
+        field.height,
+        &map_cache_dir.join("imagery"),
+    ) {
+        Ok(raster) => raster,
+        Err(error) => {
+            warn!(%error, "Sentinel-2 imagery unavailable; ground colors stay mapped");
+            append_source(
+                &mut field.source,
+                "Sentinel-2 imagery unavailable; ground colors stay mapped",
+            );
+            return;
+        }
+    };
+    let ground = GroundImagery {
+        width: raster.width,
+        height: raster.height,
+        rgbn: &raster.rgbn,
+        valid: &raster.valid,
+    };
+    let (mode, result) = match &settings.locked_ground_palette {
+        Some(locked) => (
+            "locked",
+            assign_locked_palette(&ground, locked, settings.ground_shadow_normalization),
+        ),
+        None => {
+            // Hybrid grouping reads the final raster classes, gates and
+            // smoothing included, so a demoted seawall clusters as the
+            // ground it prints as.
+            let groups =
+                (settings.ground_colors == GroundColorMode::Hybrid).then(|| field.classes.clone());
+            (
+                match settings.ground_colors {
+                    GroundColorMode::Hybrid => "hybrid",
+                    _ => "satellite",
+                },
+                discover_ground_palette(
+                    &ground,
+                    groups.as_deref(),
+                    &GroundPaletteOptions {
+                        color_count: settings.ground_color_count as usize,
+                        minimum_share: settings.ground_color_minimum_share,
+                        shadow_normalization: settings.ground_shadow_normalization,
+                    },
+                ),
+            )
+        }
+    };
+    let (palette, materials) = match result {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            warn!(%error, "ground palette discovery failed; ground colors stay mapped");
+            append_source(
+                &mut field.source,
+                "ground palette discovery failed; ground colors stay mapped",
+            );
+            return;
+        }
+    };
+    append_source(
+        &mut field.source,
+        imagery::imagery_source_note(&raster, &palette.stretch),
+    );
+    let summary = palette
+        .entries
+        .iter()
+        .map(|entry| format!("{} {} {:.1}%", entry.name, entry.color, entry.share * 100.0))
+        .collect::<Vec<_>>()
+        .join(", ");
+    append_source(
+        &mut field.source,
+        format!("ground palette ({mode}): {summary}"),
+    );
+    // Palette discovery must not run independently per super-tile: each
+    // tile would resolve its own colors and the seams would disagree. The
+    // lock is the cross-tile contract; until the grid wires it through,
+    // say so where a seam reader will look first.
+    if spec.shares_tile_edges() && settings.locked_ground_palette.is_none() {
+        append_source(
+            &mut field.source,
+            "WARNING: ground palette discovered for this tile alone; lock a palette so adjacent tiles share one",
+        );
+    }
+    if let Err(error) = field.set_ground_palette(palette, materials) {
+        warn!(%error, "discovered ground palette did not fit its field");
+        append_source(
+            &mut field.source,
+            "ground palette discarded: it did not fit its field",
+        );
+    }
 }
 
 /// Maps one latitude/longitude pair into the model's normalized UV square,
@@ -2604,7 +2717,7 @@ fn open_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<GeoTiffFil
 /// (a whole WorldCover tile is 36000 by 36000 pixels). `None`, meaning the
 /// base image, only when the file carries no readable overview at all.
 /// Entries are `(overview index, width, height)`.
-fn select_sampling_overview(
+pub(crate) fn select_sampling_overview(
     overviews: &[(usize, u32, u32)],
     base: (u32, u32),
     base_window: (usize, usize),
