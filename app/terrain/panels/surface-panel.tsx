@@ -5,7 +5,7 @@ import { SurfaceRailSection } from "./surface-rail-section";
 import { SurfaceRoadSection } from "./surface-road-section";
 import { SurfaceTerrainSection } from "./surface-terrain-section";
 import { SurfaceTrailSection } from "./surface-trail-section";
-import type { UpdateColor } from "./surface-types";
+import type { UpdateColor, UpdateMarine } from "./surface-types";
 import { SurfaceWaterSection } from "./surface-water-section";
 
 export function SurfacePanel({
@@ -15,6 +15,7 @@ export function SurfacePanel({
   spec,
   trailNotice,
   updateColor,
+  updateMarine,
 }: {
   hidden: boolean;
   importTrailFiles: (files: File[]) => Promise<void>;
@@ -22,6 +23,7 @@ export function SurfacePanel({
   spec: GenerationSpec;
   trailNotice: string | null;
   updateColor: UpdateColor;
+  updateMarine: UpdateMarine;
 }) {
   return (
     <fieldset
@@ -46,7 +48,11 @@ export function SurfacePanel({
       {spec.color_output.enabled && (
         <>
           <SurfaceTerrainSection spec={spec} updateColor={updateColor} />
-          <SurfaceWaterSection spec={spec} updateColor={updateColor} />
+          <SurfaceWaterSection
+            spec={spec}
+            updateColor={updateColor}
+            updateMarine={updateMarine}
+          />
           <SurfaceRoadSection spec={spec} updateColor={updateColor} />
           <SurfaceRailSection spec={spec} updateColor={updateColor} />
           <SurfaceFerrySection spec={spec} updateColor={updateColor} />

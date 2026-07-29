@@ -518,6 +518,19 @@ export function TerrainStudio() {
     },
     [],
   );
+  const updateMarine = useCallback(
+    <Key extends keyof GenerationSpec["marine"]>(
+      key: Key,
+      value: GenerationSpec["marine"][Key],
+    ) => {
+      setGeneratedPreview(null);
+      setSpec((current) => ({
+        ...current,
+        marine: { ...current.marine, [key]: value },
+      }));
+    },
+    [],
+  );
   const updateTray = useCallback(
     <Key extends keyof GenerationSpec["tray"]>(
       key: Key,
@@ -2295,6 +2308,7 @@ export function TerrainStudio() {
             spec={spec}
             trailNotice={trailNotice}
             updateColor={updateColor}
+            updateMarine={updateMarine}
           />
 
           <BuildingsPanel
