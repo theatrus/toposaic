@@ -184,6 +184,82 @@ mod tests {
     use super::*;
     use crate::spec::BuildingSpec;
 
+    /// The 3D preview has to show the pavement the generated model will
+    /// carry — same class, same color, and standing proud like a road —
+    /// or the preview is telling a different story from the print.
+    #[test]
+    fn the_preview_shows_airport_pavement_the_model_will_print() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_color = "#334455".into();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 4.0, SurfaceClass::Aviation);
+
+        let preview = build_preview(&spec, None, Some(&field), 16);
+        assert_eq!(preview["surface_palette"]["aviation"], "#334455");
+        assert!(
+            preview["surface_coverage"]["aviation"].as_f64().unwrap() > 0.0,
+            "the legend needs coverage to show the layer"
+        );
+
+        // The class indices the preview reports are SurfaceClass::ALL
+        // positions, so the runway must read as the aviation class.
+        let classes = preview["surface_classes"].as_array().unwrap();
+        let aviation_index = SurfaceClass::Aviation.material_index() as u64;
+        assert!(
+            classes
+                .iter()
+                .any(|class| class.as_u64() == Some(aviation_index)),
+            "no pavement in the preview classes"
+        );
+
+        // And it stands above the terrain, the way roads do.
+        let values = preview["values"].as_array().unwrap();
+        let raised = classes
+            .iter()
+            .zip(values)
+            .filter(|(class, _)| class.as_u64() == Some(aviation_index))
+            .map(|(_, value)| value.as_f64().unwrap())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let flat = classes
+            .iter()
+            .zip(values)
+            .filter(|(class, _)| class.as_u64() != Some(aviation_index))
+            .map(|(_, value)| value.as_f64().unwrap())
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            raised > flat,
+            "pavement should stand proud in the preview: {raised} vs {flat}"
+        );
+    }
+
+    /// Following the roads spends no filament slot, so the preview must not
+    /// offer an airport entry to a legend that will have no such color.
+    #[test]
+    fn the_preview_offers_no_airport_color_when_it_follows_the_roads() {
+        let mut spec = GenerationSpec {
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_style = crate::spec::AviationStyle::FollowRoads;
+
+        let field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        let preview = build_preview(&spec, None, Some(&field), 16);
+        assert!(preview["surface_palette"]["aviation"].is_null());
+    }
+
     #[test]
     fn height_preview_reports_elevation_bounds_and_frame_fit() {
         let spec = GenerationSpec {

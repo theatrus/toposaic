@@ -421,6 +421,57 @@ entry, and a layer that borrowed another's color is named by that entry instead
 layer drawn with roads appears under Route, whether or not roads themselves are
 switched on.
 
+## Airport surfaces
+
+Airport ground surfaces come from OpenStreetMap's `aeroway` scheme:
+runways, airstrips, and stopways; taxiways and taxilanes; aprons; and
+helipads. Each group switches on and off on its own, and all of them share
+one class, one color, and one filament slot — they are one printed surface
+to the eye and one filament in the slicer, so splitting them would spend
+spools on a distinction nobody asked for.
+
+The layer is off by default, unlike the other transport layers. An airport
+is something you go looking for, and a map that happens to clip the edge
+of one should not sprout a runway. Setups saved before the layer existed
+recall with it off for the same reason.
+
+Runways and taxiways arrive as centre lines, aprons and helipads as
+outlines, and OpenStreetMap carries both forms for the same pavement often
+enough that drawing both would paint it twice — once at its true shape and
+once as a ribbon down the middle. Where an explicit outline covers a
+centre line, the line is dropped. Outlines read closed ways and
+multipolygon relations, so an apron drawn around a terminal keeps the hole
+the terminal stands in, and an airport of several separate pavements stays
+several. `aeroway=aerodrome` is never drawn: that boundary is the whole
+airport, grass and car parks included.
+
+A mapped `width=*` is a measurement, so it converts through the model
+scale and takes no close-view boost — boosting it would print something
+other than what the data states. A line without one falls back to a real
+class figure (45 m for a code-E runway, 18 m for a code-C taxiway) and
+does take the boost, the rule roads follow. Both are capped by the
+maximum airport width, because a 60 m runway on a close view is a correct
+reading of the data and still wider than anyone wants across the model.
+
+Pavement is graded rather than draped. A runway is built to a steady
+gradient and is level across its width, so the terrain is read once along
+each centre line, smoothed enough to outlast DEM noise while keeping a
+real gradient, and every point of the ribbon takes the height of its own
+station. Points across the width share a station, which is what makes the
+cross-section level, and one height function covers the whole layer, so a
+taxiway meeting a runway and an apron meeting both agree where they touch.
+
+Roads and railways crossing an airport keep the ground they already had,
+and within the layer the strips go down before the aprons: a runway drawn
+across an apron reads as runway. Terminals and hangars carry `building=*`
+and stay in the building pipeline, in the building material, with the
+pavement keeping clear of them.
+
+Helipads are dropped past a ground span you set, before the request rather
+than after it, since a whole airport graph at an eighty-kilometre view is
+a mass of unprintable threads. Airport data is its own fetch under its own
+cache stem, so losing it costs only airports.
+
 ## Imported trails
 
 Hikers can import their own routes from GPX or KML files on the Surface tab.

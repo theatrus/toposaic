@@ -4144,6 +4144,83 @@ mod tests {
         assert_eq!(field.class_at(0.3, 0.3), SurfaceClass::Aviation);
     }
 
+    /// What makes an airport failure cost only airports: its own fetch,
+    /// under its own cache stem, from its own query. A layer sharing a
+    /// stem with another would take that other layer down with it, and a
+    /// layer sharing a query would serve one layer's response to another.
+    ///
+    /// The handling itself — warn, note it in the manifest, carry on — is
+    /// a match arm around this fetch in `build_surface_field`. There is no
+    /// Overpass mocking layer in this crate to force the failure with, so
+    /// what is pinned here is the separation the arm depends on.
+    #[test]
+    fn airport_data_is_fetched_apart_from_every_other_layer() {
+        let bounds = GeoBounds {
+            south: 47.4,
+            west: -122.4,
+            north: 47.5,
+            east: -122.2,
+        };
+        let stems = [
+            AVIATION_CACHE_PREFIX,
+            FERRY_CACHE_PREFIX,
+            "roads",
+            "water",
+            "buildings",
+        ];
+        let unique = stems.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), stems.len(), "two layers share a cache stem");
+
+        let aviation = aviation_query(
+            bounds,
+            AviationGroups {
+                runways: true,
+                taxiways: true,
+                aprons: true,
+                helipads: true,
+            },
+        );
+        for other in [
+            ferry_query(bounds),
+            water_query(bounds),
+            building_query(bounds),
+        ] {
+            assert_ne!(aviation, other, "two layers share a query");
+        }
+        // And nothing else asks for aeroway data, so no other layer's
+        // response can stand in for this one.
+        assert!(!ferry_query(bounds).contains("aeroway"));
+        assert!(!water_query(bounds).contains("aeroway"));
+        assert!(!building_query(bounds).contains("aeroway"));
+    }
+
+    /// Switching every group off asks for nothing at all, rather than
+    /// fetching an empty answer.
+    #[test]
+    fn no_groups_means_no_request() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_runways_enabled = false;
+        spec.color_output.aviation.aviation_taxiways_enabled = false;
+        spec.color_output.aviation.aviation_aprons_enabled = false;
+        spec.color_output.aviation.aviation_helipads_enabled = false;
+        assert!(!AviationGroups::from_spec(&spec).any());
+        assert!(!spec.uses_any_aviation_group());
+
+        // A cache directory that does not exist would fail any fetch, so
+        // reaching Ok proves nothing was fetched.
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "none").unwrap();
+        let counts = paint_aviation(
+            &spec,
+            bounds_for(&spec),
+            std::path::Path::new("/nonexistent/toposaic-test"),
+            &mut field,
+        )
+        .expect("no groups must not attempt a fetch");
+        assert_eq!(counts, AviationCounts::default());
+    }
+
     /// A multipolygon arrives as unordered member ways, each drawn in
     /// whichever direction its mapper chose. The ring has to come back
     /// whole regardless.
