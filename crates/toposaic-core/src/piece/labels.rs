@@ -316,8 +316,15 @@ fn append_shells(
         .iter()
         .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
     {
-        let shell: MeshBuilder =
-            build_polygon_shell(polygon, bottom, top, boundary_step_mm, material, context)?;
+        let shell: MeshBuilder = build_polygon_shell(
+            polygon,
+            bottom,
+            top,
+            boundary_step_mm,
+            None,
+            material,
+            context,
+        )?;
         mesh.append_isolated(shell);
     }
     Ok(())

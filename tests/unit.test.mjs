@@ -149,6 +149,56 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("setups saved before airport surfaces recall with them off", () => {
+  // The frontend half of the backend's serde defaults: a spec loaded from
+  // the database predates every aviation key, and the Colors tab reads
+  // aviation_color unconditionally. Without the merge it renders undefined
+  // and the whole panel throws.
+  const oldColorOutput = { ...initialSpec.color_output };
+  for (const key of Object.keys(oldColorOutput)) {
+    if (key.startsWith("aviation") || key === "maximum_aviation_width_mm") {
+      delete oldColorOutput[key];
+    }
+  }
+  const merged = mergeSpecDefaults({ color_output: oldColorOutput });
+  assert.equal(merged.color_output.aviation_enabled, false);
+  assert.equal(merged.color_output.aviation_color, "#4A4E54");
+  assert.equal(merged.color_output.aviation_height_mm, 0.2);
+  // The groups default on, so switching the layer on draws something.
+  assert.equal(merged.color_output.aviation_runways_enabled, true);
+});
+
+test("airport surfaces take one filament slot however many groups are on", () => {
+  const spec = structuredClone(initialSpec);
+  spec.color_output.enabled = true;
+  const withoutAirports = filamentSlotEntries(spec).length;
+
+  spec.color_output.aviation_enabled = true;
+  const entries = filamentSlotEntries(spec);
+  const airport = entries.filter((entry) => entry.classKey === "aviation");
+  assert.equal(airport.length, 1, "one entry for every aeroway group");
+  assert.equal(entries.length, withoutAirports + 1);
+  assert.equal(airport[0].label, "Airport surface");
+
+  // Turning groups off one at a time keeps the single slot until the last
+  // one goes, and then it costs nothing.
+  spec.color_output.aviation_taxiways_enabled = false;
+  spec.color_output.aviation_aprons_enabled = false;
+  spec.color_output.aviation_helipads_enabled = false;
+  assert.equal(
+    filamentSlotEntries(spec).filter((entry) => entry.classKey === "aviation")
+      .length,
+    1,
+  );
+  spec.color_output.aviation_runways_enabled = false;
+  assert.equal(filamentSlotEntries(spec).length, withoutAirports);
+
+  // And following the roads spends no slot of its own.
+  spec.color_output.aviation_runways_enabled = true;
+  spec.color_output.aviation_style = "follow_roads";
+  assert.equal(filamentSlotEntries(spec).length, withoutAirports);
+});
+
 test("filament slots number the palette and reorder without loss", () => {
   const spec = structuredClone(initialSpec);
   spec.color_output.enabled = true;

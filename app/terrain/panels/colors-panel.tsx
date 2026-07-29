@@ -134,6 +134,7 @@ export function ColorsPanel({
     ["Railway", spec.color_output.rail_color],
     ["Aerial lift", spec.color_output.aerial_color],
     ["Ferry", spec.color_output.ferry_color],
+    ["Airport surface", spec.color_output.aviation_color],
     ["Building", spec.color_output.building_color],
     ["Map marker", spec.marker_settings.color],
     ["Display base", spec.tray.tray_color],
@@ -317,6 +318,11 @@ export function ColorsPanel({
           label="Ferry"
           value={spec.color_output.ferry_color}
           onChange={(value) => updateColor("ferry_color", value)}
+        />
+        <HexColorField
+          label="Airport surface"
+          value={spec.color_output.aviation_color}
+          onChange={(value) => updateColor("aviation_color", value)}
         />
       </ColorGroup>
 

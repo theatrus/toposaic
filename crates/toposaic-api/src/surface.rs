@@ -96,6 +96,21 @@ const GONE_LIFECYCLE_PREFIXES: [&str; 6] = [
 /// Narrowest line any overlay prints. Below roughly one nozzle width a line
 /// stops being reliably extruded, so every width scale bottoms out here.
 const MINIMUM_LINE_WIDTH_MM: f32 = 0.4;
+/// Cache stem for airport surfaces. Its own and versioned, so switching a
+/// group on re-asks rather than serving a response fetched for a narrower
+/// set of groups.
+const AVIATION_CACHE_PREFIX: &str = "aeroway-v2";
+/// Linear `aeroway=*` values drawn as centre lines with a width.
+const AVIATION_STRIP_WAYS: &str = "runway|airstrip";
+const AVIATION_TAXI_WAYS: &str = "taxiway|taxilane";
+/// Working widths for aeroway lines whose OSM way carries no usable
+/// `width=*`. Real figures rather than guesses: an ICAO code-E runway is
+/// 45 m, a code-C taxiway 18 m, and a light-aircraft strip about 18 m.
+/// Stopways match the runway they extend.
+const RUNWAY_FALLBACK_WIDTH_M: f32 = 45.0;
+const AIRSTRIP_FALLBACK_WIDTH_M: f32 = 18.0;
+const TAXIWAY_FALLBACK_WIDTH_M: f32 = 18.0;
+const TAXILANE_FALLBACK_WIDTH_M: f32 = 10.5;
 /// Cache stem for the ferry layer. Its own, so switching ferries on never
 /// re-downloads a neighbouring layer.
 const FERRY_CACHE_PREFIX: &str = "ferry-v1";
@@ -124,15 +139,36 @@ struct OverpassResponse {
     remark: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct OverpassWay {
     /// OpenStreetMap way id. Overpass returns each query's ways in ascending
     /// id order, so this is what lets two separate fetches be merged back
     /// into the order one combined query would have produced.
     #[serde(default)]
     id: u64,
+    /// `way` or `relation`. Absent from every cached response written before
+    /// aeroway areas needed relations, which is why it defaults rather than
+    /// being required: an old cache entry is a way, as it always was.
+    #[serde(rename = "type", default)]
+    element_type: String,
     #[serde(default)]
     tags: HashMap<String, String>,
+    #[serde(default)]
+    geometry: Vec<OverpassPoint>,
+    /// Set only on relations. `out geom` gives each member its own
+    /// coordinates, so a multipolygon arrives complete in one response.
+    #[serde(default)]
+    members: Vec<OverpassMember>,
+}
+
+/// One member way of a multipolygon relation.
+#[derive(Debug, Default, Deserialize)]
+struct OverpassMember {
+    /// `outer` or `inner`. Anything else is not part of the surface.
+    #[serde(default)]
+    role: String,
+    #[serde(rename = "type", default)]
+    member_type: String,
     #[serde(default)]
     geometry: Vec<OverpassPoint>,
 }
@@ -567,6 +603,36 @@ pub fn fetch_surface_field(
             }
         }
     }
+    if spec.uses_any_aviation_group() {
+        match paint_aviation(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+            Ok(counts) => append_source(
+                &mut field.source,
+                format!(
+                    "airport surfaces: {} lines and {} areas ({} from multipolygon relations,                      {} holes kept) from OpenStreetMap via Overpass API; drawn in the {}                      color; {} mapped and {} fallback widths; suppressed {} centre lines                      covered by an outline; skipped {} tunnelled and {} unusable ways;                      aeroway/area:aeroway, aerodrome boundaries excluded;                      © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                    counts.lines,
+                    counts.areas,
+                    counts.relations,
+                    counts.holes,
+                    line_style_color_name(spec.aviation_line_style()),
+                    counts.mapped_widths,
+                    counts.fallback_widths,
+                    counts.duplicate_lines,
+                    counts.tunnel_skipped,
+                    counts.invalid_skipped,
+                ),
+            ),
+            Err(error) => {
+                // Airports are their own fetch, so losing them costs only
+                // airports: roads, rail, water, and buildings are already
+                // painted and stay.
+                warn!(%error, "OpenStreetMap airport surfaces unavailable; omitting them");
+                append_source(
+                    &mut field.source,
+                    "OpenStreetMap airport surfaces unavailable; airport overlay omitted",
+                );
+            }
+        }
+    }
     if !spec.trails.is_empty() {
         let painted = paint_imported_trails(spec, &mut field);
         append_source(
@@ -874,6 +940,403 @@ fn paint_ferries(
         drawn += 1;
     }
     Ok(drawn)
+}
+
+/// Which aeroway groups a fetch should ask for. Kept apart from the spec so
+/// the query, the cache key, and the tests all read the same set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AviationGroups {
+    runways: bool,
+    taxiways: bool,
+    aprons: bool,
+    helipads: bool,
+}
+
+impl AviationGroups {
+    fn from_spec(spec: &GenerationSpec) -> Self {
+        let aviation = &spec.color_output.aviation;
+        // The small features are dropped before the request, not after it:
+        // a wide view would otherwise download an entire airport graph to
+        // throw it away.
+        let dense = spec.uses_dense_aviation_detail();
+        Self {
+            runways: aviation.aviation_runways_enabled,
+            taxiways: aviation.aviation_taxiways_enabled,
+            aprons: aviation.aviation_aprons_enabled,
+            helipads: aviation.aviation_helipads_enabled && dense,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.runways || self.taxiways || self.aprons || self.helipads
+    }
+}
+
+/// One piece of airport pavement drawn as an outline, with any rings cut
+/// out of it.
+struct AviationArea {
+    shell: Vec<[f32; 2]>,
+    holes: Vec<Vec<[f32; 2]>>,
+}
+
+/// What one aviation fetch drew, for the manifest.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AviationCounts {
+    lines: usize,
+    areas: usize,
+    /// Rings cut out of an area — a terminal inside an apron, say.
+    holes: usize,
+    relations: usize,
+    /// Lines whose printed width came from a mapped `width=*`...
+    mapped_widths: usize,
+    /// ...and lines that fell back to a class default.
+    fallback_widths: usize,
+    /// Centre lines dropped because an explicit area covers the same
+    /// pavement.
+    duplicate_lines: usize,
+    tunnel_skipped: usize,
+    /// Ways and relations whose geometry could not be used: too few points,
+    /// or rings that would not close.
+    invalid_skipped: usize,
+}
+
+fn aviation_query(bounds: GeoBounds, groups: AviationGroups) -> String {
+    let mut selectors = String::new();
+    for bounds in bounds.split_at_antimeridian() {
+        let box_filter = format!(
+            "({south:.7},{west:.7},{north:.7},{east:.7})",
+            south = bounds.south,
+            west = bounds.west,
+            north = bounds.north,
+            east = bounds.east,
+        );
+        if groups.runways {
+            // Centre lines, and the explicit area outlines that supersede
+            // them where a mapper drew both.
+            selectors.push_str(&format!(
+                "way[\"aeroway\"~\"^({AVIATION_STRIP_WAYS}|stopway)$\"]{box_filter};"
+            ));
+            selectors.push_str(&format!("way[\"area:aeroway\"=\"runway\"]{box_filter};"));
+            selectors.push_str(&format!(
+                "relation[\"area:aeroway\"=\"runway\"]{box_filter};"
+            ));
+        }
+        if groups.taxiways {
+            selectors.push_str(&format!(
+                "way[\"aeroway\"~\"^({AVIATION_TAXI_WAYS})$\"]{box_filter};"
+            ));
+            selectors.push_str(&format!("way[\"area:aeroway\"=\"taxiway\"]{box_filter};"));
+            selectors.push_str(&format!(
+                "relation[\"area:aeroway\"=\"taxiway\"]{box_filter};"
+            ));
+        }
+        if groups.aprons {
+            selectors.push_str(&format!("way[\"aeroway\"=\"apron\"]{box_filter};"));
+            selectors.push_str(&format!("relation[\"aeroway\"=\"apron\"]{box_filter};"));
+        }
+        if groups.helipads {
+            selectors.push_str(&format!("way[\"aeroway\"=\"helipad\"]{box_filter};"));
+            selectors.push_str(&format!("relation[\"aeroway\"=\"helipad\"]{box_filter};"));
+        }
+    }
+    // `aeroway=aerodrome` is deliberately absent. Its boundary is the whole
+    // airport including grass, car parks, and fields; painting it would put
+    // pavement over most of a map that happens to contain an airport.
+    format!("[out:json][timeout:60];({selectors});out tags geom;")
+}
+
+/// The physical width of a linear aeroway, and whether it was mapped.
+fn aviation_fallback_width_m(tags: &HashMap<String, String>) -> Option<f32> {
+    match tags.get("aeroway")?.as_str() {
+        "runway" | "stopway" => Some(RUNWAY_FALLBACK_WIDTH_M),
+        "airstrip" => Some(AIRSTRIP_FALLBACK_WIDTH_M),
+        "taxiway" => Some(TAXIWAY_FALLBACK_WIDTH_M),
+        "taxilane" => Some(TAXILANE_FALLBACK_WIDTH_M),
+        _ => None,
+    }
+}
+
+/// A printed width for one aeroway line.
+///
+/// A mapped `width=*` is a physical measurement, so it converts through the
+/// model scale and takes no close-view boost: boosting it would print
+/// something other than the width the data states. An unmapped line falls
+/// back to a class figure, which is an estimate and does take the boost, the
+/// same rule roads follow.
+fn aviation_line_width_mm(
+    spec: &GenerationSpec,
+    tags: &HashMap<String, String>,
+    mapped_width_m: Option<f32>,
+) -> f32 {
+    let maximum = spec
+        .color_output
+        .aviation
+        .maximum_aviation_width_mm
+        .max(MINIMUM_LINE_WIDTH_MM);
+    let scale = spec.width_mm / (spec.ground_span_km as f32 * 1_000.0);
+    match mapped_width_m {
+        Some(width_m) => (width_m * scale).clamp(MINIMUM_LINE_WIDTH_MM, maximum),
+        None => {
+            let fallback_m = aviation_fallback_width_m(tags).unwrap_or(TAXIWAY_FALLBACK_WIDTH_M);
+            (fallback_m * scale * spec.close_view_line_scale())
+                .clamp(MINIMUM_LINE_WIDTH_MM, maximum)
+        }
+    }
+}
+
+/// Whether a tag set describes pavement drawn as an area rather than a line.
+fn is_aviation_area(tags: &HashMap<String, String>) -> bool {
+    if tags.contains_key("area:aeroway") {
+        return true;
+    }
+    match tags.get("aeroway").map(String::as_str) {
+        Some("apron" | "helipad") => true,
+        // A runway or taxiway way tagged `area=yes` is its outline, not its
+        // centre line.
+        Some(_) => tags.get("area").map(String::as_str) == Some("yes"),
+        None => false,
+    }
+}
+
+/// Chains relation member ways into closed rings.
+///
+/// Overpass hands back a multipolygon as its member ways, in no particular
+/// order and each running in whichever direction it was drawn. A ring is
+/// recovered by walking from one segment to whichever unused segment starts
+/// or ends where it left off. Segments that never close a ring are dropped:
+/// a partial outline is not an area, and painting it would fill an
+/// arbitrary shape.
+fn assemble_rings(segments: Vec<Vec<[f64; 2]>>) -> (Vec<Vec<[f64; 2]>>, usize) {
+    /// Roughly a centimetre of latitude. Members that share a node echo the
+    /// same coordinates, so this only has to survive float formatting.
+    const JOIN_TOLERANCE_DEG: f64 = 1e-7;
+    fn joins(a: [f64; 2], b: [f64; 2]) -> bool {
+        (a[0] - b[0]).abs() <= JOIN_TOLERANCE_DEG && (a[1] - b[1]).abs() <= JOIN_TOLERANCE_DEG
+    }
+
+    let mut pending: Vec<Vec<[f64; 2]>> = segments.into_iter().filter(|s| s.len() >= 2).collect();
+    let mut rings = Vec::new();
+    let mut dropped = 0;
+    while let Some(mut ring) = pending.pop() {
+        loop {
+            if ring.len() >= 4 && joins(ring[0], ring[ring.len() - 1]) {
+                ring.pop();
+                rings.push(ring);
+                break;
+            }
+            let end = ring[ring.len() - 1];
+            let next = pending.iter().position(|segment| {
+                joins(segment[0], end) || joins(segment[segment.len() - 1], end)
+            });
+            let Some(index) = next else {
+                // Nothing continues this chain, so it is not a ring.
+                dropped += 1;
+                break;
+            };
+            let mut segment = pending.remove(index);
+            if !joins(segment[0], end) {
+                segment.reverse();
+            }
+            segment.remove(0);
+            ring.extend(segment);
+        }
+    }
+    (rings, dropped)
+}
+
+/// Draws airport ground surfaces onto the field.
+///
+/// Areas are collected before lines so an explicit outline can suppress the
+/// centre line running through it: OpenStreetMap often carries both for the
+/// same runway, and drawing both paints the pavement twice — once at its
+/// real outline and once as a ribbon of guessed width down the middle.
+fn paint_aviation(
+    spec: &GenerationSpec,
+    bounds: GeoBounds,
+    cache_dir: &Path,
+    field: &mut SurfaceField,
+) -> Result<AviationCounts> {
+    let groups = AviationGroups::from_spec(spec);
+    if !groups.any() {
+        return Ok(AviationCounts::default());
+    }
+    let response = fetch_osm_response(
+        cache_dir,
+        AVIATION_CACHE_PREFIX,
+        aviation_query(bounds, groups),
+    )?;
+    Ok(paint_aviation_elements(spec, field, response))
+}
+
+/// The geometry half of [`paint_aviation`], apart from the fetch so it can
+/// be driven from a fixture response.
+fn paint_aviation_elements(
+    spec: &GenerationSpec,
+    field: &mut SurfaceField,
+    response: OverpassResponse,
+) -> AviationCounts {
+    let mut counts = AviationCounts::default();
+    let transform = transform_for(spec);
+    let class = spec.aviation_line_style().class;
+    let mut areas: Vec<AviationArea> = Vec::new();
+    let mut lines: Vec<(Vec<[f32; 2]>, f32, bool)> = Vec::new();
+
+    for element in &response.elements {
+        if is_tunnel(&element.tags) {
+            counts.tunnel_skipped += 1;
+            continue;
+        }
+        if element.element_type == "relation" {
+            let mut outer = Vec::new();
+            let mut inner = Vec::new();
+            for member in &element.members {
+                if member.member_type != "way" || member.geometry.len() < 2 {
+                    continue;
+                }
+                let points = member
+                    .geometry
+                    .iter()
+                    .map(|point| [point.lat, point.lon])
+                    .collect::<Vec<_>>();
+                match member.role.as_str() {
+                    "outer" => outer.push(points),
+                    "inner" => inner.push(points),
+                    _ => {}
+                }
+            }
+            let (outer_rings, outer_dropped) = assemble_rings(outer);
+            let (inner_rings, inner_dropped) = assemble_rings(inner);
+            counts.invalid_skipped += outer_dropped + inner_dropped;
+            if outer_rings.is_empty() {
+                continue;
+            }
+            counts.relations += 1;
+            let holes = inner_rings
+                .iter()
+                .map(|ring| normalized_ring(ring, transform))
+                .collect::<Vec<_>>();
+            for ring in &outer_rings {
+                // Islands each stand on their own; the holes belong to
+                // whichever island encloses them, and a hole outside every
+                // island simply never matches.
+                let shell = normalized_ring(ring, transform);
+                let owned = holes
+                    .iter()
+                    .filter(|hole| ring_contains(&shell, hole))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                counts.holes += owned.len();
+                areas.push(AviationArea {
+                    shell,
+                    holes: owned,
+                });
+            }
+            continue;
+        }
+
+        if is_aviation_area(&element.tags) {
+            if element.geometry.len() < 4 {
+                counts.invalid_skipped += 1;
+                continue;
+            }
+            let mut ring = normalized_osm_points(element, transform);
+            // A closed way repeats its first node; the ring does not want it.
+            if ring.len() >= 2 && ring[0] == ring[ring.len() - 1] {
+                ring.pop();
+            }
+            if ring.len() < 3 {
+                counts.invalid_skipped += 1;
+                continue;
+            }
+            areas.push(AviationArea {
+                shell: ring,
+                holes: Vec::new(),
+            });
+            continue;
+        }
+
+        if element.geometry.len() < 2 {
+            counts.invalid_skipped += 1;
+            continue;
+        }
+        let mapped_width_m = osm_width_m(&element.tags);
+        lines.push((
+            normalized_osm_points(element, transform),
+            aviation_line_width_mm(spec, &element.tags, mapped_width_m),
+            mapped_width_m.is_some(),
+        ));
+    }
+
+    for area in &areas {
+        field.paint_surface_area_with_holes(&area.shell, &area.holes, class);
+        counts.areas += 1;
+    }
+    for (points, width_mm, mapped) in lines {
+        // An explicit outline already covers this pavement at its true
+        // shape, so the centre line through it would paint the same surface
+        // a second time at a guessed width.
+        //
+        // Every point has to be covered, deliberately. A looser rule would
+        // catch the case where a mapper drew the outline a little tighter
+        // than the line, but it would also delete a taxiway that merely runs
+        // most of its length across an apron. Failing to suppress costs a
+        // ribbon of the wrong width showing through pavement that is cut
+        // back around it — visible, but nothing is lost; deleting a real
+        // taxiway loses it outright.
+        let covered = points.iter().all(|point| {
+            areas.iter().any(|area| {
+                point_inside_ring(&area.shell, *point)
+                    && !area
+                        .holes
+                        .iter()
+                        .any(|hole| point_inside_ring(hole, *point))
+            })
+        });
+        if covered {
+            counts.duplicate_lines += 1;
+            continue;
+        }
+        field.paint_polyline(&points, spec.width_mm, width_mm, class);
+        counts.lines += 1;
+        if mapped {
+            counts.mapped_widths += 1;
+        } else {
+            counts.fallback_widths += 1;
+        }
+    }
+    counts
+}
+
+fn normalized_ring(ring: &[[f64; 2]], transform: GeoTransform) -> Vec<[f32; 2]> {
+    ring.iter()
+        .map(|point| normalized_map_point(point[0], point[1], transform))
+        .collect()
+}
+
+/// Whether every point of `inner` lies inside `outer`.
+fn ring_contains(outer: &[[f32; 2]], inner: &[[f32; 2]]) -> bool {
+    !inner.is_empty() && inner.iter().all(|point| point_inside_ring(outer, *point))
+}
+
+/// Even-odd point-in-polygon on a closed ring given without its repeated
+/// first point.
+fn point_inside_ring(ring: &[[f32; 2]], point: [f32; 2]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a[1] > point[1]) != (b[1] > point[1]) {
+            let span = b[1] - a[1];
+            if span != 0.0 && point[0] < a[0] + (point[1] - a[1]) / span * (b[0] - a[0]) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 fn ferry_query(bounds: GeoBounds) -> String {
@@ -2625,6 +3088,7 @@ mod tests {
                         lon: bounds.east,
                     },
                 ],
+                ..Default::default()
             }],
             remark: None,
         };
@@ -2668,6 +3132,7 @@ mod tests {
                     lon: bounds.east,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -3506,6 +3971,422 @@ mod tests {
         assert!(error.to_string().contains("incomplete buildings data"));
         assert!(error.to_string().contains("Query timed out"));
         assert!(parse_osm_response(br#"{"elements":[]}"#, "buildings").is_ok());
+    }
+
+    fn aviation_spec() -> GenerationSpec {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            ground_span_km: 2.0,
+            rows: 2,
+            columns: 2,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.enabled = true;
+        spec.color_output.aviation.aviation_enabled = true;
+        spec
+    }
+
+    fn aeroway_way(tags: &[(&str, &str)], points: &[[f64; 2]]) -> OverpassWay {
+        OverpassWay {
+            id: 1,
+            element_type: "way".into(),
+            tags: tags
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            geometry: points
+                .iter()
+                .map(|point| OverpassPoint {
+                    lat: point[0],
+                    lon: point[1],
+                })
+                .collect(),
+            members: Vec::new(),
+        }
+    }
+
+    /// A mapper who drew both an outline and the centre line through it
+    /// meant one runway, not two. Painting both puts the pavement down
+    /// twice — once at its real shape, once as a guessed-width ribbon.
+    #[test]
+    fn an_area_outline_suppresses_the_centre_line_inside_it() {
+        let spec = aviation_spec();
+        let bounds = bounds_for(&spec);
+        let mid_lat = (bounds.south + bounds.north) * 0.5;
+        let inset_lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
+        let inset_lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
+
+        let outline = aeroway_way(
+            &[("area:aeroway", "runway")],
+            &[
+                [inset_lat(0.4), inset_lon(0.1)],
+                [inset_lat(0.4), inset_lon(0.9)],
+                [inset_lat(0.6), inset_lon(0.9)],
+                [inset_lat(0.6), inset_lon(0.1)],
+                [inset_lat(0.4), inset_lon(0.1)],
+            ],
+        );
+        let centre_line = aeroway_way(
+            &[("aeroway", "runway")],
+            &[[mid_lat, inset_lon(0.2)], [mid_lat, inset_lon(0.8)]],
+        );
+        // A taxiway well outside the outline is not a duplicate.
+        let taxiway = aeroway_way(
+            &[("aeroway", "taxiway")],
+            &[
+                [inset_lat(0.85), inset_lon(0.2)],
+                [inset_lat(0.85), inset_lon(0.8)],
+            ],
+        );
+
+        let mut field =
+            SurfaceField::new(32, 32, vec![SurfaceClass::Rock; 1024], "aeroway").unwrap();
+        let counts = paint_aviation_elements(
+            &spec,
+            &mut field,
+            OverpassResponse {
+                elements: vec![outline, centre_line, taxiway],
+                remark: None,
+            },
+        );
+        assert_eq!(counts.areas, 1);
+        assert_eq!(
+            counts.duplicate_lines, 1,
+            "the covered runway line is dropped"
+        );
+        assert_eq!(counts.lines, 1, "the taxiway outside it still draws");
+    }
+
+    /// An apron drawn around a terminal is apron everywhere except where
+    /// the terminal stands. Filling the hole would bury the building.
+    #[test]
+    fn a_multipolygon_apron_keeps_its_hole() {
+        let spec = aviation_spec();
+        let bounds = bounds_for(&spec);
+        let lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
+        let lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
+        let ring = |corners: [(f64, f64); 4]| OverpassMember {
+            role: String::new(),
+            member_type: "way".into(),
+            geometry: corners
+                .iter()
+                .chain(std::iter::once(&corners[0]))
+                .map(|(a, o)| OverpassPoint {
+                    lat: lat(*a),
+                    lon: lon(*o),
+                })
+                .collect(),
+        };
+        let mut outer = ring([(0.1, 0.1), (0.1, 0.9), (0.9, 0.9), (0.9, 0.1)]);
+        outer.role = "outer".into();
+        let mut inner = ring([(0.4, 0.4), (0.4, 0.6), (0.6, 0.6), (0.6, 0.4)]);
+        inner.role = "inner".into();
+
+        let relation = OverpassWay {
+            id: 7,
+            element_type: "relation".into(),
+            tags: HashMap::from([("aeroway".to_string(), "apron".to_string())]),
+            geometry: Vec::new(),
+            members: vec![outer, inner],
+        };
+
+        let mut field =
+            SurfaceField::new(64, 64, vec![SurfaceClass::Rock; 4096], "aeroway").unwrap();
+        let counts = paint_aviation_elements(
+            &spec,
+            &mut field,
+            OverpassResponse {
+                elements: vec![relation],
+                remark: None,
+            },
+        );
+        assert_eq!(counts.relations, 1);
+        assert_eq!(counts.areas, 1);
+        assert_eq!(counts.holes, 1, "the inner ring is kept as a hole");
+
+        // Pavement on the apron, bare ground in the hole it cuts.
+        assert_eq!(field.class_at(0.2, 0.5), SurfaceClass::Aviation);
+        assert_eq!(
+            field.class_at(0.5, 0.5),
+            SurfaceClass::Rock,
+            "the hole must not be paved over"
+        );
+    }
+
+    /// Lines and areas both reach the field from one response.
+    #[test]
+    fn aeroway_lines_and_areas_both_paint() {
+        let spec = aviation_spec();
+        let bounds = bounds_for(&spec);
+        let lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
+        let lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
+        let apron = aeroway_way(
+            &[("aeroway", "apron")],
+            &[
+                [lat(0.2), lon(0.2)],
+                [lat(0.2), lon(0.8)],
+                [lat(0.8), lon(0.8)],
+                [lat(0.8), lon(0.2)],
+                [lat(0.2), lon(0.2)],
+            ],
+        );
+        let runway = aeroway_way(
+            &[("aeroway", "runway"), ("width", "45")],
+            &[[lat(0.5), lon(0.05)], [lat(0.5), lon(0.95)]],
+        );
+
+        let mut field =
+            SurfaceField::new(64, 64, vec![SurfaceClass::Forest; 4096], "aeroway").unwrap();
+        paint_aviation_elements(
+            &spec,
+            &mut field,
+            OverpassResponse {
+                elements: vec![apron, runway],
+                remark: None,
+            },
+        );
+        // Both features paint; the terrain sampler's own view of them is
+        // pinned in toposaic-core, where the priority chain lives.
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Aviation);
+        assert_eq!(field.class_at(0.3, 0.3), SurfaceClass::Aviation);
+    }
+
+    /// What makes an airport failure cost only airports: its own fetch,
+    /// under its own cache stem, from its own query. A layer sharing a
+    /// stem with another would take that other layer down with it, and a
+    /// layer sharing a query would serve one layer's response to another.
+    ///
+    /// The handling itself — warn, note it in the manifest, carry on — is
+    /// a match arm around this fetch in `build_surface_field`. There is no
+    /// Overpass mocking layer in this crate to force the failure with, so
+    /// what is pinned here is the separation the arm depends on.
+    #[test]
+    fn airport_data_is_fetched_apart_from_every_other_layer() {
+        let bounds = GeoBounds {
+            south: 47.4,
+            west: -122.4,
+            north: 47.5,
+            east: -122.2,
+        };
+        let stems = [
+            AVIATION_CACHE_PREFIX,
+            FERRY_CACHE_PREFIX,
+            "roads",
+            "water",
+            "buildings",
+        ];
+        let unique = stems.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), stems.len(), "two layers share a cache stem");
+
+        let aviation = aviation_query(
+            bounds,
+            AviationGroups {
+                runways: true,
+                taxiways: true,
+                aprons: true,
+                helipads: true,
+            },
+        );
+        for other in [
+            ferry_query(bounds),
+            water_query(bounds),
+            building_query(bounds),
+        ] {
+            assert_ne!(aviation, other, "two layers share a query");
+        }
+        // And nothing else asks for aeroway data, so no other layer's
+        // response can stand in for this one.
+        assert!(!ferry_query(bounds).contains("aeroway"));
+        assert!(!water_query(bounds).contains("aeroway"));
+        assert!(!building_query(bounds).contains("aeroway"));
+    }
+
+    /// Switching every group off asks for nothing at all, rather than
+    /// fetching an empty answer.
+    #[test]
+    fn no_groups_means_no_request() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.color_output.aviation.aviation_runways_enabled = false;
+        spec.color_output.aviation.aviation_taxiways_enabled = false;
+        spec.color_output.aviation.aviation_aprons_enabled = false;
+        spec.color_output.aviation.aviation_helipads_enabled = false;
+        assert!(!AviationGroups::from_spec(&spec).any());
+        assert!(!spec.uses_any_aviation_group());
+
+        // A cache directory that does not exist would fail any fetch, so
+        // reaching Ok proves nothing was fetched.
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "none").unwrap();
+        let counts = paint_aviation(
+            &spec,
+            bounds_for(&spec),
+            std::path::Path::new("/nonexistent/toposaic-test"),
+            &mut field,
+        )
+        .expect("no groups must not attempt a fetch");
+        assert_eq!(counts, AviationCounts::default());
+    }
+
+    /// A multipolygon arrives as unordered member ways, each drawn in
+    /// whichever direction its mapper chose. The ring has to come back
+    /// whole regardless.
+    #[test]
+    fn relation_members_assemble_into_rings_in_any_order_or_direction() {
+        // A unit square, cut into four segments, shuffled, and with two of
+        // them reversed.
+        let segments = vec![
+            vec![[1.0, 1.0], [0.0, 1.0]],
+            vec![[0.0, 0.0], [1.0, 0.0]],
+            vec![[0.0, 1.0], [0.0, 0.0]],
+            vec![[1.0, 0.0], [1.0, 1.0]],
+        ];
+        let (rings, dropped) = assemble_rings(segments);
+        assert_eq!(dropped, 0);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].len(), 4, "closed ring drops its repeated point");
+        for corner in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+            assert!(rings[0].contains(&corner), "ring lost {corner:?}");
+        }
+    }
+
+    /// Two separate islands in one relation stay two rings, and an outline
+    /// that never closes is dropped rather than painted as some arbitrary
+    /// shape.
+    #[test]
+    fn assembly_keeps_islands_apart_and_drops_open_outlines() {
+        let segments = vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
+            vec![[5.0, 5.0], [6.0, 5.0], [6.0, 6.0], [5.0, 6.0], [5.0, 5.0]],
+            vec![[9.0, 9.0], [9.5, 9.0]],
+        ];
+        let (rings, dropped) = assemble_rings(segments);
+        assert_eq!(rings.len(), 2, "two islands");
+        assert_eq!(dropped, 1, "the open chain is not a ring");
+    }
+
+    /// The query asks only for what is switched on, never for the
+    /// aerodrome boundary, and asks for relations wherever areas are
+    /// possible.
+    #[test]
+    fn the_aeroway_query_follows_the_enabled_groups() {
+        let bounds = GeoBounds {
+            south: 47.4,
+            west: -122.4,
+            north: 47.5,
+            east: -122.2,
+        };
+        let all = aviation_query(
+            bounds,
+            AviationGroups {
+                runways: true,
+                taxiways: true,
+                aprons: true,
+                helipads: true,
+            },
+        );
+        for wanted in [
+            "\"aeroway\"~\"^(runway|airstrip|stopway)$\"",
+            "\"aeroway\"~\"^(taxiway|taxilane)$\"",
+            "\"aeroway\"=\"apron\"",
+            "\"aeroway\"=\"helipad\"",
+            "relation[\"aeroway\"=\"apron\"]",
+            "relation[\"area:aeroway\"=\"runway\"]",
+        ] {
+            assert!(all.contains(wanted), "query is missing {wanted}\n{all}");
+        }
+        assert!(
+            !all.contains("aerodrome"),
+            "the aerodrome boundary is the whole airport, grass and car parks included"
+        );
+
+        let runways_only = aviation_query(
+            bounds,
+            AviationGroups {
+                runways: true,
+                taxiways: false,
+                aprons: false,
+                helipads: false,
+            },
+        );
+        assert!(runways_only.contains("runway"));
+        assert!(!runways_only.contains("taxiway"));
+        assert!(!runways_only.contains("apron"));
+        assert!(!runways_only.contains("helipad"));
+        assert_ne!(
+            all, runways_only,
+            "different groups must not share a cache entry"
+        );
+    }
+
+    /// Helipads are dropped before the request once the view is too wide
+    /// for them to print, rather than downloaded and thrown away.
+    #[test]
+    fn wide_views_stop_asking_for_the_small_features() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.ground_span_km = 6.0;
+        assert!(AviationGroups::from_spec(&spec).helipads);
+
+        spec.ground_span_km = 60.0;
+        let wide = AviationGroups::from_spec(&spec);
+        assert!(!wide.helipads, "a helipad at 60 km is a speck");
+        assert!(wide.runways, "the big features still come");
+    }
+
+    /// A mapped width is a measurement and prints at its real scale; an
+    /// unmapped one is an estimate and takes the close-view boost, exactly
+    /// the rule roads follow.
+    #[test]
+    fn mapped_widths_print_to_scale_and_only_estimates_take_the_boost() {
+        let mut spec = GenerationSpec {
+            width_mm: 180.0,
+            ground_span_km: 2.0,
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.maximum_aviation_width_mm = 12.0;
+        // 2 km across 180 mm, and the close view doubles estimated widths.
+        assert_eq!(spec.close_view_line_scale(), 2.0);
+        let scale = spec.width_mm / (spec.ground_span_km as f32 * 1_000.0);
+
+        let runway = HashMap::from([("aeroway".to_string(), "runway".to_string())]);
+        let mapped = aviation_line_width_mm(&spec, &runway, Some(45.0));
+        assert!(
+            (mapped - 45.0 * scale).abs() < 1e-4,
+            "a mapped 45 m runway prints 45 m wide, got {mapped}"
+        );
+
+        let fallback = aviation_line_width_mm(&spec, &runway, None);
+        assert!(
+            (fallback - 45.0 * scale * 2.0).abs() < 1e-4,
+            "an unmapped runway takes the boost, got {fallback}"
+        );
+
+        // And the maximum is a ceiling on both.
+        spec.color_output.aviation.maximum_aviation_width_mm = 2.0;
+        assert_eq!(aviation_line_width_mm(&spec, &runway, Some(45.0)), 2.0);
+        assert_eq!(aviation_line_width_mm(&spec, &runway, None), 2.0);
+    }
+
+    /// Which tag sets mean "outline" rather than "centre line".
+    #[test]
+    fn area_tagging_is_told_apart_from_centre_lines() {
+        let area = |pairs: &[(&str, &str)]| {
+            is_aviation_area(
+                &pairs
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+            )
+        };
+        assert!(area(&[("aeroway", "apron")]));
+        assert!(area(&[("aeroway", "helipad")]));
+        assert!(area(&[("area:aeroway", "runway")]));
+        assert!(area(&[("aeroway", "runway"), ("area", "yes")]));
+        assert!(!area(&[("aeroway", "runway")]));
+        assert!(!area(&[("aeroway", "taxiway")]));
+        assert!(!area(&[("highway", "service")]));
     }
 
     #[test]

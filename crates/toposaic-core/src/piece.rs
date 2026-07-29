@@ -622,7 +622,10 @@ pub(crate) fn build_piece_with_height_range(
     }
     if ((spec.color_output.enabled && spec.color_output.roads_enabled)
         || spec.uses_trails()
-        || spec.uses_rail_or_aerial())
+        || spec.uses_rail_or_aerial()
+        // Airport pavement is drawn by the same pass, and an airfield with
+        // its roads switched off is still an airfield.
+        || spec.uses_aviation())
         && let Some(field) = surface_field
     {
         append_road_geometry(
@@ -1496,6 +1499,911 @@ mod tests {
         FlagMarkerStyle, MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec,
         WallMountStyle, WallMountTarget,
     };
+
+    /// Airport pavement reaches the mesh both ways — a ribbon down a runway
+    /// centre line and an outline around an apron — and the piece stays
+    /// closed with either or both on it.
+    #[test]
+    fn airport_pavement_meshes_watertight_as_lines_and_areas() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // An apron with a terminal cut out of it, and a runway across it.
+        field.paint_surface_area_with_holes(
+            &[[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            &[vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]],
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let pavement = mesh
+            .materials
+            .iter()
+            .filter(|material| **material == SurfaceClass::Aviation)
+            .count();
+        assert!(pavement > 0, "no airport pavement reached the mesh");
+
+        // Whether any pavement triangle actually covers a point, rather
+        // than merely passing near it. Asking for vertices "close to" a
+        // point proves nothing: a coarse triangle can straddle it with
+        // every corner far away.
+        let covered_by_pavement = |point: [f32; 2]| {
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Aviation)
+                .any(|(triangle, _)| {
+                    let corners = triangle.map(|index| {
+                        let vertex = mesh.vertices[index as usize];
+                        [vertex[0], vertex[1]]
+                    });
+                    let side = |a: [f32; 2], b: [f32; 2]| {
+                        (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+                    };
+                    let (first, second, third) = (
+                        side(corners[0], corners[1]),
+                        side(corners[1], corners[2]),
+                        side(corners[2], corners[0]),
+                    );
+                    (first >= 0.0 && second >= 0.0 && third >= 0.0)
+                        || (first <= 0.0 && second <= 0.0 && third <= 0.0)
+                })
+        };
+        // Piece (0, 0) of a 2x2 covers the map's first quarter, so both
+        // sample points fall inside it: one on the apron, one in the hole
+        // the terminal stands in.
+        let at = |u: f32, v: f32| [u * spec.width_mm, v * spec.height_mm()];
+        assert!(
+            covered_by_pavement(at(0.25, 0.25)),
+            "the apron itself should be paved"
+        );
+        assert!(
+            !covered_by_pavement(at(0.45, 0.45)),
+            "pavement covered the hole in the apron"
+        );
+    }
+
+    /// Terminals and hangars carry `building=*` and go through the building
+    /// pipeline. The aviation query never asks for them, so the only way
+    /// they could be duplicated is by the apron swallowing them — and an
+    /// apron is pavement everywhere except where a building stands.
+    #[test]
+    fn airport_buildings_keep_their_own_material_under_an_apron() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            buildings: crate::spec::BuildingSpec {
+                enabled: true,
+                z_scale: 1.0,
+            },
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // An apron with the terminal's footprint cut out of it, and the
+        // terminal itself standing in that gap.
+        let terminal = [[0.15, 0.15], [0.3, 0.15], [0.3, 0.3], [0.15, 0.3]];
+        field.paint_surface_area_with_holes(
+            &[[0.05, 0.05], [0.45, 0.05], [0.45, 0.45], [0.05, 0.45]],
+            &[terminal.to_vec()],
+            SurfaceClass::Aviation,
+        );
+        field.paint_building(&terminal, 14.0);
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        let building_faces = mesh
+            .materials
+            .iter()
+            .filter(|material| **material == SurfaceClass::Building)
+            .count();
+        assert!(
+            building_faces > 0,
+            "the terminal lost its building material to the pavement"
+        );
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "the apron itself should still be there"
+        );
+    }
+
+    /// Every tile of a super-tile grid must treat the same pavement the same
+    /// way: clipped to its own edge, watertight on both sides of the seam,
+    /// and drawn in the same material.
+    #[test]
+    fn every_super_tile_part_clips_the_same_pavement_the_same_way() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A runway straight across the middle, so it crosses every seam.
+        field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 2.0, SurfaceClass::Aviation);
+        // And an apron spanning the same seam.
+        field.paint_surface_area(
+            &[[0.3, 0.35], [0.7, 0.35], [0.7, 0.65], [0.3, 0.65]],
+            SurfaceClass::Aviation,
+        );
+
+        let mut paved_parts = 0;
+        for row in 0..spec.rows {
+            for column in 0..spec.columns {
+                let mesh = build_piece(&spec, None, Some(&field), row, column).unwrap();
+                assert_watertight(&mesh);
+                let paved = mesh
+                    .materials
+                    .iter()
+                    .filter(|material| **material == SurfaceClass::Aviation)
+                    .count();
+                if paved > 0 {
+                    paved_parts += 1;
+                }
+                // Nothing may hang outside the part it belongs to.
+                let width = spec.width_mm / spec.columns as f32;
+                let height = spec.height_mm() / spec.rows as f32;
+                for vertex in &mesh.vertices {
+                    assert!(
+                        vertex[0] >= -width * 0.6 && vertex[0] <= width * 1.6,
+                        "a vertex escaped its tile in x: {vertex:?}"
+                    );
+                    assert!(
+                        vertex[1] >= -height * 0.6 && vertex[1] <= height * 1.6,
+                        "a vertex escaped its tile in y: {vertex:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            paved_parts, 4,
+            "the runway and apron cross every tile, so every tile is paved"
+        );
+    }
+
+    /// An airport can be all apron: a helipad on a hospital roof, a small
+    /// field with unpaved strips OSM never drew as ways. The overlay pass
+    /// used to return early whenever a piece held no road, rail, or trail
+    /// LINE, which skipped areas with it — so that airport rendered nothing
+    /// at all.
+    #[test]
+    fn an_airport_with_no_lines_still_draws_its_aprons() {
+        let mut spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 24,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                // No roads either, so the piece really has no lines at all.
+                roads_enabled: false,
+                rail_enabled: false,
+                aerial_enabled: false,
+                ferry_enabled: false,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        field.paint_surface_area(
+            &[[0.05, 0.05], [0.45, 0.05], [0.45, 0.45], [0.05, 0.45]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "an apron with no line beside it still has to reach the mesh"
+        );
+    }
+
+    /// A runway is flat across its width and not along its length. It
+    /// rises and falls with the ground it is laid on — a runway that held
+    /// one height would bury itself in the first hill it crossed — but a
+    /// section cut across it is level, rather than draped over whichever
+    /// two coarse samples happen to sit either side of it.
+    #[test]
+    fn a_runway_is_level_across_its_width_and_follows_the_ground_along_it() {
+        // Ground that ripples along the strip and falls away across it.
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let u = x as f32 / (samples - 1) as f32;
+                    let v = y as f32 / (samples - 1) as f32;
+                    500.0 * (u * std::f32::consts::TAU * 1.5).sin() + 400.0 * v
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "rolling").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 48,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // Well inside the first piece, so the whole width is on one tile.
+        field.paint_polyline(
+            &[[0.0, 0.25], [1.0, 0.25]],
+            120.0,
+            4.0,
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        // Only the top of the shell is laid flat; the bottom follows the
+        // ground so the solid is never inside out.
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 500.0).round() as i32,
+                (vertex[1] * 500.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        let mut tops = columns
+            .into_iter()
+            .map(|((x, y), z)| [x as f32 / 500.0, y as f32 / 500.0, z])
+            .collect::<Vec<_>>();
+        tops.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        assert!(
+            tops.len() > 8,
+            "not enough pavement to judge: {}",
+            tops.len()
+        );
+
+        // Across the width, every point at one station shares a height.
+        let mut worst_tilt = 0.0_f32;
+        for window in tops.chunk_by(|a, b| (a[0] - b[0]).abs() < 0.002) {
+            if window.len() < 2 {
+                continue;
+            }
+            let high = window
+                .iter()
+                .map(|v| v[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let low = window.iter().map(|v| v[2]).fold(f32::INFINITY, f32::min);
+            worst_tilt = worst_tilt.max(high - low);
+        }
+        assert!(
+            worst_tilt < 0.02,
+            "cross-section should be level, tilts by {worst_tilt} mm"
+        );
+
+        // Along the length it tracks the ground, one surface height above
+        // it, rather than holding a level of its own. A triangulated ribbon
+        // carries its vertices on its edges rather than down the middle, so
+        // each is judged against the ground at the centre line for its own
+        // station — which is exactly the height a flat cross-section takes.
+        let centre_y = spec.height_mm() * 0.25;
+        let mut worst_drift = 0.0_f32;
+        for top in &tops {
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                top[0] / spec.width_mm,
+                centre_y / spec.height_mm(),
+            ) + spec.color_output.aviation.aviation_height_mm;
+            worst_drift = worst_drift.max((top[2] - ground).abs());
+        }
+        assert!(
+            worst_drift < 0.2,
+            "the runway drifts {worst_drift} mm from the ground under its centre line"
+        );
+
+        // And it really does rise and fall: a runway pinned at one height
+        // would pass the drift check only if the ground were flat, which
+        // this one is not.
+        let high = tops.iter().map(|t| t[2]).fold(f32::NEG_INFINITY, f32::max);
+        let low = tops.iter().map(|t| t[2]).fold(f32::INFINITY, f32::min);
+        assert!(
+            high - low > 2.0,
+            "the runway held one level across rolling ground: {low} to {high}"
+        );
+    }
+
+    /// An apron far from any runway must sit on its own ground. The graded
+    /// profile belongs to the strip it was measured along; letting it own
+    /// the whole map floats a distant apron above the terrain, or sinks it
+    /// under, by whatever the elevation differs by.
+    #[test]
+    fn a_distant_apron_follows_its_own_ground_not_a_far_off_runway() {
+        // Ground that climbs hard from west to east.
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let _ = y;
+                    x as f32 / (samples - 1) as f32 * 600.0
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "slope").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 32,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A short runway hard against the low western edge...
+        field.paint_polyline(
+            &[[0.02, 0.1], [0.02, 0.4]],
+            120.0,
+            2.0,
+            SurfaceClass::Aviation,
+        );
+        // ...and an apron away east, where the ground is hundreds of
+        // metres higher.
+        field.paint_surface_area(
+            &[[0.30, 0.10], [0.45, 0.10], [0.45, 0.40], [0.30, 0.40]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+
+        // The ground climbs across the apron, so every point is judged
+        // against the terrain under it rather than one figure for the lot.
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+            // Only the apron, well east of the runway.
+            .filter(|vertex| vertex[0] > spec.width_mm * 0.25)
+        {
+            let key = (
+                (vertex[0] * 50.0).round() as i32,
+                (vertex[1] * 50.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(
+            !columns.is_empty(),
+            "the apron never reached the mesh, so this proves nothing"
+        );
+
+        let mut worst = 0.0_f32;
+        let mut worst_at = (0.0, 0.0);
+        for ((x, y), top) in &columns {
+            let point = [*x as f32 / 50.0, *y as f32 / 50.0];
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                point[0] / spec.width_mm,
+                point[1] / spec.height_mm(),
+            ) + spec.color_output.aviation.aviation_height_mm;
+            if (top - ground).abs() > worst {
+                worst = (top - ground).abs();
+                worst_at = (*top, ground);
+            }
+        }
+        assert!(
+            worst < 0.5,
+            "the apron stands {worst} mm off its own ground ({} against {}) — it \
+             took a far-off runway's graded height instead",
+            worst_at.0,
+            worst_at.1
+        );
+    }
+
+    /// Guards the cost of grading. Every mesh vertex of the layer asks every
+    /// aeroway line how far away it is, so a busy airport multiplies out. A
+    /// real one — Heathrow has on the order of a hundred taxiway ways — must
+    /// not turn a piece into a stall.
+    #[test]
+    fn grading_a_busy_airport_stays_quick() {
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 48,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        // A hundred taxiways in a grid, plus two runways across them.
+        for index in 0..100 {
+            let t = index as f32 / 99.0;
+            field.paint_polyline(
+                &[[0.05, 0.05 + t * 0.9], [0.95, 0.05 + t * 0.9]],
+                120.0,
+                0.6,
+                SurfaceClass::Aviation,
+            );
+        }
+        field.paint_polyline(
+            &[[0.1, 0.3], [0.9, 0.3]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(
+            &[[0.1, 0.7], [0.9, 0.7]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+
+        let started = std::time::Instant::now();
+        let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+        let elapsed = started.elapsed();
+        assert_watertight(&mesh);
+        assert!(
+            mesh.materials.contains(&SurfaceClass::Aviation),
+            "the airport should have reached the mesh"
+        );
+        // Generous: this runs in a debug build on shared CI. It is here to
+        // catch an order-of-magnitude regression, not to hold a budget.
+        assert!(
+            elapsed.as_secs() < 60,
+            "grading a hundred-way airport took {elapsed:?}"
+        );
+        println!("grading a 102-way airport: {elapsed:?}");
+    }
+
+    /// A runway is not a flat slab dropped on a hill: real ones follow the
+    /// ground. Any pavement whose top sits below the terrain under it has
+    /// been buried — it clips into the tile and simply is not there to see.
+    #[test]
+    fn airport_pavement_never_sinks_into_the_terrain() {
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let u = x as f32 / (samples - 1) as f32;
+                    let v = y as f32 / (samples - 1) as f32;
+                    // A ridge across the middle, so any surface that does
+                    // not follow the ground dives straight through it.
+                    400.0 * (u * std::f32::consts::TAU).sin() + 300.0 * (v - 0.5).abs()
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "ridge").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 40,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(9, 9, vec![SurfaceClass::Rock; 81], "airport").unwrap();
+        field.paint_polyline(
+            &[[0.0, 0.5], [1.0, 0.5]],
+            120.0,
+            3.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_surface_area(
+            &[[0.10, 0.10], [0.40, 0.10], [0.40, 0.35], [0.10, 0.35]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        // The highest pavement in each column, against the ground there.
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 20.0).round() as i32,
+                (vertex[1] * 20.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(!columns.is_empty(), "no pavement to judge");
+
+        let mut worst_buried = 0.0_f32;
+        for ((x, y), top) in &columns {
+            let point = [*x as f32 / 20.0, *y as f32 / 20.0];
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                point[0] / spec.width_mm,
+                point[1] / spec.height_mm(),
+            );
+            worst_buried = worst_buried.max(ground - top);
+        }
+        assert!(
+            worst_buried < 0.05,
+            "pavement is buried {worst_buried} mm under the terrain it crosses"
+        );
+    }
+
+    /// Buried pavement is not pavement — it is a hole in the model where a
+    /// runway should be. A strip laid flat across a side slope buries its
+    /// uphill edge unless the level is taken from the high side, so this
+    /// runs a runway and a taxiway straight along a hillside, across the
+    /// fall line, which is the case that breaks it.
+    #[test]
+    fn nothing_airside_is_ever_buried_on_a_cross_slope() {
+        let samples = 32;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    let _ = x;
+                    // Ground that falls steadily across the strips.
+                    y as f32 / (samples - 1) as f32 * 900.0
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "side slope").unwrap();
+
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 48,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // A wide runway and a narrow taxiway, both along the contour, so
+        // every point of each has ground rising on one side of it.
+        field.paint_polyline(
+            &[[0.0, 0.2], [1.0, 0.2]],
+            120.0,
+            4.0,
+            SurfaceClass::Aviation,
+        );
+        field.paint_polyline(
+            &[[0.0, 0.35], [1.0, 0.35]],
+            120.0,
+            0.8,
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 100.0).round() as i32,
+                (vertex[1] * 100.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(columns.len() > 8, "no pavement to judge");
+
+        let mut worst_buried = 0.0_f32;
+        for ((x, y), top) in &columns {
+            let ground = terrain_z_at(
+                &spec,
+                Some(&height_field),
+                range,
+                *x as f32 / 100.0 / spec.width_mm,
+                *y as f32 / 100.0 / spec.height_mm(),
+            );
+            worst_buried = worst_buried.max(ground - top);
+        }
+        assert!(
+            worst_buried < 0.02,
+            "pavement is buried {worst_buried} mm under the hillside it crosses"
+        );
+    }
+
+    /// The case a real airport is: flat ground, a small elevation range,
+    /// and the full relief height spent on it, so a metre of DEM noise
+    /// becomes millimetres of print — many times the pavement's own 0.2 mm.
+    /// Strips run close together too, so the nearest centre line to a point
+    /// is often not the one whose ribbon it lies in. Neither may bury it.
+    ///
+    /// Numbers taken from the saved San Francisco setup: 4.5 km across
+    /// 180 mm, 28 mm of relief over ground that barely moves.
+    /// The case a real airport is: flat ground, a small elevation range, and
+    /// the full relief height spent on it, so a metre of DEM noise becomes
+    /// millimetres of print — many times the pavement's own 0.2 mm. Ground
+    /// like this swallows a surface that cannot follow it closely.
+    ///
+    /// Numbers from the saved San Francisco setup: 4.5 km across 180 mm,
+    /// 28 mm of relief over ground that barely moves.
+    #[test]
+    fn a_flat_noisy_airfield_at_full_relief_buries_nothing() {
+        let samples = 64;
+        let values_m = (0..samples)
+            .flat_map(|y| {
+                (0..samples).map(move |x| {
+                    // Airfield ground: a couple of metres of relief, and
+                    // sample-to-sample noise of about a metre on top.
+                    let drift = (x as f32 / samples as f32) * 3.0;
+                    let noise = if (x * 7 + y * 13) % 5 < 2 { 1.2 } else { 0.0 };
+                    drift + noise
+                })
+            })
+            .collect();
+        let height_field = HeightField::new(samples, samples, values_m, "airfield").unwrap();
+
+        let mut spec = GenerationSpec {
+            center_lat: 37.61847,
+            center_lon: -122.37651,
+            ground_span_km: 4.5,
+            width_mm: 180.0,
+            relief_mm: 28.0,
+            base_mm: 3.2,
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 64,
+            despike_terrain: true,
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.color_output.aviation.aviation_enabled = true;
+        spec.validate().unwrap();
+
+        let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+        // Parallel strips close together, wide and narrow, the way an
+        // airfield lays them out, plus a taxiway crossing them all.
+        for (offset, width) in [(0.20, 3.0), (0.26, 0.8), (0.32, 3.0), (0.36, 0.8)] {
+            field.paint_polyline(
+                &[[0.02, offset], [0.98, offset]],
+                180.0,
+                width,
+                SurfaceClass::Aviation,
+            );
+        }
+        field.paint_polyline(
+            &[[0.50, 0.15], [0.50, 0.42]],
+            180.0,
+            0.8,
+            SurfaceClass::Aviation,
+        );
+        field.paint_surface_area(
+            &[[0.60, 0.16], [0.90, 0.16], [0.90, 0.40], [0.60, 0.40]],
+            SurfaceClass::Aviation,
+        );
+
+        let mesh = build_piece(&spec, Some(&height_field), Some(&field), 0, 0).unwrap();
+        assert_watertight(&mesh);
+        let range = crate::heightfield::height_range_for_spec(&spec, Some(&height_field));
+
+        let mut columns = HashMap::<(i32, i32), f32>::new();
+        for vertex in mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize]))
+        {
+            let key = (
+                (vertex[0] * 200.0).round() as i32,
+                (vertex[1] * 200.0).round() as i32,
+            );
+            let top = columns.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(vertex[2]);
+        }
+        assert!(columns.len() > 50, "not enough pavement: {}", columns.len());
+
+        // Sampling the pavement's own vertices proves nothing: every one of
+        // them clears the ground by construction. The ground rises through
+        // the SURFACE BETWEEN them, so the surface is what has to be asked.
+        let faces = mesh
+            .triangles
+            .iter()
+            .zip(&mesh.materials)
+            .filter(|(_, material)| **material == SurfaceClass::Aviation)
+            .map(|(triangle, _)| triangle.map(|index| mesh.vertices[index as usize]))
+            .collect::<Vec<_>>();
+        // Height of the pavement's upper surface at a point, or None where
+        // there is no pavement.
+        let pavement_top_at = |point: [f32; 2]| {
+            let mut best = None::<f32>;
+            for face in &faces {
+                let side = |a: [f32; 3], b: [f32; 3]| {
+                    (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
+                };
+                let (first, second, third) = (
+                    side(face[0], face[1]),
+                    side(face[1], face[2]),
+                    side(face[2], face[0]),
+                );
+                let inside = (first >= 0.0 && second >= 0.0 && third >= 0.0)
+                    || (first <= 0.0 && second <= 0.0 && third <= 0.0);
+                if !inside {
+                    continue;
+                }
+                let total = first + second + third;
+                if total.abs() <= f32::EPSILON {
+                    continue;
+                }
+                let z = (second * face[0][2] + third * face[1][2] + first * face[2][2]) / total;
+                best = Some(best.map_or(z, |current: f32| current.max(z)));
+            }
+            best
+        };
+
+        let mut worst_buried = 0.0_f32;
+        let mut checked = 0;
+        let steps = 160;
+        for row in 0..=steps {
+            for column in 0..=steps {
+                let point = [
+                    column as f32 / steps as f32 * spec.width_mm * 0.5,
+                    row as f32 / steps as f32 * spec.height_mm() * 0.5,
+                ];
+                let Some(top) = pavement_top_at(point) else {
+                    continue;
+                };
+                let ground = terrain_z_at(
+                    &spec,
+                    Some(&height_field),
+                    range,
+                    point[0] / spec.width_mm,
+                    point[1] / spec.height_mm(),
+                );
+                worst_buried = worst_buried.max(ground - top);
+                checked += 1;
+            }
+        }
+        assert!(checked > 200, "only {checked} samples landed on pavement");
+        // A tenth of the height the pavement stands proud. Not zero: the
+        // surface is triangulated, so the ground can still cross it by a
+        // fraction of one triangle's own span.
+        assert!(
+            worst_buried < 0.1,
+            "the ground rises {worst_buried} mm through the pavement between its \
+             own vertices, over {checked} samples"
+        );
+    }
+
+    /// The pavement stands at its own height, not the road layer's.
+    ///
+    /// Measured as the difference between two runs rather than against the
+    /// terrain's maximum: a graded runway deliberately does not follow the
+    /// ground under it, so "higher than the tallest terrain" would be
+    /// asking the wrong question.
+    #[test]
+    fn airport_pavement_uses_its_own_surface_height() {
+        let pavement_top = |aviation_height_mm: f32| {
+            let mut spec = GenerationSpec {
+                width_mm: 60.0,
+                rows: 2,
+                columns: 2,
+                samples_per_piece: 24,
+                color_output: crate::spec::ColorOutputSpec {
+                    enabled: true,
+                    road_height_mm: 0.2,
+                    ..crate::spec::ColorOutputSpec::default()
+                },
+                ..GenerationSpec::default()
+            };
+            spec.color_output.aviation.aviation_enabled = true;
+            spec.color_output.aviation.aviation_height_mm = aviation_height_mm;
+            spec.validate().unwrap();
+
+            let mut field =
+                SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "airport").unwrap();
+            field.paint_polyline(&[[0.0, 0.5], [1.0, 0.5]], 60.0, 1.2, SurfaceClass::Aviation);
+            let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
+            assert_watertight(&mesh);
+            mesh.triangles
+                .iter()
+                .zip(&mesh.materials)
+                .filter(|(_, material)| **material == SurfaceClass::Aviation)
+                .flat_map(|(triangle, _)| triangle.iter().map(|i| mesh.vertices[*i as usize][2]))
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+
+        let thin = pavement_top(0.2);
+        let thick = pavement_top(0.6);
+        assert!(
+            (thick - thin - 0.4).abs() < 0.01,
+            "0.4 mm more pavement height should raise the top 0.4 mm; \
+             {thin} became {thick}"
+        );
+    }
 
     #[test]
     fn terrain_color_bleeds_over_the_piece_edge_before_the_rock_cut_face() {

@@ -56,7 +56,8 @@ export type SurfaceClassKey =
   | "aerial"
   | "ferry"
   | "marker"
-  | "route_trail";
+  | "route_trail"
+  | "aviation";
 
 export type GenerationSpec = {
   center_lat: number;
@@ -208,6 +209,16 @@ export type GenerationSpec = {
     bridge_thickness_mm: number;
     minimum_patch_mm: number;
     edge_bleed_mm: number;
+    aviation_enabled: boolean;
+    aviation_runways_enabled: boolean;
+    aviation_taxiways_enabled: boolean;
+    aviation_aprons_enabled: boolean;
+    aviation_helipads_enabled: boolean;
+    aviation_style: "separate" | "follow_roads";
+    aviation_color: string;
+    aviation_height_mm: number;
+    maximum_aviation_width_mm: number;
+    aviation_detail_span_km: number;
     class_borders: "blocky" | "smooth";
     border_smoothing_range_cells: number;
     border_smoothing_nugget: number;
@@ -323,6 +334,7 @@ export type PreviewData = {
     rail?: string;
     aerialway?: string;
     ferry?: string;
+    aviation?: string;
     marker?: string;
   };
   surface_coverage?: {
@@ -337,6 +349,7 @@ export type PreviewData = {
     rail?: number;
     aerialway?: number;
     ferry?: number;
+    aviation?: number;
     marker?: number;
   };
   surface_source?: string;

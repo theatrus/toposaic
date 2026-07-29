@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use geo::orient::Direction;
 use geo::{
-    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Polygon, Simplify,
+    Area, BooleanOps, Buffer, Centroid, Coord, LineString, MultiPolygon, Orient, Polygon, Simplify,
     unary_union,
 };
 use rayon::prelude::*;
@@ -13,11 +14,14 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 use crate::heightfield::{HeightField, normalized_height};
 use crate::mesh::{
-    Mesh, MeshBuilder, distance_squared, quantize_export_coordinate, triangulate_constraints,
+    Mesh, MeshBuilder, distance_squared, point_in_polygon, quantize_export_coordinate,
+    triangulate_constraints,
 };
 use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{BridgeStructure, GenerationSpec, MarkerKind, SurfaceClass};
-use crate::surface::{ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_line_progress};
+use crate::surface::{
+    ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_area_bounds, surface_line_progress,
+};
 
 use super::{
     MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM, OVERLAY_TERRAIN_EMBED_MM, SurfaceField,
@@ -121,6 +125,7 @@ pub(super) fn append_dot_geometry(
                 |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
                 |point| surface_z(point) + DOT_OVERLAY_HEIGHT_MM,
                 None,
+                None,
                 SurfaceClass::Marker,
                 "triangulate vector marker dot",
             )
@@ -214,6 +219,7 @@ pub(super) fn append_road_geometry(
                     | SurfaceClass::Aerial
                     | SurfaceClass::Ferry
                     | SurfaceClass::RouteTrail
+                    | SurfaceClass::Aviation
             )
         })
         .filter(overlaps_piece)
@@ -226,7 +232,19 @@ pub(super) fn append_road_geometry(
         .filter(|line| line.class == SurfaceClass::Trail)
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
-    if road_and_rail.is_empty() && trail_lines.is_empty() {
+    // Airport outlines are areas, not lines, so a field holding nothing but
+    // aprons and helipads still has geometry to place. Computed before the
+    // guard for exactly that reason: an airport whose runways are switched
+    // off is still an airport.
+    let aviation_outlines = aviation_area_footprint(
+        surface_field,
+        &piece_polygon,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    );
+    if road_and_rail.is_empty() && trail_lines.is_empty() && aviation_outlines.0.is_empty() {
         return Ok(());
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
@@ -299,6 +317,9 @@ pub(super) fn append_road_geometry(
     let (ferry_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::Ferry);
+    let (aviation_regular, regular): (Vec<_>, Vec<_>) = regular
+        .into_iter()
+        .partition(|line| line.class == SurfaceClass::Aviation);
     let (route_trail_regular, regular): (Vec<_>, Vec<_>) = regular
         .into_iter()
         .partition(|line| line.class == SurfaceClass::RouteTrail);
@@ -587,7 +608,198 @@ pub(super) fn append_road_geometry(
             assembled_height,
         )?;
     }
+    // Airport pavement is placed after every other overlay, so a road, rail
+    // line, or crossing over it keeps the ground it already had. Within the
+    // layer the strips go down before the aprons, which is why a runway
+    // drawn across an apron reads as runway.
+    // Grading is shared by the ribbons and the outlines: one height
+    // function over the whole layer, so a taxiway meeting a runway and an
+    // apron meeting both arrive at the same z where they touch, and the
+    // joins cannot crack.
+    let profiles = aviation_profiles(
+        spec,
+        &aviation_regular,
+        height_field,
+        height_range,
+        assembled_width,
+        assembled_height,
+    );
+    let aviation_base = |point: [f32; 2]| {
+        let assembled = [point[0] + origin_x, point[1] + origin_y];
+        let u = (assembled[0] / assembled_width).clamp(0.0, 1.0);
+        let v = (assembled[1] / assembled_height).clamp(0.0, 1.0);
+        let terrain = terrain_z_at(spec, height_field, height_range, u, v);
+        // The nearest graded line owns the point, but only near itself:
+        // inside its own ribbon the grading is the whole answer, and its
+        // say fades to nothing over the band beyond. Out in an apron away
+        // from every strip, the ground is what is left.
+        let mut nearest = None::<(f32, f32, f32)>;
+        for profile in &profiles {
+            if assembled[0] < profile.reach[0]
+                || assembled[0] > profile.reach[2]
+                || assembled[1] < profile.reach[1]
+                || assembled[1] > profile.reach[3]
+            {
+                continue;
+            }
+            let distance = polyline_distance_squared(&profile.line.points_mm, assembled);
+            if nearest.is_none_or(|(best, _, _)| distance < best) {
+                nearest = Some((distance, profile.z_at(u, v), profile.line.width_mm * 0.5));
+            }
+        }
+        let Some((distance_squared, graded, half_width)) = nearest else {
+            return terrain;
+        };
+        let distance = distance_squared.sqrt();
+        let fade_end = half_width + AVIATION_GRADE_FADE_MM;
+        let share = if distance <= half_width {
+            1.0
+        } else if distance >= fade_end {
+            0.0
+        } else {
+            1.0 - (distance - half_width) / AVIATION_GRADE_FADE_MM
+        };
+        // Smoothstep, so the join carries no crease for a slicer to find.
+        let share = share * share * (3.0 - 2.0 * share);
+        // Never below the ground at this exact point, whatever the profile
+        // says. Reading the high side across a strip only clears the ground
+        // under that strip: where strips run close together, as they do all
+        // over a real airfield, the nearest centre line is often not the one
+        // whose ribbon the point is in, and its profile can sit under the
+        // ground here. The same goes for terrain noise between two stations,
+        // which on a flat airport at full relief is millimetres tall.
+        //
+        // So the clearance is a floor rather than an outcome: the surface is
+        // flat where the profile stands above the ground and follows the
+        // ground where it would not. Buried pavement is a hole in the model,
+        // and no amount of sampling makes that acceptable.
+        terrain + ((graded - terrain) * share).max(0.0)
+    };
+    if !aviation_regular.is_empty() {
+        let aviation_area = append_overlay_geometry_at_height(
+            mesh,
+            spec,
+            SurfaceClass::Aviation,
+            "triangulate airport surface ribbon",
+            &aviation_regular,
+            spec.color_output.aviation.aviation_height_mm,
+            Some(aviation_interior_step_mm(spec)),
+            &aviation_base,
+            &clip_ribbon,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+        claimed.push(aviation_area);
+    }
+    // Outlines keep clear of buildings and markers exactly as ribbons do.
+    // An apron is often drawn right up to the terminal standing in it, and
+    // where the apron's ring and the building's outline share coordinates
+    // the two shells leave coincident faces for a slicer's weld to fuse
+    // into non-manifold edges.
+    let mut aviation_outlines = aviation_outlines;
+    if let Some(obstacles) = &obstacles {
+        aviation_outlines = aviation_outlines.difference(obstacles);
+    }
+    if let Some(marker_obstacles) = &marker_obstacles {
+        aviation_outlines = aviation_outlines.difference(marker_obstacles);
+    }
+    if !aviation_outlines.0.is_empty() {
+        append_overlay_footprint(
+            mesh,
+            spec,
+            SurfaceClass::Aviation,
+            "triangulate airport surface outline",
+            aviation_outlines,
+            spec.color_output.aviation.aviation_height_mm,
+            Some(aviation_interior_step_mm(spec)),
+            &aviation_base,
+            &claimed,
+            &decks,
+            height_field,
+            height_range,
+            origin_x,
+            origin_y,
+            assembled_width,
+            assembled_height,
+        )?;
+    }
     Ok(())
+}
+
+/// The piece's share of every aeroway area, holes kept.
+///
+/// Outlines arrive in normalized map space and in whatever winding their
+/// mapper drew; the piece wants millimetres in its own frame, so the ring
+/// order is normalized here rather than trusted. Clipping against the piece
+/// is what keeps an apron that crosses a seam watertight on both sides.
+fn aviation_area_footprint(
+    field: &SurfaceField,
+    piece_polygon: &Polygon<f64>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> MultiPolygon<f64> {
+    let ring = |points: &[[f32; 2]]| {
+        let mut coords = points
+            .iter()
+            .map(|point| Coord {
+                x: f64::from(point[0] * assembled_width - origin_x),
+                y: f64::from(point[1] * assembled_height - origin_y),
+            })
+            .collect::<Vec<_>>();
+        if let Some(first) = coords.first().copied() {
+            coords.push(first);
+        }
+        LineString::new(coords)
+    };
+    // Only the aprons this piece could touch. Unioning every one of them
+    // for every piece is work a hundred-piece puzzle does a hundred times
+    // over, and the bounds test is the same one buildings use.
+    let piece_bounds = {
+        let bounds = piece_polygon.exterior();
+        bounds.coords().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |box_, point| {
+                let u = (point.x as f32 + origin_x) / assembled_width;
+                let v = (point.y as f32 + origin_y) / assembled_height;
+                [
+                    box_[0].min(u),
+                    box_[1].min(v),
+                    box_[2].max(u),
+                    box_[3].max(v),
+                ]
+            },
+        )
+    };
+    let outlines = field
+        .vector_areas
+        .iter()
+        .filter(|area| area.class == Some(SurfaceClass::Aviation) && area.points.len() >= 3)
+        .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
+        .map(|area| {
+            Polygon::new(
+                ring(&area.points),
+                area.holes.iter().map(|hole| ring(hole)).collect(),
+            )
+            .orient(Direction::Default)
+        })
+        .collect::<Vec<_>>();
+    if outlines.is_empty() {
+        return MultiPolygon::new(Vec::new());
+    }
+    unary_union(outlines.iter()).intersection(piece_polygon)
 }
 
 /// Builds one secondary overlay's shells for a piece: terrain-following
@@ -617,11 +829,113 @@ fn append_overlay_geometry(
     assembled_width: f32,
     assembled_height: f32,
 ) -> Result<MultiPolygon<f64>> {
+    let terrain_base = |point: [f32; 2]| {
+        let u = ((point[0] + origin_x) / assembled_width).clamp(0.0, 1.0);
+        let v = ((point[1] + origin_y) / assembled_height).clamp(0.0, 1.0);
+        terrain_z_at(spec, height_field, height_range, u, v)
+    };
+    append_overlay_geometry_at_height(
+        mesh,
+        spec,
+        material,
+        error_context,
+        lines,
+        spec.color_output.road_height_mm,
+        None,
+        &terrain_base,
+        clip_ribbon,
+        claimed,
+        decks,
+        height_field,
+        height_range,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    )
+}
+
+/// [`append_overlay_geometry`] for a layer that stands at its own height
+/// rather than the road layer's.
+#[allow(clippy::too_many_arguments)]
+fn append_overlay_geometry_at_height(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    material: SurfaceClass,
+    error_context: &'static str,
+    lines: &[&VectorSurfaceLine],
+    height_mm: f32,
+    interior_step_mm: Option<f32>,
+    base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
+    clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
+    claimed: &[MultiPolygon<f64>],
+    decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<MultiPolygon<f64>> {
     let clips = lines
         .par_iter()
         .map(|line| clip_ribbon(line))
         .collect::<Vec<_>>();
-    let mut overlay_area = unary_union(clips.iter());
+    append_overlay_footprint(
+        mesh,
+        spec,
+        material,
+        error_context,
+        unary_union(clips.iter()),
+        height_mm,
+        interior_step_mm,
+        base_z,
+        claimed,
+        decks,
+        height_field,
+        height_range,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    )
+}
+
+/// Places one already-clipped overlay footprint: cuts it back against the
+/// layers claimed before it, drops the parts coincident with a terrain-level
+/// deck, and shells what is left onto the terrain.
+///
+/// Shared by every terrain-following overlay. Ribbons reach it as the union
+/// of their buffered centre lines; airport pavement drawn as an outline
+/// reaches it as that outline. Beyond how the footprint was arrived at
+/// there is nothing different to do, and having one path is what keeps a
+/// runway's edge behaving like a road's.
+#[allow(clippy::too_many_arguments)]
+fn append_overlay_footprint(
+    mesh: &mut Mesh,
+    spec: &GenerationSpec,
+    material: SurfaceClass,
+    error_context: &'static str,
+    footprint: MultiPolygon<f64>,
+    height_mm: f32,
+    // Spacing of the points scattered inside the footprint so its top can
+    // follow the ground rather than span it.
+    interior_step_mm: Option<f32>,
+    // The surface the overlay is laid on, given a piece-local point. Every
+    // layer but airport pavement passes the terrain itself; a runway passes
+    // its own graded profile, which is what makes its cross-section level
+    // instead of draped over two separate DEM samples.
+    base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
+    claimed: &[MultiPolygon<f64>],
+    decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    origin_x: f32,
+    origin_y: f32,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Result<MultiPolygon<f64>> {
+    let mut overlay_area = footprint;
     let grown = |area: &MultiPolygon<f64>| {
         let buffered = area
             .0
@@ -678,9 +992,19 @@ fn append_overlay_geometry(
         .map(|polygon| {
             build_polygon_shell(
                 polygon,
-                |point| surface_z(point) - OVERLAY_TERRAIN_EMBED_MM,
-                |point| surface_z(point) + spec.color_output.road_height_mm,
-                None,
+                // Where a graded surface cuts below the ground it crosses,
+                // the shell's bottom follows the ground instead, or the
+                // solid would be inside out.
+                |point| base_z(point).min(surface_z(point)) - OVERLAY_TERRAIN_EMBED_MM,
+                |point| base_z(point) + height_mm,
+                // The outline is densified to match. A dense interior
+                // beside a sparse edge is not enough: the band between the
+                // last row of interior points and the outline is still
+                // spanned by triangles reaching between whatever boundary
+                // vertices happen to exist, and the ground rises through
+                // those exactly as it did before.
+                interior_step_mm,
+                interior_step_mm,
                 material,
                 error_context,
             )
@@ -713,6 +1037,185 @@ fn bridge_line_z(
     } else {
         terrain_z_at(spec, height_field, height_range, u, v)
     }
+}
+
+/// Stations sampled along an aeroway centre line when following it. Dense
+/// enough that the ground between two of them cannot rise through the
+/// pavement laid across them.
+const AVIATION_PROFILE_STATIONS: usize = 256;
+/// How far beyond its own ribbon a centre-line profile keeps any say over
+/// the height, in mm of print.
+///
+/// A profile is measured along one strip and is only true near it. Letting
+/// the nearest one own the whole layer puts an apron a kilometre away at
+/// the runway's height, which on sloping ground sinks it into the hill or
+/// floats it over one. Easing back to the ground over a short band keeps
+/// the height function continuous, so an apron abutting a taxiway still
+/// meets it without a step.
+const AVIATION_GRADE_FADE_MM: f32 = 4.0;
+
+/// Spacing of the points scattered inside airport pavement, in mm of
+/// print, matched to the terrain's own sample spacing. Finer buys nothing,
+/// because the ground carries no more detail than that; coarser lets the
+/// ground rise through the surface between them.
+fn aviation_interior_step_mm(spec: &GenerationSpec) -> f32 {
+    let samples = spec.assembled_overlay_samples().max(1) as f32;
+    (spec.width_mm / samples).clamp(0.1, 2.0)
+}
+
+/// How many samples across the ribbon each station takes to find the
+/// ground it must clear.
+const AVIATION_CROSS_SAMPLES: usize = 5;
+
+/// The elevation along one aeroway centre line.
+///
+/// A runway is flat across its width and not along its length: it rises and
+/// falls with the ground it is laid on, but a section cut across it is
+/// level. Sampling the terrain per mesh vertex gives the opposite — the
+/// ribbon tilts side to side wherever two coarse samples disagree.
+///
+/// So the ground is read along the centre line, and every point of the
+/// ribbon takes the height of its own station. Points across the width
+/// share a station, which is what makes the cross-section level; stations
+/// along the length follow the terrain, which is what stops the pavement
+/// burying itself in a hill it should be climbing.
+///
+/// A station takes the HIGHEST ground across its own width, not the height
+/// under the centre line. A level surface set to the middle of a cross
+/// slope buries its uphill edge, and buried pavement is not pavement — it
+/// is a hole in the model where a runway should be. Taking the high side
+/// fills instead of cutting, which is what an airfield does to the ground
+/// anyway.
+struct AviationProfile<'lines> {
+    line: &'lines VectorSurfaceLine,
+    /// Print z at evenly spaced stations from the line's start to its end.
+    stations: Vec<f32>,
+    /// Assembled-mm box beyond which this profile has no say, being its
+    /// ribbon grown by the fade band. Every point of the layer asks every
+    /// profile how far away it is, so a busy airport would otherwise walk
+    /// hundreds of polylines per vertex. Skipping a profile whose box
+    /// misses the point changes no answer — past the fade its share is
+    /// zero — it just stops asking.
+    reach: [f32; 4],
+}
+
+impl AviationProfile<'_> {
+    /// Print z where an assembled-mm point projects onto this line.
+    fn z_at(&self, u: f32, v: f32) -> f32 {
+        let progress = surface_line_progress(self.line, u, v).clamp(0.0, 1.0);
+        let last = self.stations.len() - 1;
+        let position = progress * last as f32;
+        let index = (position.floor() as usize).min(last);
+        let next = (index + 1).min(last);
+        let fraction = position - index as f32;
+        self.stations[index] + (self.stations[next] - self.stations[index]) * fraction
+    }
+}
+
+/// Grades every aeroway line: reads the terrain along it, then smooths.
+fn aviation_profiles<'lines>(
+    spec: &GenerationSpec,
+    lines: &[&'lines VectorSurfaceLine],
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> Vec<AviationProfile<'lines>> {
+    lines
+        .par_iter()
+        .map(|line| {
+            let half_width = line.width_mm * 0.5;
+            let stations = (0..=AVIATION_PROFILE_STATIONS)
+                .map(|station| {
+                    let progress = station as f32 / AVIATION_PROFILE_STATIONS as f32;
+                    let point = polyline_point_at_progress(&line.points_mm, progress);
+                    let along = polyline_direction_at_progress(&line.points_mm, progress);
+                    // Perpendicular to the strip, so the samples cross it.
+                    let across = [-along[1], along[0]];
+                    (0..AVIATION_CROSS_SAMPLES)
+                        .map(|sample| {
+                            let offset = if AVIATION_CROSS_SAMPLES <= 1 {
+                                0.0
+                            } else {
+                                (sample as f32 / (AVIATION_CROSS_SAMPLES - 1) as f32 - 0.5) * 2.0
+                            } * half_width;
+                            let at = [point[0] + across[0] * offset, point[1] + across[1] * offset];
+                            let u = (at[0] / assembled_width).clamp(0.0, 1.0);
+                            let v = (at[1] / assembled_height).clamp(0.0, 1.0);
+                            terrain_z_at(spec, height_field, height_range, u, v)
+                        })
+                        .fold(f32::NEG_INFINITY, f32::max)
+                })
+                .collect::<Vec<_>>();
+            let margin = line.width_mm * 0.5 + AVIATION_GRADE_FADE_MM;
+            let mut reach = [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ];
+            for point in &line.points_mm {
+                reach[0] = reach[0].min(point[0] - margin);
+                reach[1] = reach[1].min(point[1] - margin);
+                reach[2] = reach[2].max(point[0] + margin);
+                reach[3] = reach[3].max(point[1] + margin);
+            }
+            AviationProfile {
+                line,
+                stations,
+                reach,
+            }
+        })
+        .collect()
+}
+
+/// The unit direction of a polyline a fraction of the way along it.
+fn polyline_direction_at_progress(points: &[[f32; 2]], progress: f32) -> [f32; 2] {
+    let ahead = polyline_point_at_progress(points, (progress + 0.005).min(1.0));
+    let behind = polyline_point_at_progress(points, (progress - 0.005).max(0.0));
+    let delta = [ahead[0] - behind[0], ahead[1] - behind[1]];
+    let length = delta[0].hypot(delta[1]);
+    if length <= f32::EPSILON {
+        [1.0, 0.0]
+    } else {
+        [delta[0] / length, delta[1] / length]
+    }
+}
+
+/// The point a fraction of the way along a polyline, by arc length.
+fn polyline_point_at_progress(points: &[[f32; 2]], progress: f32) -> [f32; 2] {
+    let Some(first) = points.first().copied() else {
+        return [0.0, 0.0];
+    };
+    let total: f32 = points
+        .windows(2)
+        .map(|segment| distance(segment[0], segment[1]))
+        .sum();
+    if total <= f32::EPSILON {
+        return first;
+    }
+    let target = progress.clamp(0.0, 1.0) * total;
+    let mut travelled = 0.0;
+    for segment in points.windows(2) {
+        let length = distance(segment[0], segment[1]);
+        if travelled + length >= target {
+            let fraction = if length <= f32::EPSILON {
+                0.0
+            } else {
+                (target - travelled) / length
+            };
+            return [
+                segment[0][0] + (segment[1][0] - segment[0][0]) * fraction,
+                segment[0][1] + (segment[1][1] - segment[0][1]) * fraction,
+            ];
+        }
+        travelled += length;
+    }
+    points.last().copied().unwrap_or(first)
+}
+
+fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
 }
 
 /// Line of a merged deck group nearest to an assembled-mm point.
@@ -836,9 +1339,20 @@ fn build_road_polygon_shell_with_embed(
         bottom,
         top,
         boundary_step_mm,
+        None,
         material,
         "triangulate vector road ribbon",
     )
+}
+
+/// Distance from a point to the nearest edge of a closed ring.
+fn ring_clearance(ring: &[[f32; 2]], point: [f32; 2]) -> f32 {
+    let open = polyline_distance_squared(ring, point);
+    let closing = match (ring.first(), ring.last()) {
+        (Some(first), Some(last)) => polyline_distance_squared(&[*last, *first], point),
+        _ => f32::INFINITY,
+    };
+    open.min(closing).sqrt()
 }
 
 pub(super) fn build_polygon_shell(
@@ -846,6 +1360,16 @@ pub(super) fn build_polygon_shell(
     bottom: impl Fn([f32; 2]) -> f32,
     top: impl Fn([f32; 2]) -> f32,
     boundary_step_mm: Option<f32>,
+    // Spacing of extra points scattered through the inside of the
+    // footprint. `None` triangulates from the outline alone, which is what
+    // every thin overlay has always done and is right for them.
+    //
+    // A wide footprint needs more. Triangulated from its outline, a runway
+    // is a handful of triangles stretched over its whole area, so the
+    // height computed for it only lands at the corners and the ground in
+    // between rises straight through the surface. Points inside give that
+    // surface somewhere to follow the ground.
+    interior_step_mm: Option<f32>,
     material: SurfaceClass,
     error_context: &'static str,
 ) -> Result<MeshBuilder> {
@@ -878,6 +1402,46 @@ pub(super) fn build_polygon_shell(
         .collect::<Vec<_>>();
     let mut points = Vec::new();
     let mut constraints = Vec::new();
+    if let Some(step) = interior_step_mm.filter(|step| *step > 0.0) {
+        let bounds = rings.iter().flatten().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |box_, point| {
+                [
+                    box_[0].min(point[0]),
+                    box_[1].min(point[1]),
+                    box_[2].max(point[0]),
+                    box_[3].max(point[1]),
+                ]
+            },
+        );
+        let columns = (((bounds[2] - bounds[0]) / step).ceil() as usize).min(2048);
+        let rows = (((bounds[3] - bounds[1]) / step).ceil() as usize).min(2048);
+        for row in 1..rows {
+            for column in 1..columns {
+                let point = [
+                    quantize_export_coordinate(bounds[0] + column as f32 * step),
+                    quantize_export_coordinate(bounds[1] + row as f32 * step),
+                ];
+                // Inside the outline, outside every hole, and clear of both:
+                // a point landing on a constraint edge splits it and leaves
+                // a crack down the seam.
+                let inside = point_in_polygon(point, &rings[0])
+                    && !rings[1..].iter().any(|hole| point_in_polygon(point, hole));
+                if inside
+                    && rings
+                        .iter()
+                        .all(|ring| ring_clearance(ring, point) > step * 0.25)
+                {
+                    points.push(Point2::new(f64::from(point[0]), f64::from(point[1])));
+                }
+            }
+        }
+    }
     for ring in &rings {
         let start = points.len();
         points.extend(
@@ -1615,6 +2179,7 @@ mod tests {
             &polygon,
             |_| 1.0,
             |_| 1.2,
+            None,
             None,
             SurfaceClass::Road,
             "test repeated boundary",
