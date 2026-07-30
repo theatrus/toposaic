@@ -695,6 +695,15 @@ a {
   white-space: nowrap;
 }
 
+/* A release summary is up to 240 characters and this is one row of the top
+   bar, so it is clipped rather than allowed to push the buttons off. The
+   title attribute carries the whole line. */
+.update-notice small.summary {
+  max-width: 38ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .update-notice a,
 .update-notice button {
   background: transparent;

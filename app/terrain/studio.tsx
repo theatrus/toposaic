@@ -1928,7 +1928,21 @@ export function TerrainStudio() {
             ? updateInstallState.message
             : availableUpdate?.urgency === "required"
               ? "This version is no longer supported."
-              : `Current ${displayVersion(appVersion)}`;
+              : // What the release says about itself, when the notice
+                // carried a line. Falls back to the running version, which
+                // is what this said before there was anything better.
+                (availableUpdate?.summary ?? `Current ${displayVersion(appVersion)}`);
+  // The line is one row of a top-bar aside, so a summary is clipped to fit
+  // and the whole of it goes in the tooltip. The running version follows it
+  // there, since the summary displaces it.
+  const updateStatusIsSummary =
+    !updateBusy &&
+    updateInstallState.phase !== "error" &&
+    availableUpdate?.urgency !== "required" &&
+    Boolean(availableUpdate?.summary);
+  const updateStatusTitle = updateStatusIsSummary
+    ? `${availableUpdate?.summary} — current ${displayVersion(appVersion)}`
+    : undefined;
   const previewState = generatedPreview
     ? "generated"
     : elevationPreview
@@ -2261,7 +2275,12 @@ export function TerrainStudio() {
                 <strong>
                   {displayVersion(availableUpdate.version)} available
                 </strong>
-                <small>{updateStatus}</small>
+                <small
+                  className={updateStatusIsSummary ? "summary" : undefined}
+                  title={updateStatusTitle}
+                >
+                  {updateStatus}
+                </small>
               </span>
               {signedUpdateReady ? (
                 <>
