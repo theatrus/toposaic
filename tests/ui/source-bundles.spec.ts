@@ -282,3 +282,90 @@ test("shows the ground colors a finished job discovered, without arrows", async 
   const waterNumber = (await water.locator(".filament-number").innerText()).trim();
   await expect(second.locator(".filament-number")).toHaveText(waterNumber);
 });
+
+test("drops an imported palette when the map moves to different ground", async ({
+  page,
+}) => {
+  let lastSubmitted: Record<string, unknown> = {};
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/sources/import") {
+      await route.fulfill({
+        json: {
+          report: {
+            place_name: "Mount Rainier",
+            added: 3,
+            added_bytes: 300,
+            already_present: 0,
+            rejected: 0,
+          },
+          spec: {
+            center_lat: 46.8523,
+            center_lon: -121.7603,
+            place_name: "Mount Rainier",
+            color_output: {
+              enabled: true,
+              ground_colors: "hybrid",
+              locked_ground_palette: ["#93867D", "#FDFDFD"],
+            },
+          },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      lastSubmitted = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: {
+          id: "1f0b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+          status: "running",
+          progress: 10,
+          artifacts: [],
+          spec: lastSubmitted,
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Setups" }).click();
+  await page.getByRole("menuitem", { name: "Import source data" }).click();
+  await page.getByLabel("Import source data bundle").setInputFiles({
+    name: "rainier-sources.zip",
+    mimeType: "application/zip",
+    buffer: Buffer.from("PK pretend archive"),
+  });
+  await expect(page.getByText(/Loaded Mount Rainier/)).toBeVisible();
+
+  // The imported palette is live, and listed as this model's ground colors.
+  await page.getByRole("tab", { name: "Colors" }).click();
+  const slots = page.getByRole("group", { name: "Output filament order" });
+  await expect(slots.getByText("Ground color 1")).toBeVisible();
+
+  // Move to different ground and it goes: those colors describe Rainier.
+  await page.getByRole("tab", { name: "Model" }).click();
+  await page.getByRole("slider", { name: "Ground span" }).fill("12");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(slots.getByText("Ground color 1")).toHaveCount(0);
+  await expect(slots).toContainText("generate it once to see them listed");
+
+  // And the generator is not asked to reuse them.
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await expect
+    .poll(
+      () =>
+        (lastSubmitted.color_output as Record<string, unknown>)
+          ?.locked_ground_palette,
+    )
+    .toBeUndefined();
+});

@@ -756,25 +756,14 @@ fn resolve_ground_palette(
         rgbn: &raster.rgbn,
         valid: &raster.valid,
     };
-    // Shadow flattening normalizes against the lightness mean of whatever
-    // raster it is handed, which is one tile. Above zero, two tiles can send
-    // the same ground color to different palette entries near a cluster
-    // boundary — a visible step exactly at a seam. So a grid that shares
-    // edges turns it off, and turns it off for the tile that *discovers* as
-    // well as the ones that assign: leaving it on for the first tile alone
-    // would put the step between tiles one and two instead of removing it.
-    let shadow_normalization = if spec.shares_tile_edges() {
-        if settings.ground_shadow_normalization > 0.0 {
-            append_source(
-                &mut field.source,
-                "shadow flattening skipped: it is measured per tile, and this \
-                 model shares its edges with another",
-            );
-        }
-        0.0
-    } else {
-        settings.ground_shadow_normalization
-    };
+    let shadow_normalization = palette_shadow_normalization(spec);
+    if shadow_normalization != settings.ground_shadow_normalization {
+        append_source(
+            &mut field.source,
+            "shadow flattening skipped: it is measured per tile, and this \
+             model shares its edges with another",
+        );
+    }
     let (mode, result) = match &settings.locked_ground_palette {
         Some(locked) => (
             "locked",
@@ -885,6 +874,23 @@ fn fetch_ocean_extent(
             None,
             "coastline data did not close into an ocean; flood fill trusts land-cover water".into(),
         ),
+    }
+}
+
+/// How much shadow flattening the palette step may use.
+///
+/// Flattening normalizes against the lightness mean of whatever raster it is
+/// handed, which is one tile. Above zero, two tiles can send the same ground
+/// color to different palette entries near a cluster boundary — a visible
+/// filament step exactly at a seam. So a model sharing its edges turns it
+/// off, and turns it off for the tile that *discovers* as well as the ones
+/// that assign to what it found: leaving it on for the first tile alone
+/// would put the step between tiles one and two instead of removing it.
+fn palette_shadow_normalization(spec: &GenerationSpec) -> f32 {
+    if spec.shares_tile_edges() {
+        0.0
+    } else {
+        spec.color_output.ground_palette.ground_shadow_normalization
     }
 }
 
@@ -3080,6 +3086,42 @@ fn world_cover_tile(longitude: f64, latitude: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A seam is the one place two tiles must agree exactly, and shadow
+    /// flattening is measured per tile — so a shared-edge model gives it up,
+    /// on the discovering tile as much as the assigning ones.
+    #[test]
+    fn shared_edges_give_up_shadow_flattening_for_every_tile() {
+        let mut spec = GenerationSpec {
+            place_name: "test".into(),
+            ..GenerationSpec::default()
+        };
+        spec.color_output.ground_palette.ground_shadow_normalization = 0.6;
+        assert_eq!(
+            palette_shadow_normalization(&spec),
+            0.6,
+            "a lone model keeps the setting"
+        );
+
+        // Every way a model comes to share an edge, and both palette
+        // branches: the first tile discovers with no palette locked, the
+        // rest assign to what it found.
+        for locked in [None, Some(vec!["#AA3311".to_string()])] {
+            spec.color_output.ground_palette.locked_ground_palette = locked.clone();
+            for shared in [
+                |spec: &mut GenerationSpec| spec.adjacent_columns = 2,
+                |spec: &mut GenerationSpec| spec.adjacent_rows = 2,
+            ] {
+                let mut sharing = spec.clone();
+                shared(&mut sharing);
+                assert_eq!(
+                    palette_shadow_normalization(&sharing),
+                    0.0,
+                    "a shared edge gives it up whatever the palette branch"
+                );
+            }
+        }
+    }
     use super::*;
 
     #[test]
