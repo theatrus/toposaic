@@ -9,7 +9,9 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "https://github.com/theatrus/toposaic/releases/*" },
-        { "url": "https://toposaic.com/*" }
+        { "url": "https://toposaic.com/*" },
+        { "url": "https://www.openstreetmap.org/copyright" },
+        { "url": "https://worldcover2021.esa.int/download" }
       ]
     },
     "process:allow-restart",

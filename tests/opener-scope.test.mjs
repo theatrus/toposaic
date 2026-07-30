@@ -59,6 +59,12 @@ test("the opener scope covers every release URL the app will try to open", async
     "https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-macos-aarch64.dmg",
     "https://toposaic.com/",
     "https://toposaic.com/changelog/",
+    // Attribution. OpenStreetMap's and ESA's licences want the terms
+    // reachable, so a dead link here is a licence problem rather than an
+    // annoyance — and these were dead in the desktop build for the same
+    // reason the update notice was.
+    "https://www.openstreetmap.org/copyright",
+    "https://worldcover2021.esa.int/download",
   ]) {
     assert.ok(
       scopeAllows(patterns, url),

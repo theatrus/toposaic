@@ -8,6 +8,7 @@ import {
   randomPuzzleSeed,
 } from "../config";
 import type { GenerationSpec, PlaceResult } from "../contracts";
+import { ExternalLink } from "../external-link";
 import type { AdjacentDirection } from "../geo";
 import { RangeField } from "./range-field";
 
@@ -112,13 +113,9 @@ export function ModelPanel({
         )}
         <p className="place-search-note">
           Submit-only search sends public place names to{" "}
-          <a
-            href="https://www.openstreetmap.org/copyright"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <ExternalLink href="https://www.openstreetmap.org/copyright">
             OpenStreetMap
-          </a>
+          </ExternalLink>
           . Do not enter private information.
         </p>
       </div>

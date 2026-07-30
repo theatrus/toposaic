@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import type { GenerationSpec } from "./contracts";
+import { ExternalLink } from "./external-link";
 import {
   DEFAULT_MAP_LABEL_STYLE,
   isMapLabel,
@@ -922,14 +923,12 @@ export function TerrainMap({
         <span />
         <span />
       </div>
-      <a
+      <ExternalLink
         className="map-attribution"
         href="https://www.openstreetmap.org/copyright"
-        target="_blank"
-        rel="noreferrer"
       >
         © OpenStreetMap
-      </a>
+      </ExternalLink>
     </div>
   );
 }
