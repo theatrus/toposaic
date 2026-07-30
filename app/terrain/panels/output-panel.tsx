@@ -105,19 +105,17 @@ export function OutputPanel({
       <div className="engine-note" hidden={hidden}>
         <span>Print source</span>
         <strong>
-          <a
+          <ExternalLink
             href={
               spec.elevation_source === "mapterhorn"
                 ? "https://mapterhorn.com/attribution"
                 : "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
             }
-            target="_blank"
-            rel="noreferrer"
           >
             {spec.elevation_source === "mapterhorn"
               ? "Mapterhorn elevation tiles"
               : "Global Mapzen elevation tiles"}
-          </a>
+          </ExternalLink>
         </strong>
         {spec.color_output.enabled && (
           <strong>

@@ -11,7 +11,11 @@
         { "url": "https://github.com/theatrus/toposaic/releases/*" },
         { "url": "https://toposaic.com/*" },
         { "url": "https://www.openstreetmap.org/copyright" },
-        { "url": "https://worldcover2021.esa.int/download" }
+        { "url": "https://worldcover2021.esa.int/download" },
+        { "url": "https://mapterhorn.com/attribution" },
+        {
+          "url": "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
+        }
       ]
     },
     "process:allow-restart",

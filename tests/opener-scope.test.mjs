@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
 // The desktop build opens external links through the Tauri opener plugin,
@@ -92,4 +92,68 @@ test("the opener scope does not open the rest of the web", async () => {
       `the desktop app should not open ${url}`,
     );
   }
+});
+
+/** Every .tsx under app/, so a new link cannot hide from these checks. */
+async function componentSources(directory = new URL("../app/", import.meta.url)) {
+  const found = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const child = new URL(
+      entry.name + (entry.isDirectory() ? "/" : ""),
+      directory,
+    );
+    if (entry.isDirectory()) {
+      found.push(...(await componentSources(child)));
+    } else if (entry.name.endsWith(".tsx")) {
+      found.push({ path: child.pathname, text: await readFile(child, "utf8") });
+    }
+  }
+  return found;
+}
+
+// Twice now a link has been added as a plain anchor and been dead in the
+// desktop app — the update notice in #51, then the attribution links and the
+// elevation source found reviewing its fix. Grepping for them by hand missed
+// the one whose href is a conditional rather than a literal, so this looks
+// for the shape instead of the string.
+test("external links go through ExternalLink, never a plain anchor", async () => {
+  const offenders = [];
+  for (const { path, text } of await componentSources()) {
+    if (path.endsWith("external-link.tsx")) continue;
+    // An <a ...> whose attributes reach an http(s) URL, literal or not.
+    for (const tag of text.matchAll(/<a\s[^>]*?>/gs)) {
+      if (/https?:\/\//.test(tag[0])) {
+        offenders.push(`${path.split("/app/")[1]}: ${tag[0].replace(/\s+/g, " ").slice(0, 80)}`);
+      }
+    }
+    // And the conditional form, where the URL sits in the expression body.
+    for (const tag of text.matchAll(/<a\s(?:[^<>]|\{[^{}]*\})*?>/gs)) {
+      if (/https?:\/\//.test(tag[0]) && !offenders.some((o) => o.includes(tag[0].slice(0, 40)))) {
+        offenders.push(`${path.split("/app/")[1]}: ${tag[0].replace(/\s+/g, " ").slice(0, 80)}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "a plain <a> to an external URL does nothing in the desktop app; use ExternalLink",
+  );
+});
+
+test("every fixed URL the app links to is inside the opener scope", async () => {
+  const patterns = await openerScope();
+  const missing = [];
+  for (const { path, text } of await componentSources()) {
+    for (const match of text.matchAll(/"(https:\/\/[^"\s]+)"/g)) {
+      const url = match[1];
+      if (!scopeAllows(patterns, url)) {
+        missing.push(`${path.split("/app/")[1]}: ${url}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    "the desktop app would refuse to open these; add them to src-tauri/capabilities/default.json",
+  );
 });
