@@ -756,34 +756,30 @@ fn resolve_ground_palette(
         rgbn: &raster.rgbn,
         valid: &raster.valid,
     };
-    let (mode, result) = match &settings.locked_ground_palette {
-        Some(locked) => {
-            // Assignment against a locked palette is exact only with shadow
-            // flattening off. Above zero each tile normalizes against its
-            // own lightness mean, so two tiles can send the same ground
-            // color to different entries near a cluster boundary — which
-            // is a visible step at a super-tile seam, the one thing the
-            // lock exists to prevent. Flattening is dropped for the
-            // assignment rather than the palette being abandoned: the
-            // colors still come from the tile that discovered them, and
-            // the seam stays equal.
-            let normalization = if spec.shares_tile_edges() {
-                0.0
-            } else {
-                settings.ground_shadow_normalization
-            };
-            if spec.shares_tile_edges() && settings.ground_shadow_normalization > 0.0 {
-                append_source(
-                    &mut field.source,
-                    "shadow flattening skipped for this tile's palette assignment; \
-                     it is per-tile and would break the shared seam",
-                );
-            }
-            (
-                "locked",
-                assign_locked_palette(&ground, locked, normalization),
-            )
+    // Shadow flattening normalizes against the lightness mean of whatever
+    // raster it is handed, which is one tile. Above zero, two tiles can send
+    // the same ground color to different palette entries near a cluster
+    // boundary — a visible step exactly at a seam. So a grid that shares
+    // edges turns it off, and turns it off for the tile that *discovers* as
+    // well as the ones that assign: leaving it on for the first tile alone
+    // would put the step between tiles one and two instead of removing it.
+    let shadow_normalization = if spec.shares_tile_edges() {
+        if settings.ground_shadow_normalization > 0.0 {
+            append_source(
+                &mut field.source,
+                "shadow flattening skipped: it is measured per tile, and this \
+                 model shares its edges with another",
+            );
         }
+        0.0
+    } else {
+        settings.ground_shadow_normalization
+    };
+    let (mode, result) = match &settings.locked_ground_palette {
+        Some(locked) => (
+            "locked",
+            assign_locked_palette(&ground, locked, shadow_normalization),
+        ),
         None => {
             // Hybrid grouping reads the final raster classes, gates and
             // smoothing included, so a demoted seawall clusters as the
@@ -801,7 +797,7 @@ fn resolve_ground_palette(
                     &GroundPaletteOptions {
                         color_count: settings.ground_color_count as usize,
                         minimum_share: settings.ground_color_minimum_share,
-                        shadow_normalization: settings.ground_shadow_normalization,
+                        shadow_normalization,
                     },
                 ),
             )

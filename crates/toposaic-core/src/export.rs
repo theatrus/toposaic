@@ -256,17 +256,12 @@ impl<'a> ThreeMfWriter<'a> {
         // Every material the mesh actually uses is in the palette by the
         // check above, so the fallback can never be reached.
         let mut slots = [0_u32; MATERIAL_SLOTS];
-        for (index, slot) in slots.iter_mut().enumerate() {
-            *slot = SurfaceClass::ALL
-                .iter()
-                .find(|class| class.material_index() as usize == index)
-                .and_then(|class| self.palette.slot(*class))
-                .or_else(|| {
-                    index
-                        .checked_sub(SurfaceClass::ALL.len())
-                        .and_then(|entry| self.palette.slot(PrintMaterial::Ground(entry as u8)))
-                })
-                .unwrap_or(0);
+        for class in SurfaceClass::ALL {
+            slots[class.material_index() as usize] = self.palette.slot(class).unwrap_or(0);
+        }
+        for entry in 0..crate::palette::MAXIMUM_PALETTE_ENTRIES as u8 {
+            let material = PrintMaterial::Ground(entry);
+            slots[material.material_index() as usize] = self.palette.slot(material).unwrap_or(0);
         }
         let object_id = self.object_count + 1;
         // Formatting millions of decimal numbers dominates the serial 3MF
