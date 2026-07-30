@@ -1017,6 +1017,16 @@ export function ReliefPreview({
                 )}
               </span>
             ))}
+          {/* The discovered ground colors are real printed materials with
+              real filament slots, so the legend has to name them too. They
+              carry no coverage figure: the backend's coverage is tallied by
+              land-cover class, which is what these replace. */}
+          {preview?.ground_palette?.map((color, index) => (
+            <span key={`ground-${index}`}>
+              <i style={{ background: color }} />
+              {`Ground ${index + 1}`}
+            </span>
+          ))}
         </div>
       )}
       <div className={`preview-label ${previewState}`}>

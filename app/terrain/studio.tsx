@@ -1759,6 +1759,17 @@ export function TerrainStudio() {
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
   };
 
+  // The ground palette to show in the Colors tab. A setup that already
+  // carries a locked palette knows its colors before anything runs;
+  // otherwise the last generated preview reports what the job discovered.
+  const discoveredGround = useMemo(
+    () =>
+      spec.color_output.locked_ground_palette ??
+      generatedPreview?.ground_palette ??
+      [],
+    [spec.color_output.locked_ground_palette, generatedPreview?.ground_palette],
+  );
+
   const generationFailure = useMemo(() => describeJobFailure(job), [job]);
   const statusLabel = useMemo(() => {
     if (!job) return null;
@@ -2517,6 +2528,7 @@ export function TerrainStudio() {
           />
 
           <ColorsPanel
+            discoveredGround={discoveredGround}
             hidden={activeSection !== "colors"}
             spec={spec}
             updateColor={updateColor}

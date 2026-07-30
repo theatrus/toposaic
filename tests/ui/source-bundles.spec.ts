@@ -179,3 +179,106 @@ test("imports a bundle and loads the setup it carried", async ({ page }) => {
   await expect(page.getByText(/2 already cached/)).toBeVisible();
   await expect(page.getByLabel("Place name")).toHaveValue("Grand Canyon");
 });
+
+test("lists the discovered ground colors among the filament slots", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    await route.abort();
+  });
+  await page.goto("/");
+
+  // Mapped mode: the slot list is the classes and nothing else.
+  await page.getByRole("tab", { name: "Colors" }).click();
+  const slots = page.getByRole("group", { name: "Output filament order" });
+  await expect(slots).toBeVisible();
+  await expect(slots.getByText(/Ground color/)).toHaveCount(0);
+
+  // Switching to a satellite mode says the colors are coming without
+  // inventing them — nothing can know them until a job has run.
+  await page.getByRole("tab", { name: "Surface" }).click();
+  await page
+    .getByLabel("Ground colors")
+    .selectOption("hybrid");
+  await page.getByRole("tab", { name: "Colors" }).click();
+  await expect(slots).toContainText("generate it once to see them listed");
+  await expect(slots.getByText(/Ground color/)).toHaveCount(0);
+});
+
+test("shows the ground colors a finished job discovered, without arrows", async ({
+  page,
+}) => {
+  const jobId = "c71e5a02-9d3c-4a11-8f60-1b2c3d4e5f60";
+  let jobSpec: Record<string, unknown> = {};
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      await route.fulfill({
+        json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/jobs" && request.method() === "POST") {
+      jobSpec = request.postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: { id: jobId, status: "queued", progress: 0, artifacts: [], spec: jobSpec },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}` && request.method() === "GET") {
+      await route.fulfill({
+        json: {
+          id: jobId,
+          status: "complete",
+          progress: 100,
+          artifacts: [],
+          spec: jobSpec,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/jobs/${jobId}/downloads/preview.json`) {
+      await route.fulfill({
+        json: {
+          width: 2,
+          height: 2,
+          values: [0.2, 0.4, 0.6, 0.8],
+          // One discovered color matches the water color, so it shares that
+          // slot rather than taking a new one — the backend packs it the
+          // same way.
+          ground_palette: ["#AA3311", "#2F76B5"],
+        },
+      });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Surface" }).click();
+  await page.getByLabel("Ground colors").selectOption("satellite");
+  await page.getByRole("button", { name: /^Generate/ }).click();
+  await page.getByRole("tab", { name: "Colors" }).click();
+
+  const slots = page.getByRole("group", { name: "Output filament order" });
+  const first = slots.getByRole("listitem").filter({ hasText: "Ground color 1" });
+  const second = slots.getByRole("listitem").filter({ hasText: "Ground color 2" });
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  await expect(first).toContainText("from the imagery");
+  // Discovered colors are not settings, so they carry no reorder arrows.
+  await expect(first.getByRole("button")).toHaveCount(0);
+  // And the one matching the water color shares its filament number.
+  const water = slots.getByRole("listitem").filter({ hasText: "Water" });
+  const waterNumber = (await water.locator(".filament-number").innerText()).trim();
+  await expect(second.locator(".filament-number")).toHaveText(waterNumber);
+});

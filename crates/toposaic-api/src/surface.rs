@@ -757,10 +757,33 @@ fn resolve_ground_palette(
         valid: &raster.valid,
     };
     let (mode, result) = match &settings.locked_ground_palette {
-        Some(locked) => (
-            "locked",
-            assign_locked_palette(&ground, locked, settings.ground_shadow_normalization),
-        ),
+        Some(locked) => {
+            // Assignment against a locked palette is exact only with shadow
+            // flattening off. Above zero each tile normalizes against its
+            // own lightness mean, so two tiles can send the same ground
+            // color to different entries near a cluster boundary — which
+            // is a visible step at a super-tile seam, the one thing the
+            // lock exists to prevent. Flattening is dropped for the
+            // assignment rather than the palette being abandoned: the
+            // colors still come from the tile that discovered them, and
+            // the seam stays equal.
+            let normalization = if spec.shares_tile_edges() {
+                0.0
+            } else {
+                settings.ground_shadow_normalization
+            };
+            if spec.shares_tile_edges() && settings.ground_shadow_normalization > 0.0 {
+                append_source(
+                    &mut field.source,
+                    "shadow flattening skipped for this tile's palette assignment; \
+                     it is per-tile and would break the shared seam",
+                );
+            }
+            (
+                "locked",
+                assign_locked_palette(&ground, locked, normalization),
+            )
+        }
         None => {
             // Hybrid grouping reads the final raster classes, gates and
             // smoothing included, so a demoted seawall clusters as the

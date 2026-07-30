@@ -225,7 +225,10 @@ pub(crate) async fn build_sources(
     let map_cache_dir = state.map_cache_dir.as_ref().clone();
     let bytes = tokio::task::spawn_blocking(move || -> Result<u64> {
         let list = sources::read_source_list(&output_dir)?;
-        let bundle = sources::build_bundle(&list, &job.spec, &map_cache_dir)?;
+        // The recorded spec is what generation ran; the job row's is what
+        // the client asked for, which lacks any palette discovered on the way.
+        let spec = list.spec.clone().unwrap_or_else(|| job.spec.clone());
+        let bundle = sources::build_bundle(&list, &spec, &map_cache_dir)?;
         let path = output_dir.join(sources::BUNDLE_ARTIFACT_NAME);
         fs::write(&path, &bundle)
             .with_context(|| format!("write the source bundle {}", path.display()))?;
@@ -331,6 +334,16 @@ fn finished_job(
     }
     let output_dir = state.jobs_dir.join(&id);
     Ok((job, output_dir))
+}
+
+/// The grid's spec with whatever ground palette its tiles shared, for the
+/// source list. Without it a rebuilt grid would rediscover per tile.
+fn bundled_grid_spec(spec: &GenerationSpec, locked: Option<&[String]>) -> GenerationSpec {
+    let mut bundled = spec.clone();
+    if let Some(colors) = locked {
+        bundled.color_output.ground_palette.locked_ground_palette = Some(colors.to_vec());
+    }
+    bundled
 }
 
 /// A set cancellation flag alone does not prove the job was canceled: the
@@ -680,6 +693,7 @@ fn run_job(
         &output_dir,
         &state.map_cache_dir,
         &manifest_data_sources(&manifest),
+        spec,
     );
     update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
     info!(
@@ -954,7 +968,14 @@ fn run_adjacent_grid_job(
         manifest_name,
         "application/json",
     )?);
-    sources::write_source_list(&output_dir, &state.map_cache_dir, &data_sources);
+    // The first tile's spec carries the palette the whole grid printed
+    // from; `spec` here is still the caller's, which does not.
+    sources::write_source_list(
+        &output_dir,
+        &state.map_cache_dir,
+        &data_sources,
+        &bundled_grid_spec(spec, ground_palette_lock.as_deref()),
+    );
     update_job(state, id, "complete", 100, &artifacts, None)?;
     info!(
         job_id = %id,

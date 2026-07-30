@@ -108,12 +108,16 @@ function ColorGroup({
 }
 
 export function ColorsPanel({
+  discoveredGround = [],
   hidden,
   spec,
   updateColor,
   updateMarkerSettings,
   updateTray,
 }: {
+  // The ground palette the last finished job discovered. Empty before one
+  // has run: these colors come off the imagery, not the settings.
+  discoveredGround?: readonly string[];
   hidden: boolean;
   spec: GenerationSpec;
   updateColor: UpdateColor;
@@ -209,8 +213,13 @@ export function ColorsPanel({
       >
         <legend>Output filament order</legend>
         <ol className="filament-order-list">
-          {filamentSlotEntries(spec).map((entry, index, entries) => (
-            <li key={entry.classKey}>
+          {filamentSlotEntries(spec, discoveredGround).map((entry, index, entries) => {
+            // Bound once so the handlers below narrow: a property read
+            // inside a closure does not.
+            const classKey = entry.classKey;
+            const movable = entries.filter((other) => other.classKey).length;
+            return (
+            <li key={classKey ?? `discovered-${entry.label}`}>
               <span className="filament-number">F{entry.filament}</span>
               <span
                 aria-hidden="true"
@@ -218,44 +227,53 @@ export function ColorsPanel({
                 style={{ backgroundColor: entry.color }}
               />
               <span className="filament-label">{entry.label}</span>
-              <button
-                aria-label={`Move ${entry.label} earlier`}
-                disabled={index === 0}
-                onClick={() => {
-                  const order = moveFilamentClass(
-                    spec,
-                    entry.classKey,
-                    "earlier",
-                  );
-                  if (order) {
-                    updateColor("filament_order", order);
-                  }
-                }}
-                type="button"
-              >
-                ↑
-              </button>
-              <button
-                aria-label={`Move ${entry.label} later`}
-                disabled={index === entries.length - 1}
-                onClick={() => {
-                  const order = moveFilamentClass(spec, entry.classKey, "later");
-                  if (order) {
-                    updateColor("filament_order", order);
-                  }
-                }}
-                type="button"
-              >
-                ↓
-              </button>
+              {classKey === null ? (
+                // Discovered from the imagery, not a setting: there is no
+                // color to edit and no place in the order to move it to.
+                <span className="filament-note">from the imagery</span>
+              ) : (
+                <>
+                  <button
+                    aria-label={`Move ${entry.label} earlier`}
+                    disabled={index === 0}
+                    onClick={() => {
+                      const order = moveFilamentClass(spec, classKey, "earlier");
+                      if (order) {
+                        updateColor("filament_order", order);
+                      }
+                    }}
+                    type="button"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    aria-label={`Move ${entry.label} later`}
+                    disabled={index === movable - 1}
+                    onClick={() => {
+                      const order = moveFilamentClass(spec, classKey, "later");
+                      if (order) {
+                        updateColor("filament_order", order);
+                      }
+                    }}
+                    type="button"
+                  >
+                    ↓
+                  </button>
+                </>
+              )}
             </li>
-          ))}
+            );
+          })}
         </ol>
         <small>
           The filament number each layer prints from, in every 3MF style.
           Two layers with one color share a number. Numbers assume each
           layer appears on the map; a layer the map lacks gives its number
           up and later ones move down.
+          {spec.color_output.ground_colors !== "mapped" &&
+            (discoveredGround.length > 0
+              ? " The ground colors below them were read off this area's imagery, so they cannot be edited or reordered here."
+              : " This model also prints satellite ground colors, which are read off the imagery — generate it once to see them listed here.")}
         </small>
       </fieldset>
 

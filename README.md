@@ -656,7 +656,10 @@ attribution beside it.
 Expect tens of megabytes. Most of it is the ESA WorldCover tile: an 8 km
 square of Mount Rainier packs 32 files and 65 MB, of which one WorldCover tile
 is 63 MB. The zip is stored, not compressed, because every part of it is
-already compressed. Bundles are built when asked for, never with the job.
+already compressed. Bundles are built when asked for, never with the job —
+and once built, one sits with that job's print files and goes when the job
+does. A bundle also carries the setup generation really ran, palette and all,
+so rebuilding from it reproduces the model rather than re-deriving it.
 
 An import writes only into the elevation, land-cover, OpenStreetMap, imagery,
 and tide-datum caches, and never over a file already there — your own cache
