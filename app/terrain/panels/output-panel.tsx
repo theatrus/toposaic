@@ -1,4 +1,5 @@
 import { IS_TAURI } from "../api";
+import { ExternalLink } from "../external-link";
 import type {
   Artifact,
   ArtifactFeedback,
@@ -120,13 +121,9 @@ export function OutputPanel({
         </strong>
         {spec.color_output.enabled && (
           <strong>
-            <a
-              href="https://worldcover2021.esa.int/download"
-              target="_blank"
-              rel="noreferrer"
-            >
+            <ExternalLink href="https://worldcover2021.esa.int/download">
               ESA WorldCover 2021 surface classes
-            </a>
+            </ExternalLink>
           </strong>
         )}
         {((spec.color_output.enabled &&
@@ -134,13 +131,9 @@ export function OutputPanel({
           spec.buildings.enabled ||
           spec.markers.some((marker) => marker.kind === "building")) && (
           <strong>
-            <a
-              href="https://www.openstreetmap.org/copyright"
-              target="_blank"
-              rel="noreferrer"
-            >
+            <ExternalLink href="https://www.openstreetmap.org/copyright">
               OpenStreetMap route and building data
-            </a>
+            </ExternalLink>
           </strong>
         )}
         <p>

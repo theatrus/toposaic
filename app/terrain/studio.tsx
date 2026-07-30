@@ -1915,20 +1915,42 @@ export function TerrainStudio() {
   const updateBusy = ["checking", "downloading", "installing"].includes(
     updateInstallState.phase,
   );
-  const updateStatus =
-    updateInstallState.phase === "checking"
-      ? "Checking signed package…"
-      : updateInstallState.phase === "downloading"
-        ? updateInstallState.percent === null
-          ? "Downloading update…"
-          : `Downloading ${updateInstallState.percent}%…`
-        : updateInstallState.phase === "installing"
-          ? "Installing and restarting…"
-          : updateInstallState.phase === "error"
-            ? updateInstallState.message
-            : availableUpdate?.urgency === "required"
-              ? "This version is no longer supported."
-              : `Current ${displayVersion(appVersion)}`;
+  // One decision, not two: whether this row is showing a release summary
+  // has to follow from the same branch that chose the text, or the clipping
+  // and the tooltip end up describing a line that is not there.
+  const updateLine: { text: string; isSummary: boolean } = (() => {
+    const plain = (text: string) => ({ text, isSummary: false });
+    switch (updateInstallState.phase) {
+      case "checking":
+        return plain("Checking signed package…");
+      case "downloading":
+        return plain(
+          updateInstallState.percent === null
+            ? "Downloading update…"
+            : `Downloading ${updateInstallState.percent}%…`,
+        );
+      case "installing":
+        return plain("Installing and restarting…");
+      case "error":
+        return plain(updateInstallState.message);
+      default:
+        break;
+    }
+    if (availableUpdate?.urgency === "required") {
+      return plain("This version is no longer supported.");
+    }
+    // What the release says about itself, when the notice carried a line.
+    // Otherwise the running version, which is what this said before there
+    // was anything better to show.
+    return availableUpdate?.summary
+      ? { text: availableUpdate.summary, isSummary: true }
+      : plain(`Current ${displayVersion(appVersion)}`);
+  })();
+  // A summary is clipped to the one top-bar row it has, so the whole of it
+  // goes in the tooltip — with the running version, which it displaced.
+  const updateStatusTitle = updateLine.isSummary
+    ? `${updateLine.text} — current ${displayVersion(appVersion)}`
+    : undefined;
   const previewState = generatedPreview
     ? "generated"
     : elevationPreview
@@ -2261,7 +2283,12 @@ export function TerrainStudio() {
                 <strong>
                   {displayVersion(availableUpdate.version)} available
                 </strong>
-                <small>{updateStatus}</small>
+                <small
+                  className={updateLine.isSummary ? "summary" : undefined}
+                  title={updateStatusTitle}
+                >
+                  {updateLine.text}
+                </small>
               </span>
               {signedUpdateReady ? (
                 <>
@@ -2277,13 +2304,9 @@ export function TerrainStudio() {
                   </ExternalLink>
                 </>
               ) : (
-                <a
-                  href={availableUpdate.url || RELEASES_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <ExternalLink href={availableUpdate.url || RELEASES_URL}>
                   Download
-                </a>
+                </ExternalLink>
               )}
               {!updateBusy && (
                 <button
