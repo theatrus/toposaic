@@ -54,6 +54,7 @@ import type {
   PreviewData,
   SavedSetup,
   SetupVersion,
+  SourceBundleSummary,
   TrailRoute,
 } from "./contracts";
 import { describeJobFailure } from "./generation-failure";
@@ -207,6 +208,14 @@ export function TerrainStudio() {
   const [message, setMessage] = useState<string | null>(null);
   const [artifactFeedback, setArtifactFeedback] =
     useState<ArtifactFeedback | null>(null);
+  // Kept with the job it describes rather than cleared when the job changes:
+  // a stale summary is then simply one that does not match, and the effect
+  // below never has to setState synchronously to wipe it.
+  const [sourceBundle, setSourceBundle] = useState<{
+    jobId: string;
+    summary: SourceBundleSummary;
+  } | null>(null);
+  const [buildingSourceBundle, setBuildingSourceBundle] = useState(false);
   const [placeQuery, setPlaceQuery] = useState("");
   const [placeResults, setPlaceResults] = useState<PlaceResult[]>([]);
   const [placeMessage, setPlaceMessage] = useState<string | null>(null);
@@ -250,6 +259,7 @@ export function TerrainStudio() {
   const visualColumnRef = useRef<HTMLElement>(null);
   const visualResizePointerRef = useRef<number | null>(null);
   const setupImportRef = useRef<HTMLInputElement>(null);
+  const sourceImportRef = useRef<HTMLInputElement>(null);
   const setupMenuRef = useRef<HTMLDivElement>(null);
   const setupMenuButtonRef = useRef<HTMLButtonElement>(null);
   const setupNameInputRef = useRef<HTMLInputElement>(null);
@@ -1674,6 +1684,76 @@ export function TerrainStudio() {
     }
   };
 
+  // Asked for once a job finishes, so the Output tab can say how large the
+  // source data is before anyone commits to packing it.
+  useEffect(() => {
+    if (job?.status !== "complete") return;
+    const jobId = job.id;
+    const controller = new AbortController();
+    terrainApi
+      .sourceBundle(jobId, controller.signal)
+      .then((summary) => setSourceBundle({ jobId, summary }))
+      // A job from before this feature, or a service that does not know the
+      // route, simply has no bundle to offer. Nothing to report.
+      .catch(() => {});
+    return () => controller.abort();
+  }, [job?.id, job?.status]);
+
+  const jobSourceBundle =
+    job && sourceBundle?.jobId === job.id ? sourceBundle.summary : null;
+
+  const buildSourceBundle = async () => {
+    if (!job) return;
+    setBuildingSourceBundle(true);
+    try {
+      const built = await terrainApi.buildSourceBundle(job.id);
+      setSourceBundle((current) =>
+        current
+          ? {
+              ...current,
+              summary: { ...current.summary, built_bytes: built.bytes },
+            }
+          : current,
+      );
+      setMessage(
+        `Packed ${(built.bytes / 1024 / 1024).toFixed(1)} MB of source data.`,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not pack the source data.",
+      );
+    } finally {
+      setBuildingSourceBundle(false);
+    }
+  };
+
+  // Reports through the setups status line, not the Output tab's message:
+  // this is started from the setups menu, and a reply the user has to change
+  // tabs to read is no reply at all.
+  const importSourceBundle = async (file: File) => {
+    setSetupStatus(`Importing ${file.name}…`);
+    try {
+      const { report, spec: bundled } =
+        await terrainApi.importSourceBundle(file);
+      setSpec(mergeSpecDefaults(bundled));
+      const kept = report.already_present
+        ? `, ${report.already_present} already cached`
+        : "";
+      const refused = report.rejected ? `, ${report.rejected} refused` : "";
+      setSetupStatus(
+        `Loaded ${report.place_name}: ${report.added} source files added${kept}${refused}. Generating now needs no network.`,
+      );
+    } catch (error) {
+      setSetupStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not import that source bundle.",
+      );
+    }
+  };
+
   const noteWebDownload = (artifact: Artifact) => {
     setArtifactFeedback({ name: artifact.name, state: "sent" });
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
@@ -2099,6 +2179,16 @@ export function TerrainStudio() {
                     >
                       Import
                     </button>
+                    <button
+                      onClick={() => {
+                        sourceImportRef.current?.click();
+                        closeSetupMenu(true);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      Import source data
+                    </button>
                   </div>
                 </div>
               )}
@@ -2116,6 +2206,18 @@ export function TerrainStudio() {
                 if (file) void importSetups(file);
               }}
               ref={setupImportRef}
+              type="file"
+            />
+            <input
+              accept="application/zip,.zip"
+              aria-label="Import source data bundle"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void importSourceBundle(file);
+              }}
+              ref={sourceImportRef}
               type="file"
             />
           </div>
@@ -2440,6 +2542,8 @@ export function TerrainStudio() {
 
           <OutputPanel
             artifactFeedback={artifactFeedback}
+            buildSourceBundle={() => void buildSourceBundle()}
+            buildingSourceBundle={buildingSourceBundle}
             failure={generationFailure}
             generationStages={generationStages}
             hidden={activeSection !== "output"}
@@ -2448,6 +2552,7 @@ export function TerrainStudio() {
             noteWebDownload={noteWebDownload}
             saveDesktopArtifactSet={saveDesktopArtifactSet}
             saveDesktopArtifact={saveDesktopArtifact}
+            sourceBundle={jobSourceBundle}
             spec={spec}
             statusLabel={statusLabel}
             updateColor={updateColor}

@@ -114,7 +114,7 @@ fn fetch_station_datums(station_id: &str, cache_dir: &Path) -> Result<DatumsResp
 
 fn fetch_cached(cache_dir: &Path, file_name: &str, url: &str) -> Result<Vec<u8>> {
     let path = cache_dir.join(file_name);
-    if let Ok(bytes) = std::fs::read(&path) {
+    if let Ok(bytes) = cache::read(&path) {
         return Ok(bytes);
     }
     let response = http::blocking_client(Duration::from_secs(30))
