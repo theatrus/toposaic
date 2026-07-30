@@ -7,6 +7,8 @@ import type {
   PreviewData,
   SavedSetup,
   SetupVersion,
+  SourceBundleSummary,
+  SourceImportResult,
 } from "./contracts";
 
 export const IS_TAURI =
@@ -120,6 +122,30 @@ export const terrainApi = {
   },
   artifactUrl(id: string, name: string) {
     return `${API_URL}/api/jobs/${encodeURIComponent(id)}/downloads/${encodeURIComponent(name)}`;
+  },
+  sourceBundle(id: string, signal?: AbortSignal) {
+    return requestJson<SourceBundleSummary>(
+      `/api/jobs/${encodeURIComponent(id)}/sources`,
+      { signal },
+    );
+  },
+  // Builds the bundle into the job's directory, where it becomes one of the
+  // job's files — so the ordinary download and save paths carry it.
+  buildSourceBundle(id: string, signal?: AbortSignal) {
+    return requestJson<{ name: string; bytes: number }>(
+      `/api/jobs/${encodeURIComponent(id)}/sources/build`,
+      { method: "POST", signal },
+    );
+  },
+  // Sent as raw bytes rather than multipart: the service streams the body
+  // straight to a file, and a bundle can run to hundreds of megabytes.
+  importSourceBundle(file: Blob, signal?: AbortSignal) {
+    return requestJson<SourceImportResult>("/api/sources/import", {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: file,
+      signal,
+    });
   },
   listSetups(signal?: AbortSignal) {
     return requestJson<SavedSetup[]>("/api/setups", { signal });

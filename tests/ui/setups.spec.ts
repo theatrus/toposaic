@@ -389,7 +389,13 @@ test("drives the setups menu from the keyboard", async ({ page }) => {
   await page.keyboard.press("ArrowUp");
   await expect(row).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(menu.getByRole("menuitem", { name: "Import" })).toBeFocused();
+  // Wraps to the last item in the menu, which is the source-data import.
+  await expect(
+    menu.getByRole("menuitem", { name: "Import source data", exact: true }),
+  ).toBeFocused();
+  await expect(
+    menu.getByRole("menuitem", { name: "Import", exact: true }),
+  ).toHaveCount(1);
   await page.keyboard.press("Home");
   await expect(row).toBeFocused();
 

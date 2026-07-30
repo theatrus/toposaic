@@ -291,6 +291,30 @@ export type CacheClearResult = {
   removed_entries: number;
 };
 
+// What a finished job's source bundle would hold. Jobs generated before
+// source bundles existed report available: false and nothing else, so the
+// download is simply not offered for them.
+export type SourceBundleSummary = {
+  available: boolean;
+  files?: number;
+  bytes?: number;
+  name?: string;
+  // Set once the bundle has been built for this job, so a reload can offer
+  // the file itself rather than the build step again.
+  built_bytes?: number | null;
+};
+
+export type SourceImportResult = {
+  report: {
+    place_name: string;
+    added: number;
+    added_bytes: number;
+    already_present: number;
+    rejected: number;
+  };
+  spec: GenerationSpec;
+};
+
 // One superseded spec of a setup, kept so an overwrite can be walked back.
 export type SetupVersion = {
   id: string;

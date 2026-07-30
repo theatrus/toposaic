@@ -632,7 +632,7 @@ fn load_tile(
     let path = cache_path(cache_dir, provider, zoom, x, y);
     if path.is_file() {
         let bytes =
-            fs::read(&path).with_context(|| format!("read cached tile {}", path.display()))?;
+            cache::read(&path).with_context(|| format!("read cached tile {}", path.display()))?;
         // A corrupt cached tile must not fail every future job in the area:
         // drop it and fall through to a fresh download.
         match decode_tile(&bytes, provider, zoom, x, y) {

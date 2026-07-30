@@ -2489,7 +2489,7 @@ fn read_cached_osm_response(
     cache_path: &Path,
     cache_prefix: &str,
 ) -> Result<Option<OverpassResponse>> {
-    match fs::read(cache_path) {
+    match cache::read(cache_path) {
         Ok(bytes) => match parse_osm_response(&bytes, cache_prefix) {
             Ok(response) => Ok(Some(response)),
             Err(error) => {
@@ -3020,6 +3020,9 @@ fn cached_world_cover_tile(tile_name: &str, cache_dir: &Path) -> Result<PathBuf>
     let file_name = format!("ESA_WorldCover_10m_2021_v200_{tile_name}_Map.tif");
     let path = cache_dir.join(&file_name);
     if path.is_file() {
+        // The caller hands this path to the GeoTIFF reader rather than
+        // reading it here, so the hit is noted by hand.
+        cache::note(&path);
         return Ok(path);
     }
     let url = format!("{WORLD_COVER_BASE_URL}/{file_name}");

@@ -1,4 +1,6 @@
 use std::{
+    cell::RefCell,
+    collections::BTreeSet,
     ffi::OsStr,
     fs,
     fs::OpenOptions,
@@ -26,11 +28,89 @@ pub fn root() -> Result<PathBuf> {
         .context("find the OS cache directory; set TOPOSAIC_CACHE_DIR to choose one")
 }
 
+/// The cache files one generation read or wrote, in path order.
+///
+/// Recording is per thread and needs no lock. A job's whole fetch phase runs
+/// on the single blocking thread `spawn_blocking` handed it, and nothing
+/// under that phase forks — the downloads are sequential, and the parallel
+/// work (Rayon meshing) starts after the last fetch. Two jobs running at
+/// once therefore keep separate logs, and a thread with no session open pays
+/// one thread-local read per cache touch.
+#[derive(Debug, Clone, Default)]
+pub struct SourceLog {
+    files: BTreeSet<PathBuf>,
+}
+
+impl SourceLog {
+    pub fn paths(&self) -> impl ExactSizeIterator<Item = &Path> {
+        self.files.iter().map(PathBuf::as_path)
+    }
+}
+
+thread_local! {
+    static SOURCE_LOG: RefCell<Option<SourceLog>> = const { RefCell::new(None) };
+}
+
+/// An open recording session. Dropping it stops recording and discards
+/// whatever is left, so a job that fails part way cannot leak its entries
+/// into the next job that lands on the same blocking thread.
+///
+/// Sessions do not nest: `begin` replaces any log already open on this
+/// thread. Nothing in the generator nests them, and a silent merge would be
+/// worse than the replacement.
+pub struct Recording {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Recording {
+    pub fn begin() -> Self {
+        SOURCE_LOG.with_borrow_mut(|slot| *slot = Some(SourceLog::default()));
+        Self {
+            _not_send: std::marker::PhantomData,
+        }
+    }
+}
+
+/// The files this thread's open session has recorded, or an empty log when
+/// none is open. Lets code deep in a generation read the log without being
+/// handed the guard.
+pub fn current_sources() -> SourceLog {
+    SOURCE_LOG.with_borrow(|slot| slot.clone().unwrap_or_default())
+}
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        SOURCE_LOG.with_borrow_mut(|slot| *slot = None);
+    }
+}
+
+/// Notes that `path` served this generation, whether it was already cached
+/// or downloaded just now. Does nothing unless a [`Recording`] is open on
+/// this thread.
+pub fn note(path: &Path) {
+    SOURCE_LOG.with_borrow_mut(|slot| {
+        if let Some(log) = slot.as_mut() {
+            log.files.insert(path.to_path_buf());
+        }
+    });
+}
+
+/// Reads a cached file, recording it as a source of this generation. The
+/// read path for every category goes through here so a cache hit counts
+/// exactly like a fresh download — a bundle built from an already-warm cache
+/// has to hold the same files as one built from a cold start.
+pub fn read(path: &Path) -> std::io::Result<Vec<u8>> {
+    let bytes = fs::read(path)?;
+    note(path);
+    Ok(bytes)
+}
+
 pub fn store(path: &Path, bytes: &[u8]) -> Result<()> {
     store_reader(path, bytes)
 }
 
 pub fn store_reader(path: &Path, mut reader: impl Read) -> Result<()> {
+    note(path);
     if path.is_file() {
         return Ok(());
     }
@@ -322,6 +402,63 @@ mod tests {
         store(&path, b"second").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"first");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_recording_collects_stores_hits_and_hand_noted_paths() {
+        let directory =
+            std::env::temp_dir().join(format!("toposaic-record-test-{}", Uuid::new_v4()));
+        let stored = directory.join("elevation/8/1/2.png");
+        let hit = directory.join("osm/roads-v2-a.json");
+        let noted = directory.join("world-cover/tile-a.tif");
+        write_file(&hit, b"cached");
+        write_file(&noted, b"tif");
+
+        // Nothing is recorded outside a session.
+        store(&stored, b"tile").unwrap();
+        assert!(read(&hit).is_ok());
+
+        let recording = Recording::begin();
+        assert_eq!(current_sources().paths().len(), 0);
+        // A store whose file already exists still counts: the generation
+        // used it either way, which is the whole point of the log.
+        store(&stored, b"tile").unwrap();
+        read(&hit).unwrap();
+        note(&noted);
+        // Repeats collapse.
+        read(&hit).unwrap();
+
+        let log = current_sources();
+        assert_eq!(log.paths().len(), 3);
+        assert_eq!(
+            log.paths().collect::<Vec<_>>(),
+            [stored.as_path(), hit.as_path(), noted.as_path()],
+            "paths come back sorted, not in touch order"
+        );
+
+        drop(recording);
+        // A new session starts empty rather than inheriting the last one.
+        let next = Recording::begin();
+        read(&hit).unwrap();
+        assert_eq!(current_sources().paths().len(), 1);
+        drop(next);
+
+        // And with no session open, reads record nothing again.
+        read(&hit).unwrap();
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_missing_read_records_nothing_and_still_reports_the_error() {
+        let missing = std::env::temp_dir().join(format!("toposaic-absent-{}", Uuid::new_v4()));
+        let _recording = Recording::begin();
+        assert!(read(&missing).is_err());
+        assert_eq!(
+            current_sources().paths().len(),
+            0,
+            "a file that could not be read is not a source"
+        );
     }
 
     /// `test_state` shares one per-process directory; these tests delete

@@ -5,11 +5,14 @@ import type {
   GenerationFailure,
   GenerationSpec,
   Job,
+  SourceBundleSummary,
 } from "../contracts";
 import { ArtifactDownloads } from "../downloads";
 
 export function OutputPanel({
   artifactFeedback,
+  buildSourceBundle,
+  buildingSourceBundle,
   failure,
   generationStages,
   hidden,
@@ -18,11 +21,14 @@ export function OutputPanel({
   noteWebDownload,
   saveDesktopArtifact,
   saveDesktopArtifactSet,
+  sourceBundle,
   spec,
   statusLabel,
   updateColor,
 }: {
   artifactFeedback: ArtifactFeedback | null;
+  buildSourceBundle: () => void;
+  buildingSourceBundle: boolean;
   failure: GenerationFailure | null;
   generationStages: Array<{
     key: string;
@@ -36,6 +42,7 @@ export function OutputPanel({
   noteWebDownload: (artifact: Artifact) => void;
   saveDesktopArtifact: (artifact: Artifact) => Promise<void>;
   saveDesktopArtifactSet: (key: string, names: string[]) => Promise<void>;
+  sourceBundle: SourceBundleSummary | null;
   spec: GenerationSpec;
   statusLabel: string | null;
   updateColor: <Key extends keyof GenerationSpec["color_output"]>(
@@ -191,7 +198,10 @@ export function OutputPanel({
           )}
           {job?.status === "complete" && (
             <ArtifactDownloads
+              building={buildingSourceBundle}
+              bundle={sourceBundle}
               feedback={artifactFeedback}
+              onBuildBundle={buildSourceBundle}
               isDesktop={IS_TAURI}
               job={job}
               onSave={(artifact) => void saveDesktopArtifact(artifact)}

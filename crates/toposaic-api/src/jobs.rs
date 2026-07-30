@@ -30,14 +30,14 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, api_error, canonical_uuid,
+    ApiError, AppState, api_error, cache, canonical_uuid,
     database::{find_job, insert_job, mark_job_canceled, recent_jobs, update_job},
     elevation,
     grid::{
         AdjacentGridOutputPlan, adjacent_tile_specs, copy_grid_artifact, local_artifact,
         mosaic_tray_spec, publish_grid_wall_hardware, stitch_height_fields,
     },
-    internal_error, surface,
+    internal_error, sources, surface,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +111,11 @@ pub(crate) async fn create_job(
         .insert(id.clone(), cancellation.clone());
     let worker_state = state.clone();
     tokio::task::spawn_blocking(move || {
+        // One recording session per job, opened here so both the single-tile
+        // and super-tile paths are covered and neither has to remember to.
+        // The whole fetch phase runs on this blocking thread, which is what
+        // makes a thread-local log sound; see cache::SourceLog.
+        let _recording = cache::Recording::begin();
         let result = catch_unwind(AssertUnwindSafe(|| {
             run_job(&worker_state, &id, &spec, &cancellation)
         }));
@@ -174,6 +179,158 @@ fn locked_ground_spec(spec: &GenerationSpec, field: Option<&SurfaceField>) -> Ge
     let mut locked = spec.clone();
     locked.color_output.ground_palette.locked_ground_palette = Some(colors);
     locked
+}
+
+/// Reports what a finished job's source bundle would hold, so the app can
+/// offer the download with a real size instead of a promise.
+pub(crate) async fn source_summary(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let (_, output_dir) = finished_job(&state, &id)?;
+    let read_dir = output_dir.clone();
+    let list = tokio::task::spawn_blocking(move || sources::read_source_list(&read_dir))
+        .await
+        .map_err(internal_error)?;
+    // A job from before this feature has no list. That is not an error the
+    // app should show as one; it is a download that is simply not on offer.
+    let Ok(list) = list else {
+        return Ok(Json(serde_json::json!({ "available": false })));
+    };
+    let built = output_dir.join(sources::BUNDLE_ARTIFACT_NAME);
+    Ok(Json(serde_json::json!({
+        "available": !list.files.is_empty(),
+        "files": list.files.len(),
+        "bytes": list.total_bytes(),
+        "name": sources::BUNDLE_ARTIFACT_NAME,
+        "built_bytes": fs::metadata(&built).ok().map(|data| data.len()),
+    })))
+}
+
+/// Builds the source bundle into the job's own directory, where it becomes
+/// one of the job's files.
+///
+/// Written to disk rather than streamed straight back so that every path
+/// that already saves a job's files works on it unchanged — the browser
+/// download, and the desktop app's native save dialog, which copies from
+/// this directory.
+///
+/// Built on request rather than at generation time: the files it packs can
+/// run to hundreds of megabytes, and most jobs never want one.
+pub(crate) async fn build_sources(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let (job, output_dir) = finished_job(&state, &id)?;
+    let map_cache_dir = state.map_cache_dir.as_ref().clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<u64> {
+        let list = sources::read_source_list(&output_dir)?;
+        let bundle = sources::build_bundle(&list, &job.spec, &map_cache_dir)?;
+        let path = output_dir.join(sources::BUNDLE_ARTIFACT_NAME);
+        fs::write(&path, &bundle)
+            .with_context(|| format!("write the source bundle {}", path.display()))?;
+        Ok(bundle.len() as u64)
+    })
+    .await
+    .map_err(internal_error)?
+    .map_err(|error| api_error(StatusCode::NOT_FOUND, format!("{error:#}")))?;
+    Ok(Json(serde_json::json!({
+        "name": sources::BUNDLE_ARTIFACT_NAME,
+        "bytes": bytes,
+    })))
+}
+
+/// Unpacks a source bundle into the map cache and hands back the setup it
+/// carried, so the app can load it and generate with no network.
+///
+/// The body is streamed to a temporary file rather than buffered. A real
+/// bundle runs to hundreds of megabytes — the Rainier test case is 65 MB for
+/// an 8 km square, most of it one WorldCover tile — and holding that in
+/// memory per request is a denial of service waiting to be found. Reading
+/// the zip needs seeking anyway, so a file is the natural home.
+pub(crate) async fn import_sources(
+    State(state): State<AppState>,
+    body: Body,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let map_cache_dir = state.map_cache_dir.as_ref().clone();
+    let upload = state
+        .jobs_dir
+        .join(format!(".import-{}.zip", Uuid::new_v4()));
+    if let Some(parent) = upload.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(internal_error)?;
+    }
+    let written = stream_body_to_file(body, &upload, sources::MAXIMUM_UPLOAD_BYTES).await;
+    let result = match written {
+        Ok(()) => {
+            let path = upload.clone();
+            tokio::task::spawn_blocking(move || {
+                let file = fs::File::open(&path).context("open the uploaded bundle")?;
+                sources::import_bundle(std::io::BufReader::new(file), &map_cache_dir)
+            })
+            .await
+            .map_err(internal_error)?
+            // A bad bundle is the caller's file, not a server fault.
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("{error:#}")))
+        }
+        Err(error) => Err(api_error(StatusCode::BAD_REQUEST, format!("{error:#}"))),
+    };
+    // The upload is scratch either way.
+    let _ = tokio::fs::remove_file(&upload).await;
+    let (report, spec) = result?;
+    Ok(Json(serde_json::json!({
+        "report": report,
+        "spec": spec,
+    })))
+}
+
+/// Writes a request body to `path`, refusing it once it passes `limit` so a
+/// long upload cannot fill the disk before anyone inspects it.
+async fn stream_body_to_file(body: Body, path: &std::path::Path, limit: u64) -> Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .context("open a temporary file for the upload")?;
+    let mut stream = body.into_data_stream();
+    let mut total = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read the uploaded bundle")?;
+        total += chunk.len() as u64;
+        if total > limit {
+            anyhow::bail!(
+                "this upload is larger than the {} GB an import accepts",
+                limit / (1024 * 1024 * 1024)
+            );
+        }
+        file.write_all(&chunk)
+            .await
+            .context("write the uploaded bundle")?;
+    }
+    file.flush().await.context("flush the uploaded bundle")?;
+    Ok(())
+}
+
+/// The job and its output directory, or a 404. Only a complete job has a
+/// source list worth reading.
+fn finished_job(
+    state: &AppState,
+    id: &str,
+) -> Result<(Job, std::path::PathBuf), (StatusCode, Json<ApiError>)> {
+    let id = canonical_uuid(id).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
+    let job = find_job(state, &id)
+        .map_err(internal_error)?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "job not found"))?;
+    if job.status != "complete" {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "this job has not finished, so its sources are not settled yet",
+        ));
+    }
+    let output_dir = state.jobs_dir.join(&id);
+    Ok((job, output_dir))
 }
 
 /// A set cancellation flag alone does not prove the job was canceled: the
@@ -517,6 +674,13 @@ fn run_job(
         elapsed_ms = phase_started.elapsed().as_millis() as u64,
         "generation phase complete"
     );
+    // Written before the job is marked complete, so a client that asks for
+    // the source bundle the moment it sees "complete" finds the list there.
+    sources::write_source_list(
+        &output_dir,
+        &state.map_cache_dir,
+        &manifest_data_sources(&manifest),
+    );
     update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
     info!(
         job_id = %id,
@@ -524,6 +688,13 @@ fn run_job(
         "generation complete"
     );
     Ok(())
+}
+
+/// The provider notes a finished manifest carries, for the source list.
+fn manifest_data_sources(manifest: &toposaic_core::ProjectManifest) -> Vec<String> {
+    let mut notes = vec![manifest.terrain_source.clone()];
+    notes.extend(manifest.surface_source.clone());
+    notes
 }
 
 fn run_adjacent_grid_job(
@@ -589,6 +760,9 @@ fn run_adjacent_grid_job(
     // so the whole grid prints from one ground palette instead of each tile
     // finding its own and changing filament at the seams.
     let mut ground_palette_lock: Option<Vec<String>> = None;
+    // Every tile reads the same providers, so the first tile's notes stand
+    // for the set.
+    let mut data_sources = Vec::new();
     let mesh_progress = AtomicI64::new(40);
 
     for (index, ((tile_spec, height_field), tile_output)) in tiles
@@ -672,6 +846,10 @@ fn run_adjacent_grid_job(
                 Ok(())
             },
         )?;
+
+        if index == 0 {
+            data_sources = manifest_data_sources(&manifest);
+        }
 
         let terrain_name = &tile_output.terrain_name;
         copy_grid_artifact(
@@ -776,6 +954,7 @@ fn run_adjacent_grid_job(
         manifest_name,
         "application/json",
     )?);
+    sources::write_source_list(&output_dir, &state.map_cache_dir, &data_sources);
     update_job(state, id, "complete", 100, &artifacts, None)?;
     info!(
         job_id = %id,
