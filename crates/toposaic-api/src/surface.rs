@@ -756,10 +756,18 @@ fn resolve_ground_palette(
         rgbn: &raster.rgbn,
         valid: &raster.valid,
     };
+    let shadow_normalization = palette_shadow_normalization(spec);
+    if shadow_normalization != settings.ground_shadow_normalization {
+        append_source(
+            &mut field.source,
+            "shadow flattening skipped: it is measured per tile, and this \
+             model shares its edges with another",
+        );
+    }
     let (mode, result) = match &settings.locked_ground_palette {
         Some(locked) => (
             "locked",
-            assign_locked_palette(&ground, locked, settings.ground_shadow_normalization),
+            assign_locked_palette(&ground, locked, shadow_normalization),
         ),
         None => {
             // Hybrid grouping reads the final raster classes, gates and
@@ -778,7 +786,7 @@ fn resolve_ground_palette(
                     &GroundPaletteOptions {
                         color_count: settings.ground_color_count as usize,
                         minimum_share: settings.ground_color_minimum_share,
-                        shadow_normalization: settings.ground_shadow_normalization,
+                        shadow_normalization,
                     },
                 ),
             )
@@ -809,16 +817,6 @@ fn resolve_ground_palette(
         &mut field.source,
         format!("ground palette ({mode}): {summary}"),
     );
-    // Palette discovery must not run independently per super-tile: each
-    // tile would resolve its own colors and the seams would disagree. The
-    // lock is the cross-tile contract; until the grid wires it through,
-    // say so where a seam reader will look first.
-    if spec.shares_tile_edges() && settings.locked_ground_palette.is_none() {
-        append_source(
-            &mut field.source,
-            "WARNING: ground palette discovered for this tile alone; lock a palette so adjacent tiles share one",
-        );
-    }
     if let Err(error) = field.set_ground_palette(palette, materials) {
         warn!(%error, "discovered ground palette did not fit its field");
         append_source(
@@ -877,6 +875,39 @@ fn fetch_ocean_extent(
             "coastline data did not close into an ocean; flood fill trusts land-cover water".into(),
         ),
     }
+}
+
+/// How much shadow flattening the palette step may use.
+///
+/// Flattening normalizes against the lightness mean of whatever raster it is
+/// handed, which is one tile. Above zero, two tiles can send the same ground
+/// color to different palette entries near a cluster boundary — a visible
+/// filament step exactly at a seam. So a model sharing its edges turns it
+/// off, and turns it off for the tile that *discovers* as well as the ones
+/// that assign to what it found: leaving it on for the first tile alone
+/// would put the step between tiles one and two instead of removing it.
+fn palette_shadow_normalization(spec: &GenerationSpec) -> f32 {
+    if spec.shares_tile_edges() {
+        0.0
+    } else {
+        spec.color_output.ground_palette.ground_shadow_normalization
+    }
+}
+
+/// The discovered ground colors a resolved field prints from, in palette
+/// order. Generation writes these back into the spec it goes on to use, so
+/// the export's material palette — a pure function of the spec — can hand
+/// them filament slots, and so every tile of a super-tile paints from the
+/// first tile's palette instead of each discovering its own.
+pub fn resolved_ground_colors(field: &SurfaceField) -> Option<Vec<String>> {
+    let palette = field.ground_palette()?;
+    (!palette.entries.is_empty()).then(|| {
+        palette
+            .entries
+            .iter()
+            .map(|entry| entry.color.clone())
+            .collect()
+    })
 }
 
 /// Resolves the spec's marine level and flattens the sea to it, recording
@@ -3055,6 +3086,42 @@ fn world_cover_tile(longitude: f64, latitude: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A seam is the one place two tiles must agree exactly, and shadow
+    /// flattening is measured per tile — so a shared-edge model gives it up,
+    /// on the discovering tile as much as the assigning ones.
+    #[test]
+    fn shared_edges_give_up_shadow_flattening_for_every_tile() {
+        let mut spec = GenerationSpec {
+            place_name: "test".into(),
+            ..GenerationSpec::default()
+        };
+        spec.color_output.ground_palette.ground_shadow_normalization = 0.6;
+        assert_eq!(
+            palette_shadow_normalization(&spec),
+            0.6,
+            "a lone model keeps the setting"
+        );
+
+        // Every way a model comes to share an edge, and both palette
+        // branches: the first tile discovers with no palette locked, the
+        // rest assign to what it found.
+        for locked in [None, Some(vec!["#AA3311".to_string()])] {
+            spec.color_output.ground_palette.locked_ground_palette = locked.clone();
+            for shared in [
+                |spec: &mut GenerationSpec| spec.adjacent_columns = 2,
+                |spec: &mut GenerationSpec| spec.adjacent_rows = 2,
+            ] {
+                let mut sharing = spec.clone();
+                shared(&mut sharing);
+                assert_eq!(
+                    palette_shadow_normalization(&sharing),
+                    0.0,
+                    "a shared edge gives it up whatever the palette branch"
+                );
+            }
+        }
+    }
     use super::*;
 
     #[test]

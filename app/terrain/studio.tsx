@@ -454,6 +454,25 @@ export function TerrainStudio() {
     [mapSharePercent],
   );
 
+  // Moving to different ground drops a pinned ground palette along with the
+  // pinned map frame, and for the same reason: both describe one footprint.
+  // A palette arrives pinned by importing a source bundle, and keeping it
+  // would match the new area's imagery against colors found somewhere else —
+  // print Fuji in Rainier's greys. Stepping through a super-tile is not this
+  // case and keeps its palette; that is the whole point of the lock.
+  const movedToNewGround = (
+    current: GenerationSpec,
+  ): Partial<GenerationSpec> =>
+    current.color_output.locked_ground_palette
+      ? {
+          map_frame: null,
+          color_output: {
+            ...current.color_output,
+            locked_ground_palette: undefined,
+          },
+        }
+      : { map_frame: null };
+
   const update = useCallback(
     <Key extends keyof GenerationSpec>(
       key: Key,
@@ -469,7 +488,7 @@ export function TerrainStudio() {
           key === "puzzle_tile_column" ||
           key === "puzzle_tile_row"
         ) {
-          return { ...current, [key]: value, map_frame: null };
+          return { ...current, [key]: value, ...movedToNewGround(current) };
         }
         if (key !== "base_mm") return { ...current, [key]: value };
         const baseMm = value as number;
@@ -907,7 +926,7 @@ export function TerrainStudio() {
       ...current,
       center_lat: Number(latitude.toFixed(5)),
       center_lon: Number(longitude.toFixed(5)),
-      map_frame: null,
+      ...movedToNewGround(current),
     }));
   }, []);
 
@@ -1759,6 +1778,17 @@ export function TerrainStudio() {
     setMessage(`Sent ${artifact.name} to your browser downloads.`);
   };
 
+  // The ground palette to show in the Colors tab. A setup that already
+  // carries a locked palette knows its colors before anything runs;
+  // otherwise the last generated preview reports what the job discovered.
+  const discoveredGround = useMemo(
+    () =>
+      spec.color_output.locked_ground_palette ??
+      generatedPreview?.ground_palette ??
+      [],
+    [spec.color_output.locked_ground_palette, generatedPreview?.ground_palette],
+  );
+
   const generationFailure = useMemo(() => describeJobFailure(job), [job]);
   const statusLabel = useMemo(() => {
     if (!job) return null;
@@ -2517,6 +2547,7 @@ export function TerrainStudio() {
           />
 
           <ColorsPanel
+            discoveredGround={discoveredGround}
             hidden={activeSection !== "colors"}
             spec={spec}
             updateColor={updateColor}

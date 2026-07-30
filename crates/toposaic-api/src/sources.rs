@@ -77,6 +77,14 @@ pub struct SourceList {
     /// archive without its attribution is of little use years later.
     #[serde(default)]
     pub data_sources: Vec<String>,
+    /// The spec generation actually ran, which is not always the spec the
+    /// job row stores: a satellite ground palette is discovered during the
+    /// run and pinned into the spec from there. Bundling the pinned one is
+    /// what makes a rebuilt model reproduce the palette rather than
+    /// rediscover it — the same colors either way, since discovery is
+    /// deterministic, but a guarantee instead of an assumption.
+    #[serde(default)]
+    pub spec: Option<GenerationSpec>,
 }
 
 impl SourceList {
@@ -108,6 +116,7 @@ pub fn source_list(
     log: &cache::SourceLog,
     map_cache_dir: &Path,
     data_sources: &[String],
+    spec: Option<&GenerationSpec>,
 ) -> SourceList {
     let mut files = Vec::new();
     for path in log.paths() {
@@ -133,14 +142,25 @@ pub fn source_list(
     SourceList {
         files,
         data_sources: data_sources.to_vec(),
+        spec: spec.cloned(),
     }
 }
 
 /// Writes the list into a finished job's directory. Failure is reported to
 /// the log and swallowed: a job that produced correct print files has
 /// succeeded, whether or not it could also describe its inputs.
-pub fn write_source_list(output_dir: &Path, map_cache_dir: &Path, data_sources: &[String]) {
-    let list = source_list(&cache::current_sources(), map_cache_dir, data_sources);
+pub fn write_source_list(
+    output_dir: &Path,
+    map_cache_dir: &Path,
+    data_sources: &[String],
+    spec: &GenerationSpec,
+) {
+    let list = source_list(
+        &cache::current_sources(),
+        map_cache_dir,
+        data_sources,
+        Some(spec),
+    );
     if list.files.is_empty() {
         return;
     }
@@ -460,6 +480,7 @@ mod tests {
                 },
             ],
             data_sources: vec!["Mapzen Terrarium".to_string()],
+            spec: None,
         };
         let spec = sample_spec();
         let bundle = build_bundle(&list, &spec, &source_cache).unwrap();
@@ -484,6 +505,44 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A bundle carries the spec generation actually ran, not the one the
+    /// client asked for. They differ whenever a satellite ground palette was
+    /// discovered on the way, and rebuilding from the asked-for spec would
+    /// rediscover instead of reproduce.
+    #[test]
+    fn the_bundle_carries_the_spec_generation_ran() {
+        let root = temporary_dir();
+        let source_cache = root.join("source-cache");
+        let target_cache = root.join("target-cache");
+        write(&source_cache.join("elevation/8/1/2.png"), b"tile");
+
+        let mut ran = sample_spec();
+        ran.color_output.ground_palette.locked_ground_palette =
+            Some(vec!["#AA3311".into(), "#EEDDCC".into()]);
+        let list = SourceList {
+            files: vec![SourceFile {
+                path: "elevation/8/1/2.png".into(),
+                bytes: 4,
+            }],
+            data_sources: Vec::new(),
+            spec: Some(ran.clone()),
+        };
+
+        let bundle = build_bundle(&list, &ran, &source_cache).unwrap();
+        let (_, restored) = import_bundle(Cursor::new(&bundle), &target_cache).unwrap();
+        assert_eq!(
+            restored
+                .color_output
+                .ground_palette
+                .locked_ground_palette
+                .as_deref(),
+            Some(["#AA3311".to_string(), "#EEDDCC".to_string()].as_slice()),
+            "the palette rides along, so a rebuild reproduces it"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn importing_twice_keeps_what_the_cache_already_holds() {
         let root = temporary_dir();
@@ -497,6 +556,7 @@ mod tests {
                 bytes: 5,
             }],
             data_sources: Vec::new(),
+            spec: None,
         };
         let bundle = build_bundle(&list, &sample_spec(), &source_cache).unwrap();
 
@@ -652,7 +712,7 @@ mod tests {
         cache::note(&present);
         cache::note(&cache.join("elevation/8/1/gone.png"));
         cache::note(&root.join("elsewhere/secret.txt"));
-        let list = source_list(&cache::current_sources(), &cache, &[]);
+        let list = source_list(&cache::current_sources(), &cache, &[], None);
 
         assert_eq!(
             list.files,

@@ -449,8 +449,8 @@ mod tests {
         )
         .unwrap();
         assert_watertight(&mesh);
-        assert!(mesh.materials.contains(&SurfaceClass::Marker));
-        assert!(mesh.materials.contains(&SurfaceClass::Snow));
+        assert!(mesh.materials.contains(&SurfaceClass::Marker.into()));
+        assert!(mesh.materials.contains(&SurfaceClass::Snow.into()));
         let snow_heights = mesh
             .triangles
             .iter()
@@ -553,7 +553,7 @@ mod tests {
         for column in 0..2 {
             let mesh = build_piece(&spec, None, None, 0, column).unwrap();
             assert_watertight(&mesh);
-            assert!(mesh.materials.contains(&SurfaceClass::Marker));
+            assert!(mesh.materials.contains(&SurfaceClass::Marker.into()));
         }
     }
 }

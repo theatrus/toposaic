@@ -16,7 +16,7 @@ use crate::mount::{
     mount_bottom, mount_bottom_across_outline, retention_bottom, split_outline_at_mount,
 };
 use crate::mount_layout::retention_centers_local;
-use crate::spec::{GenerationSpec, SurfaceClass};
+use crate::spec::{GenerationSpec, PrintMaterial, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
 use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_contour_segments};
 
@@ -450,18 +450,18 @@ pub(crate) fn build_piece_with_height_range(
         top_materials.push(
             surface_field
                 .map(|field| {
-                    field.terrain_at(
+                    field.print_material_at(
                         (centroid[0] + origin_x) / assembled_width,
                         (centroid[1] + origin_y) / assembled_height,
                     )
                 })
-                .unwrap_or(SurfaceClass::Rock),
+                .unwrap_or(PrintMaterial::Class(SurfaceClass::Rock)),
         );
     }
 
     // The surface class travels with the edge so a boundary edge — used by
     // exactly one triangle — can hand its own land cover to the wall below it.
-    let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2], SurfaceClass)>::new();
+    let mut edge_uses = HashMap::<(u32, u32), (u32, [u32; 2], PrintMaterial)>::new();
     for (triangle, material) in top_triangles.iter().zip(&top_materials) {
         for directed in [
             [triangle[0], triangle[1]],
@@ -494,7 +494,7 @@ pub(crate) fn build_piece_with_height_range(
                 top[2] + top_count as u32,
                 top[1] + top_count as u32,
             ]);
-            materials.push(SurfaceClass::Rock);
+            materials.push(SurfaceClass::Rock.into());
         }
     }
     // HashMap iteration order is randomized per process; sort the boundary
@@ -565,11 +565,11 @@ pub(crate) fn build_piece_with_height_range(
         // shorter than the bleed, which collapses that side of the quad.
         if to_bleed != to_bottom {
             triangles.push([from_bleed, to_bottom, to_bleed]);
-            materials.push(SurfaceClass::Rock);
+            materials.push(SurfaceClass::Rock.into());
         }
         if from_bleed != from_bottom {
             triangles.push([from_bleed, from_bottom, to_bottom]);
-            materials.push(SurfaceClass::Rock);
+            materials.push(SurfaceClass::Rock.into());
         }
     }
 
@@ -756,17 +756,17 @@ fn append_flag_cavities(
             let floor_a = floor_start + index as u32;
             let floor_b = floor_start + next as u32;
             mesh.triangles.push([top_a, top_b, floor_b]);
-            mesh.materials.push(SurfaceClass::Rock);
+            mesh.materials.push(SurfaceClass::Rock.into());
             mesh.triangles.push([top_a, floor_b, floor_a]);
-            mesh.materials.push(SurfaceClass::Rock);
+            mesh.materials.push(SurfaceClass::Rock.into());
             mesh.triangles.push([floor_a, floor_b, center_index]);
-            mesh.materials.push(SurfaceClass::Rock);
+            mesh.materials.push(SurfaceClass::Rock.into());
             if let Some(bottom_center_index) = bottom_center_index {
                 let bottom_a = top_a + top_count as u32;
                 let bottom_b = top_b + top_count as u32;
                 mesh.triangles
                     .push([bottom_a, bottom_center_index, bottom_b]);
-                mesh.materials.push(SurfaceClass::Rock);
+                mesh.materials.push(SurfaceClass::Rock.into());
             }
         }
     }
@@ -1667,7 +1667,7 @@ mod tests {
             "the terminal lost its building material to the pavement"
         );
         assert!(
-            mesh.materials.contains(&SurfaceClass::Aviation),
+            mesh.materials.contains(&SurfaceClass::Aviation.into()),
             "the apron itself should still be there"
         );
     }
@@ -1769,7 +1769,7 @@ mod tests {
         let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
         assert!(
-            mesh.materials.contains(&SurfaceClass::Aviation),
+            mesh.materials.contains(&SurfaceClass::Aviation.into()),
             "an apron with no line beside it still has to reach the mesh"
         );
     }
@@ -2049,7 +2049,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert_watertight(&mesh);
         assert!(
-            mesh.materials.contains(&SurfaceClass::Aviation),
+            mesh.materials.contains(&SurfaceClass::Aviation.into()),
             "the airport should have reached the mesh"
         );
         // Generous: this runs in a debug build on shared CI. It is here to

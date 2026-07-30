@@ -465,6 +465,7 @@ export function ReliefPreview({
       return bottom * (1 - ty) + top * ty;
     };
 
+    const groundPalette = preview?.ground_palette;
     const palette = {
       rock: preview?.surface_palette?.rock ?? rock_color,
       forest: preview?.surface_palette?.forest ?? forest_color,
@@ -487,6 +488,16 @@ export function ReliefPreview({
       // its filament slots, the preview does not — so this lookup must
       // keep that order exactly. Rail (7) and Aerial (8) only ever arrive
       // when their layer is drawn in its own color.
+      // An index past the fixed classes names a satellite-discovered ground
+      // color, in the order the job resolved them.
+      if (
+        surfaceClass !== undefined &&
+        surfaceClass >= CLASS_KEYS.length &&
+        groundPalette
+      ) {
+        const discovered = groundPalette[surfaceClass - CLASS_KEYS.length];
+        if (discovered) return discovered;
+      }
       const key =
         surfaceClass === undefined ? undefined : CLASS_KEYS[surfaceClass];
       // With color output off the mesh shows neutral terrain, not rock.
@@ -1006,6 +1017,16 @@ export function ReliefPreview({
                 )}
               </span>
             ))}
+          {/* The discovered ground colors are real printed materials with
+              real filament slots, so the legend has to name them too. They
+              carry no coverage figure: the backend's coverage is tallied by
+              land-cover class, which is what these replace. */}
+          {preview?.ground_palette?.map((color, index) => (
+            <span key={`ground-${index}`}>
+              <i style={{ background: color }} />
+              {`Ground ${index + 1}`}
+            </span>
+          ))}
         </div>
       )}
       <div className={`preview-label ${previewState}`}>

@@ -825,7 +825,7 @@ mod tests {
         };
         let mesh = build_piece(&spec, None, Some(&field), 0, 0).unwrap();
         assert_watertight(&mesh);
-        assert!(mesh.materials.contains(&SurfaceClass::Marker));
+        assert!(mesh.materials.contains(&SurfaceClass::Marker.into()));
     }
 
     #[test]
@@ -1052,8 +1052,8 @@ mod tests {
         };
 
         let mesh = build_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
-        assert!(mesh.materials.contains(&SurfaceClass::Building));
-        assert!(mesh.materials.contains(&SurfaceClass::Road));
+        assert!(mesh.materials.contains(&SurfaceClass::Building.into()));
+        assert!(mesh.materials.contains(&SurfaceClass::Road.into()));
         // Both roof levels of the unequal pair survive the union.
         let building_tops = mesh
             .triangles
@@ -1092,7 +1092,7 @@ mod tests {
             ..GenerationSpec::default()
         };
         let raised = build_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
-        assert!(raised.materials.contains(&SurfaceClass::Building));
+        assert!(raised.materials.contains(&SurfaceClass::Building.into()));
         let flat = build_piece(
             &GenerationSpec {
                 buildings: BuildingSpec {

@@ -3834,6 +3834,17 @@ fieldset.control-section .road-options {
   white-space: nowrap;
 }
 
+/* Stands in for the reorder arrows on a discovered ground color, which is
+   read off the imagery rather than set here. Muted, and sized to the row so
+   the arrows above and below stay in line. */
+.filament-note {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: italic;
+  justify-self: end;
+  white-space: nowrap;
+}
+
 .filament-order-list button {
   background: transparent;
   border: 1px solid var(--line);

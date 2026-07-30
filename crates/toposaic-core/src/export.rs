@@ -9,7 +9,10 @@ use rayon::prelude::*;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use crate::mesh::Mesh;
-use crate::spec::{GenerationSpec, MaterialPalette, PaintedClasses, SurfaceClass, ThreeMfStyle};
+use crate::spec::{
+    GenerationSpec, MATERIAL_SLOTS, MaterialPalette, PaintedClasses, PrintMaterial, SurfaceClass,
+    ThreeMfStyle,
+};
 
 pub(crate) fn write_binary_stl(mesh: &Mesh, path: &Path) -> Result<()> {
     let mut writer = BufWriter::new(
@@ -224,7 +227,7 @@ impl<'a> ThreeMfWriter<'a> {
         // filament. Fail instead: a mis-colored print is worse than a
         // refused one, and this can only fire on a generator bug.
         if self.spec.uses_color_materials() {
-            let mut seen = [false; SurfaceClass::ALL.len()];
+            let mut seen = [false; MATERIAL_SLOTS];
             for material in &mesh.materials {
                 seen[material.material_index() as usize] = true;
             }
@@ -236,11 +239,30 @@ impl<'a> ThreeMfWriter<'a> {
                     mesh.name,
                 );
             }
+            // And the same for the discovered ground colors, which reach a
+            // mesh the same way and would mis-color a print just as quietly.
+            for entry in 0..crate::palette::MAXIMUM_PALETTE_ENTRIES as u8 {
+                let material = PrintMaterial::Ground(entry);
+                anyhow::ensure!(
+                    !seen[material.material_index() as usize]
+                        || self.palette.slot(material).is_some(),
+                    "mesh {} paints ground color {entry} triangles, which this spec's filament \
+                     palette does not carry",
+                    mesh.name,
+                );
+            }
         }
-        // Slot per class, flattened for the parallel formatters below. Every
-        // class the mesh actually uses is in the palette by the check above,
-        // so the fallback can never be reached.
-        let slots = SurfaceClass::ALL.map(|class| self.palette.slot(class).unwrap_or(0));
+        // Slot per material, flattened for the parallel formatters below.
+        // Every material the mesh actually uses is in the palette by the
+        // check above, so the fallback can never be reached.
+        let mut slots = [0_u32; MATERIAL_SLOTS];
+        for class in SurfaceClass::ALL {
+            slots[class.material_index() as usize] = self.palette.slot(class).unwrap_or(0);
+        }
+        for entry in 0..crate::palette::MAXIMUM_PALETTE_ENTRIES as u8 {
+            let material = PrintMaterial::Ground(entry);
+            slots[material.material_index() as usize] = self.palette.slot(material).unwrap_or(0);
+        }
         let object_id = self.object_count + 1;
         // Formatting millions of decimal numbers dominates the serial 3MF
         // write, so format fixed-size ranges in parallel — with the exact
@@ -450,6 +472,47 @@ mod tests {
     /// picks to save the spools. That is the configuration whose archive still has to
     /// match the pre-trail six-slot output byte for byte, and pinning it
     /// here is what keeps the golden fixture reachable.
+    /// The discovered ground colors have to reach the archive's filament
+    /// palette, or the satellite modes change the manifest and nothing else
+    /// — which is exactly what they used to do.
+    #[test]
+    fn a_locked_ground_palette_takes_filament_slots_of_its_own() {
+        use crate::spec::{GroundColorMode, PrintMaterial};
+        let mut spec = fixture_spec(ThreeMfStyle::Project);
+        // The palette borrows the spec, so keep the count rather than it.
+        let mapped_colors = spec.material_palette(any_class()).len();
+        spec.color_output.ground_palette.ground_colors = GroundColorMode::Satellite;
+        spec.color_output.ground_palette.locked_ground_palette = Some(vec![
+            "#AA3311".into(),
+            "#EEDDCC".into(),
+            // A discovered color equal to a class color shares that slot
+            // rather than asking for a second spool of the same filament.
+            spec.color_output.water_color.clone(),
+        ]);
+        let palette = spec.material_palette(any_class());
+
+        assert_eq!(
+            palette.len(),
+            mapped_colors + 2,
+            "two new colors, and the repeat of the water color shares its slot"
+        );
+        let first = palette.slot(PrintMaterial::Ground(0)).unwrap();
+        let second = palette.slot(PrintMaterial::Ground(1)).unwrap();
+        let repeat = palette.slot(PrintMaterial::Ground(2)).unwrap();
+        assert_eq!(palette.colors()[first as usize], "#AA3311");
+        assert_eq!(palette.colors()[second as usize], "#EEDDCC");
+        assert_eq!(repeat, palette.slot(SurfaceClass::Water).unwrap());
+        // Entries past the discovered palette take no slot at all.
+        assert!(palette.slot(PrintMaterial::Ground(3)).is_none());
+
+        // Mapped mode ignores a palette left in the spec, so switching the
+        // control back to mapped really does go back to the class colors.
+        spec.color_output.ground_palette.ground_colors = GroundColorMode::Mapped;
+        let reverted = spec.material_palette(any_class());
+        assert_eq!(reverted.len(), mapped_colors);
+        assert!(reverted.slot(PrintMaterial::Ground(0)).is_none());
+    }
+
     fn fixture_spec(style: ThreeMfStyle) -> GenerationSpec {
         GenerationSpec {
             rows: 2,
@@ -496,7 +559,7 @@ mod tests {
                     vertices.push([x + 2.5, 0.75, 1.0 + piece as f32]);
                     vertices.push([x + 1.25, 3.125, 2.0 + index as f32]);
                     triangles.push([base, base + 1, base + 2]);
-                    materials.push(class);
+                    materials.push(class.into());
                 }
                 Mesh {
                     name: format!("piece-{}", piece + 1),
@@ -512,7 +575,7 @@ mod tests {
     /// The classes a set of finished meshes paints, as every caller holding
     /// its meshes hands them to the writer.
     fn painted_by(meshes: &[Mesh]) -> PaintedClasses {
-        let mut present = [false; SurfaceClass::ALL.len()];
+        let mut present = [false; MATERIAL_SLOTS];
         for material in meshes.iter().flat_map(|mesh| &mesh.materials) {
             present[material.material_index() as usize] = true;
         }
@@ -522,7 +585,7 @@ mod tests {
     /// Nothing ruled out by the data, so the settings alone decide the
     /// palette. Used to test what a spec CAN emit, apart from any map.
     fn any_class() -> PaintedClasses {
-        PaintedClasses::Exact([true; SurfaceClass::ALL.len()])
+        PaintedClasses::Exact([true; MATERIAL_SLOTS])
     }
 
     fn write_fixture(style: ThreeMfStyle) -> Vec<u8> {
@@ -818,7 +881,7 @@ mod tests {
         mesh.vertices.push([92.5, 0.75, 1.5]);
         mesh.vertices.push([91.25, 3.125, 2.0]);
         mesh.triangles.push([base, base + 1, base + 2]);
-        mesh.materials.push(SurfaceClass::Trail);
+        mesh.materials.push(SurfaceClass::Trail.into());
         meshes
     }
 
@@ -963,7 +1026,7 @@ mod tests {
         mesh.vertices.push([122.5, 0.75, 1.5]);
         mesh.vertices.push([121.25, 3.125, 2.0]);
         mesh.triangles.push([base, base + 1, base + 2]);
-        mesh.materials.push(SurfaceClass::Rail);
+        mesh.materials.push(SurfaceClass::Rail.into());
         meshes
     }
 
@@ -1120,12 +1183,12 @@ mod tests {
         let mut mesh = fixture_meshes().remove(0);
         // A tray: rim, contours, label. Nothing else.
         mesh.materials = vec![
-            SurfaceClass::Rock,
-            SurfaceClass::Forest,
-            SurfaceClass::Snow,
-            SurfaceClass::Rock,
-            SurfaceClass::Forest,
-            SurfaceClass::Snow,
+            SurfaceClass::Rock.into(),
+            SurfaceClass::Forest.into(),
+            SurfaceClass::Snow.into(),
+            SurfaceClass::Rock.into(),
+            SurfaceClass::Forest.into(),
+            SurfaceClass::Snow.into(),
         ];
 
         let path =
@@ -1227,7 +1290,7 @@ mod tests {
         assert_eq!(palette.slot(SurfaceClass::Marker), Some(6));
 
         let mut meshes = fixture_meshes();
-        meshes[0].materials[0] = SurfaceClass::Marker;
+        meshes[0].materials[0] = SurfaceClass::Marker.into();
         let model = model_xml(&write_spec_meshes(
             &spec,
             &meshes,
@@ -1336,8 +1399,16 @@ mod tests {
 
         let contained = field.contained_classes();
         assert!(
-            contained.iter().all(|present| *present),
+            contained[..SurfaceClass::ALL.len()]
+                .iter()
+                .all(|present| *present),
             "the fixture field should hold every class"
+        );
+        assert!(
+            contained[SurfaceClass::ALL.len()..]
+                .iter()
+                .all(|present| !*present),
+            "and no discovered ground colors, having no imagery"
         );
         let palette = spec.material_palette(PaintedClasses::sampled(Some(&field)));
         assert_eq!(palette.len(), SurfaceClass::ALL.len());
@@ -1362,7 +1433,10 @@ mod tests {
             SurfaceClass::Marker,
             SurfaceClass::RouteTrail,
         ] {
-            assert!(mesh.materials.contains(&class), "{class:?} should be built");
+            assert!(
+                mesh.materials.contains(&class.into()),
+                "{class:?} should be built"
+            );
         }
         // Every class the mesh paints has a slot; the writer refuses
         // otherwise, so reaching the end IS the assertion.
@@ -1424,7 +1498,7 @@ mod tests {
         let mesh = build_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
         for class in [SurfaceClass::Snow, SurfaceClass::Marker] {
             assert!(
-                mesh.materials.contains(&class),
+                mesh.materials.contains(&class.into()),
                 "{class:?} should be built, or this test proves nothing"
             );
         }
@@ -1459,7 +1533,7 @@ mod tests {
             mesh.vertices.push([122.5, 0.75, 1.5]);
             mesh.vertices.push([121.25, 3.125, 2.0]);
             mesh.triangles.push([base, base + 1, base + 2]);
-            mesh.materials.push(class);
+            mesh.materials.push(class.into());
         }
         let model = model_xml(&write_spec_meshes(&spec, &meshes, painted_by(&meshes)));
         assert_eq!(model.matches("<m:color ").count(), 8);
@@ -1707,7 +1781,7 @@ mod tests {
                 mesh.vertices.push([122.5, 0.75, 1.5]);
                 mesh.vertices.push([121.25, 3.125, 2.0]);
                 mesh.triangles.push([base, base + 1, base + 2]);
-                mesh.materials.push(class);
+                mesh.materials.push(class.into());
             }
         }
 
@@ -1808,7 +1882,7 @@ mod tests {
         assert_eq!(spec.material_palette(any_class()).len(), 6);
         let mut writer = ThreeMfWriter::new(&spec, any_class(), &path).unwrap();
         let mut mesh = fixture_meshes().remove(0);
-        mesh.materials[0] = SurfaceClass::Aerial;
+        mesh.materials[0] = SurfaceClass::Aerial.into();
         let error = writer.write_mesh(&mesh).unwrap_err().to_string();
         assert!(error.contains("filament palette"), "{error}");
         drop(writer);

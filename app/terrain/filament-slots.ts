@@ -45,19 +45,31 @@ const CLASS_LABELS: Record<SurfaceClassKey, string> = {
 };
 
 export type FilamentSlotEntry = {
-  classKey: SurfaceClassKey;
+  // A discovered ground color belongs to no class, so this is null for one.
+  classKey: SurfaceClassKey | null;
   label: string;
   color: string;
-  // 1-based filament number, matching the slicer's list. Classes sharing
+  // 1-based filament number, matching the slicer's list. Entries sharing
   // a color share a number.
   filament: number;
+  // Set on the satellite-discovered ground colors, which are not settings
+  // and so cannot be edited or reordered here.
+  discovered?: boolean;
 };
 
 // The classes the current settings put in the 3MF, in slot order. Mirrors
 // the backend's palette for display: it assumes the map contains every
 // enabled layer, so a layer the map turns out to lack gives its number up
 // and later ones move down.
-export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
+//
+// `discoveredGround` is the satellite palette a finished job resolved, which
+// the backend packs after the classes. Nothing can know those colors before
+// a job runs — they are read off the imagery — so the caller passes what the
+// last one found, or nothing at all.
+export function filamentSlotEntries(
+  spec: GenerationSpec,
+  discoveredGround: readonly string[] = [],
+): FilamentSlotEntry[] {
   const colors: Record<SurfaceClassKey, string> = {
     rock: spec.color_output.rock_color,
     forest: spec.color_output.forest_color,
@@ -128,6 +140,26 @@ export function filamentSlotEntries(spec: GenerationSpec): FilamentSlotEntry[] {
       filament: slot + 1,
     });
   }
+  // The discovered ground colors follow the classes, in the order the job
+  // resolved them, and share a slot with a class color they match — the
+  // same packing the backend does in GenerationSpec::material_palette.
+  if (spec.color_output.ground_colors !== "mapped") {
+    discoveredGround.forEach((entry, index) => {
+      const color = entry.toUpperCase();
+      let slot = slotByColor.get(color);
+      if (slot === undefined) {
+        slot = slotByColor.size;
+        slotByColor.set(color, slot);
+      }
+      entries.push({
+        classKey: null,
+        label: `Ground color ${index + 1}`,
+        color,
+        filament: slot + 1,
+        discovered: true,
+      });
+    });
+  }
   return entries;
 }
 
@@ -160,7 +192,11 @@ export function moveFilamentClass(
   classKey: SurfaceClassKey,
   direction: "earlier" | "later",
 ): SurfaceClassKey[] | null {
-  const displayed = filamentSlotEntries(spec).map((entry) => entry.classKey);
+  // Only the classes reorder. The discovered ground colors are packed
+  // after them by the backend and have no settings row to move.
+  const displayed = filamentSlotEntries(spec)
+    .map((entry) => entry.classKey)
+    .filter((key): key is SurfaceClassKey => key !== null);
   const from = displayed.indexOf(classKey);
   const to = direction === "earlier" ? from - 1 : from + 1;
   if (from < 0 || to < 0 || to >= displayed.length) {

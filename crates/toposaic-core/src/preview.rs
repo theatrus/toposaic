@@ -73,7 +73,16 @@ pub(crate) fn build_preview(
                 / spec.relief_mm.max(f32::EPSILON);
             (
                 terrain + building + road,
-                surface_sample.map(|sample| sample.class.material_index()),
+                // The same material the mesh will paint here, so the preview
+                // shows the discovered ground colors rather than the mapped
+                // class colors the print will not use. Built from the sample
+                // already taken, overlays and all — re-sampling the terrain
+                // here would drop every road and runway from the preview.
+                surface_sample.zip(surface_field).map(|(sample, field)| {
+                    field
+                        .print_material_for(sample.class, u, v)
+                        .material_index()
+                }),
             )
         })
         .collect::<Vec<_>>();
@@ -106,6 +115,17 @@ pub(crate) fn build_preview(
     if let (Some(field), Some(classes)) = (surface_field, surface_classes) {
         let coverage = field.coverage();
         preview["surface_classes"] = serde_json::json!(classes);
+        // Indices past the fixed classes name a discovered ground color, in
+        // this order. Absent when the ground colors are the mapped ones.
+        if let Some(palette) = field.ground_palette() {
+            preview["ground_palette"] = serde_json::json!(
+                palette
+                    .entries
+                    .iter()
+                    .map(|entry| entry.color.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
         preview["surface_palette"] = serde_json::json!({
             "rock": spec.color_output.rock_color,
             "forest": spec.color_output.forest_color,

@@ -1195,6 +1195,100 @@ mod tests {
         assert!((total - 1.0).abs() < 1e-5);
     }
 
+    /// The super-tile contract, end to end through the two functions that
+    /// carry it: the first tile discovers a palette, every later tile is
+    /// assigned to it, and where two tiles meet the same ground must reach
+    /// the same entry — or the seam changes filament for no reason on the
+    /// ground.
+    ///
+    /// The two tiles here differ in overall brightness, which is what makes
+    /// this worth a test: shadow flattening measures a mean per raster, so a
+    /// darker neighbour scales its samples differently and can push a seam
+    /// color across a cluster boundary. The second half of the test shows
+    /// that happening, and is why a shared-edge model gives flattening up.
+    #[test]
+    fn adjacent_tiles_agree_along_a_shared_edge() {
+        // Four columns each. The right column of the west tile and the left
+        // column of the east tile are the same ground, sampled twice.
+        let seam = [1500u16, 1400, 1100, 2500];
+        let west_rows: [[[u16; 4]; 4]; 4] = [
+            [DARK_GREEN, DARK_GREEN, BRIGHT_SAND, seam],
+            [DARK_GREEN, DARK_GREEN, BRIGHT_SAND, seam],
+            [DARK_GREEN, BRIGHT_SAND, BRIGHT_SAND, seam],
+            [DARK_GREEN, BRIGHT_SAND, BRIGHT_SAND, seam],
+        ];
+        // The east tile is the darker one, and starts with the shared column.
+        let dim = |color: [u16; 4]| color.map(|band| band / 2);
+        let east_rows: [[[u16; 4]; 4]; 4] = [
+            [seam, dim(DARK_GREEN), dim(DARK_GREEN), dim(DARK_GREEN)],
+            [seam, dim(DARK_GREEN), dim(DARK_GREEN), dim(DARK_GREEN)],
+            [seam, dim(BRIGHT_SAND), dim(DARK_GREEN), dim(DARK_GREEN)],
+            [seam, dim(BRIGHT_SAND), dim(DARK_GREEN), dim(DARK_GREEN)],
+        ];
+        let flatten = |rows: [[[u16; 4]; 4]; 4]| rows.concat();
+        let west = flatten(west_rows);
+        let east = flatten(east_rows);
+        let valid = vec![true; 16];
+        let west_raster = GroundImagery {
+            width: 4,
+            height: 4,
+            rgbn: &west,
+            valid: &valid,
+        };
+        let east_raster = GroundImagery {
+            width: 4,
+            height: 4,
+            rgbn: &east,
+            valid: &valid,
+        };
+        let discovery = |shadow_normalization| GroundPaletteOptions {
+            color_count: 3,
+            minimum_share: 0.0,
+            shadow_normalization,
+        };
+
+        // The west tile discovers, with flattening off as a shared-edge
+        // model requires.
+        let (palette, west_entries) =
+            discover_ground_palette(&west_raster, None, &discovery(0.0)).unwrap();
+        let colors: Vec<String> = palette
+            .entries
+            .iter()
+            .map(|entry| entry.color.clone())
+            .collect();
+        assert!(
+            colors.len() >= 2,
+            "the fixture holds distinguishable ground"
+        );
+
+        let seam_west: Vec<u8> = (0..4).map(|row| west_entries[row * 4 + 3]).collect();
+
+        let (_, east_entries) = assign_locked_palette(&east_raster, &colors, 0.0).unwrap();
+        let seam_east: Vec<u8> = (0..4).map(|row| east_entries[row * 4]).collect();
+        assert_eq!(
+            seam_west, seam_east,
+            "the shared column must reach the same palette entry on both tiles"
+        );
+
+        // And the hazard the rule exists for: with flattening on, the east
+        // tile normalizes against its own darker mean and sends the very
+        // same ground somewhere else.
+        let (_, flattened) = assign_locked_palette(&east_raster, &colors, 1.0).unwrap();
+        let seam_flattened: Vec<u8> = (0..4).map(|row| flattened[row * 4]).collect();
+        assert_ne!(
+            seam_west, seam_flattened,
+            "this is the seam step that shared-edge models turn flattening off to avoid"
+        );
+
+        // Flattening one side and not the other is the same hazard — the
+        // bug this branch shipped once — but it does not always bite: the
+        // shift has to cross a cluster boundary, and on this fixture it does
+        // not. So the guarantee is not asserted from data here. It comes
+        // from `palette_shadow_normalization` in the API crate, which
+        // resolves one value that both the discovering and the assigning
+        // branch use, and is tested there.
+    }
+
     #[test]
     fn an_all_invalid_raster_yields_an_empty_palette() {
         let rgbn = vec![[0u16; 4]; 100];

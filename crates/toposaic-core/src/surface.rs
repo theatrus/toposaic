@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use crate::heightfield::HeightField;
 use crate::mesh::{distance_squared, point_in_polygon};
-use crate::spec::{SteepForestTarget, SurfaceClass};
+use crate::spec::{PrintMaterial, SteepForestTarget, SurfaceClass};
 
 const VECTOR_BUCKET_COLUMNS: usize = 32;
 const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
@@ -1119,6 +1119,35 @@ impl SurfaceField {
         self.terrain_sample(u, v).class
     }
 
+    /// What one point of the terrain surface prints in: a discovered ground
+    /// color where the satellite palette covers it, and the land-cover class
+    /// everywhere else.
+    ///
+    /// The discovered color only ever replaces land cover — rock, forest,
+    /// snow, water. Roads, buildings, rail, ferries, and airport pavement
+    /// are drawn from the map on top of the ground, and a road that took its
+    /// color from the dirt beside it would stop reading as a road. Imagery
+    /// gaps fall back the same way, which is what keeps a partly-clouded
+    /// area printable instead of holed.
+    pub(crate) fn print_material_at(&self, u: f32, v: f32) -> PrintMaterial {
+        self.print_material_for(self.terrain_at(u, v), u, v)
+    }
+
+    /// The same rule applied to a class the caller already resolved.
+    ///
+    /// The preview samples with the mapped overlays on, so it must not
+    /// re-sample here: asking again without them would drop every road and
+    /// runway from the preview while the print still had them.
+    pub(crate) fn print_material_for(&self, class: SurfaceClass, u: f32, v: f32) -> PrintMaterial {
+        if !class.takes_ground_color() {
+            return PrintMaterial::Class(class);
+        }
+        match self.ground_material_at(u, v) {
+            Some(entry) => PrintMaterial::Ground(entry),
+            None => PrintMaterial::Class(class),
+        }
+    }
+
     pub(crate) fn sample(&self, u: f32, v: f32) -> SurfaceSample {
         self.sample_with_overlays(u, v, true, true)
     }
@@ -1396,8 +1425,8 @@ impl SurfaceField {
     /// It may be LOOSE in the other direction: a class the field holds in a
     /// spot no piece happens to sample still counts. That costs at worst a
     /// slot, where the reverse error would cost the export.
-    pub fn contained_classes(&self) -> [bool; SurfaceClass::ALL.len()] {
-        let mut present = [false; SurfaceClass::ALL.len()];
+    pub fn contained_classes(&self) -> [bool; crate::spec::MATERIAL_SLOTS] {
+        let mut present = [false; crate::spec::MATERIAL_SLOTS];
         for class in self.classes.iter().chain(&self.base_classes) {
             present[class.material_index() as usize] = true;
         }
@@ -1411,6 +1440,18 @@ impl SurfaceField {
         }
         for line in &self.vector_lines {
             present[line.class.material_index() as usize] = true;
+        }
+        // A discovered color counts when any sample carries it. The raster
+        // is read directly rather than through `print_material_at`, on the
+        // same over-report principle as the classes above: a color present
+        // in the data but missed by every piece's sampling costs one slot,
+        // where the reverse costs the export an assertion.
+        if let Some(materials) = &self.ground_materials {
+            for &entry in materials {
+                if entry != crate::palette::NO_GROUND_MATERIAL {
+                    present[PrintMaterial::Ground(entry).material_index() as usize] = true;
+                }
+            }
         }
         present
     }
@@ -2393,6 +2434,84 @@ mod tests {
     /// imagery could not cover answer `None` so consumers fall back to the
     /// mapped class color. A field that never saw a palette answers `None`
     /// everywhere — the mapped mode's whole contract.
+    /// The rule that decides when a discovered color prints. Land cover
+    /// hands over to the palette; anything drawn from the map on top of the
+    /// ground keeps its own color, or a road would take the color of the
+    /// dirt beside it and stop reading as a road.
+    #[test]
+    fn discovered_colors_replace_land_cover_and_never_the_mapped_overlays() {
+        use crate::palette::{GroundPalette, GroundPaletteEntry, NO_GROUND_MATERIAL};
+        let size = 2;
+        let mut field = SurfaceField::new(
+            size,
+            size,
+            vec![
+                SurfaceClass::Rock,
+                SurfaceClass::Forest,
+                SurfaceClass::Road,
+                SurfaceClass::Water,
+            ],
+            "test",
+        )
+        .unwrap();
+        // Without a palette every sample prints its mapped class.
+        assert_eq!(
+            field.print_material_at(0.0, 0.0),
+            PrintMaterial::Class(SurfaceClass::Rock)
+        );
+
+        let entry = |name: &str, color: &str| GroundPaletteEntry {
+            name: name.into(),
+            color: color.into(),
+            share: 0.25,
+            group: None,
+        };
+        field
+            .set_ground_palette(
+                GroundPalette {
+                    entries: vec![entry("ground 1", "#AA3311"), entry("ground 2", "#EEDDCC")],
+                    stretch: "test".into(),
+                },
+                // Bottom-left rock and the road both carry entry 1; the
+                // forest carries 0; the water sample has no imagery.
+                vec![0, NO_GROUND_MATERIAL, 1, 1],
+            )
+            .unwrap();
+
+        assert_eq!(
+            field.print_material_at(0.0, 0.0),
+            PrintMaterial::Ground(0),
+            "land cover takes the discovered color"
+        );
+        assert_eq!(
+            field.print_material_at(1.0, 0.0),
+            PrintMaterial::Class(SurfaceClass::Forest),
+            "an imagery gap falls back to the mapped class"
+        );
+        assert_eq!(
+            field.print_material_at(0.0, 1.0),
+            PrintMaterial::Class(SurfaceClass::Road),
+            "a road keeps the road color even where imagery covers it"
+        );
+        assert_eq!(
+            field.print_material_at(1.0, 1.0),
+            PrintMaterial::Ground(1),
+            "water is land cover too, and takes its discovered shade"
+        );
+
+        // A discovered color is never equal to the class it was found in:
+        // two shades of forest are two filaments.
+        assert_ne!(field.print_material_at(0.0, 0.0), SurfaceClass::Rock);
+
+        let contained = field.contained_classes();
+        assert!(contained[PrintMaterial::Ground(0).material_index() as usize]);
+        assert!(contained[PrintMaterial::Ground(1).material_index() as usize]);
+        assert!(
+            !contained[PrintMaterial::Ground(2).material_index() as usize],
+            "an entry no sample carries costs no filament slot"
+        );
+    }
+
     #[test]
     fn ground_materials_read_by_nearest_sample_and_fall_back_where_imagery_is_missing() {
         use crate::palette::{GroundPalette, GroundPaletteEntry, NO_GROUND_MATERIAL};
