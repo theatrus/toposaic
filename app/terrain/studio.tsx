@@ -2277,13 +2277,9 @@ export function TerrainStudio() {
                   </ExternalLink>
                 </>
               ) : (
-                <a
-                  href={availableUpdate.url || RELEASES_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <ExternalLink href={availableUpdate.url || RELEASES_URL}>
                   Download
-                </a>
+                </ExternalLink>
               )}
               {!updateBusy && (
                 <button
