@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.6.1](https://github.com/theatrus/toposaic/releases/tag/v0.6.1).
+[TopoSaic v0.7.0](https://github.com/theatrus/toposaic/releases/tag/v0.7.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.6.1/TopoSaic-0.6.1-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -72,11 +72,11 @@ in-row confirm that Delete uses. The spec it replaced becomes a version of its
 own, so a rollback can itself be rolled back.
 
 Next to it, a gear button opens the settings pane. It shows the map data
-cache — elevation tiles, land cover, OpenStreetMap, and place search — with
-each category's size and entry count plus the total. Clearing is always
-manual: pick an age and clear older entries, or clear everything after a
-confirm click. Nothing expires on its own, and the next generation
-re-downloads what it needs.
+cache — elevation tiles, land cover, satellite imagery, OpenStreetMap, tide
+datums, and place search — with each category's size and entry count plus the
+total. Clearing is always manual: pick an age and clear older entries, or
+clear everything after a confirm click. Nothing expires on its own, and the
+next generation re-downloads what it needs.
 
 ![TopoSaic v0.4 model controls and map showing a four-by-three super-tile grid](docs/images/toposaic-model-controls.png)
 
@@ -99,6 +99,32 @@ manifest in this tab.*
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. See
 [Printing in color](#printing-in-color) for how each slicer takes the palette.*
+
+## Version 0.7 highlights
+
+- Read the ground colors off the place itself. Two satellite modes cluster ESA
+  WorldCover Sentinel-2 imagery of the area into a small printable palette:
+  shades within each mapped class, or the imagery alone. Each discovered color
+  takes a filament slot, and one matching a class color shares it.
+- Print a coast's sea as one level plane instead of draped seabed, at mean sea
+  level, the nearest NOAA station's low or high tide, or an offset you set. The
+  mapped coastline is consulted first, so a below-sea-level lake touching the
+  map edge is not mistaken for the ocean.
+- Choose the vertical scale by overall height or by a fixed multiplier, and
+  measure it from the area's lowest ground, sea level, or an elevation you
+  name. A multiplier makes separate models comparable; switching modes
+  translates the value so the model does not move.
+- Pack the map data a model read into one file, and import it on another
+  machine to build the same model with no network — or keep it as an archive
+  of the data a print came from.
+- Draw airport pavement: runways, airstrips, stopways, taxiways, taxilanes,
+  aprons, and helipads, graded along the centre line rather than draped.
+- Keep water off printed walls. The slope gate now judges the printed angle
+  rather than the real one, and mapped pavement means the ground under it is
+  land.
+- Fix the update notice's links, which did nothing in the desktop app, and
+  show the release summary it already fetched. The attribution links had the
+  same fault and are fixed with them.
 
 ## Version 0.6.1 highlights
 
