@@ -1349,23 +1349,48 @@ a {
 
 .preview-label {
   align-items: flex-end;
-  bottom: 22px;
+  background: rgba(255, 254, 248, 0.94);
+  border: 1px solid rgba(20, 32, 29, 0.14);
+  bottom: 12px;
   display: flex;
+  gap: 14px;
   justify-content: space-between;
-  left: 22px;
+  left: clamp(128px, 24%, 150px);
+  padding: 8px 10px;
   position: absolute;
-  right: 22px;
+  right: 12px;
+  z-index: 3;
 }
 
-.preview-label span {
+.preview-status {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.preview-status-line {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.preview-status-line > span {
   color: var(--muted);
+  flex: 1;
   font-size: 10px;
   font-weight: 720;
   letter-spacing: 0.08em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.preview-label.loading span::before {
+.preview-label.loading .preview-status-line > span::before,
+.preview-label.updating .preview-status-line > span::before {
   animation: job-pulse 1.2s ease-in-out infinite;
   background: #d5a744;
   border-radius: 50%;
@@ -1377,10 +1402,43 @@ a {
   width: 7px;
 }
 
+.preview-status-line button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preview-status-line button:hover {
+  text-decoration: underline;
+}
+
+.preview-progress {
+  background: rgba(20, 32, 29, 0.14);
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.preview-progress i {
+  background: #d5a744;
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  transition: width 180ms ease-out;
+}
+
 .preview-label strong {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 20px;
   font-weight: 400;
+  white-space: nowrap;
 }
 
 .controls {

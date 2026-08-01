@@ -24,7 +24,7 @@ import {
   checkSignedUpdateVersion,
   downloadAndInstallSignedUpdate,
 } from "../updates/desktop";
-import { IS_TAURI, terrainApi } from "./api";
+import { IS_TAURI, terrainApi, type PreviewProgress } from "./api";
 import { ExternalLink } from "./external-link";
 import {
   DEFAULT_DOT_MARKER_STYLE,
@@ -203,7 +203,14 @@ export function TerrainStudio() {
     null,
   );
   const [previewedSpecKey, setPreviewedSpecKey] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewActivity, setPreviewActivity] = useState<
+    (PreviewProgress & { specKey: string }) | null
+  >(null);
+  const previewRequestIdRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const [previewCanceledSpecKey, setPreviewCanceledSpecKey] = useState<
+    string | null
+  >(null);
   const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -1042,12 +1049,43 @@ export function TerrainStudio() {
 
   useEffect(() => {
     const controller = new AbortController();
+    previewAbortRef.current = controller;
     const previewSpecKey = JSON.stringify(spec);
+    const requestId = ++previewRequestIdRef.current;
     const timer = window.setTimeout(async () => {
-      setPreviewLoading(true);
+      if (
+        controller.signal.aborted ||
+        previewRequestIdRef.current !== requestId
+      ) {
+        return;
+      }
+      setPreviewCanceledSpecKey(null);
+      setPreviewActivity({
+        specKey: previewSpecKey,
+        stage: "elevation",
+        label: "Starting preview",
+        progress: 2,
+      });
       try {
-        const nextPreview = await terrainApi.preview(spec, controller.signal);
-        if (controller.signal.aborted) return;
+        const nextPreview = await terrainApi.preview(
+          spec,
+          controller.signal,
+          (progress) => {
+            if (
+              controller.signal.aborted ||
+              previewRequestIdRef.current !== requestId
+            ) {
+              return;
+            }
+            setPreviewActivity({ ...progress, specKey: previewSpecKey });
+          },
+        );
+        if (
+          controller.signal.aborted ||
+          previewRequestIdRef.current !== requestId
+        ) {
+          return;
+        }
         setPreviewedSpecKey(previewSpecKey);
         setElevationPreview(nextPreview);
       } catch (error) {
@@ -1055,13 +1093,32 @@ export function TerrainStudio() {
         // Generate still reports its own error with the full job context.
         if (error instanceof DOMException && error.name === "AbortError") return;
       } finally {
-        if (!controller.signal.aborted) setPreviewLoading(false);
+        if (
+          !controller.signal.aborted &&
+          previewRequestIdRef.current === requestId
+        ) {
+          setPreviewActivity(null);
+        }
+        if (previewAbortRef.current === controller) {
+          previewAbortRef.current = null;
+        }
       }
     }, 350);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      if (previewAbortRef.current === controller) {
+        previewAbortRef.current = null;
+      }
     };
+  }, [spec]);
+
+  const cancelPreview = useCallback(() => {
+    previewRequestIdRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    setPreviewCanceledSpecKey(JSON.stringify(spec));
+    setPreviewActivity(null);
   }, [spec]);
 
   const searchPlaces = async () => {
@@ -1876,8 +1933,14 @@ export function TerrainStudio() {
       model_preview_error: elevationPreview?.model_preview_error,
     };
   }, [elevationPreview, generatedPreview]);
+  const currentSpecKey = JSON.stringify(spec);
+  const previewPaused = previewCanceledSpecKey === currentSpecKey;
   const previewStale =
-    elevationPreview !== null && previewedSpecKey !== JSON.stringify(spec);
+    elevationPreview !== null &&
+    previewedSpecKey !== currentSpecKey &&
+    !previewPaused;
+  const currentPreviewActivity =
+    previewActivity?.specKey === currentSpecKey ? previewActivity : null;
   const heightFrameLocked =
     spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
   const heightFrameCompatible = preview?.height_frame_compatible !== false;
@@ -1934,13 +1997,23 @@ export function TerrainStudio() {
     : undefined;
   const previewState = generatedPreview
     ? "generated"
-    : elevationPreview && (previewLoading || previewStale)
-      ? "updating"
-      : elevationPreview
-        ? "live"
-      : previewLoading
-        ? "loading"
-        : "shape";
+    : previewPaused && elevationPreview
+      ? "paused"
+      : elevationPreview && (currentPreviewActivity || previewStale)
+        ? "updating"
+        : elevationPreview
+          ? "live"
+          : currentPreviewActivity
+            ? "loading"
+            : "shape";
+  const previewProgress =
+    previewState === "updating" || previewState === "loading"
+      ? currentPreviewActivity ?? {
+          stage: "elevation" as const,
+          label: "Waiting for changes to settle",
+          progress: 1,
+        }
+      : null;
 
   return (
     <main className="studio">
@@ -2410,6 +2483,8 @@ export function TerrainStudio() {
               spec={spec}
               preview={preview}
               previewState={previewState}
+              progress={previewProgress}
+              onCancelPreview={previewProgress ? cancelPreview : undefined}
             />
           </Suspense>
         </section>

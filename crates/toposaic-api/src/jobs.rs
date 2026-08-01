@@ -2,6 +2,7 @@
 //! bookkeeping.
 
 use std::{
+    convert::Infallible,
     fs,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -14,10 +15,10 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path as AxumPath, State},
-    http::{HeaderValue, StatusCode, header},
-    response::Response,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,25 @@ pub(crate) enum JobControlTab {
 pub(crate) struct JobPiece {
     pub(crate) row: u32,
     pub(crate) column: u32,
+}
+
+const PREVIEW_STREAM_CONTENT_TYPE: &str = "application/x-ndjson";
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PreviewStreamEvent {
+    Progress {
+        stage: &'static str,
+        label: &'static str,
+        progress: u8,
+    },
+    Complete {
+        preview: serde_json::Value,
+    },
+    Error {
+        error: String,
+    },
+    Canceled,
 }
 
 pub(crate) async fn create_job(
@@ -152,47 +172,205 @@ pub(crate) async fn create_job(
 
 pub(crate) async fn create_preview(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(spec): Json<GenerationSpec>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
     spec.validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
+    let cancellation = begin_preview(&state).map_err(internal_error)?;
     let map_cache_dir = state.map_cache_dir.clone();
-    let preview = tokio::task::spawn_blocking(move || {
-        let mut preview_spec = toposaic_core::model_preview_spec(&spec);
-        let samples = 128;
-        let mut height_field = elevation::fetch_preview_height_field(
-            &preview_spec,
-            &map_cache_dir.join("elevation"),
-            samples,
-        )?;
-        let mut surface_field = if preview_spec.color_output.enabled
-            || preview_spec.buildings.enabled
-            || preview_spec.uses_trails()
-            || preview_spec.uses_building_markers()
-        {
-            Some(surface::fetch_surface_field(
-                &preview_spec,
-                &height_field,
+    let wants_stream = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains(PREVIEW_STREAM_CONTENT_TYPE));
+
+    if wants_stream {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(16);
+        let worker_state = state.clone();
+        let worker_cancellation = cancellation.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = catch_live_preview(
+                &spec,
                 &map_cache_dir,
-            )?)
-        } else {
-            None
-        };
-        if let Some(field) = surface_field.as_mut() {
-            surface::apply_marine_water(&preview_spec, &mut height_field, field, &map_cache_dir);
-        }
-        preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
-        toposaic_core::build_model_preview(
-            &preview_spec,
-            &height_field,
-            surface_field.as_ref(),
-            samples,
-        )
+                &worker_cancellation,
+                |stage, label, progress| {
+                    send_preview_event(
+                        &sender,
+                        &worker_cancellation,
+                        PreviewStreamEvent::Progress {
+                            stage,
+                            label,
+                            progress,
+                        },
+                    )
+                },
+            );
+            let event = match result {
+                Ok(preview) => PreviewStreamEvent::Complete { preview },
+                Err(_) if worker_cancellation.load(Ordering::Acquire) => {
+                    PreviewStreamEvent::Canceled
+                }
+                Err(error) => PreviewStreamEvent::Error {
+                    error: error.to_string(),
+                },
+            };
+            let _ = send_preview_event(&sender, &worker_cancellation, event);
+            finish_preview(&worker_state, &worker_cancellation);
+        });
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|bytes| (Ok::<Bytes, Infallible>(bytes), receiver))
+        });
+        let mut response = Response::new(Body::from_stream(stream));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PREVIEW_STREAM_CONTENT_TYPE),
+        );
+        return Ok(response);
+    }
+
+    let worker_state = state.clone();
+    let worker_cancellation = cancellation.clone();
+    let preview = tokio::task::spawn_blocking(move || {
+        let result =
+            catch_live_preview(
+                &spec,
+                &map_cache_dir,
+                &worker_cancellation,
+                |_, _, _| Ok(()),
+            );
+        finish_preview(&worker_state, &worker_cancellation);
+        result
     })
     .await
     .map_err(internal_error)?
     .map_err(internal_error)?;
-    Ok(Json(preview))
+    Ok(Json(preview).into_response())
+}
+
+fn catch_live_preview(
+    spec: &GenerationSpec,
+    map_cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
+) -> Result<serde_json::Value> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        run_live_preview(spec, map_cache_dir, cancellation, on_progress)
+    })) {
+        Ok(result) => result,
+        Err(payload) => Err(anyhow::anyhow!(panic_message(payload))),
+    }
+}
+
+fn run_live_preview(
+    spec: &GenerationSpec,
+    map_cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
+) -> Result<serde_json::Value> {
+    let mut preview_spec = toposaic_core::model_preview_spec(spec);
+    let samples = 128;
+    let mut last_elevation_progress = 0;
+    on_progress("elevation", "Loading elevation tiles", 4)?;
+    let mut height_field = elevation::fetch_preview_height_field_with_progress(
+        &preview_spec,
+        &map_cache_dir.join("elevation"),
+        samples,
+        |fraction| {
+            ensure_preview_active(cancellation)?;
+            let progress = (4.0 + fraction * 24.0).round() as u8;
+            if progress > last_elevation_progress {
+                on_progress("elevation", "Loading elevation tiles", progress)?;
+                last_elevation_progress = progress;
+            }
+            Ok(())
+        },
+    )?;
+    ensure_preview_active(cancellation)?;
+
+    let needs_surface = preview_spec.color_output.enabled
+        || preview_spec.buildings.enabled
+        || preview_spec.uses_trails()
+        || preview_spec.uses_building_markers();
+    let mut surface_field = if needs_surface {
+        Some(surface::fetch_surface_field_with_progress(
+            &preview_spec,
+            &height_field,
+            map_cache_dir,
+            |label, fraction| {
+                ensure_preview_active(cancellation)?;
+                on_progress("surface", label, (30.0 + fraction * 42.0).round() as u8)
+            },
+        )?)
+    } else {
+        on_progress("surface", "No map overlays needed", 72)?;
+        None
+    };
+    ensure_preview_active(cancellation)?;
+    if let Some(field) = surface_field.as_mut() {
+        on_progress("surface", "Applying water levels", 74)?;
+        surface::apply_marine_water(&preview_spec, &mut height_field, field, map_cache_dir);
+    }
+    ensure_preview_active(cancellation)?;
+    preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
+    on_progress("model", "Building draft model", 78)?;
+    let preview = toposaic_core::build_model_preview(
+        &preview_spec,
+        &height_field,
+        surface_field.as_ref(),
+        samples,
+    )?;
+    ensure_preview_active(cancellation)?;
+    on_progress("model", "Preparing 3D scene", 96)?;
+    Ok(preview)
+}
+
+fn begin_preview(state: &AppState) -> Result<Arc<AtomicBool>> {
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let previous = state
+        .active_preview
+        .lock()
+        .map_err(|_| anyhow::anyhow!("active preview lock failed"))?
+        .replace(cancellation.clone());
+    if let Some(previous) = previous {
+        previous.store(true, Ordering::Release);
+    }
+    Ok(cancellation)
+}
+
+fn finish_preview(state: &AppState, cancellation: &Arc<AtomicBool>) {
+    let Ok(mut active) = state.active_preview.lock() else {
+        return;
+    };
+    if active
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+    {
+        active.take();
+    }
+}
+
+fn ensure_preview_active(cancellation: &AtomicBool) -> Result<()> {
+    if cancellation.load(Ordering::Acquire) {
+        anyhow::bail!("preview superseded by newer settings");
+    }
+    Ok(())
+}
+
+fn send_preview_event(
+    sender: &tokio::sync::mpsc::Sender<Bytes>,
+    cancellation: &AtomicBool,
+    event: PreviewStreamEvent,
+) -> Result<()> {
+    let mut line = serde_json::to_vec(&event)?;
+    line.push(b'\n');
+    if sender.blocking_send(Bytes::from(line)).is_err() {
+        cancellation.store(true, Ordering::Release);
+        anyhow::bail!("preview listener closed");
+    }
+    Ok(())
 }
 
 /// The spec with its ground palette pinned to what discovery resolved, or
@@ -1353,5 +1531,36 @@ mod tests {
         assert_eq!(mesh_job_progress(0.0), 65);
         assert_eq!(mesh_job_progress(0.5), 82);
         assert_eq!(mesh_job_progress(1.0), 99);
+    }
+
+    #[test]
+    fn a_new_preview_cancels_only_the_preview_it_replaced() {
+        let state = test_state();
+        let first = begin_preview(&state).unwrap();
+        let second = begin_preview(&state).unwrap();
+
+        assert!(first.load(Ordering::Acquire));
+        assert!(!second.load(Ordering::Acquire));
+        finish_preview(&state, &first);
+        assert!(
+            state
+                .active_preview
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, &second))
+        );
+        finish_preview(&state, &second);
+        assert!(state.active_preview.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_closed_preview_stream_cancels_its_worker() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let cancellation = AtomicBool::new(false);
+
+        assert!(send_preview_event(&sender, &cancellation, PreviewStreamEvent::Canceled).is_err());
+        assert!(cancellation.load(Ordering::Acquire));
     }
 }

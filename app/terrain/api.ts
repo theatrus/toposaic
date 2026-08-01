@@ -94,9 +94,97 @@ function jsonBody(value: unknown, signal?: AbortSignal): RequestInit {
   };
 }
 
+export type PreviewProgress = {
+  stage: "elevation" | "surface" | "model";
+  label: string;
+  progress: number;
+};
+
+type PreviewStreamEvent =
+  | ({ type: "progress" } & PreviewProgress)
+  | { type: "complete"; preview: PreviewData }
+  | { type: "error"; error: string }
+  | { type: "canceled" };
+
+async function previewRequest(
+  spec: GenerationSpec,
+  signal?: AbortSignal,
+  onProgress?: (progress: PreviewProgress) => void,
+) {
+  const response = await fetch(`${API_URL}/api/preview`, {
+    method: "POST",
+    headers: {
+      accept: "application/x-ndjson",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(spec),
+    signal,
+  });
+  if (!response.ok) {
+    const detail = await errorDetail(response);
+    throw new Error(detail ?? `TopoSaic service returned ${response.status}.`);
+  }
+  if (!response.headers.get("content-type")?.includes("application/x-ndjson")) {
+    try {
+      return (await response.json()) as PreviewData;
+    } catch (error) {
+      rethrowAbort(error);
+      throw new Error(
+        `TopoSaic service returned ${response.status}, but the reply was unreadable.`,
+      );
+    }
+  }
+  if (!response.body) {
+    throw new Error("TopoSaic service returned an empty preview stream.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let completed: PreviewData | null = null;
+  const readEvent = (line: string) => {
+    const event = JSON.parse(line) as PreviewStreamEvent;
+    if (event.type === "progress") {
+      onProgress?.({
+        stage: event.stage,
+        label: event.label,
+        progress: Math.max(0, Math.min(100, event.progress)),
+      });
+    } else if (event.type === "complete") {
+      completed = event.preview;
+    } else if (event.type === "error") {
+      throw new Error(event.error);
+    } else if (event.type === "canceled") {
+      throw new DOMException("Preview replaced by newer settings.", "AbortError");
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffered += decoder.decode(value, { stream: !done });
+    let newline = buffered.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      if (line) readEvent(line);
+      newline = buffered.indexOf("\n");
+    }
+    if (done) break;
+  }
+  if (buffered.trim()) readEvent(buffered.trim());
+  if (!completed) {
+    throw new Error("TopoSaic preview ended before the model was ready.");
+  }
+  return completed;
+}
+
 export const terrainApi = {
-  preview(spec: GenerationSpec, signal?: AbortSignal) {
-    return requestJson<PreviewData>("/api/preview", jsonBody(spec, signal));
+  preview(
+    spec: GenerationSpec,
+    signal?: AbortSignal,
+    onProgress?: (progress: PreviewProgress) => void,
+  ) {
+    return previewRequest(spec, signal, onProgress);
   },
   searchPlaces(query: string) {
     return requestJson<PlaceResult[]>(

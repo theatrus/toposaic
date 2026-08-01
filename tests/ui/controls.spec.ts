@@ -42,9 +42,19 @@ test("renders draft export geometry from the background preview", async ({
   await expect(page.getByText("Live model preview")).toBeVisible();
 
   await page.getByRole("slider", { name: "Terrain height" }).fill("32");
-  await expect(page.getByText("Updating model preview")).toBeVisible();
+  await expect(
+    page.getByRole("progressbar", {
+      name: "Waiting for changes to settle",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel preview" }).click();
+  await expect(page.getByRole("button", { name: "Cancel preview" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/Preview paused/)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(previewRequests).toBe(1);
   await expect(preview).toHaveAttribute("data-model-geometry", "mesh");
-  await expect(page.getByText("Live model preview")).toBeVisible();
 });
 
 test("switches between the reflowed control panels", async ({ page }) => {

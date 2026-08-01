@@ -40,6 +40,7 @@ export const defaultCacheCategories: StoredCacheCategory[] = [
 export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
   const state = {
     setups,
+    previewRequests: 0,
     saved: [] as Array<{ name: string; spec: Record<string, unknown> }>,
     renamed: [] as Array<{ id: string; name: string }>,
     cacheCategories: defaultCacheCategories.map((category) => ({
@@ -54,6 +55,7 @@ export async function mockSetupsService(page: Page, setups: StoredSetup[]) {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/preview") {
+      state.previewRequests += 1;
       await route.fulfill({
         json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
       });

@@ -78,6 +78,59 @@ test("rethrows aborts instead of wrapping them", () =>
     },
   ));
 
+test("preview streams stage progress before returning the model", () => {
+  const progress = [];
+  const preview = { width: 2, height: 2, values: [0, 0.3, 0.7, 1] };
+  const body = [
+    JSON.stringify({
+      type: "progress",
+      stage: "surface",
+      label: "Loading roads and paths",
+      progress: 53,
+    }),
+    JSON.stringify({ type: "complete", preview }),
+    "",
+  ].join("\n");
+  return withFetch(
+    async (_url, init) => {
+      assert.equal(init?.headers.accept, "application/x-ndjson");
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/x-ndjson" },
+      });
+    },
+    async () => {
+      const result = await terrainApi.preview({}, undefined, (event) => {
+        progress.push(event);
+      });
+      assert.deepEqual(result, preview);
+      assert.deepEqual(progress, [
+        {
+          stage: "surface",
+          label: "Loading roads and paths",
+          progress: 53,
+        },
+      ]);
+    },
+  );
+});
+
+test("preview reports a server-side replacement as an abort", () =>
+  withFetch(
+    async () =>
+      new Response('{"type":"canceled"}\n', {
+        status: 200,
+        headers: { "content-type": "application/x-ndjson" },
+      }),
+    async () => {
+      await assert.rejects(terrainApi.preview({}), (error) => {
+        assert.ok(error instanceof DOMException);
+        assert.equal(error.name, "AbortError");
+        return true;
+      });
+    },
+  ));
+
 test("saveSetup reports a 201 as created", () =>
   withFetch(
     async () =>

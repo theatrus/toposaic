@@ -302,6 +302,16 @@ pub fn fetch_surface_field(
     height_field: &HeightField,
     map_cache_dir: &Path,
 ) -> Result<SurfaceField> {
+    fetch_surface_field_with_progress(spec, height_field, map_cache_dir, |_, _| Ok(()))
+}
+
+pub fn fetch_surface_field_with_progress(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    map_cache_dir: &Path,
+    mut on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<SurfaceField> {
+    on_progress("Preparing surface grid", 0.0)?;
     let samples = spec
         .effective_samples_per_piece()
         .min(height_field.samples_per_piece(spec) as u32)
@@ -313,6 +323,7 @@ pub fn fetch_surface_field(
     let mut source = String::new();
 
     if spec.color_output.enabled {
+        on_progress("Loading land cover", 0.04)?;
         let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
         for row in 0..height {
             let v = row as f64 / (height - 1) as f64;
@@ -335,7 +346,11 @@ pub fn fetch_surface_field(
         // download error) degrades to the default Rock class instead of
         // failing the whole generation, matching the other overlays.
         let mut missing_tiles = Vec::new();
-        for tile_name in &tile_names {
+        for (tile_index, tile_name) in tile_names.iter().enumerate() {
+            on_progress(
+                "Loading land cover",
+                0.04 + 0.12 * tile_index as f32 / tile_names.len().max(1) as f32,
+            )?;
             let points = tiles
                 .remove(tile_name)
                 .context("land-cover tile group disappeared")?;
@@ -366,6 +381,7 @@ pub fn fetch_surface_field(
         }
     }
 
+    on_progress("Classifying terrain", 0.18)?;
     let mut field = SurfaceField::new(width, height, classes, source)?;
     // Only tiles with separately generated neighbours freeze their outer
     // ring; a lone tile lets slope gates and smoothing reach its edges.
@@ -520,6 +536,7 @@ pub fn fetch_surface_field(
             field.restore_raster_edge_classes(edges)?;
         }
         if spec.color_output.osm_water_enabled {
+            on_progress("Loading waterways", 0.28)?;
             match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
                 Ok(counts) => append_source(
                     &mut field.source,
@@ -539,15 +556,19 @@ pub fn fetch_surface_field(
                     );
                 }
             }
+            on_progress("Loaded waterways", 0.38)?;
         }
         // After every raster pass: hybrid grouping reads the final classes,
         // and imagery unavailability must degrade to exactly the mapped
         // output above, so nothing after this point may depend on it.
         if spec.color_output.ground_palette.ground_colors != GroundColorMode::Mapped {
+            on_progress("Loading ground imagery", 0.4)?;
             resolve_ground_palette(spec, &transform, &mut field, map_cache_dir);
+            on_progress("Loaded ground imagery", 0.5)?;
         }
     }
     if spec.color_output.enabled && spec.color_output.roads_enabled {
+        on_progress("Loading roads and paths", 0.52)?;
         match paint_roads_or_trails(
             spec,
             height_field,
@@ -581,8 +602,10 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        on_progress("Loaded roads and paths", 0.62)?;
     }
     if spec.uses_rail_or_aerial() {
+        on_progress("Loading railways and lifts", 0.64)?;
         let (drawn, failures) = paint_rail_family(
             spec,
             height_field,
@@ -620,8 +643,10 @@ pub fn fetch_surface_field(
         for failure in failures {
             append_source(&mut field.source, failure);
         }
+        on_progress("Loaded railways and lifts", 0.72)?;
     }
     if spec.uses_ferry() {
+        on_progress("Loading ferries", 0.74)?;
         match paint_ferries(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(count) => append_source(
                 &mut field.source,
@@ -640,8 +665,10 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        on_progress("Loaded ferries", 0.78)?;
     }
     if spec.uses_any_aviation_group() {
+        on_progress("Loading airport surfaces", 0.8)?;
         match paint_aviation(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(counts) => append_source(
                 &mut field.source,
@@ -670,6 +697,7 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        on_progress("Loaded airport surfaces", 0.86)?;
     }
     if !spec.trails.is_empty() {
         let painted = paint_imported_trails(spec, &mut field);
@@ -682,6 +710,7 @@ pub fn fetch_surface_field(
         );
     }
     if spec.buildings.enabled || spec.uses_building_markers() {
+        on_progress("Loading buildings", 0.88)?;
         match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
             Ok(count) => append_source(
                 &mut field.source,
@@ -700,7 +729,9 @@ pub fn fetch_surface_field(
                 );
             }
         }
+        on_progress("Loaded buildings", 0.96)?;
     }
+    on_progress("Surface data ready", 1.0)?;
     Ok(field)
 }
 

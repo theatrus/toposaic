@@ -342,8 +342,13 @@ elevation sample and builds a lower-detail model with the same Rust mesh code
 as export. It shows puzzle cuts, solid outlines, buildings, bridges, labels,
 mount cuts, mapped overlays, and the fitted or split tray before Generate runs.
 The last good model stays visible while a new draft is built, and all input
-downloads use the same cache as generation. Drag or use the arrow keys to
-orbit; scroll, pinch, or use the plus and minus keys to zoom.
+downloads use the same cache as generation. The preview names each elevation,
+map, and model stage and shows its progress. A newer preview cancels stale work
+before it starts the next data layer, and the status card can stop the current
+preview. Moving the selected area updates its map outline while you drag, then
+starts one preview when you release it. Drag or
+use the arrow keys to orbit; scroll, pinch, or use the plus and minus keys to
+zoom.
 
 ## Land cover and color
 

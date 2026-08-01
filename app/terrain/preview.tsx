@@ -301,10 +301,20 @@ export function ReliefPreview({
   spec,
   preview,
   previewState,
+  progress,
+  onCancelPreview,
 }: {
   spec: GenerationSpec;
   preview: PreviewData | null;
-  previewState: "shape" | "loading" | "live" | "updating" | "generated";
+  previewState:
+    | "shape"
+    | "loading"
+    | "live"
+    | "updating"
+    | "paused"
+    | "generated";
+  progress: { label: string; progress: number } | null;
+  onCancelPreview?: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderErrorRef = useRef<HTMLParagraphElement>(null);
@@ -1209,21 +1219,45 @@ export function ReliefPreview({
         </div>
       )}
       <div className={`preview-label ${previewState}`}>
-        <span>
-          {previewState === "generated"
-            ? "Generated terrain"
-            : previewState === "live"
-              ? "Live model preview"
-              : previewState === "updating"
-                ? "Updating model preview"
-              : previewState === "loading"
-                ? "Sampling model preview"
-                : "Fast shape preview"}{" "}
-          ·{" "}
-          {spec.solid_model
-            ? `${effectiveMeshSamples(spec)} mesh samples`
-            : `${assembledMeshSamples(spec)} mesh samples across model`}
-        </span>
+        <div className="preview-status">
+          <div className="preview-status-line">
+            <span>
+              {progress?.label ??
+                (previewState === "generated"
+                  ? "Generated terrain"
+                  : previewState === "live"
+                    ? "Live model preview"
+                    : previewState === "paused"
+                      ? "Preview paused"
+                      : previewState === "updating"
+                        ? "Updating model preview"
+                        : previewState === "loading"
+                          ? "Sampling model preview"
+                          : "Fast shape preview")}{" "}
+              ·{" "}
+              {spec.solid_model
+                ? `${effectiveMeshSamples(spec)} mesh samples`
+                : `${assembledMeshSamples(spec)} mesh samples across model`}
+            </span>
+            {progress && onCancelPreview && (
+              <button onClick={onCancelPreview} type="button">
+                Cancel preview
+              </button>
+            )}
+          </div>
+          {progress && (
+            <span
+              aria-label={progress.label}
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={progress.progress}
+              className="preview-progress"
+              role="progressbar"
+            >
+              <i style={{ width: `${progress.progress}%` }} />
+            </span>
+          )}
+        </div>
         <strong>
           {spec.solid_model
             ? "One solid terrain model"

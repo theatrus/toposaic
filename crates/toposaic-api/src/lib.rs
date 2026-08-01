@@ -52,6 +52,9 @@ struct AppState {
     geocoder_base_url: Arc<String>,
     last_geocode_request: Arc<AsyncMutex<Instant>>,
     active_jobs: Arc<StdMutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// The live preview is replaceable work: a newer request cancels the
+    /// older one instead of leaving a queue of OSM fetches behind it.
+    active_preview: Arc<StdMutex<Option<Arc<AtomicBool>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +100,7 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         geocoder_base_url: Arc::new(settings::geocoder_base_url()),
         last_geocode_request: Arc::new(AsyncMutex::new(Instant::now() - Duration::from_secs(1))),
         active_jobs: Arc::new(StdMutex::new(HashMap::new())),
+        active_preview: Arc::new(StdMutex::new(None)),
     };
 
     let app = Router::new()
@@ -198,6 +202,7 @@ pub(crate) fn test_state() -> AppState {
         geocoder_base_url: Arc::new("https://example.invalid".into()),
         last_geocode_request: Arc::new(AsyncMutex::new(Instant::now())),
         active_jobs: Arc::new(StdMutex::new(HashMap::new())),
+        active_preview: Arc::new(StdMutex::new(None)),
     }
 }
 

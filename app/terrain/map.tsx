@@ -143,6 +143,13 @@ export function TerrainMap({
     longitude: number;
     latitude: number;
   } | null>(null);
+  // Move-area drags stay local until pointer-up. Sending every pointer sample
+  // to the studio used to start a fresh elevation/OSM preview while the
+  // previous blocking request was still running.
+  const [dragCenter, setDragCenter] = useState<{
+    longitude: number;
+    latitude: number;
+  } | null>(null);
   const [draft, setDraft] = useState<SelectionDraft | null>(null);
   const [outlineDraft, setOutlineDraft] = useState<[number, number][]>([]);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -168,16 +175,35 @@ export function TerrainMap({
     return () => observer.disconnect();
   }, []);
 
+  const mapSpec = useMemo(
+    () =>
+      dragCenter
+        ? {
+            ...spec,
+            center_lon: dragCenter.longitude,
+            center_lat: dragCenter.latitude,
+          }
+        : spec,
+    [dragCenter, spec],
+  );
   const superTileGeography = useMemo(() => {
     const cells = [];
     for (let row = 0; row < superTileRows; row += 1) {
       for (let column = 0; column < superTileColumns; column += 1) {
-        cells.push({ row, column, corners: superTileCorners(spec, row, column) });
+        cells.push({
+          row,
+          column,
+          corners: superTileCorners(mapSpec, row, column),
+        });
       }
     }
     return cells;
-  }, [spec, superTileColumns, superTileRows]);
-  const baseAnchorWorld = projectToWorld(spec.center_lon, spec.center_lat, zoom);
+  }, [mapSpec, superTileColumns, superTileRows]);
+  const baseAnchorWorld = projectToWorld(
+    mapSpec.center_lon,
+    mapSpec.center_lat,
+    zoom,
+  );
   const baseWorldScale = TILE_SIZE * 2 ** zoom;
   const baseFootprintPoints = superTileGeography.flatMap((cell) =>
     cell.corners.map((corner) => {
@@ -237,8 +263,8 @@ export function TerrainMap({
     setMapOnlyZoom(fittedMapZoomRef.current);
   }, [recallCount]);
   const anchorWorld = useMemo(
-    () => projectToWorld(spec.center_lon, spec.center_lat, mapZoom),
-    [mapZoom, spec.center_lat, spec.center_lon],
+    () => projectToWorld(mapSpec.center_lon, mapSpec.center_lat, mapZoom),
+    [mapSpec.center_lat, mapSpec.center_lon, mapZoom],
   );
   const superTileCells = useMemo(() => {
     const worldScale = TILE_SIZE * 2 ** mapZoom;
@@ -294,9 +320,9 @@ export function TerrainMap({
     [mapZoom, selectionWorldCenter, viewCenter],
   );
   const outlineScreenPoints = useMemo(() => {
-    if (spec.model_outline.shape === "rectangle") return null;
+    if (mapSpec.model_outline.shape === "rectangle") return null;
     const worldScale = TILE_SIZE * 2 ** mapZoom;
-    return geographicOutlinePoints(spec).map((point) => {
+    return geographicOutlinePoints(mapSpec).map((point) => {
       const projected = projectToWorld(point.longitude, point.latitude, mapZoom);
       let deltaX = projected.x - anchorWorld.x;
       if (deltaX > worldScale / 2) deltaX -= worldScale;
@@ -306,7 +332,7 @@ export function TerrainMap({
         y: projected.y - viewWorldCenter.y + size.height / 2,
       };
     });
-  }, [anchorWorld.x, mapZoom, size, spec, viewWorldCenter]);
+  }, [anchorWorld.x, mapSpec, mapZoom, size, viewWorldCenter]);
   const outlineDraftScreenPoints = useMemo(() => {
     if (outlineDraft.length === 0) return [];
     const draftSpec = {
@@ -475,7 +501,7 @@ export function TerrainMap({
       drag.worldY - (event.clientY - drag.startY),
     );
     if (drag.mode === "move") {
-      onCenterChange(next.longitude, next.latitude);
+      setDragCenter(next);
     } else {
       setViewCenter(next);
     }
@@ -593,6 +619,7 @@ export function TerrainMap({
       drag.worldY - (event.clientY - drag.startY),
     );
     if (drag.mode === "move") {
+      setDragCenter(null);
       onCenterChange(next.longitude, next.latitude);
     } else {
       setViewCenter(next);
@@ -709,6 +736,12 @@ export function TerrainMap({
         onPointerUp={pointerUp}
         onPointerCancel={() => {
           dragRef.current = null;
+          setDragCenter(null);
+          setDraft(null);
+        }}
+        onLostPointerCapture={() => {
+          dragRef.current = null;
+          setDragCenter(null);
           setDraft(null);
         }}
         role="application"
