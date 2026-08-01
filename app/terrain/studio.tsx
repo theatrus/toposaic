@@ -2014,6 +2014,12 @@ export function TerrainStudio() {
           progress: 1,
         }
       : null;
+  const markerPlacementMode =
+    movingMarkerIndex !== null
+      ? "move"
+      : markerPlacementKind
+        ? "place"
+        : null;
 
   return (
     <main className="studio">
@@ -2427,13 +2433,7 @@ export function TerrainStudio() {
         >
           <TerrainMap
             spec={spec}
-            markerPlacementMode={
-              movingMarkerIndex !== null
-                ? "move"
-                : markerPlacementKind
-                  ? "place"
-                  : null
-            }
+            markerPlacementMode={markerPlacementMode}
             onPlaceMarker={placeMarker}
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
@@ -2485,6 +2485,8 @@ export function TerrainStudio() {
               previewState={previewState}
               progress={previewProgress}
               onCancelPreview={previewProgress ? cancelPreview : undefined}
+              markerPlacementMode={markerPlacementMode}
+              onPlaceMarker={placeMarker}
             />
           </Suspense>
         </section>

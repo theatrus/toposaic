@@ -41,6 +41,7 @@ import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
 import {
   adjacentCenter,
+  coordinateAtNormalizedPoint,
   mapFrameForSpec,
   matchingTileCenter,
   normalizedMapPoint,
@@ -79,6 +80,23 @@ test("maps arbitrary terrain rotations into the fixed model frame", () => {
   assert.ok(Math.abs(top.u - 0.5) < 1e-12);
   assert.ok(Math.abs(top.v - 1) < 1e-12);
   assert.equal(mergeSpecDefaults({}).terrain_rotation_degrees, 0);
+});
+
+test("maps a 3D terrain point back into geographic coordinates", () => {
+  const spec = {
+    center_lat: 37.6151,
+    center_lon: -122.4004,
+    ground_span_km: 4,
+    terrain_rotation_degrees: 31,
+  };
+  const geographic = coordinateAtNormalizedPoint(spec, 0.23, 0.78);
+  const normalized = normalizedMapPoint(
+    spec,
+    geographic.latitude,
+    geographic.longitude,
+  );
+  assert.ok(Math.abs(normalized.u - 0.23) < 1e-10);
+  assert.ok(Math.abs(normalized.v - 0.78) < 1e-10);
 });
 
 test("manual adjacent moves stay on their first tile's map frame", () => {

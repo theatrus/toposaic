@@ -97,7 +97,7 @@ pub fn build_model_preview(
         surface_field,
         size.clamp(32, 192),
     );
-    let model_geometry = (|| -> Result<(Vec<ModelPreviewMesh>, [f32; 6])> {
+    let model_geometry = (|| -> Result<(Vec<ModelPreviewMesh>, [f32; 6], [f32; 4])> {
         let height_range = height_range_for_spec(&draft, Some(height_field));
         let terrain_in_tray = if draft.tray.enabled {
             terrain_origin_in_tray(&draft)?
@@ -169,12 +169,19 @@ pub fn build_model_preview(
             bounds[4] = bounds[4].max(point[1]);
             bounds[5] = bounds[5].max(point[2]);
         }
-        Ok((meshes, bounds))
+        let terrain_bounds = [
+            terrain_in_tray[0],
+            terrain_in_tray[1],
+            terrain_in_tray[0] + draft.width_mm,
+            terrain_in_tray[1] + draft.height_mm(),
+        ];
+        Ok((meshes, bounds, terrain_bounds))
     })();
     match model_geometry {
-        Ok((meshes, bounds)) => {
+        Ok((meshes, bounds, terrain_bounds)) => {
             preview["model_meshes"] = serde_json::to_value(meshes)?;
             preview["model_bounds_mm"] = serde_json::json!(bounds);
+            preview["model_terrain_bounds_mm"] = serde_json::json!(terrain_bounds);
             preview["model_preview_detail"] = serde_json::json!("draft export geometry");
         }
         Err(error) => {
@@ -542,6 +549,13 @@ mod tests {
         let bounds = preview["model_bounds_mm"].as_array().unwrap();
         assert!(bounds[3].as_f64().unwrap() > f64::from(spec.width_mm));
         assert!(bounds[4].as_f64().unwrap() > f64::from(spec.height_mm()));
+        let terrain_bounds = preview["model_terrain_bounds_mm"].as_array().unwrap();
+        let terrain_width =
+            terrain_bounds[2].as_f64().unwrap() - terrain_bounds[0].as_f64().unwrap();
+        let terrain_height =
+            terrain_bounds[3].as_f64().unwrap() - terrain_bounds[1].as_f64().unwrap();
+        assert!((terrain_width - f64::from(spec.width_mm)).abs() < 1e-4);
+        assert!((terrain_height - f64::from(spec.height_mm())).abs() < 1e-4);
     }
 
     #[test]

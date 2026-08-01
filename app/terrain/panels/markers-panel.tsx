@@ -152,7 +152,7 @@ export function MarkersPanel({
       <div className="color-heading">
         <div>
           <strong className="color-title">Map markers</strong>
-          <p>Choose a marker, then click its place on the map.</p>
+          <p>Choose a marker, then click its place on the map or 3D terrain.</p>
         </div>
       </div>
 
@@ -177,9 +177,9 @@ export function MarkersPanel({
       </div>
       <p className="color-note" role="status">
         {movingMarkerIndex !== null
-          ? `Click the map to move ${spec.markers[movingMarkerIndex]?.name ?? "the marker"}.`
+          ? `Click the map or 3D terrain to move ${spec.markers[movingMarkerIndex]?.name ?? "the marker"}.`
           : placementKind
-            ? `Click the map to place a ${kindLabel[placementKind].toLowerCase()}.`
+            ? `Click the map or 3D terrain to place a ${kindLabel[placementKind].toLowerCase()}.`
             : "Building markers color a footprint. Dots print as smooth one-layer overlays. Flags can stay blank or use an editable name. Surface labels follow the terrain; plaques make a flat raised base."}
       </p>
       {groupedMarkers.length > 0 && (

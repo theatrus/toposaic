@@ -433,6 +433,8 @@ export type PreviewData = {
   }>;
   /** min x, min y, min z, max x, max y, max z in assembled print mm. */
   model_bounds_mm?: [number, number, number, number, number, number];
+  /** Exact terrain footprint inside the assembled preview: min x/y, max x/y. */
+  model_terrain_bounds_mm?: [number, number, number, number];
   model_preview_detail?: string;
   model_preview_error?: string;
 };

@@ -60,6 +60,36 @@ export function normalizedMapPoint(
   };
 }
 
+export function coordinateAtNormalizedPoint(
+  spec: GeographicFrame,
+  u: number,
+  v: number,
+) {
+  const rotation = canonicalRotation(spec.terrain_rotation_degrees ?? 0);
+  if (rotation !== 0) {
+    return coordinateAtLocalOffset(
+      spec.center_lat,
+      spec.center_lon,
+      (u - 0.5) * spec.ground_span_km,
+      (v - 0.5) * spec.ground_span_km,
+      rotation,
+      spec.map_frame?.origin_lat ?? spec.center_lat,
+    );
+  }
+  const halfLatitude =
+    spec.ground_span_km / (2 * KILOMETRES_PER_LATITUDE_DEGREE);
+  const halfLongitude = spec.ground_span_km / (2 * longitudeScale(spec.center_lat));
+  const south = Math.max(-MAX_MODEL_LATITUDE, spec.center_lat - halfLatitude);
+  const north = Math.min(MAX_MODEL_LATITUDE, spec.center_lat + halfLatitude);
+  const unwrappedLongitude =
+    spec.center_lon - halfLongitude + 2 * halfLongitude * u;
+  const longitude = ((unwrappedLongitude + 180) % 360 + 360) % 360 - 180;
+  return {
+    latitude: south + (north - south) * v,
+    longitude,
+  };
+}
+
 function longitudeScale(latitude: number) {
   return Math.max(
     MINIMUM_LONGITUDE_SCALE,

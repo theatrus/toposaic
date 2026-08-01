@@ -1260,6 +1260,11 @@ a {
   cursor: grabbing;
 }
 
+.relief-canvas.placing-marker,
+.relief-canvas.placing-marker:active {
+  cursor: crosshair;
+}
+
 .relief-canvas:focus-visible {
   outline: 3px solid var(--acid);
   outline-offset: -5px;

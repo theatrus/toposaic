@@ -41,7 +41,18 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await controls.getByLabel("Marker 1 latitude").press("Enter");
 
   await controls.getByRole("button", { name: "Color dot" }).click();
-  await map.click({ position: { x: 260, y: 180 } });
+  const preview3d = page.locator(".relief-canvas");
+  await expect(preview3d).toHaveAttribute("data-marker-placement-mode", "place");
+  const previewBounds = await preview3d.boundingBox();
+  expect(previewBounds).not.toBeNull();
+  if (!previewBounds) return;
+  await preview3d.click({
+    position: {
+      x: previewBounds.width * 0.5,
+      y: previewBounds.height * 0.5,
+    },
+  });
+  await expect(preview3d).toHaveAttribute("data-marker-placement-mode", "none");
   await controls.getByLabel("Marker 2 dot diameter").fill("5");
   await controls.getByRole("button", { name: "Blank flag" }).click();
   await map.click({ position: { x: 300, y: 210 } });

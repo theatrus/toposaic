@@ -25,7 +25,7 @@ import { geographicOutlinePoints } from "./outline";
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
 const MIN_MAP_ZOOM = 2;
-const MAX_MAP_ZOOM = 17;
+const MAX_MAP_ZOOM = 19;
 // Arrow keys pan the focused map by a share of the current ground span.
 const KEYBOARD_PAN_SHARE = 0.1;
 const KEYBOARD_PAN_SHARE_SHIFT = 0.5;

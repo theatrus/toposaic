@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use geotiff_reader::GeoTiffFile;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use toposaic_core::{
     ClassBorders, GenerationSpec, GroundColorMode, GroundImagery, GroundPaletteOptions,
     HeightField, LineStyle, MarineGeometry, MarkerKind, NativeClassGrid, RailLifecycle,
@@ -143,6 +143,40 @@ struct OverpassResponse {
     elements: Vec<OverpassWay>,
     #[serde(default)]
     remark: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OsmCacheMetadata {
+    version: u8,
+    south: f64,
+    north: f64,
+    west: f64,
+    east: f64,
+    query_variant_hash: u64,
+    response_file: String,
+}
+
+impl OsmCacheMetadata {
+    fn new(bounds: GeoBounds, query_variant_hash: u64, response_file: String) -> Self {
+        Self {
+            version: 1,
+            south: bounds.south,
+            north: bounds.north,
+            west: bounds.west,
+            east: bounds.east,
+            query_variant_hash,
+            response_file,
+        }
+    }
+
+    fn bounds(&self) -> GeoBounds {
+        GeoBounds {
+            south: self.south,
+            north: self.north,
+            west: self.west,
+            east: self.east,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -870,6 +904,7 @@ fn fetch_ocean_extent(
     let response = match fetch_osm_response(
         &map_cache_dir.join("osm"),
         COASTLINE_CACHE_PREFIX,
+        bounds,
         coastline_query(bounds),
     ) {
         Ok(response) => response,
@@ -1073,7 +1108,7 @@ fn paint_water(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<WaterCounts> {
-    let water = fetch_osm_response(cache_dir, "water", water_query(bounds))?;
+    let water = fetch_osm_response(cache_dir, "water", bounds, water_query(bounds))?;
     let transform = transform_for(spec);
     let mut counts = WaterCounts::default();
     let mut lines = Vec::new();
@@ -1294,7 +1329,7 @@ fn paint_ferries(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<usize> {
-    let response = fetch_osm_response(cache_dir, FERRY_CACHE_PREFIX, ferry_query(bounds))?;
+    let response = fetch_osm_response(cache_dir, FERRY_CACHE_PREFIX, bounds, ferry_query(bounds))?;
     let transform = transform_for(spec);
     let style = spec.ferry_line_style();
     let width_mm = (style.width_mm * spec.close_view_line_scale()).max(MINIMUM_LINE_WIDTH_MM);
@@ -1531,6 +1566,7 @@ fn paint_aviation(
     let response = fetch_osm_response(
         cache_dir,
         AVIATION_CACHE_PREFIX,
+        bounds,
         aviation_query(bounds, groups),
     )?;
     Ok(paint_aviation_elements(spec, field, response))
@@ -1827,6 +1863,7 @@ fn fetch_rail_ways(
     let response = fetch_osm_response(
         cache_dir,
         &cache_prefix,
+        bounds,
         rail_query(bounds, kind, lifecycle),
     )?;
     Ok(response.elements)
@@ -2370,7 +2407,7 @@ fn paint_buildings(
     cache_dir: &Path,
     field: &mut SurfaceField,
 ) -> Result<usize> {
-    let response = fetch_osm_response(cache_dir, "buildings", building_query(bounds))?;
+    let response = fetch_osm_response(cache_dir, "buildings", bounds, building_query(bounds))?;
     let transform = transform_for(spec);
     let building_markers = spec
         .markers
@@ -2466,6 +2503,7 @@ fn fetch_osm_ways(
     fetch_osm_response(
         cache_dir,
         cache_prefix,
+        bounds,
         overpass_query(bounds, highway_filter),
     )
 }
@@ -2473,12 +2511,20 @@ fn fetch_osm_ways(
 fn fetch_osm_response(
     cache_dir: &Path,
     cache_prefix: &str,
+    bounds: GeoBounds,
     query: String,
 ) -> Result<OverpassResponse> {
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
     let cache_path = osm_cache_path(cache_dir, cache_prefix, &query);
+    let query_variant_hash = osm_query_variant_hash(bounds, &query);
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
+        record_osm_cache_metadata(&cache_path, bounds, query_variant_hash);
+        return Ok(response);
+    }
+    if let Some(response) =
+        read_covering_osm_response(cache_dir, cache_prefix, bounds, query_variant_hash)?
+    {
         return Ok(response);
     }
     // A panic while holding the lock poisons it, but the lock only guards
@@ -2488,6 +2534,12 @@ fn fetch_osm_response(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
+        record_osm_cache_metadata(&cache_path, bounds, query_variant_hash);
+        return Ok(response);
+    }
+    if let Some(response) =
+        read_covering_osm_response(cache_dir, cache_prefix, bounds, query_variant_hash)?
+    {
         return Ok(response);
     }
 
@@ -2521,6 +2573,12 @@ fn fetch_osm_response(
                                         %error,
                                         path = %cache_path.display(),
                                         "could not cache OpenStreetMap response; using downloaded data"
+                                    );
+                                } else {
+                                    record_osm_cache_metadata(
+                                        &cache_path,
+                                        bounds,
+                                        query_variant_hash,
                                     );
                                 }
                                 return Ok(parsed);
@@ -2575,6 +2633,164 @@ fn read_cached_osm_response(
     }
 }
 
+fn osm_cache_metadata_path(response_path: &Path) -> Option<PathBuf> {
+    let file_name = response_path.file_name()?.to_str()?;
+    Some(response_path.with_file_name(format!("{file_name}.meta")))
+}
+
+fn record_osm_cache_metadata(response_path: &Path, bounds: GeoBounds, query_variant_hash: u64) {
+    let Some(metadata_path) = osm_cache_metadata_path(response_path) else {
+        return;
+    };
+    let Some(response_file) = response_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let metadata = OsmCacheMetadata::new(bounds, query_variant_hash, response_file);
+    let result = serde_json::to_vec(&metadata)
+        .context("serialize OpenStreetMap cache metadata")
+        .and_then(|bytes| cache::store(&metadata_path, &bytes));
+    if let Err(error) = result {
+        warn!(
+            %error,
+            path = %metadata_path.display(),
+            "could not store OpenStreetMap cache coverage metadata"
+        );
+    }
+}
+
+fn read_covering_osm_response(
+    cache_dir: &Path,
+    cache_prefix: &str,
+    requested_bounds: GeoBounds,
+    query_variant_hash: u64,
+) -> Result<Option<OverpassResponse>> {
+    let expected_start = format!("{cache_prefix}-");
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(cache_dir)
+        .with_context(|| format!("scan OpenStreetMap cache {}", cache_dir.display()))?
+    {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(&expected_start) || !file_name.ends_with(".json.meta") {
+            continue;
+        }
+        // Scanning metadata only discovers candidates. Record just the entry
+        // that serves this generation, or source bundles would include every
+        // cached OSM area's index file.
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(%error, path = %path.display(), "could not read OpenStreetMap cache metadata");
+                continue;
+            }
+        };
+        let metadata: OsmCacheMetadata = match serde_json::from_slice(&bytes) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                warn!(%error, path = %path.display(), "ignoring invalid OpenStreetMap cache metadata");
+                continue;
+            }
+        };
+        if metadata.version != 1
+            || metadata.query_variant_hash != query_variant_hash
+            || !osm_bounds_cover(metadata.bounds(), requested_bounds)
+        {
+            continue;
+        }
+        let response_name = Path::new(&metadata.response_file);
+        if response_name.file_name() != Some(response_name.as_os_str()) {
+            warn!(path = %path.display(), "ignoring unsafe OpenStreetMap cache metadata path");
+            continue;
+        }
+        candidates.push((
+            osm_bounds_area(metadata.bounds()),
+            cache_dir.join(response_name),
+            path,
+        ));
+    }
+    candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+    for (_, response_path, metadata_path) in candidates {
+        match read_cached_osm_response(&response_path, cache_prefix)? {
+            Some(response) => {
+                cache::note(&metadata_path);
+                return Ok(Some(filter_osm_response(response, requested_bounds)));
+            }
+            None => {
+                let _ = fs::remove_file(metadata_path);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn osm_bounds_cover(cached: GeoBounds, requested: GeoBounds) -> bool {
+    let cached_parts = cached.split_at_antimeridian();
+    requested.split_at_antimeridian().iter().all(|requested| {
+        cached_parts.iter().any(|cached| {
+            cached.south <= requested.south
+                && cached.north >= requested.north
+                && cached.west <= requested.west
+                && cached.east >= requested.east
+        })
+    })
+}
+
+fn osm_bounds_area(bounds: GeoBounds) -> f64 {
+    bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|part| (part.north - part.south) * (part.east - part.west))
+        .sum()
+}
+
+fn filter_osm_response(
+    mut response: OverpassResponse,
+    requested_bounds: GeoBounds,
+) -> OverpassResponse {
+    response.elements.retain(|element| {
+        osm_geometry_intersects_bounds(&element.geometry, requested_bounds)
+            || element
+                .members
+                .iter()
+                .any(|member| osm_geometry_intersects_bounds(&member.geometry, requested_bounds))
+    });
+    response
+}
+
+fn osm_geometry_intersects_bounds(points: &[OverpassPoint], bounds: GeoBounds) -> bool {
+    if points.is_empty() {
+        return false;
+    }
+    let south = points
+        .iter()
+        .map(|point| point.lat)
+        .fold(f64::INFINITY, f64::min);
+    let north = points
+        .iter()
+        .map(|point| point.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let west = points
+        .iter()
+        .map(|point| point.lon)
+        .fold(f64::INFINITY, f64::min);
+    let east = points
+        .iter()
+        .map(|point| point.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
+    bounds.split_at_antimeridian().iter().any(|part| {
+        north >= part.south && south <= part.north && east >= part.west && west <= part.east
+    })
+}
+
 fn parse_osm_response(bytes: &[u8], cache_prefix: &str) -> Result<OverpassResponse> {
     let response: OverpassResponse = serde_json::from_slice(bytes)
         .with_context(|| format!("parse OpenStreetMap Overpass {cache_prefix} response"))?;
@@ -2595,16 +2811,33 @@ fn overpass_urls(configured_url: Option<&str>, preferred_endpoint: usize) -> Vec
 }
 
 fn osm_cache_path(cache_dir: &Path, cache_prefix: &str, query: &str) -> PathBuf {
+    let hash = osm_hash(&[
+        b"toposaic-overpass-v3",
+        cache_prefix.as_bytes(),
+        query.as_bytes(),
+    ]);
+    cache_dir.join(format!("{cache_prefix}-{hash:016x}.json"))
+}
+
+fn osm_query_variant_hash(bounds: GeoBounds, query: &str) -> u64 {
+    let mut variant = query.to_owned();
+    for part in bounds.split_at_antimeridian() {
+        let coordinates = format!(
+            "{:.7},{:.7},{:.7},{:.7}",
+            part.south, part.west, part.north, part.east
+        );
+        variant = variant.replace(&coordinates, "{bounds}");
+    }
+    osm_hash(&[b"toposaic-overpass-query-variant-v1", variant.as_bytes()])
+}
+
+fn osm_hash(parts: &[&[u8]]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in b"toposaic-overpass-v3"
-        .iter()
-        .chain(cache_prefix.as_bytes())
-        .chain(query.as_bytes())
-    {
+    for byte in parts.iter().flat_map(|part| part.iter()) {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    cache_dir.join(format!("{cache_prefix}-{hash:016x}.json"))
+    hash
 }
 
 fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
@@ -4448,6 +4681,56 @@ mod tests {
             osm_cache_path(Path::new("/cache"), prefix, &first),
             osm_cache_path(Path::new("/cache"), prefix, &second)
         );
+    }
+
+    #[test]
+    fn nested_osm_scales_share_a_query_variant() {
+        let large = GeoBounds::around(46.0, -122.0, 18.0);
+        let small = GeoBounds::around(46.0, -122.0, 4.0);
+        assert_eq!(
+            osm_query_variant_hash(large, &overpass_query(large, STREET_HIGHWAYS)),
+            osm_query_variant_hash(small, &overpass_query(small, STREET_HIGHWAYS))
+        );
+        assert_ne!(
+            osm_query_variant_hash(large, &overpass_query(large, STREET_HIGHWAYS)),
+            osm_query_variant_hash(large, &overpass_query(large, MAJOR_HIGHWAYS))
+        );
+    }
+
+    #[test]
+    fn a_smaller_scale_reuses_and_filters_a_covering_osm_response() {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "toposaic-osm-covering-cache-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&cache_dir).unwrap();
+        let large = GeoBounds::around(46.0, -122.0, 18.0);
+        let small = GeoBounds::around(46.0, -122.0, 4.0);
+        let query = overpass_query(large, STREET_HIGHWAYS);
+        let prefix = road_cache_prefix(ResolvedRoadDetail::Streets);
+        let response_path = osm_cache_path(&cache_dir, prefix, &query);
+        fs::write(
+            &response_path,
+            br#"{"elements":[
+                {"type":"way","id":1,"tags":{"highway":"residential"},"geometry":[
+                    {"lat":46.0,"lon":-122.0},{"lat":46.001,"lon":-122.001}]},
+                {"type":"way","id":2,"tags":{"highway":"residential"},"geometry":[
+                    {"lat":46.06,"lon":-122.06},{"lat":46.061,"lon":-122.061}]}
+            ]}"#,
+        )
+        .unwrap();
+        let variant = osm_query_variant_hash(large, &query);
+        record_osm_cache_metadata(&response_path, large, variant);
+
+        let _recording = cache::Recording::begin();
+        let reused = read_covering_osm_response(&cache_dir, prefix, small, variant)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reused.elements.len(), 1);
+        assert_eq!(reused.elements[0].id, 1);
+        assert_eq!(cache::current_sources().paths().len(), 2);
+
+        fs::remove_dir_all(cache_dir).unwrap();
     }
 
     #[test]

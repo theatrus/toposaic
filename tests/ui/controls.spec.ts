@@ -1062,6 +1062,11 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
   await page.getByRole("button", { name: "Zoom in" }).click();
   await expect(selection).toHaveAttribute("data-map-zoom", "12");
   await expect(groundSpan).toHaveValue("9");
+  for (let level = 13; level <= 19; level += 1) {
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await expect(selection).toHaveAttribute("data-map-zoom", String(level));
+  }
+  await expect(page.getByRole("button", { name: "Zoom in" })).toBeDisabled();
 
   await groundSpan.fill("30");
   await expect(selection).toHaveAttribute(
@@ -1271,6 +1276,13 @@ test("rotates, zooms, and resets the interactive 3D preview", async ({
   await preview.focus();
   await page.keyboard.press("ArrowLeft");
   await expect(preview).toHaveAttribute("data-camera-moved", "true");
+
+  for (let step = 0; step < 18; step += 1) {
+    await page.keyboard.press("=");
+  }
+  await expect
+    .poll(async () => Number(await preview.getAttribute("data-camera-distance")))
+    .toBeLessThan(0.5);
 });
 
 test("keeps the map and preview split adjustable from the keyboard", async ({

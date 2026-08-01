@@ -2,6 +2,7 @@
 
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
   useState,
@@ -22,9 +23,11 @@ import {
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
+  Raycaster,
   Scene,
   Shape,
   SRGBColorSpace,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -44,7 +47,7 @@ import {
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
-import { normalizedMapPoint } from "./geo";
+import { coordinateAtNormalizedPoint, normalizedMapPoint } from "./geo";
 import { normalizedOutlinePoints, pointInNormalizedOutline } from "./outline";
 
 // The terrain color the mesh renders when color output is off but trails
@@ -303,6 +306,8 @@ export function ReliefPreview({
   previewState,
   progress,
   onCancelPreview,
+  markerPlacementMode,
+  onPlaceMarker,
 }: {
   spec: GenerationSpec;
   preview: PreviewData | null;
@@ -315,10 +320,23 @@ export function ReliefPreview({
     | "generated";
   progress: { label: string; progress: number } | null;
   onCancelPreview?: () => void;
+  markerPlacementMode: "place" | "move" | null;
+  onPlaceMarker: (longitude: number, latitude: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderErrorRef = useRef<HTMLParagraphElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const placementRef = useRef<
+    ((clientX: number, clientY: number) => {
+      longitude: number;
+      latitude: number;
+    } | null) | null
+  >(null);
+  const placementPointerRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const viewRef = useRef<{
     position: [number, number, number];
     target: [number, number, number];
@@ -428,6 +446,7 @@ export function ReliefPreview({
     }
 
     const scene = new Scene();
+    const placementSurfaces: Mesh[] = [];
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
     const heightScale = relief_mm / width_mm;
@@ -626,6 +645,7 @@ export function ReliefPreview({
         const mesh = new Mesh(geometry, material);
         mesh.name = previewMesh.name;
         scene.add(mesh);
+        if (previewMesh.kind === "terrain") placementSurfaces.push(mesh);
       }
     }
     const positions: number[] = [];
@@ -707,6 +727,7 @@ export function ReliefPreview({
     const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
     if (!hasModelMeshes) {
       scene.add(terrainMesh);
+      placementSurfaces.push(terrainMesh);
     } else {
       terrainGeometry.dispose();
       terrainMaterial.dispose();
@@ -958,7 +979,7 @@ export function ReliefPreview({
     controls.target.fromArray(savedView?.target ?? defaultTarget);
     controls.enableDamping = false;
     controls.enablePan = false;
-    controls.minDistance = 0.72;
+    controls.minDistance = Math.max(0.06, 0.08 * cameraScale);
     controls.maxDistance = 3.1 * cameraScale;
     controls.minPolarAngle = 0.12;
     controls.maxPolarAngle = Math.PI / 2 - 0.025;
@@ -966,6 +987,9 @@ export function ReliefPreview({
     controls.zoomSpeed = 0.85;
     controls.zoomToCursor = true;
     controls.update();
+    canvas.dataset.cameraDistance = camera.position
+      .distanceTo(controls.target)
+      .toFixed(4);
     controlsRef.current = controls;
     canvas.dataset.cameraMoved = savedView ? "true" : "false";
     resetViewRef.current = false;
@@ -987,6 +1011,9 @@ export function ReliefPreview({
       render();
     };
     const onViewChange = () => {
+      canvas.dataset.cameraDistance = camera.position
+        .distanceTo(controls.target)
+        .toFixed(4);
       const positionDelta = camera.position.distanceToSquared(initialPosition);
       const targetDelta = controls.target.distanceToSquared(initialTarget);
       const cameraMoved = positionDelta > 1e-12 || targetDelta > 1e-12;
@@ -1004,7 +1031,59 @@ export function ReliefPreview({
     observer.observe(canvas);
     resize();
 
+    const raycaster = new Raycaster();
+    const pointer = new Vector2();
+    const terrainBounds = preview?.model_terrain_bounds_mm ?? [
+      0,
+      0,
+      width_mm,
+      (width_mm * rows) / columns,
+    ];
+    const placeAtPreviewPoint = (clientX: number, clientY: number) => {
+      const bounds = canvas.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return null;
+      pointer.set(
+        ((clientX - bounds.left) / bounds.width) * 2 - 1,
+        -((clientY - bounds.top) / bounds.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster
+        .intersectObjects(placementSurfaces, false)
+        .find((intersection) =>
+          intersection.face
+            ? Math.abs(intersection.face.normal.y) > 0.04
+            : true,
+        );
+      if (!hit) return null;
+      const u = hasModelMeshes
+        ? (modelCenterX - hit.point.x * modelScale - terrainBounds[0]) /
+          Math.max(Number.EPSILON, terrainBounds[2] - terrainBounds[0])
+        : 0.5 - hit.point.x;
+      const v = hasModelMeshes
+        ? (hit.point.z * modelScale + modelCenterY - terrainBounds[1]) /
+          Math.max(Number.EPSILON, terrainBounds[3] - terrainBounds[1])
+        : hit.point.z + 0.5;
+      if (u < 0 || u > 1 || v < 0 || v > 1 || !insideOutline(u, v)) {
+        return null;
+      }
+      return coordinateAtNormalizedPoint(
+        {
+          center_lat,
+          center_lon,
+          ground_span_km,
+          terrain_rotation_degrees,
+          map_frame,
+        },
+        u,
+        v,
+      );
+    };
+    placementRef.current = placeAtPreviewPoint;
+
     return () => {
+      if (placementRef.current === placeAtPreviewPoint) {
+        placementRef.current = null;
+      }
       if (!resetViewRef.current && canvas.dataset.cameraMoved === "true") {
         viewRef.current = {
           position: camera.position.toArray(),
@@ -1070,6 +1149,28 @@ export function ReliefPreview({
     trayLabelColor,
   ]);
 
+  const previewPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!markerPlacementMode) return;
+    placementPointerRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+  };
+
+  const previewPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const start = placementPointerRef.current;
+    placementPointerRef.current = null;
+    if (!markerPlacementMode || !start || start.pointerId !== event.pointerId) {
+      return;
+    }
+    if (Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > 6) {
+      return;
+    }
+    const point = placementRef.current?.(event.clientX, event.clientY);
+    if (point) onPlaceMarker(point.longitude, point.latitude);
+  };
+
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -1088,11 +1189,11 @@ export function ReliefPreview({
         break;
       case "+":
       case "=":
-        controls.dollyIn(1.12);
+        controls.dollyOut(1.12);
         break;
       case "-":
       case "_":
-        controls.dollyOut(1.12);
+        controls.dollyIn(1.12);
         break;
       default:
         return;
@@ -1105,12 +1206,22 @@ export function ReliefPreview({
     <div className="relief-shell">
       <canvas
         ref={canvasRef}
-        className="relief-canvas"
-        aria-label="Interactive 3D terrain preview"
+        className={`relief-canvas${markerPlacementMode ? " placing-marker" : ""}`}
+        aria-label={
+          markerPlacementMode
+            ? `Interactive 3D terrain preview. Click terrain to ${markerPlacementMode} marker.`
+            : "Interactive 3D terrain preview"
+        }
         data-camera-moved="false"
+        data-marker-placement-mode={markerPlacementMode ?? "none"}
         data-puzzle-tabs={spec.puzzle_tabs}
         data-straight-piece-sides={spec.straight_piece_sides}
         onKeyDown={keyboardOrbit}
+        onPointerCancel={() => {
+          placementPointerRef.current = null;
+        }}
+        onPointerDown={previewPointerDown}
+        onPointerUp={previewPointerUp}
         tabIndex={0}
       />
       <p ref={renderErrorRef} className="preview-render-error" hidden>
@@ -1122,7 +1233,11 @@ export function ReliefPreview({
         </p>
       )}
       <div className="preview-orbit-controls" aria-label="3D preview controls">
-        <span>Drag to rotate · Scroll or pinch to zoom</span>
+        <span>
+          {markerPlacementMode
+            ? "Click terrain to place · Drag to rotate · Scroll or pinch to zoom"
+            : "Drag to rotate · Scroll or pinch to zoom"}
+        </span>
         <button
           type="button"
           onClick={() => {
