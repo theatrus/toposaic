@@ -373,7 +373,7 @@ pub(crate) fn build_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::BuildingSpec;
+    use crate::spec::{BuildingSpec, MapMarker, MarkerKind};
 
     /// The 3D preview has to show the pavement the generated model will
     /// carry — same class, same color, and standing proud like a road —
@@ -527,6 +527,53 @@ mod tests {
                     material.as_u64() == Some(u64::from(SurfaceClass::Building.material_index()))
                 }),
             "the draft must carry the building shell, not a raised raster cell"
+        );
+    }
+
+    #[test]
+    fn live_model_preview_keeps_highlighted_buildings_in_the_marker_material() {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            solid_model: true,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            markers: vec![MapMarker {
+                name: "Terminal".into(),
+                latitude: 0.0,
+                longitude: 0.0,
+                kind: MarkerKind::Building,
+                label_height_mm: 4.0,
+                rotation_degrees: 0.0,
+                dot_style: None,
+                flag_style: None,
+                label_style: None,
+            }],
+            ..GenerationSpec::default()
+        };
+        let height = HeightField::new(33, 33, vec![0.0; 33 * 33], "height").unwrap();
+        let mut surface =
+            SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "surface").unwrap();
+        surface.paint_building_with_class(
+            &[[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]],
+            12.0,
+            SurfaceClass::Marker,
+        );
+
+        let preview = build_model_preview(&spec, &height, Some(&surface), 64).unwrap();
+        let materials = preview["model_meshes"][0]["materials"].as_array().unwrap();
+        assert!(materials.iter().any(|material| {
+            material.as_u64() == Some(u64::from(SurfaceClass::Marker.material_index()))
+        }));
+        assert!(
+            preview["surface_classes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|class| {
+                    class.as_u64() == Some(u64::from(SurfaceClass::Marker.material_index()))
+                })
         );
     }
 

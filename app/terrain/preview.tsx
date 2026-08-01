@@ -305,6 +305,7 @@ export function ReliefPreview({
   preview,
   previewState,
   progress,
+  previewError,
   onCancelPreview,
   markerPlacementMode,
   onPlaceMarker,
@@ -317,8 +318,10 @@ export function ReliefPreview({
     | "live"
     | "updating"
     | "paused"
+    | "error"
     | "generated";
   progress: { label: string; progress: number } | null;
+  previewError: string | null;
   onCancelPreview?: () => void;
   markerPlacementMode: "place" | "move" | null;
   onPlaceMarker: (longitude: number, latitude: number) => void;
@@ -1336,8 +1339,12 @@ export function ReliefPreview({
       <div className={`preview-label ${previewState}`}>
         <div className="preview-status">
           <div className="preview-status-line">
-            <span>
-              {progress?.label ??
+            <span
+              role={previewError ? "alert" : undefined}
+              title={previewError ?? undefined}
+            >
+              {previewError ??
+                progress?.label ??
                 (previewState === "generated"
                   ? "Generated terrain"
                   : previewState === "live"
@@ -1348,7 +1355,9 @@ export function ReliefPreview({
                         ? "Updating model preview"
                         : previewState === "loading"
                           ? "Sampling model preview"
-                          : "Fast shape preview")}{" "}
+                          : previewState === "error"
+                            ? "Live model preview could not update"
+                            : "Fast shape preview")}{" "}
               ·{" "}
               {spec.solid_model
                 ? `${effectiveMeshSamples(spec)} mesh samples`

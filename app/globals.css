@@ -1407,6 +1407,10 @@ a {
   width: 7px;
 }
 
+.preview-label.error .preview-status-line > span {
+  color: #9b3f32;
+}
+
 .preview-status-line button {
   background: transparent;
   border: 0;

@@ -1547,6 +1547,45 @@ fn assemble_rings(segments: Vec<Vec<[f64; 2]>>) -> (Vec<Vec<[f64; 2]>>, usize) {
     (rings, dropped)
 }
 
+struct RelationRings {
+    outer: Vec<Vec<[f32; 2]>>,
+    inner: Vec<Vec<[f32; 2]>>,
+    dropped: usize,
+}
+
+fn normalized_relation_rings(element: &OverpassWay, transform: GeoTransform) -> RelationRings {
+    let mut outer = Vec::new();
+    let mut inner = Vec::new();
+    for member in &element.members {
+        if member.member_type != "way" || member.geometry.len() < 2 {
+            continue;
+        }
+        let points = member
+            .geometry
+            .iter()
+            .map(|point| [point.lat, point.lon])
+            .collect::<Vec<_>>();
+        match member.role.as_str() {
+            "outer" => outer.push(points),
+            "inner" => inner.push(points),
+            _ => {}
+        }
+    }
+    let (outer, outer_dropped) = assemble_rings(outer);
+    let (inner, inner_dropped) = assemble_rings(inner);
+    RelationRings {
+        outer: outer
+            .into_iter()
+            .map(|ring| normalized_ring(&ring, transform))
+            .collect(),
+        inner: inner
+            .into_iter()
+            .map(|ring| normalized_ring(&ring, transform))
+            .collect(),
+        dropped: outer_dropped + inner_dropped,
+    }
+}
+
 /// Draws airport ground surfaces onto the field.
 ///
 /// Areas are collected before lines so an explicit outline can suppress the
@@ -1591,47 +1630,25 @@ fn paint_aviation_elements(
             continue;
         }
         if element.element_type == "relation" {
-            let mut outer = Vec::new();
-            let mut inner = Vec::new();
-            for member in &element.members {
-                if member.member_type != "way" || member.geometry.len() < 2 {
-                    continue;
-                }
-                let points = member
-                    .geometry
-                    .iter()
-                    .map(|point| [point.lat, point.lon])
-                    .collect::<Vec<_>>();
-                match member.role.as_str() {
-                    "outer" => outer.push(points),
-                    "inner" => inner.push(points),
-                    _ => {}
-                }
-            }
-            let (outer_rings, outer_dropped) = assemble_rings(outer);
-            let (inner_rings, inner_dropped) = assemble_rings(inner);
-            counts.invalid_skipped += outer_dropped + inner_dropped;
-            if outer_rings.is_empty() {
+            let rings = normalized_relation_rings(element, transform);
+            counts.invalid_skipped += rings.dropped;
+            if rings.outer.is_empty() {
                 continue;
             }
             counts.relations += 1;
-            let holes = inner_rings
-                .iter()
-                .map(|ring| normalized_ring(ring, transform))
-                .collect::<Vec<_>>();
-            for ring in &outer_rings {
+            for ring in rings.outer {
                 // Islands each stand on their own; the holes belong to
                 // whichever island encloses them, and a hole outside every
                 // island simply never matches.
-                let shell = normalized_ring(ring, transform);
-                let owned = holes
+                let owned = rings
+                    .inner
                     .iter()
-                    .filter(|hole| ring_contains(&shell, hole))
+                    .filter(|hole| ring_contains(&ring, hole))
                     .cloned()
                     .collect::<Vec<_>>();
                 counts.holes += owned.len();
                 areas.push(AviationArea {
-                    shell,
+                    shell: ring,
                     holes: owned,
                 });
             }
@@ -2408,6 +2425,20 @@ fn paint_buildings(
     field: &mut SurfaceField,
 ) -> Result<usize> {
     let response = fetch_osm_response(cache_dir, "buildings", bounds, building_query(bounds))?;
+    paint_building_elements(spec, field, response)
+}
+
+struct BuildingArea {
+    shell: Vec<[f32; 2]>,
+    holes: Vec<Vec<[f32; 2]>>,
+    height_m: f32,
+}
+
+fn paint_building_elements(
+    spec: &GenerationSpec,
+    field: &mut SurfaceField,
+    response: OverpassResponse,
+) -> Result<usize> {
     let transform = transform_for(spec);
     let building_markers = spec
         .markers
@@ -2423,23 +2454,51 @@ fn paint_buildings(
         })
         .filter(|(_, _, point)| (0.0..=1.0).contains(&point[0]) && (0.0..=1.0).contains(&point[1]))
         .collect::<Vec<_>>();
+    let mut areas = Vec::new();
+    for building in response.elements {
+        let height_m = building_height_m(&building.tags);
+        if building.element_type == "relation" {
+            let rings = normalized_relation_rings(&building, transform);
+            for shell in rings.outer {
+                let owned = rings
+                    .inner
+                    .iter()
+                    .filter(|hole| ring_contains(&shell, hole))
+                    .cloned()
+                    .collect();
+                areas.push(BuildingArea {
+                    shell,
+                    holes: owned,
+                    height_m,
+                });
+            }
+        } else if building.geometry.len() >= 3 {
+            areas.push(BuildingArea {
+                shell: normalized_osm_points(&building, transform),
+                holes: Vec::new(),
+                height_m,
+            });
+        }
+    }
     let mut matched_markers = HashSet::new();
     let mut painted = 0;
-    for building in response.elements {
-        if building.geometry.len() < 3 {
-            continue;
-        }
-        let points = normalized_osm_points(&building, transform);
+    for building in areas {
         let mut highlighted = false;
         for (index, _, point) in &building_markers {
-            if point_in_polygon(*point, &points) {
+            if point_inside_ring(&building.shell, *point)
+                && !building
+                    .holes
+                    .iter()
+                    .any(|hole| point_inside_ring(hole, *point))
+            {
                 matched_markers.insert(*index);
                 highlighted = true;
             }
         }
-        field.paint_building_with_class(
-            &points,
-            building_height_m(&building.tags),
+        field.paint_building_with_class_and_holes(
+            &building.shell,
+            &building.holes,
+            building.height_m,
             if highlighted {
                 SurfaceClass::Marker
             } else {
@@ -2458,19 +2517,6 @@ fn paint_buildings(
         );
     }
     Ok(painted)
-}
-
-fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
-    let mut inside = false;
-    for (start, end) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
-        if (start[1] > point[1]) != (end[1] > point[1])
-            && point[0]
-                < (end[0] - start[0]) * (point[1] - start[1]) / (end[1] - start[1]) + start[0]
-        {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 fn building_height_m(tags: &HashMap<String, String>) -> f32 {
@@ -2858,12 +2904,12 @@ fn overpass_query(bounds: GeoBounds, highway_filter: &str) -> String {
 }
 
 fn building_query(bounds: GeoBounds) -> String {
-    let ways = bounds
+    let elements = bounds
         .split_at_antimeridian()
         .iter()
         .map(|bounds| {
             format!(
-                "way[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});",
+                "way[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});relation[\"building\"][\"building\"!=\"no\"]({south:.7},{west:.7},{north:.7},{east:.7});",
                 south = bounds.south,
                 west = bounds.west,
                 north = bounds.north,
@@ -2871,7 +2917,7 @@ fn building_query(bounds: GeoBounds) -> String {
             )
         })
         .collect::<String>();
-    format!("[out:json][timeout:60];({ways});out tags geom;")
+    format!("[out:json][timeout:60];({elements});out tags geom;")
 }
 
 fn water_query(bounds: GeoBounds) -> String {
@@ -3481,8 +3527,8 @@ mod tests {
     #[test]
     fn building_marker_intersection_handles_points_inside_and_outside() {
         let footprint = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]];
-        assert!(point_in_polygon([0.5, 0.5], &footprint));
-        assert!(!point_in_polygon([0.1, 0.5], &footprint));
+        assert!(point_inside_ring(&footprint, [0.5, 0.5]));
+        assert!(!point_inside_ring(&footprint, [0.1, 0.5]));
     }
 
     #[test]
@@ -5184,6 +5230,7 @@ mod tests {
         });
         assert!(query.contains("[\"building\"]"));
         assert!(query.contains("[\"building\"!=\"no\"]"));
+        assert!(query.contains("relation[\"building\"]"));
         assert!(query.contains("out tags geom"));
         assert_eq!(
             building_height_m(&HashMap::from([("height".into(), "12.5 m".into())])),
@@ -5194,5 +5241,64 @@ mod tests {
             12.0
         );
         assert_eq!(building_height_m(&HashMap::new()), 8.0);
+    }
+
+    #[test]
+    fn multipolygon_buildings_can_receive_marker_color_and_keep_holes() {
+        let mut spec = GenerationSpec::default();
+        let bounds = bounds_for(&spec);
+        let lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
+        let lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
+        let ring = |role: &str, low: f64, high: f64| OverpassMember {
+            role: role.into(),
+            member_type: "way".into(),
+            geometry: [
+                [lat(low), lon(low)],
+                [lat(low), lon(high)],
+                [lat(high), lon(high)],
+                [lat(high), lon(low)],
+                [lat(low), lon(low)],
+            ]
+            .into_iter()
+            .map(|point| OverpassPoint {
+                lat: point[0],
+                lon: point[1],
+            })
+            .collect(),
+        };
+        spec.markers.push(toposaic_core::MapMarker {
+            kind: MarkerKind::Building,
+            latitude: lat(0.45),
+            longitude: lon(0.45),
+            name: "Terminal".into(),
+            label_height_mm: 4.0,
+            rotation_degrees: 0.0,
+            dot_style: None,
+            flag_style: None,
+            label_style: None,
+        });
+        let relation = OverpassWay {
+            id: 42,
+            element_type: "relation".into(),
+            tags: HashMap::from([("building".into(), "yes".into())]),
+            geometry: Vec::new(),
+            members: vec![ring("outer", 0.3, 0.7), ring("inner", 0.48, 0.52)],
+        };
+        let mut field =
+            SurfaceField::new(64, 64, vec![SurfaceClass::Rock; 4096], "buildings").unwrap();
+
+        let painted = paint_building_elements(
+            &spec,
+            &mut field,
+            OverpassResponse {
+                elements: vec![relation],
+                remark: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(painted, 1);
+        assert_eq!(field.class_at(0.45, 0.45), SurfaceClass::Marker);
+        assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Rock);
     }
 }

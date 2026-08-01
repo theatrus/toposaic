@@ -206,6 +206,10 @@ export function TerrainStudio() {
   const [previewActivity, setPreviewActivity] = useState<
     (PreviewProgress & { specKey: string }) | null
   >(null);
+  const [previewFailure, setPreviewFailure] = useState<{
+    specKey: string;
+    message: string;
+  } | null>(null);
   const previewRequestIdRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
   const [previewCanceledSpecKey, setPreviewCanceledSpecKey] = useState<
@@ -1060,6 +1064,7 @@ export function TerrainStudio() {
         return;
       }
       setPreviewCanceledSpecKey(null);
+      setPreviewFailure(null);
       setPreviewActivity({
         specKey: previewSpecKey,
         stage: "elevation",
@@ -1092,6 +1097,15 @@ export function TerrainStudio() {
         // Keep the last good mesh in view when a background refresh fails.
         // Generate still reports its own error with the full job context.
         if (error instanceof DOMException && error.name === "AbortError") return;
+        if (previewRequestIdRef.current === requestId) {
+          setPreviewFailure({
+            specKey: previewSpecKey,
+            message:
+              error instanceof Error
+                ? error.message
+                : "The live model preview could not update.",
+          });
+        }
       } finally {
         if (
           !controller.signal.aborted &&
@@ -1929,6 +1943,7 @@ export function TerrainStudio() {
       // the background pass owns the draft export geometry. Keep both.
       model_meshes: elevationPreview?.model_meshes,
       model_bounds_mm: elevationPreview?.model_bounds_mm,
+      model_terrain_bounds_mm: elevationPreview?.model_terrain_bounds_mm,
       model_preview_detail: elevationPreview?.model_preview_detail,
       model_preview_error: elevationPreview?.model_preview_error,
     };
@@ -1941,6 +1956,8 @@ export function TerrainStudio() {
     !previewPaused;
   const currentPreviewActivity =
     previewActivity?.specKey === currentSpecKey ? previewActivity : null;
+  const currentPreviewFailure =
+    previewFailure?.specKey === currentSpecKey ? previewFailure.message : null;
   const heightFrameLocked =
     spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
   const heightFrameCompatible = preview?.height_frame_compatible !== false;
@@ -1995,17 +2012,17 @@ export function TerrainStudio() {
   const updateStatusTitle = updateLine.isSummary
     ? `${updateLine.text} — current ${displayVersion(appVersion)}`
     : undefined;
-  const previewState = generatedPreview
-    ? "generated"
-    : previewPaused && elevationPreview
-      ? "paused"
-      : elevationPreview && (currentPreviewActivity || previewStale)
-        ? "updating"
-        : elevationPreview
-          ? "live"
-          : currentPreviewActivity
-            ? "loading"
-            : "shape";
+  const previewState = (() => {
+    if (generatedPreview) return "generated";
+    if (previewPaused && elevationPreview) return "paused";
+    if (currentPreviewFailure) return "error";
+    if (elevationPreview && (currentPreviewActivity || previewStale)) {
+      return "updating";
+    }
+    if (elevationPreview) return "live";
+    if (currentPreviewActivity) return "loading";
+    return "shape";
+  })();
   const previewProgress =
     previewState === "updating" || previewState === "loading"
       ? currentPreviewActivity ?? {
@@ -2484,6 +2501,7 @@ export function TerrainStudio() {
               preview={preview}
               previewState={previewState}
               progress={previewProgress}
+              previewError={currentPreviewFailure}
               onCancelPreview={previewProgress ? cancelPreview : undefined}
               markerPlacementMode={markerPlacementMode}
               onPlaceMarker={placeMarker}
