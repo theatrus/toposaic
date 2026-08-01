@@ -490,6 +490,28 @@ export function TerrainStudio() {
         ) {
           return { ...current, [key]: value, ...movedToNewGround(current) };
         }
+        if (key === "model_outline") {
+          const outline = value as GenerationSpec["model_outline"];
+          return {
+            ...current,
+            model_outline: outline,
+            tray:
+              outline.shape === "rectangle"
+                ? current.tray
+                : { ...current.tray, label_enabled: false },
+          };
+        }
+        if (
+          (key === "adjacent_columns" || key === "adjacent_rows") &&
+          Number(value) > 1 &&
+          current.model_outline.shape !== "rectangle"
+        ) {
+          return {
+            ...current,
+            [key]: value,
+            model_outline: { ...current.model_outline, shape: "rectangle" },
+          };
+        }
         if (key !== "base_mm") return { ...current, [key]: value };
         const baseMm = value as number;
         return {
@@ -954,7 +976,7 @@ export function TerrainStudio() {
       `Height frame locked at ${datum.toFixed(1)} m with ${metresPerMm.toFixed(1)} m/mm.`,
     );
     return true;
-  }, [elevationPreview, generatedPreview, spec.relief_mm]);
+  }, [elevationPreview, generatedPreview, spec]);
 
   const unlockHeightFrame = useCallback(() => {
     setGeneratedPreview(null);
@@ -2382,6 +2404,12 @@ export function TerrainStudio() {
             onCenterChange={onCenterChange}
             onGroundSpanChange={(groundSpanKm) =>
               update("ground_span_km", groundSpanKm)
+            }
+            onOutlineChange={(points) =>
+              update("model_outline", {
+                shape: "polygon",
+                points,
+              })
             }
             recallCount={setupRecallCount}
           />

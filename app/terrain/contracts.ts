@@ -68,6 +68,11 @@ export type GenerationSpec = {
   terrain_rotation_degrees: number;
   map_frame: MapFrame | null;
   width_mm: number;
+  model_outline: {
+    shape: "rectangle" | "circle" | "ellipse" | "polygon";
+    /** Points in the normalized, rotated model frame. */
+    points: [number, number][];
+  };
   rows: number;
   columns: number;
   base_mm: number;

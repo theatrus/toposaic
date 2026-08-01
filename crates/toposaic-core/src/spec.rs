@@ -90,6 +90,9 @@ pub struct GenerationSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map_frame: Option<MapFrame>,
     pub width_mm: f32,
+    /// The print-space boundary inside the square geographic sample frame.
+    #[serde(default, skip_serializing_if = "ModelOutlineSpec::is_default")]
+    pub model_outline: ModelOutlineSpec,
     pub rows: u32,
     pub columns: u32,
     pub base_mm: f32,
@@ -164,6 +167,7 @@ impl Default for GenerationSpec {
             terrain_rotation_degrees: 0.0,
             map_frame: None,
             width_mm: 180.0,
+            model_outline: ModelOutlineSpec::default(),
             rows: 3,
             columns: 3,
             base_mm: 3.2,
@@ -226,6 +230,24 @@ impl GenerationSpec {
         }
         if !(60.0..=500.0).contains(&self.width_mm) {
             bail!("model width must be between 60 and 500 mm");
+        }
+        self.model_outline.validate()?;
+        if self.model_outline.shape != OutlineShape::Rectangle
+            && (self.adjacent_columns > 1 || self.adjacent_rows > 1)
+        {
+            bail!("shaped outlines are not yet available in super-tile mode");
+        }
+        if self.model_outline.shape != OutlineShape::Rectangle
+            && self.tray.enabled
+            && (self.tray.segment_columns > 1 || self.tray.segment_rows > 1)
+        {
+            bail!("shaped outlines need a one-piece tray; tray splitting is not yet available");
+        }
+        if self.model_outline.shape != OutlineShape::Rectangle
+            && self.tray.enabled
+            && self.tray.label_enabled
+        {
+            bail!("top-lip labels are not yet available on shaped trays; turn off the tray label");
         }
         if !(2..=16).contains(&self.rows) || !(2..=16).contains(&self.columns) {
             bail!("piece rows and columns must each be between 2 and 16");
@@ -1460,6 +1482,48 @@ pub enum SuperTileAnchor {
     #[default]
     TopLeft,
     Center,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineShape {
+    #[default]
+    Rectangle,
+    Circle,
+    Ellipse,
+    Polygon,
+}
+
+/// Boundary points use the normalized, rotated model frame. They stay on
+/// the same selected ground when print size or map zoom changes. Only a
+/// polygon reads `points`; the built-in shapes ignore them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelOutlineSpec {
+    pub shape: OutlineShape,
+    pub points: Vec<[f32; 2]>,
+}
+
+impl Default for ModelOutlineSpec {
+    fn default() -> Self {
+        Self {
+            shape: OutlineShape::Rectangle,
+            points: Vec::new(),
+        }
+    }
+}
+
+impl ModelOutlineSpec {
+    fn is_default(&self) -> bool {
+        self.shape == OutlineShape::Rectangle && self.points.is_empty()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.shape != OutlineShape::Polygon {
+            return Ok(());
+        }
+        crate::outline::validate_normalized_polygon(&self.points)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

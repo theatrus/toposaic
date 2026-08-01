@@ -14,6 +14,7 @@ import {
   Color,
   DirectionalLight,
   DoubleSide,
+  ExtrudeGeometry,
   Float32BufferAttribute,
   HemisphereLight,
   Line,
@@ -22,6 +23,7 @@ import {
   MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
+  Shape,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
@@ -43,6 +45,7 @@ import {
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
 import { normalizedMapPoint } from "./geo";
+import { normalizedOutlinePoints, pointInNormalizedOutline } from "./outline";
 
 // The terrain color the mesh renders when color output is off but trails
 // or buildings still force color materials. The legend must show the same
@@ -334,6 +337,7 @@ export function ReliefPreview({
     puzzle_seed,
     puzzle_tile_column,
     puzzle_tile_row,
+    model_outline,
   } = spec;
   const {
     enabled: colorOutputEnabled,
@@ -413,6 +417,36 @@ export function ReliefPreview({
     const sampleHeight = preview?.height ?? sampleWidth;
     const heightScale = relief_mm / width_mm;
     const baseDepth = base_mm / width_mm;
+    const outlinePoints = normalizedOutlinePoints(
+      { model_outline, width_mm, rows, columns },
+      160,
+    );
+    const insideOutline = (u: number, v: number) =>
+      pointInNormalizedOutline([u, v], outlinePoints);
+    const boundarySafePuzzleSign = (
+      start: { x: number; y: number },
+      end: { x: number; y: number },
+      pattern: EdgePattern,
+      sign: number,
+      modelHeight: number,
+      depth: number,
+    ) => {
+      if (model_outline.shape === "rectangle" || sign === 0) return sign;
+      for (let step = 0; step <= 32; step += 1) {
+        const point = puzzleEdgePoint(
+          start,
+          end,
+          pattern,
+          sign,
+          step / 32,
+          depth,
+        );
+        if (!insideOutline(point.x / width_mm, point.y / modelHeight)) {
+          return 0;
+        }
+      }
+      return sign;
+    };
     canvas.dataset.heightScale = heightScale.toFixed(4);
     canvas.dataset.baseScale = baseDepth.toFixed(4);
     const seedA = Math.sin((center_lat * Math.PI) / 180) * 1.7;
@@ -542,6 +576,9 @@ export function ReliefPreview({
     };
     for (let y = 0; y < sampleHeight - 1; y += 1) {
       for (let x = 0; x < sampleWidth - 1; x += 1) {
+        const centerU = (x + 0.5) / Math.max(1, sampleWidth - 1);
+        const centerV = (y + 0.5) / Math.max(1, sampleHeight - 1);
+        if (!insideOutline(centerU, centerV)) continue;
         const surfaceClass =
           colorOutputEnabled ||
           buildingsEnabled ||
@@ -603,7 +640,7 @@ export function ReliefPreview({
         marker.latitude,
         marker.longitude,
       );
-      if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+      if (u < 0 || u > 1 || v < 0 || v > 1 || !insideOutline(u, v)) continue;
       const deltaU = 1 / Math.max(2, sampleWidth - 1);
       const deltaV = 1 / Math.max(2, sampleHeight - 1);
       const westU = Math.max(0, u - deltaU);
@@ -634,14 +671,35 @@ export function ReliefPreview({
       scene.add(dot);
     }
 
-    const baseGeometry = new BoxGeometry(1, baseDepth, 1);
+    let baseGeometry: BoxGeometry | ExtrudeGeometry;
+    if (model_outline.shape === "rectangle") {
+      baseGeometry = new BoxGeometry(1, baseDepth, 1);
+    } else {
+      const shape = new Shape();
+      outlinePoints.forEach(([u, v], index) => {
+        const x = previewWorldX(u);
+        const z = v - 0.5;
+        if (index === 0) shape.moveTo(x, z);
+        else shape.lineTo(x, z);
+      });
+      shape.closePath();
+      baseGeometry = new ExtrudeGeometry(shape, {
+        bevelEnabled: false,
+        depth: baseDepth,
+        steps: 1,
+      });
+      // Extrude down from the terrain plane, matching the rectangular base.
+      baseGeometry.rotateX(Math.PI / 2);
+    }
     const baseMaterial = new MeshStandardMaterial({
       color: new Color(palette.rock).multiplyScalar(0.68),
       metalness: 0,
       roughness: 0.92,
     });
     const baseMesh = new Mesh(baseGeometry, baseMaterial);
-    baseMesh.position.y = -baseDepth / 2;
+    if (model_outline.shape === "rectangle") {
+      baseMesh.position.y = -baseDepth / 2;
+    }
     scene.add(baseMesh);
 
     const lineMaterial = new LineBasicMaterial({
@@ -649,23 +707,23 @@ export function ReliefPreview({
       opacity: 0.72,
       transparent: true,
     });
-    const perimeter = [
-      ...Array.from({ length: sampleWidth }, (_, x) =>
-        pointOnTerrain(x / Math.max(1, sampleWidth - 1), 0),
-      ),
-      ...Array.from({ length: sampleHeight - 1 }, (_, y) =>
-        pointOnTerrain(1, (y + 1) / Math.max(1, sampleHeight - 1)),
-      ),
-      ...Array.from({ length: sampleWidth - 1 }, (_, x) =>
-        pointOnTerrain((sampleWidth - 2 - x) / Math.max(1, sampleWidth - 1), 1),
-      ),
-      ...Array.from({ length: sampleHeight - 2 }, (_, y) =>
-        pointOnTerrain(
-          0,
-          (sampleHeight - 2 - y) / Math.max(1, sampleHeight - 1),
-        ),
-      ),
-    ];
+    const addClippedPuzzleLine = (points: [number, number][]) => {
+      let run: Vector3[] = [];
+      const finish = () => {
+        if (run.length >= 2) {
+          scene.add(
+            new Line(new BufferGeometry().setFromPoints(run), lineMaterial),
+          );
+        }
+        run = [];
+      };
+      for (const [u, v] of points) {
+        if (insideOutline(u, v)) run.push(pointOnTerrain(u, v));
+        else finish();
+      }
+      finish();
+    };
+    const perimeter = outlinePoints.map(([u, v]) => pointOnTerrain(u, v));
     perimeter.push(perimeter[0].clone());
     scene.add(
       new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
@@ -696,10 +754,17 @@ export function ReliefPreview({
             globalLine,
             globalSegment,
           );
-          const sign = puzzle_tabs
-            ? edgeSign(puzzle_seed, 1, globalSegment, globalLine)
-            : 0;
-          const points = [];
+          const sign = boundarySafePuzzleSign(
+            start,
+            end,
+            pattern,
+            puzzle_tabs
+              ? edgeSign(puzzle_seed, 1, globalSegment, globalLine)
+              : 0,
+            modelHeight,
+            puzzleTabDepth,
+          );
+          const points: [number, number][] = [];
           for (let step = 0; step <= 48; step += 1) {
             const t = step / 48;
             const edgePoint = puzzleEdgePoint(
@@ -710,13 +775,12 @@ export function ReliefPreview({
               t,
               puzzleTabDepth,
             );
-            points.push(
-              pointOnTerrain(edgePoint.x / width_mm, edgePoint.y / modelHeight),
-            );
+            points.push([
+              edgePoint.x / width_mm,
+              edgePoint.y / modelHeight,
+            ]);
           }
-          scene.add(
-            new Line(new BufferGeometry().setFromPoints(points), lineMaterial),
-          );
+          addClippedPuzzleLine(points);
         }
       }
       for (let edgeRow = 1; edgeRow < rows; edgeRow += 1) {
@@ -731,10 +795,17 @@ export function ReliefPreview({
             globalLine,
             globalSegment,
           );
-          const sign = puzzle_tabs
-            ? edgeSign(puzzle_seed, 0, globalSegment, globalLine)
-            : 0;
-          const points = [];
+          const sign = boundarySafePuzzleSign(
+            start,
+            end,
+            pattern,
+            puzzle_tabs
+              ? edgeSign(puzzle_seed, 0, globalSegment, globalLine)
+              : 0,
+            modelHeight,
+            puzzleTabDepth,
+          );
+          const points: [number, number][] = [];
           for (let step = 0; step <= 48; step += 1) {
             const t = step / 48;
             const edgePoint = puzzleEdgePoint(
@@ -745,13 +816,12 @@ export function ReliefPreview({
               t,
               puzzleTabDepth,
             );
-            points.push(
-              pointOnTerrain(edgePoint.x / width_mm, edgePoint.y / modelHeight),
-            );
+            points.push([
+              edgePoint.x / width_mm,
+              edgePoint.y / modelHeight,
+            ]);
           }
-          scene.add(
-            new Line(new BufferGeometry().setFromPoints(points), lineMaterial),
-          );
+          addClippedPuzzleLine(points);
         }
       }
     }
@@ -866,6 +936,7 @@ export function ReliefPreview({
     puzzle_seed,
     puzzle_tile_column,
     puzzle_tile_row,
+    model_outline,
     colorOutputEnabled,
     buildingsEnabled,
     trailsPresent,

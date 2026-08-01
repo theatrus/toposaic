@@ -88,6 +88,10 @@ export const initialSpec: GenerationSpec = {
   terrain_rotation_degrees: 0,
   map_frame: null,
   width_mm: 180,
+  model_outline: {
+    shape: "rectangle",
+    points: [],
+  },
   rows: 10,
   columns: 10,
   base_mm: 3.2,
@@ -351,6 +355,11 @@ export function mergeSpecDefaults(
       saved.mesh_samples_across ?? initialSpec.mesh_samples_across,
     overlay_samples_across:
       saved.overlay_samples_across ?? initialSpec.overlay_samples_across,
+    model_outline: {
+      ...initialSpec.model_outline,
+      ...saved.model_outline,
+      points: saved.model_outline?.points ?? [],
+    },
     buildings: { ...initialSpec.buildings, ...saved.buildings },
     marine: { ...initialSpec.marine, ...saved.marine },
     marker_settings: {

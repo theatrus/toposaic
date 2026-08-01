@@ -502,6 +502,47 @@ export function ModelPanel({
         step={5}
         onChange={(value) => update("width_mm", value)}
       />
+      <label className="road-detail-field model-outline-field">
+        Outer outline
+        <select
+          value={spec.model_outline.shape}
+          onChange={(event) =>
+            update("model_outline", {
+              ...spec.model_outline,
+              shape: event.target.value as GenerationSpec["model_outline"]["shape"],
+            })
+          }
+        >
+          <option value="rectangle">Rectangle</option>
+          <option
+            value="circle"
+            disabled={spec.adjacent_columns > 1 || spec.adjacent_rows > 1}
+          >
+            Circle
+          </option>
+          <option
+            value="ellipse"
+            disabled={spec.adjacent_columns > 1 || spec.adjacent_rows > 1}
+          >
+            Ellipse
+          </option>
+          <option
+            value="polygon"
+            disabled={spec.adjacent_columns > 1 || spec.adjacent_rows > 1}
+          >
+            Drawn polygon
+          </option>
+        </select>
+        <small>
+          {spec.adjacent_columns > 1 || spec.adjacent_rows > 1
+            ? "Shaped outlines need a 1 × 1 super-tile grid."
+            : spec.model_outline.shape === "polygon"
+              ? spec.model_outline.points.length >= 3
+                ? `${spec.model_outline.points.length} map points. Use Edit outline on the map to replace them.`
+                : "Use Edit outline on the map, click at least three points, then choose Done."
+              : "Circle stays round in print space. Ellipse fills the current model frame."}
+        </small>
+      </label>
       <label className="road-detail-field">
         Vertical scale
         <select
