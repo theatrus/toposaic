@@ -304,7 +304,7 @@ export function ReliefPreview({
 }: {
   spec: GenerationSpec;
   preview: PreviewData | null;
-  previewState: "shape" | "loading" | "elevation" | "generated";
+  previewState: "shape" | "loading" | "live" | "updating" | "generated";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderErrorRef = useRef<HTMLParagraphElement>(null);
@@ -354,6 +354,11 @@ export function ReliefPreview({
     ferry_color,
     aviation_color,
   } = spec.color_output;
+  const {
+    tray_color: trayColor,
+    contour_color: trayContourColor,
+    label_color: trayLabelColor,
+  } = spec.tray;
   const markerColor = spec.marker_settings.color;
   const coloredMarkersPresent = markers.some(
     (marker) => !isFlagMarker(marker.kind),
@@ -540,6 +545,79 @@ export function ReliefPreview({
       }
       return palette[key];
     };
+    const modelMeshes = preview?.model_meshes ?? [];
+    const modelBounds = preview?.model_bounds_mm;
+    const hasModelMeshes = modelMeshes.length > 0 && modelBounds !== undefined;
+    const modelScale = modelBounds
+      ? Math.max(
+          1,
+          modelBounds[3] - modelBounds[0],
+          modelBounds[4] - modelBounds[1],
+        )
+      : width_mm;
+    const modelCenterX = modelBounds
+      ? (modelBounds[0] + modelBounds[3]) / 2
+      : width_mm / 2;
+    const modelCenterY = modelBounds
+      ? (modelBounds[1] + modelBounds[4]) / 2
+      : (width_mm * rows) / columns / 2;
+    const modelMinimumZ = modelBounds?.[2] ?? 0;
+    const modelMaximumZ = modelBounds?.[5] ?? relief_mm;
+    canvas.dataset.modelGeometry = hasModelMeshes ? "mesh" : "heightmap";
+    canvas.dataset.modelMeshCount = String(modelMeshes.length);
+
+    if (hasModelMeshes) {
+      for (const previewMesh of modelMeshes) {
+        const meshPositions: number[] = [];
+        const meshColors: number[] = [];
+        for (
+          let triangleIndex = 0;
+          triangleIndex < previewMesh.triangles.length;
+          triangleIndex += 1
+        ) {
+          const triangle = previewMesh.triangles[triangleIndex];
+          const materialIndex = previewMesh.materials[triangleIndex];
+          const color = new Color(
+            previewMesh.kind === "tray"
+              ? materialIndex === 1
+                ? trayContourColor
+                : materialIndex === 2
+                  ? trayLabelColor
+                  : trayColor
+              : classColor(materialIndex),
+          );
+          for (const vertexIndex of triangle) {
+            const point = previewMesh.vertices[vertexIndex];
+            meshPositions.push(
+              (modelCenterX - point[0]) / modelScale,
+              (point[2] - modelMinimumZ) / modelScale,
+              (point[1] - modelCenterY) / modelScale,
+            );
+            meshColors.push(color.r, color.g, color.b);
+          }
+        }
+        const geometry = new BufferGeometry();
+        geometry.setAttribute(
+          "position",
+          new Float32BufferAttribute(meshPositions, 3),
+        );
+        geometry.setAttribute(
+          "color",
+          new Float32BufferAttribute(meshColors, 3),
+        );
+        geometry.computeVertexNormals();
+        const material = new MeshStandardMaterial({
+          color: 0xffffff,
+          metalness: 0,
+          roughness: previewMesh.kind === "tray" ? 0.92 : 0.84,
+          side: DoubleSide,
+          vertexColors: true,
+        });
+        const mesh = new Mesh(geometry, material);
+        mesh.name = previewMesh.name;
+        scene.add(mesh);
+      }
+    }
     const positions: number[] = [];
     const colors: number[] = [];
     const normals: number[] = [];
@@ -617,7 +695,12 @@ export function ReliefPreview({
       vertexColors: true,
     });
     const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
-    scene.add(terrainMesh);
+    if (!hasModelMeshes) {
+      scene.add(terrainMesh);
+    } else {
+      terrainGeometry.dispose();
+      terrainMaterial.dispose();
+    }
 
     const pointOnTerrain = (u: number, v: number) =>
       new Vector3(
@@ -627,8 +710,10 @@ export function ReliefPreview({
       );
 
     const dotMarkers = markers.filter((candidate) => candidate.kind === "dot");
-    canvas.dataset.vectorDotCount = String(dotMarkers.length);
-    for (const marker of dotMarkers) {
+    canvas.dataset.vectorDotCount = String(
+      hasModelMeshes ? 0 : dotMarkers.length,
+    );
+    for (const marker of hasModelMeshes ? [] : dotMarkers) {
       const { u, v } = normalizedMapPoint(
         {
           center_lat,
@@ -700,7 +785,12 @@ export function ReliefPreview({
     if (model_outline.shape === "rectangle") {
       baseMesh.position.y = -baseDepth / 2;
     }
-    scene.add(baseMesh);
+    if (!hasModelMeshes) {
+      scene.add(baseMesh);
+    } else {
+      baseGeometry.dispose();
+      baseMaterial.dispose();
+    }
 
     const lineMaterial = new LineBasicMaterial({
       color: 0x14201d,
@@ -723,11 +813,13 @@ export function ReliefPreview({
       }
       finish();
     };
-    const perimeter = outlinePoints.map(([u, v]) => pointOnTerrain(u, v));
-    perimeter.push(perimeter[0].clone());
-    scene.add(
-      new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
-    );
+    if (!hasModelMeshes) {
+      const perimeter = outlinePoints.map(([u, v]) => pointOnTerrain(u, v));
+      perimeter.push(perimeter[0].clone());
+      scene.add(
+        new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
+      );
+    }
 
     const gridSpec = {
       width_mm,
@@ -741,7 +833,7 @@ export function ReliefPreview({
     const modelHeight = (width_mm * rows) / columns;
     const puzzleTabDepth =
       Math.min(width_mm / columns, modelHeight / rows) * 0.17;
-    if (!solid_model) {
+    if (!solid_model && !hasModelMeshes) {
       for (let edgeColumn = 1; edgeColumn < columns; edgeColumn += 1) {
         for (let row = 0; row < rows; row += 1) {
           const start = puzzleGridPoint(gridSpec, row, edgeColumn);
@@ -835,8 +927,15 @@ export function ReliefPreview({
     scene.add(fillLight);
 
     const camera = new PerspectiveCamera(36, 1, 0.01, 20);
-    const cameraScale = Math.max(1, heightScale * 1.5);
-    const defaultTarget: [number, number, number] = [0, heightScale * 0.35, 0];
+    const visibleHeightScale = hasModelMeshes
+      ? (modelMaximumZ - modelMinimumZ) / modelScale
+      : heightScale;
+    const cameraScale = Math.max(1, visibleHeightScale * 1.5);
+    const defaultTarget: [number, number, number] = [
+      0,
+      visibleHeightScale * 0.35,
+      0,
+    ];
     const savedView = resetViewRef.current ? null : viewRef.current;
     if (savedView) {
       camera.position.fromArray(savedView.position);
@@ -915,6 +1014,7 @@ export function ReliefPreview({
           materials.forEach((material) => material.dispose());
         }
       });
+      if (hasModelMeshes) lineMaterial.dispose();
       renderer.dispose();
     };
   }, [
@@ -955,6 +1055,9 @@ export function ReliefPreview({
     aviation_color,
     markerColor,
     markers,
+    trayColor,
+    trayContourColor,
+    trayLabelColor,
   ]);
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
@@ -1003,6 +1106,11 @@ export function ReliefPreview({
       <p ref={renderErrorRef} className="preview-render-error" hidden>
         This system could not start the 3D preview.
       </p>
+      {preview?.model_preview_error && (
+        <p className="preview-render-error" role="status">
+          Detailed model preview unavailable; showing the sampled surface.
+        </p>
+      )}
       <div className="preview-orbit-controls" aria-label="3D preview controls">
         <span>Drag to rotate · Scroll or pinch to zoom</span>
         <button
@@ -1104,10 +1212,12 @@ export function ReliefPreview({
         <span>
           {previewState === "generated"
             ? "Generated terrain"
-            : previewState === "elevation"
-              ? "Live elevation preview"
+            : previewState === "live"
+              ? "Live model preview"
+              : previewState === "updating"
+                ? "Updating model preview"
               : previewState === "loading"
-                ? "Sampling preview elevation"
+                ? "Sampling model preview"
                 : "Fast shape preview"}{" "}
           ·{" "}
           {spec.solid_model

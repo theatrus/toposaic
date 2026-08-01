@@ -422,6 +422,19 @@ export type PreviewData = {
   minimum_elevation_m?: number;
   maximum_elevation_m?: number;
   height_frame_compatible?: boolean;
+  /** Draft meshes made by the same Rust builders used for export. */
+  model_meshes?: Array<{
+    kind: "terrain" | "tray";
+    name: string;
+    vertices: [number, number, number][];
+    triangles: [number, number, number][];
+    /** Raw PrintMaterial indices, one per triangle. */
+    materials: number[];
+  }>;
+  /** min x, min y, min z, max x, max y, max z in assembled print mm. */
+  model_bounds_mm?: [number, number, number, number, number, number];
+  model_preview_detail?: string;
+  model_preview_error?: string;
 };
 
 export type PlaceResult = {

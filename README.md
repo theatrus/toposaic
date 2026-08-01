@@ -335,15 +335,15 @@ Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across
 the model. Ultra creates about four times as many surface triangles as High and
 best suits 0.2 mm nozzles, resin printing, or small high-detail terrain areas.
 Vector roads, waterways, and building edges add local points where they need
-them. Generated browser previews use up to 384 samples across the assembled
-map.
+them.
 
-The preview asks for a 64×64 real elevation sample after the location or ground
-span has been still for 450 ms. This gives the relief pane useful terrain
-before a full mesh job starts. It uses the same tile cache as generation. A
-completed job replaces it with the detailed generated preview. The preview is a
-lit 3D height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or
-use the plus and minus keys to zoom.
+After a setting has been still for 350 ms, the live preview reads a 128×128
+elevation sample and builds a lower-detail model with the same Rust mesh code
+as export. It shows puzzle cuts, solid outlines, buildings, bridges, labels,
+mount cuts, mapped overlays, and the fitted or split tray before Generate runs.
+The last good model stays visible while a new draft is built, and all input
+downloads use the same cache as generation. Drag or use the arrow keys to
+orbit; scroll, pinch, or use the plus and minus keys to zoom.
 
 ## Land cover and color
 

@@ -202,6 +202,7 @@ export function TerrainStudio() {
   const [elevationPreview, setElevationPreview] = useState<PreviewData | null>(
     null,
   );
+  const [previewedSpecKey, setPreviewedSpecKey] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [canceling, setCanceling] = useState(false);
@@ -1041,83 +1042,27 @@ export function TerrainStudio() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const previewSpecKey = JSON.stringify(spec);
     const timer = window.setTimeout(async () => {
-      setElevationPreview(null);
       setPreviewLoading(true);
-      const previewSpec: GenerationSpec = {
-        ...initialSpec,
-        center_lat: spec.center_lat,
-        center_lon: spec.center_lon,
-        elevation_source: spec.elevation_source,
-        ground_span_km: spec.ground_span_km,
-        terrain_rotation_degrees: spec.terrain_rotation_degrees,
-        map_frame: spec.map_frame,
-        width_mm: spec.width_mm,
-        base_mm: spec.base_mm,
-        relief_mm: spec.relief_mm,
-        samples_per_piece: spec.samples_per_piece,
-        overlay_samples_per_piece: spec.overlay_samples_per_piece,
-        mesh_samples_across: spec.mesh_samples_across,
-        overlay_samples_across: spec.overlay_samples_across,
-        fine_dem_detail: spec.fine_dem_detail,
-        despike_terrain: spec.despike_terrain,
-        elevation_datum_m: spec.elevation_datum_m,
-        elevation_m_per_mm: spec.elevation_m_per_mm,
-        // The preview normalizes through the same frame the print does,
-        // so the fields that choose one belong here too — without them a
-        // multiplier or a sea-level datum shows the old fitted model.
-        height_mode: spec.height_mode,
-        vertical_exaggeration: spec.vertical_exaggeration,
-        datum_reference: spec.datum_reference,
-        custom_datum_m: spec.custom_datum_m,
-        color_output: {
-          ...initialSpec.color_output,
-          enabled: false,
-          roads_enabled: false,
-          osm_water_enabled: false,
-        },
-        buildings: { ...initialSpec.buildings, enabled: false },
-        tray: { ...initialSpec.tray, enabled: false },
-      };
       try {
-        setElevationPreview(
-          await terrainApi.preview(previewSpec, controller.signal),
-        );
+        const nextPreview = await terrainApi.preview(spec, controller.signal);
+        if (controller.signal.aborted) return;
+        setPreviewedSpecKey(previewSpecKey);
+        setElevationPreview(nextPreview);
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setElevationPreview(null);
-        }
+        // Keep the last good mesh in view when a background refresh fails.
+        // Generate still reports its own error with the full job context.
+        if (error instanceof DOMException && error.name === "AbortError") return;
       } finally {
         if (!controller.signal.aborted) setPreviewLoading(false);
       }
-    }, 450);
+    }, 350);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [
-    spec.base_mm,
-    spec.center_lat,
-    spec.center_lon,
-    spec.elevation_datum_m,
-    spec.elevation_m_per_mm,
-    spec.height_mode,
-    spec.vertical_exaggeration,
-    spec.datum_reference,
-    spec.custom_datum_m,
-    spec.despike_terrain,
-    spec.elevation_source,
-    spec.fine_dem_detail,
-    spec.ground_span_km,
-    spec.map_frame,
-    spec.terrain_rotation_degrees,
-    spec.mesh_samples_across,
-    spec.overlay_samples_per_piece,
-    spec.overlay_samples_across,
-    spec.relief_mm,
-    spec.samples_per_piece,
-    spec.width_mm,
-  ]);
+  }, [spec]);
 
   const searchPlaces = async () => {
     const query = placeQuery.trim();
@@ -1918,7 +1863,21 @@ export function TerrainStudio() {
     });
   }, [job]);
 
-  const preview = generatedPreview ?? elevationPreview;
+  const preview = useMemo(() => {
+    if (!generatedPreview) return elevationPreview;
+    return {
+      ...elevationPreview,
+      ...generatedPreview,
+      // The finished preview has denser sampled colors and heights, while
+      // the background pass owns the draft export geometry. Keep both.
+      model_meshes: elevationPreview?.model_meshes,
+      model_bounds_mm: elevationPreview?.model_bounds_mm,
+      model_preview_detail: elevationPreview?.model_preview_detail,
+      model_preview_error: elevationPreview?.model_preview_error,
+    };
+  }, [elevationPreview, generatedPreview]);
+  const previewStale =
+    elevationPreview !== null && previewedSpecKey !== JSON.stringify(spec);
   const heightFrameLocked =
     spec.elevation_datum_m !== null && spec.elevation_m_per_mm !== null;
   const heightFrameCompatible = preview?.height_frame_compatible !== false;
@@ -1975,8 +1934,10 @@ export function TerrainStudio() {
     : undefined;
   const previewState = generatedPreview
     ? "generated"
-    : elevationPreview
-      ? "elevation"
+    : elevationPreview && (previewLoading || previewStale)
+      ? "updating"
+      : elevationPreview
+        ? "live"
       : previewLoading
         ? "loading"
         : "shape";

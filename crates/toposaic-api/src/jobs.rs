@@ -156,11 +156,38 @@ pub(crate) async fn create_preview(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     spec.validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
-    let cache_dir = state.map_cache_dir.join("elevation");
+    let map_cache_dir = state.map_cache_dir.clone();
     let preview = tokio::task::spawn_blocking(move || {
-        let samples = spec.terrain_samples_per_piece().clamp(64, 128) as usize;
-        let height_field = elevation::fetch_preview_height_field(&spec, &cache_dir, samples)?;
-        toposaic_core::build_height_preview(&spec, &height_field, samples)
+        let mut preview_spec = toposaic_core::model_preview_spec(&spec);
+        let samples = 128;
+        let mut height_field = elevation::fetch_preview_height_field(
+            &preview_spec,
+            &map_cache_dir.join("elevation"),
+            samples,
+        )?;
+        let mut surface_field = if preview_spec.color_output.enabled
+            || preview_spec.buildings.enabled
+            || preview_spec.uses_trails()
+            || preview_spec.uses_building_markers()
+        {
+            Some(surface::fetch_surface_field(
+                &preview_spec,
+                &height_field,
+                &map_cache_dir,
+            )?)
+        } else {
+            None
+        };
+        if let Some(field) = surface_field.as_mut() {
+            surface::apply_marine_water(&preview_spec, &mut height_field, field, &map_cache_dir);
+        }
+        preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
+        toposaic_core::build_model_preview(
+            &preview_spec,
+            &height_field,
+            surface_field.as_ref(),
+            samples,
+        )
     })
     .await
     .map_err(internal_error)?

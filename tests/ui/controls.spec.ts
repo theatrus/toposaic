@@ -2,6 +2,51 @@ import { expect, test } from "@playwright/test";
 
 import { appVersion } from "./helpers";
 
+test("renders draft export geometry from the background preview", async ({
+  page,
+}) => {
+  let previewRequests = 0;
+  await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
+    previewRequests += 1;
+    if (previewRequests > 1) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    await route.fulfill({
+      json: {
+        width: 2,
+        height: 2,
+        values: [0, 0, 0, 0.1],
+        model_bounds_mm: [0, 0, 0, 100, 100, 10],
+        model_preview_detail: "draft export geometry",
+        model_meshes: [
+          {
+            kind: "terrain",
+            name: "preview-piece",
+            vertices: [
+              [0, 0, 0],
+              [100, 0, 0],
+              [0, 100, 10],
+            ],
+            triangles: [[0, 1, 2]],
+            materials: [0],
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/");
+  const preview = page.getByLabel("Interactive 3D terrain preview");
+  await expect(preview).toHaveAttribute("data-model-geometry", "mesh");
+  await expect(preview).toHaveAttribute("data-model-mesh-count", "1");
+  await expect(page.getByText("Live model preview")).toBeVisible();
+
+  await page.getByRole("slider", { name: "Terrain height" }).fill("32");
+  await expect(page.getByText("Updating model preview")).toBeVisible();
+  await expect(preview).toHaveAttribute("data-model-geometry", "mesh");
+  await expect(page.getByText("Live model preview")).toBeVisible();
+});
+
 test("switches between the reflowed control panels", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
@@ -1041,7 +1086,7 @@ test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page.getByText("Live elevation preview")).toBeVisible();
+  await expect(page.getByText("Live model preview")).toBeVisible();
   await page.getByText("Advanced puzzle identity", { exact: true }).click();
   const puzzleSeed = page.getByLabel("Puzzle seed");
   const reseed = page.getByRole("button", { name: "Generate new seed" });
