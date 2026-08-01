@@ -16,7 +16,7 @@ use crate::heightfield::{HeightField, height_range_for_spec, validate_height_fra
 use crate::marker::build_flag_template;
 use crate::mesh::Mesh;
 use crate::mount::{build_wall_alignment_spacer, build_wall_hardware};
-use crate::piece::build_piece_with_height_range;
+use crate::piece::{build_piece_with_height_range, printable_piece_positions};
 use crate::preview::{build_preview, preview_sample_count};
 use crate::spec::{GenerationSpec, MapMarker, MarkerKind, PaintedClasses, WallMountStyle};
 use crate::surface::SurfaceField;
@@ -326,11 +326,8 @@ fn generate_project_inner(
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output directory {}", output_dir.display()))?;
 
-    let object_count = if spec.solid_model {
-        1
-    } else {
-        (spec.rows * spec.columns) as usize
-    };
+    let piece_positions = printable_piece_positions(spec)?;
+    let object_count = piece_positions.len();
 
     let mut artifacts = Vec::new();
     validate_height_frame(spec, height_field)?;
@@ -386,16 +383,7 @@ fn generate_project_inner(
                     .into_par_iter()
                     .map(|index| -> Result<(Mesh, Artifact)> {
                         ensure_generation_active(is_cancelled)?;
-                        let row = if spec.solid_model {
-                            0
-                        } else {
-                            index as u32 / spec.columns
-                        };
-                        let column = if spec.solid_model {
-                            0
-                        } else {
-                            index as u32 % spec.columns
-                        };
+                        let (row, column) = piece_positions[index];
                         let mesh = build_piece_with_height_range(
                             spec,
                             height_field,
@@ -547,7 +535,8 @@ mod tests {
 
     use crate::piece::{build_piece, solid_outline};
     use crate::spec::{
-        BuildingSpec, ColorOutputSpec, SurfaceClass, WallMountSpec, WallMountStyle, WallMountTarget,
+        BuildingSpec, ColorOutputSpec, OutlineShape, SurfaceClass, WallMountSpec, WallMountStyle,
+        WallMountTarget,
     };
 
     fn colors_in(path: &Path) -> Vec<String> {
@@ -749,6 +738,38 @@ mod tests {
         );
         assert!(progress.windows(2).all(|values| values[0] <= values[1]));
         assert_eq!(progress.last().copied(), Some(1.0));
+
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn shaped_projects_omit_cells_outside_the_outline() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-shaped-project-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let mut spec = GenerationSpec {
+            width_mm: 120.0,
+            rows: 2,
+            columns: 6,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Circle;
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+
+        assert!(output_dir.join("toposaic.3mf").is_file());
+        assert!(!output_dir.join("piece-1-1.stl").exists());
+        assert!(output_dir.join("piece-1-3.stl").is_file());
+        assert!(
+            manifest
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.name != "piece-1-1.stl")
+        );
 
         std::fs::remove_dir_all(output_dir).unwrap();
     }

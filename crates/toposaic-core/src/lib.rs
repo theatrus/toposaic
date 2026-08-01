@@ -10,6 +10,7 @@ mod marker;
 mod mesh;
 mod mount;
 mod mount_layout;
+mod outline;
 mod palette;
 mod piece;
 mod planar_mesh;
@@ -45,9 +46,9 @@ pub use spec::{
     DatumReference, DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec,
     GroundColorMode, GroundPaletteSpec, HeightMode, HeightScaleSpec, LabelFont, LineScaleSpec,
     LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel, MarineSpec,
-    MarkerKind, MarkerSpec, PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail,
-    RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle,
-    TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle,
-    WallMountTarget,
+    MarkerKind, MarkerSpec, ModelOutlineSpec, OutlineShape, PuzzleRetentionSpec, RailLifecycle,
+    RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
+    SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec,
+    WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

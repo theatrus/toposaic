@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
-use geo::{Area, Buffer, Coord, LineString, MultiPolygon, Polygon};
+use geo::{Area, Buffer, Contains, Coord, LineString, MultiPolygon, Point, Polygon};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 #[cfg(test)]
@@ -16,6 +16,8 @@ use crate::mount::{
     mount_bottom, mount_bottom_across_outline, retention_bottom, split_outline_at_mount,
 };
 use crate::mount_layout::retention_centers_local;
+use crate::outline::{clip_piece_outline, model_outline_mm};
+use crate::planar_mesh::polygon_from_outline;
 use crate::spec::{GenerationSpec, PrintMaterial, SurfaceClass};
 use crate::surface::{SurfaceField, surface_area_bounds};
 use crate::tray::{add_triangle_contour_segment, smooth_contour_path, stitch_contour_segments};
@@ -365,11 +367,19 @@ pub(crate) fn build_piece_with_height_range(
     // query from roughly one grid row's worth of edges instead of the whole
     // outline while returning exactly what point_in_polygon would.
     let outline_index = PolygonStripIndex::new(&outline, grid_rows.max(1))?;
+    let shaped_outline = (spec.model_outline.shape != crate::spec::OutlineShape::Rectangle)
+        .then(|| polygon_from_outline(&outline));
+    let contains_outline = |point: [f32; 2]| {
+        shaped_outline.as_ref().map_or_else(
+            || outline_index.contains(point),
+            |polygon| polygon.contains(&Point::new(f64::from(point[0]), f64::from(point[1]))),
+        )
+    };
     for grid_y in 0..grid_rows {
         let y = minimum_y + (grid_y as f32 + 0.5) * terrain_spacing;
         for grid_x in 0..grid_columns {
             let x = minimum_x + (grid_x as f32 + 0.5) * terrain_spacing;
-            if outline_index.contains([x, y]) {
+            if contains_outline([x, y]) {
                 push_unique_triangulation_point(&mut points, &mut point_keys, [x, y]);
             }
         }
@@ -425,20 +435,34 @@ pub(crate) fn build_piece_with_height_range(
 
     let mut top_triangles = Vec::with_capacity(triangulation.num_inner_faces());
     let mut top_materials = Vec::with_capacity(triangulation.num_inner_faces());
+    let mut kept_faces = vec![false; triangulation.num_all_faces()];
     for face in triangulation.inner_faces() {
+        let positions = face.vertices().map(|vertex| vertex.position());
+        let centroid = [
+            ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
+            ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
+        ];
+        kept_faces[face.fix().index()] = contains_outline(centroid)
+            && !flag_cavities
+                .iter()
+                .any(|cavity| point_in_polygon(centroid, &cavity.ring));
+    }
+    if shaped_outline.is_some() {
+        // Dense curve intersections can leave a sliver at one constrained
+        // vertex whose incident faces alternate inside and outside. Shed
+        // only the smallest kept fan so the terrain wall remains manifold.
+        repair_classification_pinches(&triangulation, &mut kept_faces, false);
+    }
+    for face in triangulation.inner_faces() {
+        if !kept_faces[face.fix().index()] {
+            continue;
+        }
         let face_vertices = face.vertices();
         let positions = face_vertices.map(|vertex| vertex.position());
         let centroid = [
             ((positions[0].x + positions[1].x + positions[2].x) / 3.0) as f32,
             ((positions[0].y + positions[1].y + positions[2].y) / 3.0) as f32,
         ];
-        if !outline_index.contains(centroid)
-            || flag_cavities
-                .iter()
-                .any(|cavity| point_in_polygon(centroid, &cavity.ring))
-        {
-            continue;
-        }
         let face_indices = face_vertices.map(|vertex| vertex.fix().index());
         let mut top = face_indices.map(|index| index as u32);
         let area = (positions[1].x - positions[0].x) * (positions[2].y - positions[0].y)
@@ -1167,6 +1191,9 @@ fn densify_outline_for_triangulation(outline: &[[f32; 2]], maximum_step: f32) ->
 }
 
 pub(crate) fn solid_outline(spec: &GenerationSpec, edge_samples: usize) -> Result<Vec<[f32; 2]>> {
+    if spec.model_outline.shape != crate::spec::OutlineShape::Rectangle {
+        return Ok(model_outline_mm(spec, edge_samples));
+    }
     if spec.adjacent_interlocks && (spec.adjacent_columns > 1 || spec.adjacent_rows > 1) {
         let mut tile = spec.clone();
         tile.rows = 1;
@@ -1210,47 +1237,85 @@ fn piece_outline(
     let base_depth = nominal_piece_size * 0.17;
     let edge_samples = spec.samples_per_piece.clamp(64, 128) as usize;
     let mut outline = Vec::with_capacity(edge_samples * 4);
+    let model_boundary = (spec.model_outline.shape != crate::spec::OutlineShape::Rectangle)
+        .then(|| polygon_from_outline(&model_outline_mm(spec, edge_samples)));
 
+    let bottom_pattern = piece_edge_pattern(spec, 0, column, row);
+    let bottom_sign = boundary_safe_edge_sign(
+        model_boundary.as_ref(),
+        bottom_left,
+        bottom_right,
+        bottom_pattern,
+        puzzle_edge_sign(spec, 0, column, row, spec.rows),
+        base_depth,
+    );
     for index in 0..edge_samples {
         let t = index as f32 / edge_samples as f32;
         outline.push(puzzle_edge_point(
             bottom_left,
             bottom_right,
-            piece_edge_pattern(spec, 0, column, row),
-            puzzle_edge_sign(spec, 0, column, row, spec.rows),
+            bottom_pattern,
+            bottom_sign,
             t,
             base_depth,
         ));
     }
+    let right_pattern = piece_edge_pattern(spec, 1, row, column + 1);
+    let right_sign = boundary_safe_edge_sign(
+        model_boundary.as_ref(),
+        bottom_right,
+        top_right,
+        right_pattern,
+        puzzle_edge_sign(spec, 1, row, column + 1, spec.columns),
+        base_depth,
+    );
     for index in 0..edge_samples {
         let t = index as f32 / edge_samples as f32;
         outline.push(puzzle_edge_point(
             bottom_right,
             top_right,
-            piece_edge_pattern(spec, 1, row, column + 1),
-            puzzle_edge_sign(spec, 1, row, column + 1, spec.columns),
+            right_pattern,
+            right_sign,
             t,
             base_depth,
         ));
     }
+    let top_pattern = piece_edge_pattern(spec, 0, column, row + 1);
+    let top_sign = boundary_safe_edge_sign(
+        model_boundary.as_ref(),
+        top_left,
+        top_right,
+        top_pattern,
+        puzzle_edge_sign(spec, 0, column, row + 1, spec.rows),
+        base_depth,
+    );
     for index in 0..edge_samples {
         let t = 1.0 - index as f32 / edge_samples as f32;
         outline.push(puzzle_edge_point(
             top_left,
             top_right,
-            piece_edge_pattern(spec, 0, column, row + 1),
-            puzzle_edge_sign(spec, 0, column, row + 1, spec.rows),
+            top_pattern,
+            top_sign,
             t,
             base_depth,
         ));
     }
+    let left_pattern = piece_edge_pattern(spec, 1, row, column);
+    let left_sign = boundary_safe_edge_sign(
+        model_boundary.as_ref(),
+        bottom_left,
+        top_left,
+        left_pattern,
+        puzzle_edge_sign(spec, 1, row, column, spec.columns),
+        base_depth,
+    );
     for index in 0..edge_samples {
         let t = 1.0 - index as f32 / edge_samples as f32;
         outline.push(puzzle_edge_point(
             bottom_left,
             top_left,
-            piece_edge_pattern(spec, 1, row, column),
-            puzzle_edge_sign(spec, 1, row, column, spec.columns),
+            left_pattern,
+            left_sign,
             t,
             base_depth,
         ));
@@ -1262,6 +1327,64 @@ fn piece_outline(
     Ok(outline)
 }
 
+fn boundary_safe_edge_sign(
+    model_boundary: Option<&Polygon<f64>>,
+    start: [f32; 2],
+    end: [f32; 2],
+    pattern: crate::jigsaw::EdgePattern,
+    sign: f32,
+    depth: f32,
+) -> f32 {
+    let Some(model_boundary) = model_boundary else {
+        return sign;
+    };
+    if sign == 0.0 {
+        return sign;
+    }
+    // A shaped boundary can cut a tab head away from its neck. Keep tabs
+    // whose full shared curve lies inside the model; use a straight shared
+    // seam near the outer cut so every exported puzzle piece stays whole.
+    let stays_inside = (0..=32).all(|index| {
+        let point = puzzle_edge_point(start, end, pattern, sign, index as f32 / 32.0, depth);
+        model_boundary.contains(&Point::new(f64::from(point[0]), f64::from(point[1])))
+    });
+    if stays_inside { sign } else { 0.0 }
+}
+
+pub(crate) fn clipped_piece_outline(
+    spec: &GenerationSpec,
+    row: u32,
+    column: u32,
+    exact_shared_edge: bool,
+) -> Result<Option<Vec<[f32; 2]>>> {
+    if spec.model_outline.shape == crate::spec::OutlineShape::Rectangle {
+        return piece_outline(spec, row, column, exact_shared_edge).map(Some);
+    }
+    let piece = piece_outline(spec, row, column, exact_shared_edge)?;
+    let Some(clipped) = clip_piece_outline(spec, &piece)? else {
+        return Ok(None);
+    };
+    Ok(Some(clipped))
+}
+
+pub(crate) fn printable_piece_positions(spec: &GenerationSpec) -> Result<Vec<(u32, u32)>> {
+    if spec.solid_model {
+        return Ok(vec![(0, 0)]);
+    }
+    let mut positions = Vec::new();
+    for row in 0..spec.rows {
+        for column in 0..spec.columns {
+            if clipped_piece_outline(spec, row, column, false)?.is_some() {
+                positions.push((row, column));
+            }
+        }
+    }
+    if positions.is_empty() {
+        bail!("the model outline does not contain any printable puzzle pieces");
+    }
+    Ok(positions)
+}
+
 pub(crate) fn local_piece_outline(
     spec: &GenerationSpec,
     row: u32,
@@ -1271,7 +1394,14 @@ pub(crate) fn local_piece_outline(
     let piece_height = spec.height_mm() / spec.rows as f32;
     let origin_x = column as f32 * piece_width;
     let origin_y = row as f32 * piece_height;
-    Ok(piece_outline(spec, row, column, false)?
+    Ok(clipped_piece_outline(spec, row, column, false)?
+        .with_context(|| {
+            format!(
+                "puzzle piece {}, {} lies outside the model outline",
+                row + 1,
+                column + 1
+            )
+        })?
         .into_iter()
         .map(|[x, y]| [x - origin_x, y - origin_y])
         .collect())
@@ -1436,7 +1566,9 @@ fn flag_marker_owner(spec: &GenerationSpec, uv: [f32; 2]) -> Result<(u32, u32)> 
     let last_column = (nominal_column + 1).min(spec.columns - 1);
     for row in first_row..=last_row {
         for column in first_column..=last_column {
-            if point_in_polygon(point, &piece_outline(spec, row, column, true)?) {
+            if clipped_piece_outline(spec, row, column, true)?
+                .is_some_and(|outline| point_in_polygon(point, &outline))
+            {
                 return Ok((row, column));
             }
         }
@@ -1508,9 +1640,118 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::spec::{
-        FlagMarkerStyle, MapMarker, MarkerKind, PuzzleRetentionSpec, TraySpec, WallMountSpec,
-        WallMountStyle, WallMountTarget,
+        FlagMarkerStyle, MapMarker, MarkerKind, OutlineShape, PuzzleRetentionSpec, TraySpec,
+        WallMountSpec, WallMountStyle, WallMountTarget,
     };
+
+    #[test]
+    fn a_solid_ellipse_is_watertight() {
+        let mut spec = GenerationSpec {
+            solid_model: true,
+            width_mm: 80.0,
+            rows: 2,
+            columns: 3,
+            samples_per_piece: 24,
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Ellipse;
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn a_concave_custom_solid_outline_is_watertight() {
+        let mut spec = GenerationSpec {
+            solid_model: true,
+            width_mm: 80.0,
+            rows: 4,
+            columns: 4,
+            samples_per_piece: 24,
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Polygon;
+        spec.model_outline.points = vec![
+            [0.1, 0.1],
+            [0.9, 0.1],
+            [0.9, 0.42],
+            [0.58, 0.42],
+            [0.58, 0.9],
+            [0.1, 0.9],
+        ];
+        spec.validate().unwrap();
+        let mesh = build_piece(&spec, None, None, 0, 0).unwrap();
+        assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn a_circle_omits_cells_that_fall_outside_its_boundary() {
+        let mut spec = GenerationSpec {
+            width_mm: 100.0,
+            rows: 10,
+            columns: 10,
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Circle;
+        let positions = printable_piece_positions(&spec).unwrap();
+        assert!(positions.len() < 100);
+        assert!(!positions.contains(&(0, 0)));
+        assert!(positions.contains(&(5, 5)));
+        let boundary = positions
+            .into_iter()
+            .find(|(row, column)| *row == 0 || *column == 0)
+            .expect("circle should retain a boundary piece");
+        let outline = local_piece_outline(&spec, boundary.0, boundary.1).unwrap();
+        let unique_points = outline
+            .iter()
+            .map(|point| triangulation_point_key(*point))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            unique_points.len(),
+            outline.len(),
+            "clipped outline repeats vertices"
+        );
+        let mut edge_counts = HashMap::new();
+        for (start, end) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+            let mut edge = [
+                triangulation_point_key(*start),
+                triangulation_point_key(*end),
+            ];
+            edge.sort();
+            *edge_counts.entry(edge).or_insert(0usize) += 1;
+        }
+        let repeated = edge_counts.values().filter(|count| **count > 1).count();
+        assert_eq!(repeated, 0, "clipped outline repeats {repeated} edges");
+        let mesh = build_piece(&spec, None, None, boundary.0, boundary.1).unwrap();
+        assert_watertight(&mesh);
+    }
+
+    #[test]
+    fn a_custom_polygon_clips_jigsaw_pieces_without_loose_parts() {
+        let mut spec = GenerationSpec {
+            width_mm: 90.0,
+            rows: 5,
+            columns: 5,
+            samples_per_piece: 16,
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Polygon;
+        spec.model_outline.points = vec![
+            [0.12, 0.2],
+            [0.52, 0.08],
+            [0.9, 0.3],
+            [0.82, 0.84],
+            [0.3, 0.92],
+            [0.08, 0.58],
+        ];
+        spec.validate().unwrap();
+        let positions = printable_piece_positions(&spec).unwrap();
+        assert!(positions.len() < (spec.rows * spec.columns) as usize);
+        assert!(!positions.is_empty());
+        for (row, column) in positions {
+            let mesh = build_piece(&spec, None, None, row, column).unwrap();
+            assert_watertight(&mesh);
+        }
+    }
 
     /// Airport pavement reaches the mesh both ways — a ribbon down a runway
     /// centre line and an outline around an apron — and the piece stays

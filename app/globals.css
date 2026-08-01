@@ -883,7 +883,9 @@ a {
 }
 
 .map-canvas.map-select,
-.map-canvas.map-select:active {
+.map-canvas.map-select:active,
+.map-canvas.map-outline,
+.map-canvas.map-outline:active {
   cursor: crosshair;
 }
 
@@ -972,6 +974,20 @@ a {
   top: 0;
   transform: translate(-50%, -50%);
   white-space: nowrap;
+}
+
+.map-outline-draft {
+  color: var(--acid);
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 6;
+}
+
+.map-outline-draft circle {
+  fill: var(--acid);
+  stroke: var(--ink);
+  stroke-width: 1.5;
 }
 
 .map-shell::after {

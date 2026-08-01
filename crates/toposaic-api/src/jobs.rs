@@ -444,6 +444,28 @@ pub(crate) fn classify_job_error(error: &str) -> JobFailure {
             piece,
         };
     }
+    if (lower.contains("shaped outline") || lower.contains("shaped tray"))
+        && (lower.contains("tray") || lower.contains("top-lip"))
+    {
+        return JobFailure {
+            title: "The tray settings do not fit this outline".into(),
+            message: "Use one tray segment and turn off its top-lip label, then generate again."
+                .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Mounting),
+            piece,
+        };
+    }
+    if piece.is_none() && (lower.contains("outline") || lower.contains("super-tile mode")) {
+        return JobFailure {
+            title: "The model outline could not be built".into(),
+            message: "Check the outline in Model. Custom edges must not cross or split one puzzle piece into separate parts."
+                .into(),
+            technical_detail,
+            control_tab: Some(JobControlTab::Model),
+            piece,
+        };
+    }
     if let Some(piece) = piece {
         let conflicting_edge = lower.contains("conflicting edge");
         return JobFailure {
@@ -1053,6 +1075,24 @@ mod tests {
         let failure = classify_job_error("Mapterhorn elevation tile returned HTTP 503");
         assert_eq!(failure.control_tab, Some(JobControlTab::Model));
         assert!(failure.title.contains("Elevation"));
+    }
+
+    #[test]
+    fn shaped_outline_failures_point_to_the_matching_control() {
+        let failure = classify_job_error("custom outline edges cannot cross");
+        assert_eq!(failure.control_tab, Some(JobControlTab::Model));
+        assert!(failure.title.contains("outline"));
+
+        let failure = classify_job_error(
+            "shaped outlines need a one-piece tray; tray splitting is not yet available",
+        );
+        assert_eq!(failure.control_tab, Some(JobControlTab::Mounting));
+        assert!(failure.title.contains("tray"));
+
+        let failure = classify_job_error(
+            "top-lip labels are not yet available on shaped trays; turn off the tray label",
+        );
+        assert_eq!(failure.control_tab, Some(JobControlTab::Mounting));
     }
 
     #[test]

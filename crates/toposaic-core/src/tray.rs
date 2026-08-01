@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
-use geo::{BooleanOps, Contains, LineString, Point, Polygon};
+use geo::{
+    Area, BooleanOps, BoundingRect, Buffer, Contains, LineString, Point, Polygon, Translate,
+};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::jigsaw::{edge_sign, puzzle_edge_point, shared_edge_pattern};
 use crate::mesh::{Mesh, MeshBuilder, distance_squared, unit_vector, weld_export_mesh};
 use crate::mount::{circle_points, mount_bottom, mount_bottom_polygons};
 use crate::mount_layout::retention_centers_local;
-use crate::piece::{local_piece_outline, solid_outline};
+use crate::outline::model_outline_mm;
+use crate::piece::{local_piece_outline, printable_piece_positions, solid_outline};
 use crate::planar_mesh::{
     add_horizontal_polygons, closed_ring, polygon_from_outline as geo_polygon,
 };
@@ -66,6 +69,9 @@ impl TrayFrame {
 }
 
 fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
+    if spec.model_outline.shape != crate::spec::OutlineShape::Rectangle {
+        return build_shaped_tray(spec, height_field);
+    }
     let tray = &spec.tray;
     let TrayFrame {
         inner_width,
@@ -345,6 +351,138 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     }
 
     Ok(mesh.finish("terrain-tray"))
+}
+
+fn build_shaped_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
+    let tray = &spec.tray;
+    let terrain = geo_polygon(&model_outline_mm(spec, 96));
+    let cavity_unshifted = largest_polygon(terrain.buffer(f64::from(tray.clearance_mm)))?;
+    let outer_unshifted = largest_polygon(cavity_unshifted.buffer(f64::from(tray.rim_width_mm)))?;
+    let bounds = outer_unshifted
+        .bounding_rect()
+        .context("shaped tray has no printable bounds")?;
+    let shift_x = -bounds.min().x;
+    let shift_y = -bounds.min().y;
+    let cavity = cavity_unshifted.translate(shift_x, shift_y);
+    let outer = outer_unshifted.translate(shift_x, shift_y);
+    let rim = vec![Polygon::new(
+        outer.exterior().clone(),
+        vec![cavity.exterior().clone()],
+    )];
+    let floor_z = tray.floor_mm;
+    let rim_z = tray.floor_mm + tray.rim_height_mm;
+    let retention_centers = if spec.puzzle_retention.active(spec.tray.enabled) {
+        tray_retention_centers_at(spec, [shift_x as f32, shift_y as f32])?
+    } else {
+        Vec::new()
+    };
+    let mut mesh = MeshBuilder::default();
+
+    if spec.puzzle_retention.active(spec.tray.enabled) {
+        add_floor_with_retention_pins(
+            &mut mesh,
+            std::slice::from_ref(&cavity),
+            floor_z,
+            &retention_centers,
+            spec,
+        )?;
+    } else {
+        add_horizontal_polygons(
+            &mut mesh,
+            std::slice::from_ref(&cavity),
+            floor_z,
+            SurfaceClass::Rock,
+            false,
+        )?;
+    }
+    add_horizontal_polygons(&mut mesh, &rim, rim_z, SurfaceClass::Rock, false)?;
+    if spec.wall_mount.cuts_tray() {
+        mesh.append_isolated(mount_bottom_polygons(
+            std::slice::from_ref(&outer),
+            &spec.wall_mount,
+            [
+                0.0,
+                0.0,
+                (bounds.max().x - bounds.min().x) as f32,
+                (bounds.max().y - bounds.min().y) as f32,
+            ],
+        )?);
+    } else {
+        add_horizontal_polygons(
+            &mut mesh,
+            std::slice::from_ref(&outer),
+            0.0,
+            SurfaceClass::Rock,
+            true,
+        )?;
+    }
+    add_ring_walls(&mut mesh, outer.exterior(), 0.0, rim_z, false);
+    add_ring_walls(&mut mesh, cavity.exterior(), floor_z, rim_z, true);
+
+    if tray.contours_enabled {
+        let rectangular_origin = tray.rim_width_mm + tray.clearance_mm;
+        let contour_shift = [
+            shift_x as f32 - rectangular_origin,
+            shift_y as f32 - rectangular_origin,
+        ];
+        for mut path in tray_contour_paths(spec, height_field) {
+            for point in &mut path.points {
+                point[0] += contour_shift[0];
+                point[1] += contour_shift[1];
+            }
+            for clipped in clip_contour_path(&path, &cavity) {
+                for printable in
+                    contour_paths_around_retention_pins(&clipped, &retention_centers, spec)
+                {
+                    add_contour_ribbon(
+                        &mut mesh,
+                        &printable,
+                        floor_z - TRAY_CONTOUR_INLAY_MM,
+                        floor_z + TRAY_CONTOUR_SURFACE_OFFSET_MM,
+                    );
+                }
+            }
+        }
+    }
+    Ok(mesh.finish("terrain-tray"))
+}
+
+fn largest_polygon(polygons: geo::MultiPolygon<f64>) -> Result<Polygon<f64>> {
+    polygons
+        .0
+        .into_iter()
+        .max_by(|first, second| first.unsigned_area().total_cmp(&second.unsigned_area()))
+        .context("tray clearance removed the model outline")
+}
+
+fn add_ring_walls(
+    mesh: &mut MeshBuilder,
+    ring: &LineString<f64>,
+    lower_z: f32,
+    upper_z: f32,
+    reverse: bool,
+) {
+    for edge in ring.0.windows(2) {
+        let a = [edge[0].x as f32, edge[0].y as f32];
+        let b = [edge[1].x as f32, edge[1].y as f32];
+        if reverse {
+            mesh.quad(
+                [b[0], b[1], lower_z],
+                [a[0], a[1], lower_z],
+                [a[0], a[1], upper_z],
+                [b[0], b[1], upper_z],
+                SurfaceClass::Rock,
+            );
+        } else {
+            mesh.quad(
+                [a[0], a[1], lower_z],
+                [b[0], b[1], lower_z],
+                [b[0], b[1], upper_z],
+                [a[0], a[1], upper_z],
+                SurfaceClass::Rock,
+            );
+        }
+    }
 }
 
 pub(crate) fn build_tray_segments(
@@ -710,33 +848,42 @@ fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f3
 
 fn tray_retention_centers(spec: &GenerationSpec) -> Result<Vec<[f32; 2]>> {
     let frame = TrayFrame::from_spec(spec);
-    let terrain_x0 = frame.inner_x0 + spec.tray.clearance_mm;
-    let terrain_y0 = frame.inner_y0 + spec.tray.clearance_mm;
+    tray_retention_centers_at(
+        spec,
+        [
+            frame.inner_x0 + spec.tray.clearance_mm,
+            frame.inner_y0 + spec.tray.clearance_mm,
+        ],
+    )
+}
+
+fn tray_retention_centers_at(
+    spec: &GenerationSpec,
+    terrain_origin: [f32; 2],
+) -> Result<Vec<[f32; 2]>> {
     if spec.solid_model {
         let outline = solid_outline(spec, 64)?;
         return Ok(retention_centers_local(spec, 0, 0, &outline)
             .into_iter()
-            .map(|center| [terrain_x0 + center[0], terrain_y0 + center[1]])
+            .map(|center| [terrain_origin[0] + center[0], terrain_origin[1] + center[1]])
             .collect());
     }
 
     let piece_width = spec.width_mm / spec.columns as f32;
     let piece_height = spec.height_mm() / spec.rows as f32;
     let mut centers = Vec::with_capacity((spec.rows * spec.columns) as usize);
-    for row in 0..spec.rows {
-        for column in 0..spec.columns {
-            let outline = local_piece_outline(spec, row, column)?;
-            centers.extend(
-                retention_centers_local(spec, row, column, &outline)
-                    .into_iter()
-                    .map(|center| {
-                        [
-                            terrain_x0 + column as f32 * piece_width + center[0],
-                            terrain_y0 + row as f32 * piece_height + center[1],
-                        ]
-                    }),
-            );
-        }
+    for (row, column) in printable_piece_positions(spec)? {
+        let outline = local_piece_outline(spec, row, column)?;
+        centers.extend(
+            retention_centers_local(spec, row, column, &outline)
+                .into_iter()
+                .map(|center| {
+                    [
+                        terrain_origin[0] + column as f32 * piece_width + center[0],
+                        terrain_origin[1] + row as f32 * piece_height + center[1],
+                    ]
+                }),
+        );
     }
     Ok(centers)
 }
@@ -1491,8 +1638,61 @@ mod tests {
     use crate::mesh::assert_watertight;
     use crate::project::{generate_project, generate_project_with_height_field};
     use crate::spec::{
-        LabelFont, PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+        LabelFont, OutlineShape, PuzzleRetentionSpec, TraySpec, WallMountSpec, WallMountStyle,
+        WallMountTarget,
     };
+
+    #[test]
+    fn a_shaped_tray_follows_the_terrain_outline() {
+        let mut spec = GenerationSpec {
+            solid_model: true,
+            width_mm: 120.0,
+            rows: 2,
+            columns: 4,
+            tray: TraySpec {
+                enabled: true,
+                label_enabled: false,
+                contours_enabled: false,
+                ..TraySpec::default()
+            },
+            puzzle_retention: PuzzleRetentionSpec {
+                enabled: true,
+                ..PuzzleRetentionSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        spec.model_outline.shape = OutlineShape::Circle;
+        spec.validate().unwrap();
+        let terrain = geo_polygon(&model_outline_mm(&spec, 96));
+        let cavity = largest_polygon(terrain.buffer(f64::from(spec.tray.clearance_mm))).unwrap();
+        let outer = largest_polygon(cavity.buffer(f64::from(spec.tray.rim_width_mm))).unwrap();
+        let outer_bounds = outer.bounding_rect().unwrap();
+        let shift = [-outer_bounds.min().x as f32, -outer_bounds.min().y as f32];
+        let centers = tray_retention_centers_at(&spec, shift).unwrap();
+        assert_eq!(centers.len(), 1);
+        assert!((centers[0][0] - 38.6).abs() < 0.2);
+        assert!((centers[0][1] - 38.6).abs() < 0.2);
+        let mesh = build_tray(&spec, None).unwrap();
+        assert_watertight(&mesh);
+        let bounds = mesh.vertices.iter().fold(
+            [
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |bounds, point| {
+                [
+                    bounds[0].min(point[0]),
+                    bounds[1].max(point[0]),
+                    bounds[2].min(point[1]),
+                    bounds[3].max(point[1]),
+                ]
+            },
+        );
+        assert!((bounds[1] - bounds[0] - 77.2).abs() < 0.2);
+        assert!((bounds[3] - bounds[2] - 77.2).abs() < 0.2);
+    }
 
     #[test]
     fn tray_is_watertight_and_keeps_contours_and_label_colors() {

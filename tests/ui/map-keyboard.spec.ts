@@ -2,6 +2,59 @@ import { expect, test } from "@playwright/test";
 
 import { mockSetupsService } from "./helpers";
 
+test("draws a custom model outline on the selected map area", async ({
+  page,
+}) => {
+  await mockSetupsService(page, []);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const outline = page.getByLabel("Outer outline");
+  await outline.selectOption("circle");
+  await expect(page.locator(".map-selection.current")).toHaveAttribute(
+    "points",
+    /(?:\S+\s+){63}/,
+  );
+
+  await outline.selectOption("polygon");
+  await page.getByRole("button", { name: "Edit custom terrain outline" }).click();
+  const map = page.locator(".map-canvas");
+  const selection = page.locator(".map-selection.current");
+  const bounds = await selection.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  for (const [x, y] of [
+    [0.25, 0.25],
+    [0.75, 0.2],
+    [0.82, 0.7],
+    [0.3, 0.78],
+  ]) {
+    await map.click({
+      position: {
+        x: bounds.x - (await map.boundingBox())!.x + bounds.width * x,
+        y: bounds.y - (await map.boundingBox())!.y + bounds.height * y,
+      },
+    });
+  }
+  await expect(page.locator(".map-outline-draft circle")).toHaveCount(4);
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.locator(".map-selection.current")).toHaveAttribute(
+    "points",
+    /^(?:\S+\s+){3}\S+$/,
+  );
+  await expect(page.locator(".map-canvas")).toHaveAttribute(
+    "data-interaction-mode",
+    "pan",
+  );
+
+  await page.getByLabel("Super-tile grid").getByLabel("Across").selectOption("2");
+  await expect(outline).toHaveValue("rectangle");
+  await expect(outline.locator('option[value="polygon"]')).toHaveAttribute(
+    "disabled",
+    "",
+  );
+});
+
 test("pans the map without moving the terrain area", async ({ page }) => {
   await mockSetupsService(page, []);
   await page.goto("/");

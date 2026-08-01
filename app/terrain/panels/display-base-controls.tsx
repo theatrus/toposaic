@@ -55,6 +55,10 @@ export function DisplayBaseControls({
               aria-label="Emboss the label on the base"
               type="checkbox"
               checked={spec.tray.label_enabled}
+              disabled={
+                spec.model_outline.shape !== "rectangle" &&
+                !spec.tray.label_enabled
+              }
               onChange={(event) =>
                 updateTray("label_enabled", event.target.checked)
               }
@@ -62,9 +66,9 @@ export function DisplayBaseControls({
             <span>
               <strong>Embossed label</strong>
               <small>
-                Raise the place name and its coordinates on the front lip. The
-                coordinates carry as many digits as the map&apos;s span
-                supports, and no more.
+                {spec.model_outline.shape === "rectangle"
+                  ? "Raise the place name and its coordinates on the front lip. The coordinates carry as many digits as the map's span supports, and no more."
+                  : "Shaped trays have no straight front lip for this label yet."}
               </small>
             </span>
           </label>

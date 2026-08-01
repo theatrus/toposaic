@@ -19,7 +19,8 @@ import {
   MAX_GROUND_SPAN_KM,
   MIN_GROUND_SPAN_KM,
 } from "./config";
-import { superTileCorners } from "./geo";
+import { normalizedMapPoint, superTileCorners } from "./geo";
+import { geographicOutlinePoints } from "./outline";
 
 const TILE_SIZE = 256;
 const MAX_MERCATOR_LATITUDE = 85.05112878;
@@ -28,8 +29,9 @@ const MAX_MAP_ZOOM = 17;
 // Arrow keys pan the focused map by a share of the current ground span.
 const KEYBOARD_PAN_SHARE = 0.1;
 const KEYBOARD_PAN_SHARE_SHIFT = 0.5;
+const MAX_OUTLINE_POINTS = 128;
 
-type MapInteractionMode = "pan" | "move" | "select";
+type MapInteractionMode = "pan" | "move" | "select" | "outline";
 
 type SelectionDraft = {
   left: number;
@@ -107,6 +109,7 @@ export function TerrainMap({
   onPlaceMarker,
   onCenterChange,
   onGroundSpanChange,
+  onOutlineChange,
   recallCount,
 }: {
   spec: GenerationSpec;
@@ -114,6 +117,7 @@ export function TerrainMap({
   onPlaceMarker: (longitude: number, latitude: number) => void;
   onCenterChange: (longitude: number, latitude: number) => void;
   onGroundSpanChange: (groundSpanKm: number) => void;
+  onOutlineChange: (points: [number, number][]) => void;
   // Bumped each time a saved setup is recalled.
   recallCount: number;
 }) {
@@ -140,6 +144,7 @@ export function TerrainMap({
     latitude: number;
   } | null>(null);
   const [draft, setDraft] = useState<SelectionDraft | null>(null);
+  const [outlineDraft, setOutlineDraft] = useState<[number, number][]>([]);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [tilesLoaded, setTilesLoaded] = useState(false);
   const superTileColumns = Math.max(1, spec.adjacent_columns);
@@ -288,6 +293,38 @@ export function TerrainMap({
         : selectionWorldCenter,
     [mapZoom, selectionWorldCenter, viewCenter],
   );
+  const outlineScreenPoints = useMemo(() => {
+    if (spec.model_outline.shape === "rectangle") return null;
+    const worldScale = TILE_SIZE * 2 ** mapZoom;
+    return geographicOutlinePoints(spec).map((point) => {
+      const projected = projectToWorld(point.longitude, point.latitude, mapZoom);
+      let deltaX = projected.x - anchorWorld.x;
+      if (deltaX > worldScale / 2) deltaX -= worldScale;
+      if (deltaX < -worldScale / 2) deltaX += worldScale;
+      return {
+        x: anchorWorld.x + deltaX - viewWorldCenter.x + size.width / 2,
+        y: projected.y - viewWorldCenter.y + size.height / 2,
+      };
+    });
+  }, [anchorWorld.x, mapZoom, size, spec, viewWorldCenter]);
+  const outlineDraftScreenPoints = useMemo(() => {
+    if (outlineDraft.length === 0) return [];
+    const draftSpec = {
+      ...spec,
+      model_outline: { shape: "polygon" as const, points: outlineDraft },
+    };
+    const worldScale = TILE_SIZE * 2 ** mapZoom;
+    return geographicOutlinePoints(draftSpec).map((point) => {
+      const projected = projectToWorld(point.longitude, point.latitude, mapZoom);
+      let deltaX = projected.x - anchorWorld.x;
+      if (deltaX > worldScale / 2) deltaX -= worldScale;
+      if (deltaX < -worldScale / 2) deltaX += worldScale;
+      return {
+        x: anchorWorld.x + deltaX - viewWorldCenter.x + size.width / 2,
+        y: projected.y - viewWorldCenter.y + size.height / 2,
+      };
+    });
+  }, [anchorWorld.x, mapZoom, outlineDraft, size, spec, viewWorldCenter]);
   const tiles = useMemo(() => {
     if (!size.width || !size.height) return [];
     const firstX =
@@ -418,7 +455,7 @@ export function TerrainMap({
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    if (drag.mode === "marker") return;
+    if (drag.mode === "marker" || drag.mode === "outline") return;
     if (drag.mode === "select") {
       const bounds = event.currentTarget.getBoundingClientRect();
       setDraft(
@@ -459,6 +496,36 @@ export function TerrainMap({
           viewWorldCenter.y + event.clientY - bounds.top - size.height / 2,
         );
         onPlaceMarker(point.longitude, point.latitude);
+      }
+      return;
+    }
+    if (drag.mode === "outline") {
+      if (
+        Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <=
+        6
+      ) {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const point = moveToWorld(
+          viewWorldCenter.x + event.clientX - bounds.left - size.width / 2,
+          viewWorldCenter.y + event.clientY - bounds.top - size.height / 2,
+        );
+        const normalized = normalizedMapPoint(
+          spec,
+          point.latitude,
+          point.longitude,
+        );
+        if (
+          normalized.u >= 0 &&
+          normalized.u <= 1 &&
+          normalized.v >= 0 &&
+          normalized.v <= 1
+        ) {
+          setOutlineDraft((current) =>
+            current.length >= MAX_OUTLINE_POINTS
+              ? current
+              : [...current, [normalized.u, normalized.v]],
+          );
+        }
       }
       return;
     }
@@ -549,6 +616,7 @@ export function TerrainMap({
     const share = event.shiftKey
       ? KEYBOARD_PAN_SHARE_SHIFT
       : KEYBOARD_PAN_SHARE;
+    if (interactionMode === "outline") return;
     const keyboardOrigin =
       interactionMode === "move" ? anchorWorld : viewWorldCenter;
     const viewPosition = moveToWorld(keyboardOrigin.x, keyboardOrigin.y);
@@ -681,7 +749,9 @@ export function TerrainMap({
               x: point.x - viewWorldCenter.x + size.width / 2,
               y: point.y - viewWorldCenter.y + size.height / 2,
             }));
-            const points = corners
+            const selectionPoints =
+              current && outlineScreenPoints ? outlineScreenPoints : corners;
+            const points = selectionPoints
               .map((point) => `${point.x.toFixed(3)},${point.y.toFixed(3)}`)
               .join(" ");
             const labelX = (corners[0].x + corners[1].x) / 2;
@@ -716,6 +786,27 @@ export function TerrainMap({
             );
           })}
         </svg>
+        {interactionMode === "outline" && outlineDraftScreenPoints.length > 0 && (
+          <svg
+            aria-label={`New custom outline with ${outlineDraft.length} points`}
+            className="map-outline-draft"
+            height={size.height}
+            role="img"
+            width={size.width}
+          >
+            <polyline
+              fill={outlineDraft.length >= 3 ? "rgba(244, 243, 236, 0.16)" : "none"}
+              points={outlineDraftScreenPoints
+                .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
+                .join(" ")}
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            {outlineDraftScreenPoints.map((point, index) => (
+              <circle cx={point.x} cy={point.y} key={index} r="4" />
+            ))}
+          </svg>
+        )}
         {draft && (
           <div
             aria-label={`New terrain area: ${superTileColumns} across by ${superTileRows} down`}
@@ -834,6 +925,51 @@ export function TerrainMap({
         >
           Pan
         </button>
+        {spec.model_outline.shape === "polygon" &&
+          interactionMode !== "outline" && (
+            <button
+              aria-label="Edit custom terrain outline"
+              onClick={() => {
+                setDraft(null);
+                setOutlineDraft([]);
+                setInteractionMode("outline");
+              }}
+              type="button"
+            >
+              Edit outline
+            </button>
+          )}
+        {interactionMode === "outline" && (
+          <>
+            <button
+              disabled={outlineDraft.length === 0}
+              onClick={() => setOutlineDraft((points) => points.slice(0, -1))}
+              type="button"
+            >
+              Undo point
+            </button>
+            <button
+              disabled={outlineDraft.length < 3}
+              onClick={() => {
+                onOutlineChange(outlineDraft);
+                setInteractionMode("pan");
+                setOutlineDraft([]);
+              }}
+              type="button"
+            >
+              Done
+            </button>
+            <button
+              onClick={() => {
+                setInteractionMode("pan");
+                setOutlineDraft([]);
+              }}
+              type="button"
+            >
+              Cancel
+            </button>
+          </>
+        )}
         <button
           aria-label="Move terrain area with map"
           aria-pressed={interactionMode === "move"}
@@ -872,6 +1008,10 @@ export function TerrainMap({
                 ? "Drag to pan"
                 : interactionMode === "move"
                   ? "Drag to move area"
+                : interactionMode === "outline"
+                  ? outlineDraft.length >= MAX_OUTLINE_POINTS
+                    ? `${MAX_OUTLINE_POINTS} points · outline point limit reached`
+                    : `${outlineDraft.length} points · click inside the selected area`
                 : superTileActive
                   ? `Drag ${superTileColumns} × ${superTileRows} area`
                   : "Drag a terrain area"
