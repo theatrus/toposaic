@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.7.0](https://github.com/theatrus/toposaic/releases/tag/v0.7.0).
+[TopoSaic v0.8.0](https://github.com/theatrus/toposaic/releases/tag/v0.8.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.7.0/TopoSaic-0.7.0-linux-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.8.0/TopoSaic-0.8.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.8.0/TopoSaic-0.8.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.8.0/TopoSaic-0.8.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.8.0/TopoSaic-0.8.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.8.0/TopoSaic-0.8.0-linux-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
@@ -99,6 +99,25 @@ manifest in this tab.*
 *The exported 3MF keeps the puzzle pieces and their forest, rock, snow, water,
 road, and building materials ready for a color print. See
 [Printing in color](#printing-in-color) for how each slicer takes the palette.*
+
+## Version 0.8 highlights
+
+- Shape a single-tile model as a circle, ellipse, or polygon drawn on the map.
+  Puzzle pieces and a one-piece display tray follow the same outline, while
+  the established rectangle stays the default.
+- See the model before pressing Generate. The live 3D preview now uses the
+  same mesh builders as export, so it can show pieces, shaped edges, buildings,
+  bridges, mapped layers, labels, mount cuts, and whole or split trays. Named
+  progress stages, cancellation, three detail levels, marker placement in 3D,
+  and a super-tile member picker keep background work under control.
+- Reuse OpenStreetMap downloads across nearby pans, zooms, map rotations, and
+  super-tiles. Stable map tiles fetch added street or path detail only when a
+  closer view needs it, and a failed detail layer no longer drops the data
+  that already loaded.
+- Build dense city models much faster. The checked-in Slow Tacoma case fell
+  from earlier 24–38 second runs to about 7.9 seconds while keeping all mapped
+  buildings by default. Optional building filters and an option to skip
+  separate per-piece STLs can cut more work when a combined 3MF is enough.
 
 ## Version 0.7 highlights
 
