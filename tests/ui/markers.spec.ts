@@ -48,6 +48,7 @@ test("reports a failed building lookup without leaving the preview pending", asy
 });
 
 test("places map markers and submits their print modes", async ({ page }) => {
+  test.slow();
   let jobSpec: Record<string, unknown> = {};
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();

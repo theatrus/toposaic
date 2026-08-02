@@ -121,7 +121,7 @@ pub fn fetch_preview_height_field_with_progress(
     size: usize,
     on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<HeightField> {
-    let size = size.clamp(32, 128);
+    let size = size.clamp(32, 256);
     fetch_height_field_at_size(spec, cache_dir, size, size, on_progress)
 }
 

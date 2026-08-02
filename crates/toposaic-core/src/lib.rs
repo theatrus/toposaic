@@ -35,7 +35,10 @@ pub use palette::{
     GroundImagery, GroundPalette, GroundPaletteEntry, GroundPaletteOptions,
     MAXIMUM_PALETTE_ENTRIES, NO_GROUND_MATERIAL, assign_locked_palette, discover_ground_palette,
 };
-pub use preview::{PreviewDetail, build_height_preview, build_model_preview, model_preview_spec};
+pub use preview::{
+    PreviewDetail, build_height_preview, build_model_preview, build_model_preview_cancellable,
+    model_preview_spec,
+};
 pub use project::{
     Artifact, ProjectManifest, artifact_path, generate_marker_artifacts, generate_project,
     generate_project_with_fields, generate_project_with_fields_cancellable,

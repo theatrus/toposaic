@@ -1081,9 +1081,15 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
 
 test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   const previewSpecs: Array<Record<string, unknown>> = [];
+  const previewTiles: string[] = [];
   await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
-    const spec = route.request().postDataJSON() as Record<string, unknown>;
+    const request = route.request();
+    const spec = request.postDataJSON() as Record<string, unknown>;
     previewSpecs.push(spec);
+    const headers = request.headers();
+    previewTiles.push(
+      `${headers["x-toposaic-preview-tile-row"]}:${headers["x-toposaic-preview-tile-column"]}`,
+    );
     const moved = Number(spec.center_lon) > -121.7;
     const minimum = moved ? 80 : 100;
     const datum = spec.elevation_datum_m;
@@ -1167,6 +1173,11 @@ test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   await superTileControls.getByLabel("Across").selectOption("8");
   await superTileControls.getByLabel("Down").selectOption("6");
   await expect(page.getByText(/48 terrain 3MF files/)).toBeVisible();
+  const previewTile = page.getByLabel("3D preview super-tile");
+  await expect(previewTile).toHaveValue("0:0");
+  await previewTile.selectOption("1:2");
+  await expect(page.getByText("Tile 2,3", { exact: true })).toBeVisible();
+  await expect.poll(() => previewTiles.includes("1:2")).toBe(true);
   const mapGrid = page.getByRole("group", {
     name: "Super-tile map: 8 across by 6 down, anchored at top-left tile",
   });

@@ -94,16 +94,26 @@ test("preview streams stage progress before returning the model", () => {
   return withFetch(
     async (_url, init) => {
       assert.equal(init?.headers.accept, "application/x-ndjson");
-      assert.equal(init?.headers["x-toposaic-preview-detail"], "fast");
+      assert.equal(init?.headers["x-toposaic-preview-detail"], "high");
+      assert.equal(init?.headers["x-toposaic-preview-id"], "preview-17");
+      assert.equal(init?.headers["x-toposaic-preview-tile-row"], "2");
+      assert.equal(init?.headers["x-toposaic-preview-tile-column"], "3");
       return new Response(body, {
         status: 200,
         headers: { "content-type": "application/x-ndjson" },
       });
     },
     async () => {
-      const result = await terrainApi.preview({}, undefined, (event) => {
-        progress.push(event);
-      });
+      const result = await terrainApi.preview(
+        {},
+        undefined,
+        (event) => {
+          progress.push(event);
+        },
+        "high",
+        "preview-17",
+        { row: 2, column: 3 },
+      );
       assert.deepEqual(result, preview);
       assert.deepEqual(progress, [
         {
@@ -112,6 +122,23 @@ test("preview streams stage progress before returning the model", () => {
           progress: 53,
         },
       ]);
+    },
+  );
+});
+
+test("cancels one named preview without stopping its replacement", () => {
+  let captured;
+  return withFetch(
+    async (url, init) => {
+      captured = { url: String(url), method: init?.method };
+      return new Response(JSON.stringify({ canceled: true }), { status: 200 });
+    },
+    async () => {
+      assert.deepEqual(await terrainApi.cancelPreview("preview/17"), {
+        canceled: true,
+      });
+      assert.match(captured.url, /\/api\/preview\/preview%2F17$/);
+      assert.equal(captured.method, "DELETE");
     },
   );
 });

@@ -101,6 +101,7 @@ export type PreviewProgress = {
 };
 
 export type PreviewDetail = "fast" | "detailed" | "high";
+export type PreviewTile = { row: number; column: number };
 
 type PreviewStreamEvent =
   | ({ type: "progress" } & PreviewProgress)
@@ -113,6 +114,8 @@ async function previewRequest(
   signal?: AbortSignal,
   onProgress?: (progress: PreviewProgress) => void,
   detail: PreviewDetail = "fast",
+  requestId?: string,
+  tile?: PreviewTile,
 ) {
   const response = await fetch(`${API_URL}/api/preview`, {
     method: "POST",
@@ -120,6 +123,13 @@ async function previewRequest(
       accept: "application/x-ndjson",
       "content-type": "application/json",
       "x-toposaic-preview-detail": detail,
+      ...(requestId ? { "x-toposaic-preview-id": requestId } : {}),
+      ...(tile
+        ? {
+            "x-toposaic-preview-tile-row": String(tile.row),
+            "x-toposaic-preview-tile-column": String(tile.column),
+          }
+        : {}),
     },
     body: JSON.stringify(spec),
     signal,
@@ -188,8 +198,16 @@ export const terrainApi = {
     signal?: AbortSignal,
     onProgress?: (progress: PreviewProgress) => void,
     detail: PreviewDetail = "fast",
+    requestId?: string,
+    tile?: PreviewTile,
   ) {
-    return previewRequest(spec, signal, onProgress, detail);
+    return previewRequest(spec, signal, onProgress, detail, requestId, tile);
+  },
+  cancelPreview(requestId: string) {
+    return requestJson<{ canceled: boolean }>(
+      `/api/preview/${encodeURIComponent(requestId)}`,
+      { method: "DELETE" },
+    );
   },
   searchPlaces(query: string) {
     return requestJson<PlaceResult[]>(

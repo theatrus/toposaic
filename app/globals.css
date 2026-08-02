@@ -1454,6 +1454,33 @@ a {
   text-decoration: underline;
 }
 
+.preview-tile-select {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.preview-tile-select > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preview-tile-select select {
+  background: var(--panel);
+  border: 1px solid rgba(20, 32, 29, 0.24);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  min-height: 24px;
+  padding: 2px 22px 2px 6px;
+  width: auto;
+}
+
 .preview-progress {
   background: rgba(20, 32, 29, 0.14);
   display: block;

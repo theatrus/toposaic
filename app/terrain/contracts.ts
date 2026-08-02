@@ -437,6 +437,10 @@ export type PreviewData = {
   model_terrain_bounds_mm?: [number, number, number, number];
   model_preview_detail?: string;
   model_preview_error?: string;
+  model_mesh_samples_across?: number;
+  model_preview_tile_row?: number;
+  model_preview_tile_column?: number;
+  model_preview_scope?: "model" | "super_tile_member";
 };
 
 export type PlaceResult = {

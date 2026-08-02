@@ -5,6 +5,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
   lazy,
   Suspense,
   useCallback,
@@ -29,6 +30,7 @@ import {
   terrainApi,
   type PreviewDetail,
   type PreviewProgress,
+  type PreviewTile,
 } from "./api";
 import { ExternalLink } from "./external-link";
 import {
@@ -74,6 +76,7 @@ import {
   type AdjacentDirection,
   mapFrameForSpec,
   matchingTileCenter,
+  superTileMemberSpec,
 } from "./geo";
 import { TerrainMap } from "./map";
 import { SettingsMenu } from "./settings-menu";
@@ -158,8 +161,21 @@ function isImportableSetup(
   );
 }
 
-function previewKey(spec: GenerationSpec, detail: PreviewDetail) {
-  return JSON.stringify([detail, spec]);
+function previewKey(
+  spec: GenerationSpec,
+  detail: PreviewDetail,
+  tile: PreviewTile,
+) {
+  return JSON.stringify([detail, tile.row, tile.column, spec]);
+}
+
+function anchorPreviewTile(spec: GenerationSpec): PreviewTile {
+  return spec.super_tile_anchor === "center"
+    ? {
+        row: Math.floor(spec.adjacent_rows / 2),
+        column: Math.floor(spec.adjacent_columns / 2),
+      }
+    : { row: 0, column: 0 };
 }
 
 const ADJACENT_GRID_SIZES = Array.from(
@@ -202,6 +218,9 @@ export function TerrainStudio() {
     }
     return "fast";
   });
+  const [requestedPreviewTile, setRequestedPreviewTile] = useState<PreviewTile>(
+    () => anchorPreviewTile(initialSpec),
+  );
   const [activeSection, setActiveSection] =
     useState<GenerationControlTab>("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
@@ -232,6 +251,7 @@ export function TerrainStudio() {
   } | null>(null);
   const previewRequestIdRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
+  const previewServerIdRef = useRef<string | null>(null);
   const [previewCanceledSpecKey, setPreviewCanceledSpecKey] = useState<
     string | null
   >(null);
@@ -298,6 +318,11 @@ export function TerrainStudio() {
   // "__first" focuses the first enabled item; a setup id focuses that row.
   const setupFocusRef = useRef<string | null>(null);
   const skipSetupNameBlurRef = useRef(false);
+
+  const changeSpec = useCallback((next: SetStateAction<GenerationSpec>) => {
+    setGeneratedPreview(null);
+    setSpec(next);
+  }, []);
 
   const changePreviewDetail = useCallback((detail: PreviewDetail) => {
     setPreviewDetail(detail);
@@ -520,8 +545,7 @@ export function TerrainStudio() {
       key: Key,
       value: GenerationSpec[Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => {
+      changeSpec((current) => {
         if (
           key === "center_lat" ||
           key === "center_lon" ||
@@ -577,26 +601,24 @@ export function TerrainStudio() {
         };
       });
     },
-    [],
+    [changeSpec],
   );
   const setPieceLayout = useCallback((count: number) => {
-    setGeneratedPreview(null);
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       rows: count,
       columns: count,
     }));
-  }, []);
+  }, [changeSpec]);
   const setMeshQuality = useCallback((samples: number) => {
-    setGeneratedPreview(null);
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       mesh_samples_across: samples,
       overlay_samples_across: samples,
       fine_dem_detail:
         samples === MAX_ASSEMBLED_SAMPLES ? false : current.fine_dem_detail,
     }));
-  }, []);
+  }, [changeSpec]);
   // The sampled area, for translating between the two ways of naming a
   // vertical scale and for showing what the current one comes to.
   const heightSample = useMemo(() => {
@@ -630,8 +652,7 @@ export function TerrainStudio() {
   // area there is nothing to translate from, so the mode changes alone.
   const setHeightMode = useCallback(
     (mode: GenerationSpec["height_mode"]) => {
-      setGeneratedPreview(null);
-      setSpec((current) => {
+      changeSpec((current) => {
         if (current.height_mode === mode) return current;
         if (!heightSample) return { ...current, height_mode: mode };
         if (mode === "multiplier") {
@@ -671,7 +692,7 @@ export function TerrainStudio() {
         };
       });
     },
-    [heightSample],
+    [changeSpec, heightSample],
   );
 
   const updateColor = useCallback(
@@ -679,8 +700,7 @@ export function TerrainStudio() {
       key: Key,
       value: GenerationSpec["color_output"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => {
+      changeSpec((current) => {
         const colorOutput = normalizeMappedWidthCap({
           ...current.color_output,
           [key]: value,
@@ -688,91 +708,84 @@ export function TerrainStudio() {
         return { ...current, color_output: colorOutput };
       });
     },
-    [],
+    [changeSpec],
   );
   const updateMarine = useCallback(
     <Key extends keyof GenerationSpec["marine"]>(
       key: Key,
       value: GenerationSpec["marine"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         marine: { ...current.marine, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const updateTray = useCallback(
     <Key extends keyof GenerationSpec["tray"]>(
       key: Key,
       value: GenerationSpec["tray"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         tray: { ...current.tray, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const updateWallMount = useCallback(
     <Key extends keyof GenerationSpec["wall_mount"]>(
       key: Key,
       value: GenerationSpec["wall_mount"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         wall_mount: { ...current.wall_mount, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const updatePuzzleRetention = useCallback(
     <Key extends keyof GenerationSpec["puzzle_retention"]>(
       key: Key,
       value: GenerationSpec["puzzle_retention"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         puzzle_retention: { ...current.puzzle_retention, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const updateBuildings = useCallback(
     <Key extends keyof GenerationSpec["buildings"]>(
       key: Key,
       value: GenerationSpec["buildings"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         buildings: { ...current.buildings, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const updateMarkerSettings = useCallback(
     <Key extends keyof GenerationSpec["marker_settings"]>(
       key: Key,
       value: GenerationSpec["marker_settings"][Key],
     ) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         marker_settings: { ...current.marker_settings, [key]: value },
       }));
     },
-    [],
+    [changeSpec],
   );
   const placeMarker = useCallback(
     (longitude: number, latitude: number) => {
       if (movingMarkerIndex !== null) {
-        setGeneratedPreview(null);
-        setSpec((current) => ({
+        changeSpec((current) => ({
           ...current,
           markers: current.markers.map((marker, index) =>
             index === movingMarkerIndex
@@ -784,8 +797,7 @@ export function TerrainStudio() {
         return;
       }
       if (!markerPlacementKind) return;
-      setGeneratedPreview(null);
-      setSpec((current) => {
+      changeSpec((current) => {
         const number = current.markers.length + 1;
         const label =
           markerPlacementKind === "building"
@@ -840,7 +852,7 @@ export function TerrainStudio() {
       });
       setMarkerPlacementKind(null);
     },
-    [markerPlacementKind, movingMarkerIndex],
+    [changeSpec, markerPlacementKind, movingMarkerIndex],
   );
   const chooseMarkerPlacementKind = useCallback((kind: MarkerKind | null) => {
     setMovingMarkerIndex(null);
@@ -852,8 +864,7 @@ export function TerrainStudio() {
   }, []);
   const updateMarker = useCallback(
     (index: number, patch: Partial<GenerationSpec["markers"][number]>) => {
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         buildings:
           patch.kind === "building"
@@ -884,19 +895,18 @@ export function TerrainStudio() {
         }),
       }));
     },
-    [],
+    [changeSpec],
   );
   const removeMarker = useCallback((index: number) => {
-    setGeneratedPreview(null);
     setMovingMarkerIndex((current) => {
       if (current === null || current < index) return current;
       return current === index ? null : current - 1;
     });
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       markers: current.markers.filter((_, position) => position !== index),
     }));
-  }, []);
+  }, [changeSpec]);
   const importTrailFiles = async (files: File[]) => {
     if (files.length === 0) return;
     const notices: string[] = [];
@@ -939,8 +949,7 @@ export function TerrainStudio() {
       // Merge inside the updater: the awaits above span renders, so two
       // overlapping imports would otherwise each merge from a stale
       // spec.trails and one would drop the other's trails.
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         trails: [...current.trails, ...imported].slice(0, MAX_TRAILS),
       }));
@@ -965,13 +974,20 @@ export function TerrainStudio() {
         anchor === "center"
           ? oddSuperTileSize(spec.adjacent_rows)
           : spec.adjacent_rows;
-      setGeneratedPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         adjacent_columns: columns,
         adjacent_rows: rows,
         super_tile_anchor: anchor,
       }));
+      setRequestedPreviewTile(
+        anchor === "center"
+          ? {
+              row: Math.floor(rows / 2),
+              column: Math.floor(columns / 2),
+            }
+          : { row: 0, column: 0 },
+      );
       setAdjacentMessage(
         anchor === "center"
           ? columns !== spec.adjacent_columns || rows !== spec.adjacent_rows
@@ -980,19 +996,18 @@ export function TerrainStudio() {
           : "The selected map point is the top-left tile.",
       );
     },
-    [spec.adjacent_columns, spec.adjacent_rows],
+    [changeSpec, spec.adjacent_columns, spec.adjacent_rows],
   );
 
   const onCenterChange = useCallback((longitude: number, latitude: number) => {
-    setGeneratedPreview(null);
     setAdjacentMessage(null);
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       center_lat: Number(latitude.toFixed(5)),
       center_lon: Number(longitude.toFixed(5)),
       ...movedToNewGround(current),
     }));
-  }, []);
+  }, [changeSpec]);
 
   const lockHeightFrame = useCallback(() => {
     const sampled = generatedPreview ?? elevationPreview;
@@ -1009,7 +1024,7 @@ export function TerrainStudio() {
       minimum_elevation_m: sampled.minimum_elevation_m,
       maximum_elevation_m: sampled.maximum_elevation_m,
     });
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       elevation_datum_m: datum,
       elevation_m_per_mm: Number(metresPerMm.toFixed(4)),
@@ -1018,11 +1033,10 @@ export function TerrainStudio() {
       `Height frame locked at ${datum.toFixed(1)} m with ${metresPerMm.toFixed(1)} m/mm.`,
     );
     return true;
-  }, [elevationPreview, generatedPreview, spec]);
+  }, [changeSpec, elevationPreview, generatedPreview, spec]);
 
   const unlockHeightFrame = useCallback(() => {
-    setGeneratedPreview(null);
-    setSpec((current) => ({
+    changeSpec((current) => ({
       ...current,
       elevation_datum_m: null,
       elevation_m_per_mm: null,
@@ -1030,7 +1044,7 @@ export function TerrainStudio() {
     setAdjacentMessage(
       "Each tile will now use its own height range and may not meet its neighbors.",
     );
-  }, []);
+  }, [changeSpec]);
 
   const moveToAdjacentTile = useCallback(
     (direction: AdjacentDirection) => {
@@ -1062,9 +1076,8 @@ export function TerrainStudio() {
         spec.puzzle_tile_row +
         (direction === "south" ? 1 : direction === "north" ? -1 : 0);
       const next = matchingTileCenter(spec, tileColumn, tileRow);
-      setGeneratedPreview(null);
       setElevationPreview(null);
-      setSpec((current) => ({
+      changeSpec((current) => ({
         ...current,
         center_lat: next.latitude,
         center_lon: next.longitude,
@@ -1078,13 +1091,38 @@ export function TerrainStudio() {
         `Moved ${direction} by one tile. The shared height frame stays locked.`,
       );
     },
-    [elevationPreview, generatedPreview, spec],
+    [changeSpec, elevationPreview, generatedPreview, spec],
+  );
+
+  const previewTile = useMemo<PreviewTile>(
+    () => ({
+      row: Math.max(
+        0,
+        Math.min(spec.adjacent_rows - 1, requestedPreviewTile.row),
+      ),
+      column: Math.max(
+        0,
+        Math.min(spec.adjacent_columns - 1, requestedPreviewTile.column),
+      ),
+    }),
+    [
+      requestedPreviewTile.column,
+      requestedPreviewTile.row,
+      spec.adjacent_columns,
+      spec.adjacent_rows,
+    ],
+  );
+  const previewSpec = useMemo(
+    () => superTileMemberSpec(spec, previewTile.row, previewTile.column),
+    [previewTile.column, previewTile.row, spec],
   );
 
   useEffect(() => {
     const controller = new AbortController();
     previewAbortRef.current = controller;
-    const previewSpecKey = previewKey(spec, previewDetail);
+    const serverPreviewId = crypto.randomUUID();
+    previewServerIdRef.current = serverPreviewId;
+    const previewSpecKey = previewKey(spec, previewDetail, previewTile);
     const requestId = ++previewRequestIdRef.current;
     const timer = window.setTimeout(async () => {
       if (
@@ -1115,6 +1153,8 @@ export function TerrainStudio() {
             setPreviewActivity({ ...progress, specKey: previewSpecKey });
           },
           previewDetail,
+          serverPreviewId,
+          previewTile,
         );
         if (
           controller.signal.aborted ||
@@ -1147,6 +1187,9 @@ export function TerrainStudio() {
         if (previewAbortRef.current === controller) {
           previewAbortRef.current = null;
         }
+        if (previewServerIdRef.current === serverPreviewId) {
+          previewServerIdRef.current = null;
+        }
       }
     }, 350);
     return () => {
@@ -1155,16 +1198,26 @@ export function TerrainStudio() {
       if (previewAbortRef.current === controller) {
         previewAbortRef.current = null;
       }
+      if (previewServerIdRef.current === serverPreviewId) {
+        previewServerIdRef.current = null;
+      }
     };
-  }, [previewDetail, spec]);
+  }, [previewDetail, previewTile, spec]);
 
   const cancelPreview = useCallback(() => {
     previewRequestIdRef.current += 1;
+    const serverPreviewId = previewServerIdRef.current;
+    previewServerIdRef.current = null;
+    if (serverPreviewId) {
+      void terrainApi.cancelPreview(serverPreviewId).catch(() => {
+        // The local abort still stops the UI when the service has gone away.
+      });
+    }
     previewAbortRef.current?.abort();
     previewAbortRef.current = null;
-    setPreviewCanceledSpecKey(previewKey(spec, previewDetail));
+    setPreviewCanceledSpecKey(previewKey(spec, previewDetail, previewTile));
     setPreviewActivity(null);
-  }, [previewDetail, spec]);
+  }, [previewDetail, previewTile, spec]);
 
   const searchPlaces = async () => {
     const query = placeQuery.trim();
@@ -1200,7 +1253,6 @@ export function TerrainStudio() {
     );
     setPlaceResults([]);
     setPlaceMessage(`Map moved to ${place.display_name.split(",")[0]}.`);
-    setGeneratedPreview(null);
   };
 
   const refreshSetups = useCallback(async (signal?: AbortSignal) => {
@@ -1481,10 +1533,9 @@ export function TerrainStudio() {
     setSetupRecallCount((count) => count + 1);
     // Merge over the client defaults so setups saved before a field existed
     // still get a value, then drop stale generated output like a place change.
-    setSpec(mergeSpecDefaults(setup.spec));
+    changeSpec(mergeSpecDefaults(setup.spec));
     setMarkerPlacementKind(null);
     setMovingMarkerIndex(null);
-    setGeneratedPreview(null);
     setAdjacentMessage(null);
     setSetupStatus(`Recalled “${setup.name}”.`);
     closeSetupMenu(true);
@@ -1825,7 +1876,7 @@ export function TerrainStudio() {
     try {
       const { report, spec: bundled } =
         await terrainApi.importSourceBundle(file);
-      setSpec(mergeSpecDefaults(bundled));
+      changeSpec(mergeSpecDefaults(bundled));
       const kept = report.already_present
         ? `, ${report.already_present} already cached`
         : "";
@@ -1966,20 +2017,13 @@ export function TerrainStudio() {
   }, [job]);
 
   const preview = useMemo(() => {
-    if (!generatedPreview) return elevationPreview;
-    return {
-      ...elevationPreview,
-      ...generatedPreview,
-      // The finished preview has denser sampled colors and heights, while
-      // the background pass owns the draft export geometry. Keep both.
-      model_meshes: elevationPreview?.model_meshes,
-      model_bounds_mm: elevationPreview?.model_bounds_mm,
-      model_terrain_bounds_mm: elevationPreview?.model_terrain_bounds_mm,
-      model_preview_detail: elevationPreview?.model_preview_detail,
-      model_preview_error: elevationPreview?.model_preview_error,
-    };
+    // Mesh material indexes and discovered ground palettes form one payload.
+    // Never combine a live mesh with a generated job's independently sampled
+    // palette: the same index can name a different filament in the two passes.
+    if (elevationPreview?.model_meshes?.length) return elevationPreview;
+    return generatedPreview ?? elevationPreview;
   }, [elevationPreview, generatedPreview]);
-  const currentSpecKey = previewKey(spec, previewDetail);
+  const currentSpecKey = previewKey(spec, previewDetail, previewTile);
   const previewPaused = previewCanceledSpecKey === currentSpecKey;
   const previewStale =
     elevationPreview !== null &&
@@ -2531,12 +2575,14 @@ export function TerrainStudio() {
             }
           >
             <ReliefPreview
-              spec={spec}
+              spec={previewSpec}
               preview={preview}
               previewState={previewState}
               progress={previewProgress}
               previewError={currentPreviewFailure}
               onCancelPreview={previewProgress ? cancelPreview : undefined}
+              previewTile={previewTile}
+              onPreviewTileChange={setRequestedPreviewTile}
               markerPlacementMode={markerPlacementMode}
               onPlaceMarker={placeMarker}
             />

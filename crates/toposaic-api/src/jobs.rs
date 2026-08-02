@@ -84,6 +84,9 @@ pub(crate) struct JobPiece {
 
 const PREVIEW_STREAM_CONTENT_TYPE: &str = "application/x-ndjson";
 const PREVIEW_DETAIL_HEADER: &str = "x-toposaic-preview-detail";
+const PREVIEW_ID_HEADER: &str = "x-toposaic-preview-id";
+const PREVIEW_TILE_ROW_HEADER: &str = "x-toposaic-preview-tile-row";
+const PREVIEW_TILE_COLUMN_HEADER: &str = "x-toposaic-preview-tile-column";
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -179,7 +182,14 @@ pub(crate) async fn create_preview(
     spec.validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
     let preview_detail = preview_detail(&headers)?;
-    let cancellation = begin_preview(&state).map_err(internal_error)?;
+    let spec = preview_tile_spec(&spec, &headers)?;
+    let preview_id = headers
+        .get(PREVIEW_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let cancellation = begin_preview(&state, preview_id).map_err(internal_error)?;
     let map_cache_dir = state.map_cache_dir.clone();
     let wants_stream = headers
         .get(header::ACCEPT)
@@ -295,15 +305,12 @@ fn run_live_preview(
     )?;
     ensure_preview_active(cancellation)?;
 
-    let needs_surface = preview_spec.color_output.enabled
-        || preview_spec.buildings.enabled
-        || preview_spec.uses_trails()
-        || preview_spec.uses_building_markers();
-    let mut surface_field = if needs_surface {
-        Some(surface::fetch_surface_field_with_progress(
+    let mut surface_field = if preview_spec.needs_surface_field() {
+        Some(surface::fetch_surface_field_with_progress_cancellable(
             &preview_spec,
             &height_field,
             map_cache_dir,
+            cancellation,
             |label, fraction| {
                 ensure_preview_active(cancellation)?;
                 on_progress("surface", label, (30.0 + fraction * 42.0).round() as u8)
@@ -316,20 +323,35 @@ fn run_live_preview(
     ensure_preview_active(cancellation)?;
     if let Some(field) = surface_field.as_mut() {
         on_progress("surface", "Applying water levels", 74)?;
-        surface::apply_marine_water(&preview_spec, &mut height_field, field, map_cache_dir);
+        surface::apply_marine_water_cancellable(
+            &preview_spec,
+            &mut height_field,
+            field,
+            map_cache_dir,
+            cancellation,
+        );
     }
     ensure_preview_active(cancellation)?;
     preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
     on_progress("model", "Building draft model", 78)?;
-    let preview = toposaic_core::build_model_preview(
+    let mut preview = toposaic_core::build_model_preview_cancellable(
         &preview_spec,
         &height_field,
         surface_field.as_ref(),
         samples,
         detail,
+        &|| cancellation.load(Ordering::Acquire),
     )?;
     ensure_preview_active(cancellation)?;
     on_progress("model", "Preparing 3D scene", 96)?;
+    preview["model_preview_tile_row"] = serde_json::json!(spec.adjacent_tile_row);
+    preview["model_preview_tile_column"] = serde_json::json!(spec.adjacent_tile_column);
+    preview["model_preview_scope"] =
+        serde_json::json!(if spec.adjacent_rows > 1 || spec.adjacent_columns > 1 {
+            "super_tile_member"
+        } else {
+            "model"
+        });
     Ok(preview)
 }
 
@@ -348,15 +370,94 @@ fn preview_detail(headers: &HeaderMap) -> Result<PreviewDetail, (StatusCode, Jso
     }
 }
 
-fn begin_preview(state: &AppState) -> Result<Arc<AtomicBool>> {
+fn preview_tile_spec(
+    spec: &GenerationSpec,
+    headers: &HeaderMap,
+) -> Result<GenerationSpec, (StatusCode, Json<ApiError>)> {
+    let parse_index = |name: &'static str| {
+        headers
+            .get(name)
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .ok_or_else(|| {
+                        api_error(
+                            StatusCode::BAD_REQUEST,
+                            anyhow::anyhow!("{name} must be a non-negative integer"),
+                        )
+                    })
+            })
+            .transpose()
+    };
+    let requested_row = parse_index(PREVIEW_TILE_ROW_HEADER)?;
+    let requested_column = parse_index(PREVIEW_TILE_COLUMN_HEADER)?;
+    if requested_row.is_some() != requested_column.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("preview tile row and column must be sent together"),
+        ));
+    }
+    let default_row = match spec.super_tile_anchor {
+        toposaic_core::SuperTileAnchor::TopLeft => 0,
+        toposaic_core::SuperTileAnchor::Center => spec.adjacent_rows / 2,
+    };
+    let default_column = match spec.super_tile_anchor {
+        toposaic_core::SuperTileAnchor::TopLeft => 0,
+        toposaic_core::SuperTileAnchor::Center => spec.adjacent_columns / 2,
+    };
+    let row = requested_row.unwrap_or(default_row);
+    let column = requested_column.unwrap_or(default_column);
+    if row >= spec.adjacent_rows || column >= spec.adjacent_columns {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!(
+                "preview tile {},{} is outside the {} by {} super-tile grid",
+                row + 1,
+                column + 1,
+                spec.adjacent_rows,
+                spec.adjacent_columns
+            ),
+        ));
+    }
+    let tile_index = (row * spec.adjacent_columns + column) as usize;
+    let tile_specs = adjacent_tile_specs(spec);
+    Ok(AdjacentGridOutputPlan::new(spec).terrain_spec(&tile_specs[tile_index]))
+}
+
+pub(crate) async fn cancel_preview(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let canceled = cancel_preview_by_id(&state, &id).map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "canceled": canceled })))
+}
+
+fn cancel_preview_by_id(state: &AppState, id: &str) -> Result<bool> {
+    let mut active = state
+        .active_preview
+        .lock()
+        .map_err(|_| anyhow::anyhow!("active preview lock failed"))?;
+    let canceled = active.as_ref().is_some_and(|preview| preview.id == id);
+    if canceled && let Some(preview) = active.take() {
+        preview.cancellation.store(true, Ordering::Release);
+    }
+    Ok(canceled)
+}
+
+fn begin_preview(state: &AppState, id: String) -> Result<Arc<AtomicBool>> {
     let cancellation = Arc::new(AtomicBool::new(false));
     let previous = state
         .active_preview
         .lock()
         .map_err(|_| anyhow::anyhow!("active preview lock failed"))?
-        .replace(cancellation.clone());
+        .replace(crate::ActivePreview {
+            id,
+            cancellation: cancellation.clone(),
+        });
     if let Some(previous) = previous {
-        previous.store(true, Ordering::Release);
+        previous.cancellation.store(true, Ordering::Release);
     }
     Ok(cancellation)
 }
@@ -367,7 +468,7 @@ fn finish_preview(state: &AppState, cancellation: &Arc<AtomicBool>) {
     };
     if active
         .as_ref()
-        .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+        .is_some_and(|current| Arc::ptr_eq(&current.cancellation, cancellation))
     {
         active.take();
     }
@@ -881,11 +982,7 @@ fn run_job(
         "generation phase complete"
     );
     update_job(state, id, "running", 40, &[], None)?;
-    let mut surface_field = if spec.color_output.enabled
-        || spec.buildings.enabled
-        || spec.uses_trails()
-        || spec.uses_building_markers()
-    {
+    let mut surface_field = if spec.needs_surface_field() {
         update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
@@ -1048,11 +1145,7 @@ fn run_adjacent_grid_job(
             }
             None => tile_spec,
         };
-        let mut surface_field = if tile_spec.color_output.enabled
-            || tile_spec.buildings.enabled
-            || tile_spec.uses_trails()
-            || tile_spec.uses_building_markers()
-        {
+        let mut surface_field = if tile_spec.needs_surface_field() {
             Some(surface::fetch_surface_field(
                 tile_spec,
                 height_field,
@@ -1573,10 +1666,42 @@ mod tests {
     }
 
     #[test]
+    fn preview_tile_defaults_to_the_anchor_and_accepts_an_explicit_member() {
+        let spec = GenerationSpec {
+            adjacent_rows: 3,
+            adjacent_columns: 5,
+            super_tile_anchor: toposaic_core::SuperTileAnchor::Center,
+            puzzle_tile_row: 7,
+            puzzle_tile_column: 11,
+            ..GenerationSpec::default()
+        };
+        let mut headers = HeaderMap::new();
+        let anchor = preview_tile_spec(&spec, &headers).unwrap();
+        assert_eq!(anchor.adjacent_tile_row, 1);
+        assert_eq!(anchor.adjacent_tile_column, 2);
+        assert_eq!(anchor.puzzle_tile_row, 7);
+        assert_eq!(anchor.puzzle_tile_column, 11);
+
+        headers.insert(PREVIEW_TILE_ROW_HEADER, HeaderValue::from_static("0"));
+        headers.insert(PREVIEW_TILE_COLUMN_HEADER, HeaderValue::from_static("4"));
+        let selected = preview_tile_spec(&spec, &headers).unwrap();
+        assert_eq!(selected.adjacent_tile_row, 0);
+        assert_eq!(selected.adjacent_tile_column, 4);
+        assert_eq!(selected.puzzle_tile_row, 6);
+        assert_eq!(selected.puzzle_tile_column, 13);
+
+        headers.insert(PREVIEW_TILE_ROW_HEADER, HeaderValue::from_static("3"));
+        assert_eq!(
+            preview_tile_spec(&spec, &headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
     fn a_new_preview_cancels_only_the_preview_it_replaced() {
         let state = test_state();
-        let first = begin_preview(&state).unwrap();
-        let second = begin_preview(&state).unwrap();
+        let first = begin_preview(&state, "first".into()).unwrap();
+        let second = begin_preview(&state, "second".into()).unwrap();
 
         assert!(first.load(Ordering::Acquire));
         assert!(!second.load(Ordering::Acquire));
@@ -1587,9 +1712,21 @@ mod tests {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .is_some_and(|active| Arc::ptr_eq(active, &second))
+                .is_some_and(|active| Arc::ptr_eq(&active.cancellation, &second))
         );
         finish_preview(&state, &second);
+        assert!(state.active_preview.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn canceling_an_old_preview_id_does_not_cancel_its_replacement() {
+        let state = test_state();
+        let current = begin_preview(&state, "current".into()).unwrap();
+
+        assert!(!cancel_preview_by_id(&state, "old").unwrap());
+        assert!(!current.load(Ordering::Acquire));
+        assert!(cancel_preview_by_id(&state, "current").unwrap());
+        assert!(current.load(Ordering::Acquire));
         assert!(state.active_preview.lock().unwrap().is_none());
     }
 

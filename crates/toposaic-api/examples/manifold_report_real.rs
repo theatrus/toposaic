@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("fetching data for {name}...");
         let height_field =
             fetch_height_field_with_progress(&spec, &cache_dir.join("elevation"), |_| Ok(()))?;
-        let surface_field = if spec.color_output.enabled || spec.buildings.enabled {
+        let surface_field = if spec.needs_surface_field() {
             Some(fetch_surface_field(&spec, &height_field, &cache_dir)?)
         } else {
             None

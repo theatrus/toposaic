@@ -47,6 +47,7 @@ import {
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
+import type { PreviewTile } from "./api";
 import { coordinateAtNormalizedPoint, normalizedMapPoint } from "./geo";
 import { normalizedOutlinePoints, pointInNormalizedOutline } from "./outline";
 
@@ -307,6 +308,8 @@ export function ReliefPreview({
   progress,
   previewError,
   onCancelPreview,
+  previewTile,
+  onPreviewTileChange,
   markerPlacementMode,
   onPlaceMarker,
 }: {
@@ -323,6 +326,8 @@ export function ReliefPreview({
   progress: { label: string; progress: number } | null;
   previewError: string | null;
   onCancelPreview?: () => void;
+  previewTile: PreviewTile;
+  onPreviewTileChange: (tile: PreviewTile) => void;
   markerPlacementMode: "place" | "move" | null;
   onPlaceMarker: (longitude: number, latitude: number) => void;
 }) {
@@ -1359,10 +1364,38 @@ export function ReliefPreview({
                             ? "Live model preview could not update"
                             : "Fast shape preview")}{" "}
               ·{" "}
-              {spec.solid_model
-                ? `${effectiveMeshSamples(spec)} mesh samples`
-                : `${assembledMeshSamples(spec)} mesh samples across model`}
+              {preview?.model_mesh_samples_across !== undefined
+                ? `${preview.model_mesh_samples_across} live mesh samples across model`
+                : spec.solid_model
+                  ? `${effectiveMeshSamples(spec)} mesh samples`
+                  : `${assembledMeshSamples(spec)} mesh samples across model`}
             </span>
+            {(spec.adjacent_rows > 1 || spec.adjacent_columns > 1) && (
+              <label className="preview-tile-select">
+                <span>3D tile</span>
+                <select
+                  aria-label="3D preview super-tile"
+                  value={`${previewTile.row}:${previewTile.column}`}
+                  onChange={(event) => {
+                    const [row, column] = event.target.value
+                      .split(":")
+                      .map(Number);
+                    onPreviewTileChange({ row, column });
+                  }}
+                >
+                  {Array.from({ length: spec.adjacent_rows }, (_, row) =>
+                    Array.from(
+                      { length: spec.adjacent_columns },
+                      (_, column) => (
+                        <option key={`${row}:${column}`} value={`${row}:${column}`}>
+                          {`R${row + 1} · C${column + 1}`}
+                        </option>
+                      ),
+                    ),
+                  )}
+                </select>
+              </label>
+            )}
             {progress && onCancelPreview && (
               <button onClick={onCancelPreview} type="button">
                 Cancel preview
@@ -1383,9 +1416,11 @@ export function ReliefPreview({
           )}
         </div>
         <strong>
-          {spec.solid_model
-            ? "One solid terrain model"
-            : `${spec.columns} × ${spec.rows} pieces`}
+          {spec.adjacent_rows > 1 || spec.adjacent_columns > 1
+            ? `Tile ${previewTile.row + 1},${previewTile.column + 1}`
+            : spec.solid_model
+              ? "One solid terrain model"
+              : `${spec.columns} × ${spec.rows} pieces`}
         </strong>
       </div>
     </div>

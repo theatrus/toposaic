@@ -848,6 +848,17 @@ impl GenerationSpec {
             && self.mesh_samples_across != Some(MAX_ASSEMBLED_SAMPLES)
     }
 
+    /// Whether generation needs the classified surface grid in addition to
+    /// elevation. Keep this decision shared by live previews, single exports,
+    /// and super-tile exports so a new surface feature cannot reach only some
+    /// of those paths.
+    pub fn needs_surface_field(&self) -> bool {
+        self.color_output.enabled
+            || self.buildings.enabled
+            || self.uses_trails()
+            || self.uses_building_markers()
+    }
+
     pub(crate) fn uses_color_materials(&self) -> bool {
         self.color_output.enabled
             || self.buildings.enabled

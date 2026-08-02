@@ -1,11 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::mesh::Mesh;
 use crate::piece::{
-    build_piece_with_height_range, printable_piece_positions, scaled_building_height_mm,
+    build_piece_with_height_range, printable_piece_positions, resolved_piece_samples,
+    scaled_building_height_mm,
 };
 use crate::spec::{GenerationSpec, PrintMaterial, SurfaceClass};
 use crate::surface::SurfaceField;
@@ -129,8 +130,20 @@ pub fn build_model_preview(
     size: usize,
     detail: PreviewDetail,
 ) -> Result<serde_json::Value> {
+    build_model_preview_cancellable(spec, height_field, surface_field, size, detail, &|| false)
+}
+
+pub fn build_model_preview_cancellable(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    surface_field: Option<&SurfaceField>,
+    size: usize,
+    detail: PreviewDetail,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<serde_json::Value> {
     spec.validate()?;
     let draft = model_preview_spec(spec, detail);
+    ensure_model_preview_active(is_cancelled)?;
 
     let mut preview = build_preview(
         &draft,
@@ -138,7 +151,15 @@ pub fn build_model_preview(
         surface_field,
         size.clamp(32, detail.sample_grid()),
     );
+    let piece_samples = resolved_piece_samples(&draft, Some(height_field));
+    let assembled_samples = if draft.solid_model {
+        piece_samples
+    } else {
+        piece_samples * draft.rows.max(draft.columns) as usize
+    };
+    preview["model_mesh_samples_across"] = serde_json::json!(assembled_samples);
     let model_geometry = (|| -> Result<(Vec<ModelPreviewMesh>, [f32; 6], [f32; 4])> {
+        ensure_model_preview_active(is_cancelled)?;
         let height_range = height_range_for_spec(&draft, Some(height_field));
         let terrain_in_tray = if draft.tray.enabled {
             terrain_origin_in_tray(&draft)?
@@ -156,6 +177,7 @@ pub fn build_model_preview(
         let mut meshes = positions
             .into_par_iter()
             .map(|(row, column)| {
+                ensure_model_preview_active(is_cancelled)?;
                 let mesh = build_piece_with_height_range(
                     &draft,
                     Some(height_field),
@@ -165,6 +187,7 @@ pub fn build_model_preview(
                     column,
                 )
                 .with_context(|| format!("build preview piece {}, {}", row + 1, column + 1))?;
+                ensure_model_preview_active(is_cancelled)?;
                 let piece_offset = if draft.solid_model {
                     [0.0, 0.0]
                 } else {
@@ -183,6 +206,7 @@ pub fn build_model_preview(
             .collect::<Result<Vec<_>>>()?;
 
         if draft.tray.enabled {
+            ensure_model_preview_active(is_cancelled)?;
             let tray_origins = tray_segment_origins(&draft);
             let tray_meshes = build_preview_tray_segments(&draft, Some(height_field))?;
             for (mesh, origin) in tray_meshes.into_iter().zip(tray_origins) {
@@ -230,6 +254,13 @@ pub fn build_model_preview(
         }
     }
     Ok(preview)
+}
+
+fn ensure_model_preview_active(is_cancelled: &(dyn Fn() -> bool + Sync)) -> Result<()> {
+    if is_cancelled() {
+        bail!("preview superseded by newer settings");
+    }
+    Ok(())
 }
 
 pub(crate) fn preview_sample_count(spec: &GenerationSpec) -> usize {

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -204,6 +204,10 @@ struct OverpassWay {
 /// One member way of a multipolygon relation.
 #[derive(Debug, Default, Deserialize)]
 struct OverpassMember {
+    /// The member way id. This lets relation-aware layers avoid painting the
+    /// same tagged way once as a standalone area and again as relation data.
+    #[serde(rename = "ref", default)]
+    reference: u64,
     /// `outer` or `inner`. Anything else is not part of the surface.
     #[serde(default)]
     role: String,
@@ -336,13 +340,30 @@ pub fn fetch_surface_field(
     height_field: &HeightField,
     map_cache_dir: &Path,
 ) -> Result<SurfaceField> {
-    fetch_surface_field_with_progress(spec, height_field, map_cache_dir, |_, _| Ok(()))
+    fetch_surface_field_inner(spec, height_field, map_cache_dir, None, |_, _| Ok(()))
 }
 
-pub fn fetch_surface_field_with_progress(
+pub fn fetch_surface_field_with_progress_cancellable(
     spec: &GenerationSpec,
     height_field: &HeightField,
     map_cache_dir: &Path,
+    cancellation: &AtomicBool,
+    on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<SurfaceField> {
+    fetch_surface_field_inner(
+        spec,
+        height_field,
+        map_cache_dir,
+        Some(cancellation),
+        on_progress,
+    )
+}
+
+fn fetch_surface_field_inner(
+    spec: &GenerationSpec,
+    height_field: &HeightField,
+    map_cache_dir: &Path,
+    cancellation: Option<&AtomicBool>,
     mut on_progress: impl FnMut(&'static str, f32) -> Result<()>,
 ) -> Result<SurfaceField> {
     on_progress("Preparing surface grid", 0.0)?;
@@ -571,7 +592,13 @@ pub fn fetch_surface_field_with_progress(
         }
         if spec.color_output.osm_water_enabled {
             on_progress("Loading waterways", 0.28)?;
-            match paint_water(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+            match paint_water(
+                spec,
+                bounds,
+                &map_cache_dir.join("osm"),
+                &mut field,
+                cancellation,
+            ) {
                 Ok(counts) => append_source(
                     &mut field.source,
                     format!(
@@ -609,6 +636,7 @@ pub fn fetch_surface_field_with_progress(
             bounds,
             &map_cache_dir.join("osm"),
             &mut field,
+            cancellation,
         ) {
             Ok(counts) => {
                 let fallback = if counts.fallback {
@@ -646,6 +674,7 @@ pub fn fetch_surface_field_with_progress(
             bounds,
             &map_cache_dir.join("osm"),
             &mut field,
+            cancellation,
         );
         for kind in RailKind::ALL {
             let Some(counts) = drawn[kind.index()] else {
@@ -681,7 +710,13 @@ pub fn fetch_surface_field_with_progress(
     }
     if spec.uses_ferry() {
         on_progress("Loading ferries", 0.74)?;
-        match paint_ferries(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+        match paint_ferries(
+            spec,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+            cancellation,
+        ) {
             Ok(count) => append_source(
                 &mut field.source,
                 format!(
@@ -703,7 +738,13 @@ pub fn fetch_surface_field_with_progress(
     }
     if spec.uses_any_aviation_group() {
         on_progress("Loading airport surfaces", 0.8)?;
-        match paint_aviation(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+        match paint_aviation(
+            spec,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+            cancellation,
+        ) {
             Ok(counts) => append_source(
                 &mut field.source,
                 format!(
@@ -745,7 +786,13 @@ pub fn fetch_surface_field_with_progress(
     }
     if spec.buildings.enabled || spec.uses_building_markers() {
         on_progress("Loading buildings", 0.88)?;
-        match paint_buildings(spec, bounds, &map_cache_dir.join("osm"), &mut field) {
+        match paint_buildings(
+            spec,
+            bounds,
+            &map_cache_dir.join("osm"),
+            &mut field,
+            cancellation,
+        ) {
             Ok(count) => append_source(
                 &mut field.source,
                 format!(
@@ -898,6 +945,7 @@ fn resolve_ground_palette(
 fn fetch_ocean_extent(
     spec: &GenerationSpec,
     map_cache_dir: &Path,
+    cancellation: Option<&AtomicBool>,
 ) -> (Option<toposaic_core::OceanExtent>, String) {
     let transform = transform_for(spec);
     let bounds = transform.bounds();
@@ -906,6 +954,7 @@ fn fetch_ocean_extent(
         COASTLINE_CACHE_PREFIX,
         bounds,
         coastline_query(bounds),
+        cancellation,
     ) {
         Ok(response) => response,
         Err(error) => {
@@ -988,6 +1037,26 @@ pub fn apply_marine_water(
     field: &mut SurfaceField,
     map_cache_dir: &Path,
 ) {
+    apply_marine_water_inner(spec, height_field, field, map_cache_dir, None);
+}
+
+pub fn apply_marine_water_cancellable(
+    spec: &GenerationSpec,
+    height_field: &mut HeightField,
+    field: &mut SurfaceField,
+    map_cache_dir: &Path,
+    cancellation: &AtomicBool,
+) {
+    apply_marine_water_inner(spec, height_field, field, map_cache_dir, Some(cancellation));
+}
+
+fn apply_marine_water_inner(
+    spec: &GenerationSpec,
+    height_field: &mut HeightField,
+    field: &mut SurfaceField,
+    map_cache_dir: &Path,
+    cancellation: Option<&AtomicBool>,
+) {
     if spec.marine.geometry != MarineGeometry::FlatSurface || !spec.color_output.enabled {
         return;
     }
@@ -1010,7 +1079,7 @@ pub fn apply_marine_water(
         height_field.vertical_reference,
         tides.as_ref(),
     );
-    let (ocean, ocean_note) = fetch_ocean_extent(spec, map_cache_dir);
+    let (ocean, ocean_note) = fetch_ocean_extent(spec, map_cache_dir, cancellation);
     // The frozen ring rule keeps shared super-tile edges deciding each
     // ring sample from shared data alone; the plane itself is the same for
     // every tile because nothing in the resolution reads this tile's
@@ -1107,8 +1176,15 @@ fn paint_water(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<WaterCounts> {
-    let water = fetch_osm_response(cache_dir, "water", bounds, water_query(bounds))?;
+    let water = fetch_osm_response(
+        cache_dir,
+        "water",
+        bounds,
+        water_query(bounds),
+        cancellation,
+    )?;
     let transform = transform_for(spec);
     let mut counts = WaterCounts::default();
     let mut lines = Vec::new();
@@ -1212,11 +1288,18 @@ fn paint_roads_or_trails(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<RouteCounts> {
     let detail = spec.color_output.road_detail.resolve(spec.ground_span_km);
     let highway_filter = road_highway_filter(detail);
     let cache_prefix = road_cache_prefix(detail);
-    let routes = fetch_osm_ways(bounds, cache_dir, cache_prefix, highway_filter)?;
+    let routes = fetch_osm_ways(
+        bounds,
+        cache_dir,
+        cache_prefix,
+        highway_filter,
+        cancellation,
+    )?;
     let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, routes);
     if road_count + trail_count > 0 || detail == ResolvedRoadDetail::All {
         return Ok(RouteCounts {
@@ -1228,7 +1311,13 @@ fn paint_roads_or_trails(
             fallback: false,
         });
     }
-    let trails = fetch_osm_ways(bounds, cache_dir, "roads-v2-path-fallback", PATH_HIGHWAYS)?;
+    let trails = fetch_osm_ways(
+        bounds,
+        cache_dir,
+        "roads-v2-path-fallback",
+        PATH_HIGHWAYS,
+        cancellation,
+    )?;
     let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, trails);
     Ok(RouteCounts {
         roads: road_count,
@@ -1328,8 +1417,15 @@ fn paint_ferries(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<usize> {
-    let response = fetch_osm_response(cache_dir, FERRY_CACHE_PREFIX, bounds, ferry_query(bounds))?;
+    let response = fetch_osm_response(
+        cache_dir,
+        FERRY_CACHE_PREFIX,
+        bounds,
+        ferry_query(bounds),
+        cancellation,
+    )?;
     let transform = transform_for(spec);
     let style = spec.ferry_line_style();
     let width_mm = (style.width_mm * spec.close_view_line_scale()).max(MINIMUM_LINE_WIDTH_MM);
@@ -1597,6 +1693,7 @@ fn paint_aviation(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<AviationCounts> {
     let groups = AviationGroups::from_spec(spec);
     if !groups.any() {
@@ -1607,6 +1704,7 @@ fn paint_aviation(
         AVIATION_CACHE_PREFIX,
         bounds,
         aviation_query(bounds, groups),
+        cancellation,
     )?;
     Ok(paint_aviation_elements(spec, field, response))
 }
@@ -1828,6 +1926,7 @@ fn paint_rail_family(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> ([Option<RailCounts>; 2], Vec<String>) {
     let mut ways = Vec::new();
     let mut drawn = [None, None];
@@ -1840,7 +1939,7 @@ fn paint_rail_family(
         if !enabled {
             continue;
         }
-        match fetch_rail_ways(spec, bounds, cache_dir, kind) {
+        match fetch_rail_ways(spec, bounds, cache_dir, kind, cancellation) {
             Ok(fetched) => {
                 ways.extend(fetched.into_iter().map(|way| (kind, way)));
                 drawn[kind.index()] = Some(RailCounts::default());
@@ -1874,6 +1973,7 @@ fn fetch_rail_ways(
     bounds: GeoBounds,
     cache_dir: &Path,
     kind: RailKind,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<Vec<OverpassWay>> {
     let lifecycle = spec.color_output.rail_lifecycle;
     let cache_prefix = rail_cache_prefix(kind, lifecycle);
@@ -1882,6 +1982,7 @@ fn fetch_rail_ways(
         &cache_prefix,
         bounds,
         rail_query(bounds, kind, lifecycle),
+        cancellation,
     )?;
     Ok(response.elements)
 }
@@ -2423,8 +2524,15 @@ fn paint_buildings(
     bounds: GeoBounds,
     cache_dir: &Path,
     field: &mut SurfaceField,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<usize> {
-    let response = fetch_osm_response(cache_dir, "buildings", bounds, building_query(bounds))?;
+    let response = fetch_osm_response(
+        cache_dir,
+        "buildings",
+        bounds,
+        building_query(bounds),
+        cancellation,
+    )?;
     paint_building_elements(spec, field, response)
 }
 
@@ -2440,6 +2548,20 @@ fn paint_building_elements(
     response: OverpassResponse,
 ) -> Result<usize> {
     let transform = transform_for(spec);
+    let member_way_heights = response
+        .elements
+        .iter()
+        .filter(|element| element.element_type != "relation" && element.id != 0)
+        .filter_map(|way| explicit_building_height_m(&way.tags).map(|height| (way.id, height)))
+        .collect::<HashMap<_, _>>();
+    let relation_member_ways = response
+        .elements
+        .iter()
+        .filter(|element| element.element_type == "relation")
+        .flat_map(|relation| relation.members.iter())
+        .filter(|member| member.member_type == "way" && member.reference != 0)
+        .map(|member| member.reference)
+        .collect::<HashSet<_>>();
     let building_markers = spec
         .markers
         .iter()
@@ -2456,7 +2578,10 @@ fn paint_building_elements(
         .collect::<Vec<_>>();
     let mut areas = Vec::new();
     for building in response.elements {
-        let height_m = building_height_m(&building.tags);
+        if building.element_type != "relation" && relation_member_ways.contains(&building.id) {
+            continue;
+        }
+        let height_m = relation_building_height_m(&building, &member_way_heights);
         if building.element_type == "relation" {
             let rings = normalized_relation_rings(&building, transform);
             for shell in rings.outer {
@@ -2520,6 +2645,10 @@ fn paint_building_elements(
 }
 
 fn building_height_m(tags: &HashMap<String, String>) -> f32 {
+    explicit_building_height_m(tags).unwrap_or(8.0)
+}
+
+fn explicit_building_height_m(tags: &HashMap<String, String>) -> Option<f32> {
     tags.get("height")
         .and_then(|value| first_number(value))
         .or_else(|| {
@@ -2527,8 +2656,23 @@ fn building_height_m(tags: &HashMap<String, String>) -> f32 {
                 .and_then(|value| first_number(value))
                 .map(|levels| levels * 3.0)
         })
-        .unwrap_or(8.0)
-        .clamp(2.5, 200.0)
+        .map(|height| height.clamp(2.5, 200.0))
+}
+
+fn relation_building_height_m(
+    building: &OverpassWay,
+    member_way_heights: &HashMap<u64, f32>,
+) -> f32 {
+    explicit_building_height_m(&building.tags)
+        .or_else(|| {
+            building
+                .members
+                .iter()
+                .filter(|member| member.role != "inner")
+                .filter_map(|member| member_way_heights.get(&member.reference).copied())
+                .max_by(f32::total_cmp)
+        })
+        .unwrap_or_else(|| building_height_m(&building.tags))
 }
 
 fn first_number(value: &str) -> Option<f32> {
@@ -2545,12 +2689,14 @@ fn fetch_osm_ways(
     cache_dir: &Path,
     cache_prefix: &str,
     highway_filter: &str,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<OverpassResponse> {
     fetch_osm_response(
         cache_dir,
         cache_prefix,
         bounds,
         overpass_query(bounds, highway_filter),
+        cancellation,
     )
 }
 
@@ -2559,7 +2705,9 @@ fn fetch_osm_response(
     cache_prefix: &str,
     bounds: GeoBounds,
     query: String,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<OverpassResponse> {
+    ensure_osm_active(cancellation)?;
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create OpenStreetMap cache {}", cache_dir.display()))?;
     let cache_path = osm_cache_path(cache_dir, cache_prefix, &query);
@@ -2573,12 +2721,21 @@ fn fetch_osm_response(
     {
         return Ok(response);
     }
-    // A panic while holding the lock poisons it, but the lock only guards
-    // request pacing; recovering the guard costs nothing, while treating the
-    // poison as fatal would disable OSM overlays for the process's lifetime.
-    let _request_guard = OVERPASS_REQUEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Poll rather than block on the process-wide request lock. A stale live
+    // preview can then leave the queue before an older request finishes.
+    let _request_guard = loop {
+        ensure_osm_active(cancellation)?;
+        match OVERPASS_REQUEST_LOCK.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                break poisoned.into_inner();
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    ensure_osm_active(cancellation)?;
     if let Some(response) = read_cached_osm_response(&cache_path, cache_prefix)? {
         record_osm_cache_metadata(&cache_path, bounds, query_variant_hash);
         return Ok(response);
@@ -2597,9 +2754,14 @@ fn fetch_osm_response(
     let mut failures = Vec::new();
     for attempt in 0..OVERPASS_ATTEMPTS {
         if attempt > 0 {
-            thread::sleep(OVERPASS_RETRY_DELAY);
+            let slices = OVERPASS_RETRY_DELAY.as_millis().div_ceil(50) as usize;
+            for _ in 0..slices {
+                ensure_osm_active(cancellation)?;
+                thread::sleep(Duration::from_millis(50));
+            }
         }
         for &(endpoint_index, base_url) in &urls {
+            ensure_osm_active(cancellation)?;
             match client
                 .post(base_url)
                 .form(&[("data", query.as_str())])
@@ -2643,6 +2805,13 @@ fn fetch_osm_response(
         "OpenStreetMap Overpass rejected the {cache_prefix} request after {OVERPASS_ATTEMPTS} attempts ({})",
         failures.join("; ")
     )
+}
+
+fn ensure_osm_active(cancellation: Option<&AtomicBool>) -> Result<()> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        bail!("preview superseded by newer settings");
+    }
+    Ok(())
 }
 
 fn read_cached_osm_response(
@@ -4897,6 +5066,7 @@ mod tests {
         let lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
         let lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
         let ring = |corners: [(f64, f64); 4]| OverpassMember {
+            reference: 0,
             role: String::new(),
             member_type: "way".into(),
             geometry: corners
@@ -5054,6 +5224,7 @@ mod tests {
             bounds_for(&spec),
             std::path::Path::new("/nonexistent/toposaic-test"),
             &mut field,
+            None,
         )
         .expect("no groups must not attempt a fetch");
         assert_eq!(counts, AviationCounts::default());
@@ -5250,6 +5421,7 @@ mod tests {
         let lat = |t: f64| bounds.south + (bounds.north - bounds.south) * t;
         let lon = |t: f64| bounds.west + (bounds.east - bounds.west) * t;
         let ring = |role: &str, low: f64, high: f64| OverpassMember {
+            reference: 0,
             role: role.into(),
             member_type: "way".into(),
             geometry: [
@@ -5277,13 +5449,34 @@ mod tests {
             flag_style: None,
             label_style: None,
         });
+        let mut outer = ring("outer", 0.3, 0.7);
+        outer.reference = 100;
+        let mut inner = ring("inner", 0.48, 0.52);
+        inner.reference = 101;
         let relation = OverpassWay {
             id: 42,
             element_type: "relation".into(),
             tags: HashMap::from([("building".into(), "yes".into())]),
             geometry: Vec::new(),
-            members: vec![ring("outer", 0.3, 0.7), ring("inner", 0.48, 0.52)],
+            members: vec![outer, inner],
         };
+        // Overpass may also return a tagged outer member because the query
+        // asks for both ways and relations. It must not fill the relation's
+        // courtyard or replace the relation's height.
+        let standalone_outer = OverpassWay {
+            id: 100,
+            element_type: "way".into(),
+            tags: HashMap::from([
+                ("building".into(), "yes".into()),
+                ("height".into(), "40".into()),
+            ]),
+            geometry: ring("outer", 0.3, 0.7).geometry,
+            members: Vec::new(),
+        };
+        assert_eq!(
+            relation_building_height_m(&relation, &HashMap::from([(100, 40.0)])),
+            40.0
+        );
         let mut field =
             SurfaceField::new(64, 64, vec![SurfaceClass::Rock; 4096], "buildings").unwrap();
 
@@ -5291,7 +5484,7 @@ mod tests {
             &spec,
             &mut field,
             OverpassResponse {
-                elements: vec![relation],
+                elements: vec![standalone_outer, relation],
                 remark: None,
             },
         )
