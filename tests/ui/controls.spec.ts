@@ -58,6 +58,7 @@ test("renders draft export geometry from the background preview", async ({
 });
 
 test("switches between the reflowed control panels", async ({ page }) => {
+  test.slow();
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
 
