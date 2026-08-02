@@ -724,13 +724,23 @@ or commercial use.
 
 ## Performance
 
-Mesh generation uses Rayon to build separate puzzle pieces and their STL files
-in parallel. It keeps 3MF archive writes, downloads, cache writes, and SQLite
-work in order. No more than eight piece meshes stay in memory at once. Set
-`RAYON_NUM_THREADS` to cap CPU use. A repeatable release-mode mesh check is:
+Mesh generation uses Rayon to build separate puzzle pieces and optional STL
+files in parallel. It keeps 3MF archive writes, downloads, cache writes, and
+SQLite work in order. No more than eight piece meshes stay in memory at once.
+Set `RAYON_NUM_THREADS` to cap CPU use. A repeatable release-mode mesh check is:
 
 ```bash
 cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
+```
+
+The checked-in Slow Tacoma case exercises a 10×10 urban puzzle with mapped
+buildings, roads, rail, water, color, and a tray. It uses the normal OS map
+cache, runs one warm-up, then reports the median of three measured release
+runs. Individual terrain STLs are off in this fixture, so it measures the
+model and combined 3MF instead of duplicate file writes:
+
+```bash
+bash scripts/benchmark-slow-tacoma.sh
 ```
 
 ## Collecting the files
@@ -738,9 +748,9 @@ cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 A finished job lists its files on the Output tab. The color 3MF holds every
 puzzle piece as its own object, so it is the only model file most prints
 need; the tray, its segments, wall-mount hardware, and each flag template
-are separate 3MFs beside it, and every one of those also has a plain STL,
-along with one STL per puzzle piece for anyone who would rather print from
-those.
+are separate 3MFs beside it, and every one of those also has a plain STL.
+Individual terrain STLs remain on by default for existing setups and can be
+turned off on the Output tab when the combined 3MF is enough.
 
 In the desktop app, **Save all print files to a folder** asks once for a
 folder and writes the 3MFs and the manifest into a new subfolder named after

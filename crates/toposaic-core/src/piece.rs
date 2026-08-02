@@ -48,6 +48,7 @@ struct FlagCavity {
 }
 
 mod buildings;
+mod cache;
 mod labels;
 mod overlays;
 mod timing;
@@ -694,6 +695,7 @@ fn build_piece_with_samples_timed(
     }
     timing.terrain_us = elapsed_us(terrain_started);
     let mut building_union = None;
+    let mut building_obstacles = None;
     if (spec.buildings.enabled || spec.uses_building_markers())
         && let Some(field) = surface_field
     {
@@ -710,6 +712,7 @@ fn build_piece_with_samples_timed(
             assembled_height,
         )?;
         building_union = Some(building.footprint);
+        building_obstacles = Some(building.overlay_obstacles);
         timing.buildings = Some(building.timing);
     }
     if ((spec.color_output.enabled && spec.color_output.roads_enabled)
@@ -731,7 +734,7 @@ fn build_piece_with_samples_timed(
             origin_y,
             assembled_width,
             assembled_height,
-            building_union.as_ref(),
+            building_obstacles.as_ref(),
         )?);
     }
     if spec.uses_dot_markers() {
@@ -1951,6 +1954,7 @@ mod tests {
             buildings: crate::spec::BuildingSpec {
                 enabled: true,
                 z_scale: 1.0,
+                ..crate::spec::BuildingSpec::default()
             },
             color_output: crate::spec::ColorOutputSpec {
                 enabled: true,

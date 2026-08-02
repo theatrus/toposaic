@@ -224,6 +224,15 @@ test("defaults the 3MF style to the embedded-settings project output", () => {
   assert.equal(merged.color_output.threemf_style, "project");
 });
 
+test("keeps all buildings and individual terrain STLs by default", () => {
+  assert.equal(initialSpec.buildings.detail, "all");
+  assert.equal(initialSpec.buildings.minimum_footprint_mm, 0.2);
+  assert.equal(initialSpec.export_piece_stls, true);
+  const merged = mergeSpecDefaults({ buildings: { enabled: true, z_scale: 3 } });
+  assert.equal(merged.buildings.detail, "all");
+  assert.equal(merged.export_piece_stls, true);
+});
+
 test("setups saved before airport surfaces recall with them off", () => {
   // The frontend half of the backend's serde defaults: a spec loaded from
   // the database predates every aviation key, and the Colors tab reads

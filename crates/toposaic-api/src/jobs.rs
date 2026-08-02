@@ -1205,6 +1205,10 @@ fn run_adjacent_grid_job(
             ground_palette_lock = Some(colors);
         }
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
+        // Grid publishing has always copied only each tile's combined 3MF;
+        // per-piece STLs in the temporary tile directory were discarded.
+        // Do not spend time and disk writing files no user can receive.
+        terrain_spec.export_piece_stls = false;
         // A super-tile exports each requested flag once. Per-tile generation
         // would build and discard the same files in every temporary folder.
         for marker in terrain_spec

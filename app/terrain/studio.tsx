@@ -2774,6 +2774,7 @@ export function TerrainStudio() {
             spec={spec}
             statusLabel={statusLabel}
             updateColor={updateColor}
+            updateSpec={update}
           />
         </form>
       </div>

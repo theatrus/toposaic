@@ -122,10 +122,13 @@ export const initialSpec: GenerationSpec = {
   solid_model: false,
   straight_piece_sides: false,
   puzzle_tabs: true,
+  export_piece_stls: true,
   place_name: "Mount Rainier",
   buildings: {
     enabled: false,
     z_scale: 5,
+    detail: "all",
+    minimum_footprint_mm: 0.2,
   },
   marine: {
     geometry: "bathymetric_relief",

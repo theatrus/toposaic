@@ -35,6 +35,7 @@ export function OutputPanel({
   spec,
   statusLabel,
   updateColor,
+  updateSpec,
 }: {
   artifactFeedback: ArtifactFeedback | null;
   buildSourceBundle: () => void;
@@ -58,6 +59,10 @@ export function OutputPanel({
   updateColor: <Key extends keyof GenerationSpec["color_output"]>(
     key: Key,
     value: GenerationSpec["color_output"][Key],
+  ) => void;
+  updateSpec: <Key extends keyof GenerationSpec>(
+    key: Key,
+    value: GenerationSpec[Key],
   ) => void;
 }) {
   return (
@@ -108,6 +113,31 @@ export function OutputPanel({
             already loaded, and no presets are touched. Geometry only writes
             a plain standards-based 3MF for other tools.
           </small>
+        </label>
+      </fieldset>
+
+      <fieldset
+        className="control-section"
+        aria-label="Extra export files"
+        hidden={hidden}
+      >
+        <label className="option-toggle feature-enable-toggle">
+          <input
+            aria-label="Export individual terrain STLs"
+            type="checkbox"
+            checked={spec.export_piece_stls}
+            onChange={(event) =>
+              updateSpec("export_piece_stls", event.target.checked)
+            }
+          />
+          <span>
+            <strong>Export individual terrain STLs</strong>
+            <small>
+              The combined 3MF already contains each terrain object. Turn
+              this off to save generation time and disk space when the 3MF is
+              enough.
+            </small>
+          </span>
         </label>
       </fieldset>
 

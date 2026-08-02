@@ -113,10 +113,13 @@ export type GenerationSpec = {
   solid_model: boolean;
   straight_piece_sides: boolean;
   puzzle_tabs: boolean;
+  export_piece_stls: boolean;
   place_name: string;
   buildings: {
     enabled: boolean;
     z_scale: number;
+    detail: "all" | "automatic" | "custom";
+    minimum_footprint_mm: number;
   };
   // Marine water: what the sea's printed surface is, and at which level.
   // bathymetric_relief — the draped output every setup has today — is the
@@ -459,12 +462,15 @@ export type PreviewData = {
     building_selection_work_ms: number;
     building_clipping_work_ms: number;
     building_union_work_ms: number;
+    building_obstacle_work_ms: number;
     building_assignment_work_ms: number;
     building_shell_work_ms: number;
+    building_cache_hits: number;
     roads_work_ms: number;
     road_obstacle_work_ms: number;
     road_ribbon_clip_work_ms: number;
     road_building_cutback_work_ms: number;
+    road_cache_hits: number;
     aviation_work_ms: number;
     markers_work_ms: number;
     labels_work_ms: number;
@@ -482,6 +488,7 @@ export type PreviewData = {
     building_component_count: number;
     line_candidate_count: number;
     ribbon_clip_count: number;
+    obstacle_cutback_count: number;
     vertices: number;
     triangles: number;
     slowest_pieces: Array<{

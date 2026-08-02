@@ -47,12 +47,15 @@ pub(crate) struct GeometryTimingSummary {
     building_selection_work_ms: f64,
     building_clipping_work_ms: f64,
     building_union_work_ms: f64,
+    building_obstacle_work_ms: f64,
     building_assignment_work_ms: f64,
     building_shell_work_ms: f64,
+    building_cache_hits: usize,
     roads_work_ms: f64,
     road_obstacle_work_ms: f64,
     road_ribbon_clip_work_ms: f64,
     road_building_cutback_work_ms: f64,
+    road_cache_hits: usize,
     aviation_work_ms: f64,
     markers_work_ms: f64,
     labels_work_ms: f64,
@@ -72,6 +75,7 @@ pub(crate) struct GeometryTimingSummary {
     building_component_count: usize,
     line_candidate_count: usize,
     ribbon_clip_count: usize,
+    obstacle_cutback_count: usize,
     vertices: usize,
     triangles: usize,
     slowest_pieces: Vec<SlowPieceGeometryTiming>,
@@ -143,12 +147,20 @@ pub(crate) fn summarize_geometry_timing(
         building_union_work_ms: microseconds_as_milliseconds(building_sum(&|timing| {
             timing.union_us
         })),
+        building_obstacle_work_ms: microseconds_as_milliseconds(building_sum(&|timing| {
+            timing.obstacle_us
+        })),
         building_assignment_work_ms: microseconds_as_milliseconds(building_sum(&|timing| {
             timing.assignment_us
         })),
         building_shell_work_ms: microseconds_as_milliseconds(building_sum(&|timing| {
             timing.shell_us
         })),
+        building_cache_hits: pieces
+            .iter()
+            .filter_map(|piece| piece.buildings.as_ref())
+            .filter(|timing| timing.cache_hit)
+            .count(),
         roads_work_ms: microseconds_as_milliseconds(road_sum(&|timing| timing.total_us)),
         road_obstacle_work_ms: microseconds_as_milliseconds(road_sum(&|timing| timing.obstacle_us)),
         road_ribbon_clip_work_ms: microseconds_as_milliseconds(road_sum(&|timing| {
@@ -157,6 +169,11 @@ pub(crate) fn summarize_geometry_timing(
         road_building_cutback_work_ms: microseconds_as_milliseconds(road_sum(&|timing| {
             timing.building_cutback_work_us
         })),
+        road_cache_hits: pieces
+            .iter()
+            .filter_map(|piece| piece.roads.as_ref())
+            .filter(|timing| timing.cache_hit)
+            .count(),
         aviation_work_ms: microseconds_as_milliseconds(road_sum(&|timing| timing.aviation_us)),
         markers_work_ms: microseconds_as_milliseconds(sum(&|piece| piece.markers_us)),
         labels_work_ms: microseconds_as_milliseconds(sum(&|piece| piece.labels_us)),
@@ -193,6 +210,11 @@ pub(crate) fn summarize_geometry_timing(
             .iter()
             .filter_map(|piece| piece.roads.as_ref())
             .map(|timing| timing.ribbon_clip_count)
+            .sum(),
+        obstacle_cutback_count: pieces
+            .iter()
+            .filter_map(|piece| piece.roads.as_ref())
+            .map(|timing| timing.obstacle_cutback_count)
             .sum(),
         vertices: pieces.iter().map(|piece| piece.vertices).sum(),
         triangles: pieces.iter().map(|piece| piece.triangles).sum(),

@@ -54,6 +54,40 @@ export function BuildingsPanel({
             step={0.5}
             onChange={(value) => updateBuildings("z_scale", value)}
           />
+          <label className="road-detail-field">
+            Building detail
+            <select
+              value={spec.buildings.detail}
+              onChange={(event) =>
+                updateBuildings(
+                  "detail",
+                  event.target.value as GenerationSpec["buildings"]["detail"],
+                )
+              }
+            >
+              <option value="all">All mapped buildings</option>
+              <option value="automatic">Automatic 0.2 mm print filter</option>
+              <option value="custom">Custom minimum footprint</option>
+            </select>
+            <small>
+              All is the default and removes nothing. The filters omit a
+              building only when both printed footprint spans are below the
+              cutoff. Marked buildings always remain.
+            </small>
+          </label>
+          {spec.buildings.detail === "custom" && (
+            <RangeField
+              label="Minimum building footprint"
+              value={spec.buildings.minimum_footprint_mm}
+              unit="mm"
+              min={0.05}
+              max={2}
+              step={0.05}
+              onChange={(value) =>
+                updateBuildings("minimum_footprint_mm", value)
+              }
+            />
+          )}
           <p className="color-note">
             Buildings use exact mapped footprints, flat roofs, straight
             vertical walls, and their color from the Colors tab. 1× keeps true

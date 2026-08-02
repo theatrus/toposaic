@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn model_preview_spec_keeps_features_and_lowers_only_detail() {
+    fn model_preview_spec_keeps_features_and_building_detail() {
         let mut spec = GenerationSpec::default();
         spec.color_output.enabled = true;
         spec.color_output.roads_enabled = true;
@@ -767,6 +767,11 @@ mod tests {
         assert_eq!(draft.mesh_samples_across, None);
         assert_eq!(draft.overlay_samples_across, None);
         assert!(!draft.fine_dem_detail);
+        assert_eq!(draft.buildings.detail, spec.buildings.detail);
+        assert_eq!(
+            draft.buildings.minimum_footprint_mm,
+            spec.buildings.minimum_footprint_mm
+        );
 
         let detailed = model_preview_spec(&spec, PreviewDetail::Detailed);
         assert_eq!(detailed.samples_per_piece, 32);
@@ -774,6 +779,7 @@ mod tests {
         assert_eq!(detailed.mesh_samples_across, None);
         assert_eq!(detailed.overlay_samples_across, None);
         assert!(!detailed.fine_dem_detail);
+        assert_eq!(detailed.buildings.detail, spec.buildings.detail);
 
         let high = model_preview_spec(&spec, PreviewDetail::High);
         assert_eq!(high.samples_per_piece, 48);
@@ -781,6 +787,7 @@ mod tests {
         assert_eq!(high.mesh_samples_across, None);
         assert_eq!(high.overlay_samples_across, None);
         assert!(!high.fine_dem_detail);
+        assert_eq!(high.buildings.detail, spec.buildings.detail);
         assert_eq!(PreviewDetail::Fast.sample_grid(), 128);
         assert_eq!(PreviewDetail::Detailed.sample_grid(), 192);
         assert_eq!(PreviewDetail::High.sample_grid(), 256);

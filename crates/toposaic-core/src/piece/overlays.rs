@@ -27,6 +27,7 @@ use crate::surface::{
     ROAD_VECTOR_STEP_MM, VectorSurfaceLine, surface_area_bounds, surface_line_progress,
 };
 
+use super::cache::{PreparedRibbons, get_ribbons, piece_cache_key, put_ribbons};
 use super::{
     MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM, OVERLAY_TERRAIN_EMBED_MM, SurfaceField,
     bounds_overlap, elapsed_us, multi_polygon_bounds, repair_classification_pinches,
@@ -35,9 +36,11 @@ use super::{
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct RoadGeometryTiming {
+    pub cache_hit: bool,
     pub line_count: usize,
     pub aviation_component_count: usize,
     pub ribbon_clip_count: usize,
+    pub obstacle_cutback_count: usize,
     pub selection_us: u64,
     pub obstacle_us: u64,
     /// Sum of elapsed clipping work across Rayon workers. This can be larger
@@ -71,6 +74,45 @@ fn marker_circle(center: [f32; 2], radius: f32) -> Polygon<f64> {
         })
         .collect::<Vec<_>>();
     geo_polygon(&points)
+}
+
+fn polygon_bounds(polygon: &Polygon<f64>) -> [f32; 4] {
+    polygon.exterior().0.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |bounds, point| {
+            [
+                bounds[0].min(point.x as f32),
+                bounds[1].min(point.y as f32),
+                bounds[2].max(point.x as f32),
+                bounds[3].max(point.y as f32),
+            ]
+        },
+    )
+}
+
+fn subtract_nearby_obstacles(
+    footprint: MultiPolygon<f64>,
+    obstacles: &MultiPolygon<f64>,
+    footprint_bounds: [f32; 4],
+) -> MultiPolygon<f64> {
+    let nearby = MultiPolygon(
+        obstacles
+            .0
+            .iter()
+            .filter(|polygon| bounds_overlap(footprint_bounds, polygon_bounds(polygon)))
+            .cloned()
+            .collect(),
+    );
+    if nearby.0.is_empty() {
+        footprint
+    } else {
+        footprint.difference(&nearby)
+    }
 }
 
 /// Builds smooth terrain-following discs for dot markers. Dots are vector
@@ -189,7 +231,7 @@ pub(super) fn append_road_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
-    building_union: Option<&MultiPolygon<f64>>,
+    building_obstacles: Option<&MultiPolygon<f64>>,
 ) -> Result<RoadGeometryTiming> {
     let total_started = Instant::now();
     let selection_started = Instant::now();
@@ -211,6 +253,12 @@ pub(super) fn append_road_geometry(
             ]
         },
     );
+    let normalized_piece_bounds = [
+        (piece_bounds[0] / assembled_width).clamp(0.0, 1.0),
+        (piece_bounds[1] / assembled_height).clamp(0.0, 1.0),
+        (piece_bounds[2] / assembled_width).clamp(0.0, 1.0),
+        (piece_bounds[3] / assembled_height).clamp(0.0, 1.0),
+    ];
     let overlaps_piece = |line: &&VectorSurfaceLine| {
         let half_width = line.width_mm * 0.5;
         let line_bounds = line.points_mm.iter().fold(
@@ -237,9 +285,10 @@ pub(super) fn append_road_geometry(
     // layers already placed the way trails do. Under the default styles
     // neither a Rail nor an Aerial line exists and this walks the exact
     // road-only path.
-    let road_and_rail = surface_field
-        .vector_lines
+    let candidate_lines = surface_field.vector_line_indices_in_bounds(normalized_piece_bounds);
+    let road_and_rail = candidate_lines
         .iter()
+        .map(|index| &surface_field.vector_lines[*index])
         .filter(|line| {
             matches!(
                 line.class,
@@ -255,9 +304,9 @@ pub(super) fn append_road_geometry(
         .collect::<Vec<_>>();
     // Imported trails are Trail-class lines; they only exist when the spec
     // carries trails, so specs without trails walk the exact road-only path.
-    let trail_lines = surface_field
-        .vector_lines
+    let trail_lines = candidate_lines
         .iter()
+        .map(|index| &surface_field.vector_lines[*index])
         .filter(|line| line.class == SurfaceClass::Trail)
         .filter(overlaps_piece)
         .collect::<Vec<_>>();
@@ -280,18 +329,10 @@ pub(super) fn append_road_geometry(
         timing.total_us = elapsed_us(total_started);
         return Ok(timing);
     }
-    // Buildings the roads must keep clear of, grown by the separation gap.
+    // The building pass prepares and caches this buffered union with its
+    // clipped footprints, so preview and export do not repeat that work.
     let obstacle_started = Instant::now();
-    let obstacles = building_union
-        .filter(|union| !union.0.is_empty())
-        .map(|union| {
-            let buffered = union
-                .0
-                .iter()
-                .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
-                .collect::<Vec<_>>();
-            unary_union(buffered.iter())
-        });
+    let obstacles = building_obstacles.filter(|union| !union.0.is_empty());
     let marker_areas = spec
         .markers
         .iter()
@@ -322,29 +363,73 @@ pub(super) fn append_road_geometry(
     let ribbon_clip_work_ns = AtomicU64::new(0);
     let building_cutback_work_ns = AtomicU64::new(0);
     let ribbon_clip_count = AtomicUsize::new(0);
-    let clip_ribbon = |line: &VectorSurfaceLine| {
-        let clip_started = Instant::now();
-        ribbon_clip_count.fetch_add(1, Ordering::Relaxed);
-        let local_points = line
-            .points_mm
-            .iter()
-            .map(|point| Coord {
-                x: f64::from(point[0] - origin_x),
-                y: f64::from(point[1] - origin_y),
+    let obstacle_cutback_count = AtomicUsize::new(0);
+    let cache_key = piece_cache_key(
+        surface_field,
+        piece_outline,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    );
+    let selected_lines = road_and_rail
+        .iter()
+        .chain(&trail_lines)
+        .copied()
+        .collect::<Vec<_>>();
+    ribbon_clip_count.store(selected_lines.len(), Ordering::Relaxed);
+    let prepared_ribbons = if let Some(prepared) = get_ribbons(cache_key) {
+        timing.cache_hit = true;
+        prepared
+    } else {
+        let clips = selected_lines
+            .par_iter()
+            .map(|line| {
+                let clip_started = Instant::now();
+                let local_points = line
+                    .points_mm
+                    .iter()
+                    .map(|point| Coord {
+                        x: f64::from(point[0] - origin_x),
+                        y: f64::from(point[1] - origin_y),
+                    })
+                    .collect::<Vec<_>>();
+                let ribbon = LineString::new(local_points).buffer(f64::from(line.width_mm) * 0.5);
+                let clipped = ribbon.intersection(&piece_polygon);
+                ribbon_clip_work_ns.fetch_add(elapsed_ns(clip_started), Ordering::Relaxed);
+                (line.geometry_id, clipped)
             })
-            .collect::<Vec<_>>();
-        let ribbon = LineString::new(local_points).buffer(f64::from(line.width_mm) * 0.5);
-        let mut clipped = ribbon.intersection(&piece_polygon);
-        if let Some(obstacles) = &obstacles {
+            .collect::<HashMap<_, _>>();
+        let prepared = std::sync::Arc::new(PreparedRibbons { clips });
+        put_ribbons(cache_key, std::sync::Arc::clone(&prepared));
+        prepared
+    };
+    let clip_ribbon = |line: &VectorSurfaceLine| {
+        prepared_ribbons
+            .clips
+            .get(&line.geometry_id)
+            .cloned()
+            .unwrap_or_else(|| MultiPolygon::new(Vec::new()))
+    };
+    // Boolean subtraction distributes over union. Union a whole material
+    // layer first, then cut it back once, instead of sending every road
+    // ribbon through the full building set. Limit each subtraction to
+    // obstacle components whose bounds can reach the layer.
+    let cut_back_obstacles = |mut footprint: MultiPolygon<f64>| {
+        if footprint.0.is_empty() {
+            return footprint;
+        }
+        obstacle_cutback_count.fetch_add(1, Ordering::Relaxed);
+        let footprint_bounds = multi_polygon_bounds(&footprint);
+        if let Some(obstacles) = obstacles {
             let cutback_started = Instant::now();
-            clipped = clipped.difference(obstacles);
+            footprint = subtract_nearby_obstacles(footprint, obstacles, footprint_bounds);
             building_cutback_work_ns.fetch_add(elapsed_ns(cutback_started), Ordering::Relaxed);
         }
         if let Some(marker_obstacles) = &marker_obstacles {
-            clipped = clipped.difference(marker_obstacles);
+            footprint = subtract_nearby_obstacles(footprint, marker_obstacles, footprint_bounds);
         }
-        ribbon_clip_work_ns.fetch_add(elapsed_ns(clip_started), Ordering::Relaxed);
-        clipped
+        footprint
     };
     let (bridges, regular): (Vec<_>, Vec<_>) = road_and_rail
         .into_iter()
@@ -374,7 +459,7 @@ pub(super) fn append_road_geometry(
         .par_iter()
         .map(|line| clip_ribbon(line))
         .collect::<Vec<_>>();
-    let mut road_area = unary_union(regular_areas.iter());
+    let mut road_area = cut_back_obstacles(unary_union(regular_areas.iter()));
     // Bridge decks follow their own elevation profile, so they cannot join
     // the terrain-following union. But one physical bridge arrives as many
     // lines — chained segments that share endpoints (whose round buffer
@@ -451,7 +536,9 @@ pub(super) fn append_road_geometry(
     }
     let decks = groups
         .into_iter()
-        .map(|(group_lines, group_areas)| (group_lines, unary_union(group_areas)))
+        .map(|(group_lines, group_areas)| {
+            (group_lines, cut_back_obstacles(unary_union(group_areas)))
+        })
         .collect::<Vec<_>>();
     // Where a deck touches down — the same OSM way continues as a plain road
     // from the bridge's end node, so both ribbons carry the identical round
@@ -561,6 +648,7 @@ pub(super) fn append_road_geometry(
             "triangulate mapped trail ribbon",
             &route_trail_regular,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -580,6 +668,7 @@ pub(super) fn append_road_geometry(
             "triangulate imported trail ribbon",
             &trail_lines,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -599,6 +688,7 @@ pub(super) fn append_road_geometry(
             "triangulate railway ribbon",
             &rail_regular,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -620,6 +710,7 @@ pub(super) fn append_road_geometry(
             "triangulate aerialway ribbon",
             &aerial_regular,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -641,6 +732,7 @@ pub(super) fn append_road_geometry(
             "triangulate ferry ribbon",
             &ferry_regular,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -731,6 +823,7 @@ pub(super) fn append_road_geometry(
             Some(aviation_interior_step_mm(spec)),
             &aviation_base,
             &clip_ribbon,
+            &cut_back_obstacles,
             &claimed,
             &decks,
             height_field,
@@ -747,13 +840,7 @@ pub(super) fn append_road_geometry(
     // where the apron's ring and the building's outline share coordinates
     // the two shells leave coincident faces for a slicer's weld to fuse
     // into non-manifold edges.
-    let mut aviation_outlines = aviation_outlines;
-    if let Some(obstacles) = &obstacles {
-        aviation_outlines = aviation_outlines.difference(obstacles);
-    }
-    if let Some(marker_obstacles) = &marker_obstacles {
-        aviation_outlines = aviation_outlines.difference(marker_obstacles);
-    }
+    let aviation_outlines = cut_back_obstacles(aviation_outlines);
     if !aviation_outlines.0.is_empty() {
         append_overlay_footprint(
             mesh,
@@ -776,6 +863,7 @@ pub(super) fn append_road_geometry(
     }
     timing.aviation_us = elapsed_us(aviation_started);
     timing.ribbon_clip_count = ribbon_clip_count.load(Ordering::Relaxed);
+    timing.obstacle_cutback_count = obstacle_cutback_count.load(Ordering::Relaxed);
     timing.ribbon_clip_work_us = ribbon_clip_work_ns.load(Ordering::Relaxed) / 1_000;
     timing.building_cutback_work_us = building_cutback_work_ns.load(Ordering::Relaxed) / 1_000;
     timing.total_us = elapsed_us(total_started);
@@ -870,6 +958,7 @@ fn append_overlay_geometry(
     error_context: &'static str,
     lines: &[&VectorSurfaceLine],
     clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
+    cut_back_obstacles: &(impl Fn(MultiPolygon<f64>) -> MultiPolygon<f64> + Sync),
     claimed: &[MultiPolygon<f64>],
     decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
     height_field: Option<&HeightField>,
@@ -894,6 +983,7 @@ fn append_overlay_geometry(
         None,
         &terrain_base,
         clip_ribbon,
+        cut_back_obstacles,
         claimed,
         decks,
         height_field,
@@ -918,6 +1008,7 @@ fn append_overlay_geometry_at_height(
     interior_step_mm: Option<f32>,
     base_z: &(impl Fn([f32; 2]) -> f32 + Sync),
     clip_ribbon: &(impl Fn(&VectorSurfaceLine) -> MultiPolygon<f64> + Sync),
+    cut_back_obstacles: &(impl Fn(MultiPolygon<f64>) -> MultiPolygon<f64> + Sync),
     claimed: &[MultiPolygon<f64>],
     decks: &[(Vec<&VectorSurfaceLine>, MultiPolygon<f64>)],
     height_field: Option<&HeightField>,
@@ -936,7 +1027,7 @@ fn append_overlay_geometry_at_height(
         spec,
         material,
         error_context,
-        unary_union(clips.iter()),
+        cut_back_obstacles(unary_union(clips.iter())),
         height_mm,
         interior_step_mm,
         base_z,
@@ -1687,6 +1778,26 @@ mod tests {
     use crate::piece::build_piece;
     use crate::preview::build_preview;
     use crate::spec::{BuildingSpec, ColorOutputSpec, DotMarkerStyle, MapMarker, MarkerKind};
+
+    #[test]
+    fn union_then_building_cutback_matches_per_ribbon_cutback() {
+        let first =
+            LineString::new(vec![Coord { x: 0.0, y: 2.0 }, Coord { x: 10.0, y: 2.0 }]).buffer(0.5);
+        let second =
+            LineString::new(vec![Coord { x: 5.0, y: 0.0 }, Coord { x: 5.0, y: 6.0 }]).buffer(0.5);
+        let obstacles = MultiPolygon(vec![geo_polygon(&[
+            [4.0, 1.0],
+            [6.0, 1.0],
+            [6.0, 3.0],
+            [4.0, 3.0],
+        ])]);
+        let old = unary_union([first.difference(&obstacles), second.difference(&obstacles)].iter());
+        let union = unary_union([first, second].iter());
+        let new =
+            subtract_nearby_obstacles(union.clone(), &obstacles, multi_polygon_bounds(&union));
+        let mismatch = old.difference(&new).unsigned_area() + new.difference(&old).unsigned_area();
+        assert!(mismatch < 1e-9, "batched cutback changed {mismatch} mm²");
+    }
 
     #[test]
     fn dot_markers_are_smooth_vector_overlays_without_surface_data() {
