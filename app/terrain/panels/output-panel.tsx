@@ -9,6 +9,15 @@ import type {
   SourceBundleSummary,
 } from "../contracts";
 import { ArtifactDownloads } from "../downloads";
+import { elapsedLabel } from "../time";
+
+function jobElapsedSuffix(job: Job) {
+  const started = Date.parse(job.created_at);
+  const terminal = ["complete", "failed", "canceled"].includes(job.status);
+  const ended = terminal ? Date.parse(job.updated_at) : Date.now();
+  if (!Number.isFinite(started) || !Number.isFinite(ended)) return "";
+  return ` · ${elapsedLabel(ended - started)}`;
+}
 
 export function OutputPanel({
   artifactFeedback,
@@ -179,12 +188,14 @@ export function OutputPanel({
               ))}
             </ol>
           )}
-          {job && !["failed", "canceled"].includes(job.status) && (
+          {job && (
             <div className="job-progress">
               <div className="progress-track">
                 <span style={{ width: `${job.progress}%` }} />
               </div>
-              <output>{job.progress}%</output>
+              <output>
+                {job.progress}%{jobElapsedSuffix(job)}
+              </output>
             </div>
           )}
           {job?.status === "complete" && (

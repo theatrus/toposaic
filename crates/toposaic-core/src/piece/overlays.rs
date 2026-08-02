@@ -1,7 +1,11 @@
 //! Overlay shells: marker dots, road and bridge-deck ribbons, imported
 //! trails, railways, and the generic footprint-to-shell machinery they share.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    time::Instant,
+};
 
 use anyhow::Result;
 use geo::orient::Direction;
@@ -25,9 +29,31 @@ use crate::surface::{
 
 use super::{
     MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM, OVERLAY_TERRAIN_EMBED_MM, SurfaceField,
-    bounds_overlap, multi_polygon_bounds, repair_classification_pinches, sanitize_footprint_group,
-    simplify_closed_ring, terrain_z_at,
+    bounds_overlap, elapsed_us, multi_polygon_bounds, repair_classification_pinches,
+    sanitize_footprint_group, simplify_closed_ring, terrain_z_at,
 };
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RoadGeometryTiming {
+    pub line_count: usize,
+    pub aviation_component_count: usize,
+    pub ribbon_clip_count: usize,
+    pub selection_us: u64,
+    pub obstacle_us: u64,
+    /// Sum of elapsed clipping work across Rayon workers. This can be larger
+    /// than wall time when clips run in parallel.
+    pub ribbon_clip_work_us: u64,
+    /// The share of `ribbon_clip_work_us` spent subtracting building areas.
+    pub building_cutback_work_us: u64,
+    pub regular_and_bridge_us: u64,
+    pub secondary_overlay_us: u64,
+    pub aviation_us: u64,
+    pub total_us: u64,
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+}
 
 /// One common 0.2 mm print layer keeps marker dots distinct from the terrain
 /// without turning them into pegs.
@@ -164,7 +190,10 @@ pub(super) fn append_road_geometry(
     assembled_width: f32,
     assembled_height: f32,
     building_union: Option<&MultiPolygon<f64>>,
-) -> Result<()> {
+) -> Result<RoadGeometryTiming> {
+    let total_started = Instant::now();
+    let selection_started = Instant::now();
+    let mut timing = RoadGeometryTiming::default();
     let piece_polygon = geo_polygon(piece_outline);
     let piece_bounds = piece_outline.iter().fold(
         [
@@ -244,10 +273,15 @@ pub(super) fn append_road_geometry(
         assembled_width,
         assembled_height,
     );
+    timing.line_count = road_and_rail.len() + trail_lines.len();
+    timing.aviation_component_count = aviation_outlines.0.len();
+    timing.selection_us = elapsed_us(selection_started);
     if road_and_rail.is_empty() && trail_lines.is_empty() && aviation_outlines.0.is_empty() {
-        return Ok(());
+        timing.total_us = elapsed_us(total_started);
+        return Ok(timing);
     }
     // Buildings the roads must keep clear of, grown by the separation gap.
+    let obstacle_started = Instant::now();
     let obstacles = building_union
         .filter(|union| !union.0.is_empty())
         .map(|union| {
@@ -284,7 +318,13 @@ pub(super) fn append_road_geometry(
         })
         .collect::<Vec<_>>();
     let marker_obstacles = (!marker_areas.is_empty()).then(|| unary_union(marker_areas.iter()));
+    timing.obstacle_us = elapsed_us(obstacle_started);
+    let ribbon_clip_work_ns = AtomicU64::new(0);
+    let building_cutback_work_ns = AtomicU64::new(0);
+    let ribbon_clip_count = AtomicUsize::new(0);
     let clip_ribbon = |line: &VectorSurfaceLine| {
+        let clip_started = Instant::now();
+        ribbon_clip_count.fetch_add(1, Ordering::Relaxed);
         let local_points = line
             .points_mm
             .iter()
@@ -296,11 +336,14 @@ pub(super) fn append_road_geometry(
         let ribbon = LineString::new(local_points).buffer(f64::from(line.width_mm) * 0.5);
         let mut clipped = ribbon.intersection(&piece_polygon);
         if let Some(obstacles) = &obstacles {
+            let cutback_started = Instant::now();
             clipped = clipped.difference(obstacles);
+            building_cutback_work_ns.fetch_add(elapsed_ns(cutback_started), Ordering::Relaxed);
         }
         if let Some(marker_obstacles) = &marker_obstacles {
             clipped = clipped.difference(marker_obstacles);
         }
+        ribbon_clip_work_ns.fetch_add(elapsed_ns(clip_started), Ordering::Relaxed);
         clipped
     };
     let (bridges, regular): (Vec<_>, Vec<_>) = road_and_rail
@@ -326,6 +369,7 @@ pub(super) fn append_road_geometry(
     // Ordinary ribbons are clipped in parallel and unioned; the union is
     // shelled per connected component further below, once the bridge decks
     // it must keep clear of are known.
+    let regular_started = Instant::now();
     let regular_areas = regular
         .par_iter()
         .map(|line| clip_ribbon(line))
@@ -503,9 +547,11 @@ pub(super) fn append_road_geometry(
             mesh.append_isolated(shell);
         }
     }
+    timing.regular_and_bridge_us = elapsed_us(regular_started);
     // Trails yield to the roads and their decks; railways yield to those and
     // to the trails. Each layer only ever cedes ground to the layers added
     // before it, so adding railways leaves trail geometry untouched.
+    let secondary_started = Instant::now();
     let mut claimed = vec![road_area];
     if !route_trail_regular.is_empty() {
         let route_trail_area = append_overlay_geometry(
@@ -605,6 +651,7 @@ pub(super) fn append_road_geometry(
             assembled_height,
         )?;
     }
+    timing.secondary_overlay_us = elapsed_us(secondary_started);
     // Airport pavement is placed after every other overlay, so a road, rail
     // line, or crossing over it keeps the ground it already had. Within the
     // layer the strips go down before the aprons, which is why a runway
@@ -613,6 +660,7 @@ pub(super) fn append_road_geometry(
     // function over the whole layer, so a taxiway meeting a runway and an
     // apron meeting both arrive at the same z where they touch, and the
     // joins cannot crack.
+    let aviation_started = Instant::now();
     let profiles = aviation_profiles(
         spec,
         &aviation_regular,
@@ -726,7 +774,12 @@ pub(super) fn append_road_geometry(
             assembled_height,
         )?;
     }
-    Ok(())
+    timing.aviation_us = elapsed_us(aviation_started);
+    timing.ribbon_clip_count = ribbon_clip_count.load(Ordering::Relaxed);
+    timing.ribbon_clip_work_us = ribbon_clip_work_ns.load(Ordering::Relaxed) / 1_000;
+    timing.building_cutback_work_us = building_cutback_work_ns.load(Ordering::Relaxed) / 1_000;
+    timing.total_us = elapsed_us(total_started);
+    Ok(timing)
 }
 
 /// The piece's share of every aeroway area, holes kept.

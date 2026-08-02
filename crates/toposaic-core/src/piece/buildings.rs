@@ -20,10 +20,28 @@ use crate::surface::{SurfaceField, VectorSurfaceArea, surface_area_bounds};
 
 use super::{
     BUILDING_GROUND_STEP_MM, MINIMUM_OVERLAY_AREA_MM2, OVERLAY_TERRAIN_EMBED_MM, bounds_overlap,
-    multi_polygon_bounds, polygon_from_rings, repair_classification_pinches, retract_pinch_point,
-    ring_signed_area, sanitize_footprint_group, scaled_building_height_mm, snapped_open_ring,
-    terrain_z_at, triangulation_face_areas,
+    elapsed_us, multi_polygon_bounds, polygon_from_rings, repair_classification_pinches,
+    retract_pinch_point, ring_signed_area, sanitize_footprint_group, scaled_building_height_mm,
+    snapped_open_ring, terrain_z_at, triangulation_face_areas,
 };
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct BuildingGeometryTiming {
+    pub candidate_count: usize,
+    pub clipped_count: usize,
+    pub component_count: usize,
+    pub selection_us: u64,
+    pub clipping_us: u64,
+    pub union_us: u64,
+    pub assignment_us: u64,
+    pub shell_us: u64,
+    pub total_us: u64,
+}
+
+pub(super) struct BuildingGeometry {
+    pub footprint: MultiPolygon<f64>,
+    pub timing: BuildingGeometryTiming,
+}
 
 /// One building footprint clipped to the current piece, with the roof level
 /// the whole footprint shares.
@@ -62,7 +80,10 @@ pub(super) fn append_building_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
-) -> Result<MultiPolygon<f64>> {
+) -> Result<BuildingGeometry> {
+    let total_started = std::time::Instant::now();
+    let selection_started = std::time::Instant::now();
+    let mut timing = BuildingGeometryTiming::default();
     let piece_polygon = geo_polygon(piece_outline);
     let piece_bounds = piece_outline.iter().fold(
         [
@@ -109,6 +130,9 @@ pub(super) fn append_building_geometry(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    timing.candidate_count = candidates.len();
+    timing.selection_us = elapsed_us(selection_started);
+    let clipping_started = std::time::Instant::now();
     let clipped_buildings = candidates
         .par_iter()
         .map(|building| {
@@ -153,13 +177,22 @@ pub(super) fn append_building_geometry(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    timing.clipped_count = clipped_buildings.len();
+    timing.clipping_us = elapsed_us(clipping_started);
     if clipped_buildings.is_empty() {
-        return Ok(MultiPolygon(Vec::new()));
+        timing.total_us = elapsed_us(total_started);
+        return Ok(BuildingGeometry {
+            footprint: MultiPolygon(Vec::new()),
+            timing,
+        });
     }
+    let union_started = std::time::Instant::now();
     let footprint_union = sanitize_footprint_group(
         unary_union(clipped_buildings.iter().map(|building| &building.footprint)),
         false,
     );
+    timing.component_count = footprint_union.0.len();
+    timing.union_us = elapsed_us(union_started);
     let bottom = |point: [f32; 2]| {
         terrain_z_at(
             spec,
@@ -173,6 +206,7 @@ pub(super) fn append_building_geometry(
     // membership matters: a component's shell keeps only faces covered by
     // its own members, so no two components can ever emit geometry over the
     // same spot even when coordinate rounding nudges their outlines.
+    let assignment_started = std::time::Instant::now();
     let mut component_members: Vec<Vec<&ClippedBuilding>> =
         vec![Vec::new(); footprint_union.0.len()];
     let component_bounds = footprint_union
@@ -203,8 +237,10 @@ pub(super) fn append_building_geometry(
             }
         }
     }
+    timing.assignment_us = elapsed_us(assignment_started);
     // Components are independent, so shell them in parallel and append in
     // the union's stable output order.
+    let shell_started = std::time::Instant::now();
     let shells = footprint_union
         .0
         .par_iter()
@@ -257,7 +293,12 @@ pub(super) fn append_building_geometry(
     for shell in shells {
         mesh.append_isolated(shell);
     }
-    Ok(footprint_union)
+    timing.shell_us = elapsed_us(shell_started);
+    timing.total_us = elapsed_us(total_started);
+    Ok(BuildingGeometry {
+        footprint: footprint_union,
+        timing,
+    })
 }
 
 /// Separates member footprints that touch each other (or the union outline)

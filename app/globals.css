@@ -3571,7 +3571,8 @@ fieldset.control-section .road-options {
   color: var(--muted);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
-  min-width: 28px;
+  min-width: 90px;
+  white-space: nowrap;
   text-align: right;
 }
 

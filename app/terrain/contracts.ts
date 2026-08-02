@@ -371,6 +371,8 @@ export type Job = {
   id: string;
   status: "queued" | "running" | "complete" | "failed" | "canceled";
   progress: number;
+  created_at: string;
+  updated_at: string;
   artifacts: Artifact[];
   error?: string | null;
   failure?: GenerationFailure | null;
@@ -441,6 +443,57 @@ export type PreviewData = {
   model_preview_tile_row?: number;
   model_preview_tile_column?: number;
   model_preview_scope?: "model" | "super_tile_member";
+  /** Timing data for diagnosing slow live previews. */
+  preview_pipeline_timing?: {
+    elevation_ms: number;
+    surface_ms: number;
+    water_ms: number;
+    model_ms: number;
+    total_ms: number;
+  };
+  model_geometry_timing?: {
+    piece_phase_wall_ms: number;
+    piece_work_ms: number;
+    terrain_work_ms: number;
+    buildings_work_ms: number;
+    building_selection_work_ms: number;
+    building_clipping_work_ms: number;
+    building_union_work_ms: number;
+    building_assignment_work_ms: number;
+    building_shell_work_ms: number;
+    roads_work_ms: number;
+    road_obstacle_work_ms: number;
+    road_ribbon_clip_work_ms: number;
+    road_building_cutback_work_ms: number;
+    aviation_work_ms: number;
+    markers_work_ms: number;
+    labels_work_ms: number;
+    weld_work_ms: number;
+    tray_ms: number;
+    serialization_ms: number;
+    piece_count: number;
+    minimum_samples_per_piece: number;
+    maximum_samples_per_piece: number;
+    source_building_count: number;
+    source_line_count: number;
+    source_area_count: number;
+    building_candidate_count: number;
+    clipped_building_count: number;
+    building_component_count: number;
+    line_candidate_count: number;
+    ribbon_clip_count: number;
+    vertices: number;
+    triangles: number;
+    slowest_pieces: Array<{
+      row: number;
+      column: number;
+      total_ms: number;
+      terrain_ms: number;
+      buildings_ms: number;
+      roads_ms: number;
+      weld_ms: number;
+    }>;
+  };
 };
 
 export type PlaceResult = {
