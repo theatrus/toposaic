@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use geo::{
-    Area, BooleanOps, Centroid, Contains, InteriorPoint, MultiPolygon, Point, Polygon, unary_union,
+    Area, BooleanOps, Buffer, Centroid, Contains, InteriorPoint, MultiPolygon, Point, Polygon,
+    unary_union,
 };
 use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
@@ -18,12 +19,36 @@ use crate::planar_mesh::polygon_from_outline as geo_polygon;
 use crate::spec::{GenerationSpec, SurfaceClass};
 use crate::surface::{SurfaceField, VectorSurfaceArea, surface_area_bounds};
 
-use super::{
-    BUILDING_GROUND_STEP_MM, MINIMUM_OVERLAY_AREA_MM2, OVERLAY_TERRAIN_EMBED_MM, bounds_overlap,
-    multi_polygon_bounds, polygon_from_rings, repair_classification_pinches, retract_pinch_point,
-    ring_signed_area, sanitize_footprint_group, scaled_building_height_mm, snapped_open_ring,
-    terrain_z_at, triangulation_face_areas,
+use super::cache::{
+    PreparedBuildingClip, PreparedBuildings, get_buildings, piece_cache_key, put_buildings,
 };
+use super::{
+    BUILDING_GROUND_STEP_MM, MINIMUM_OVERLAY_AREA_MM2, OVERLAY_SEPARATION_MM,
+    OVERLAY_TERRAIN_EMBED_MM, bounds_overlap, elapsed_us, multi_polygon_bounds, polygon_from_rings,
+    repair_classification_pinches, retract_pinch_point, ring_signed_area, sanitize_footprint_group,
+    scaled_building_height_mm, snapped_open_ring, terrain_z_at, triangulation_face_areas,
+};
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct BuildingGeometryTiming {
+    pub cache_hit: bool,
+    pub candidate_count: usize,
+    pub clipped_count: usize,
+    pub component_count: usize,
+    pub selection_us: u64,
+    pub clipping_us: u64,
+    pub union_us: u64,
+    pub obstacle_us: u64,
+    pub assignment_us: u64,
+    pub shell_us: u64,
+    pub total_us: u64,
+}
+
+pub(super) struct BuildingGeometry {
+    pub footprint: MultiPolygon<f64>,
+    pub overlay_obstacles: MultiPolygon<f64>,
+    pub timing: BuildingGeometryTiming,
+}
 
 /// One building footprint clipped to the current piece, with the roof level
 /// the whole footprint shares.
@@ -62,7 +87,9 @@ pub(super) fn append_building_geometry(
     origin_y: f32,
     assembled_width: f32,
     assembled_height: f32,
-) -> Result<MultiPolygon<f64>> {
+) -> Result<BuildingGeometry> {
+    let total_started = std::time::Instant::now();
+    let mut timing = BuildingGeometryTiming::default();
     let piece_polygon = geo_polygon(piece_outline);
     let piece_bounds = piece_outline.iter().fold(
         [
@@ -80,12 +107,15 @@ pub(super) fn append_building_geometry(
             ]
         },
     );
-    let candidates = surface_field
-        .vector_areas
-        .iter()
-        .filter(|area| area.building_height_m > 0.0 && area.points.len() >= 3)
-        .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
-        .collect::<Vec<_>>();
+    let cache_key = piece_cache_key(
+        surface_field,
+        piece_outline,
+        origin_x,
+        origin_y,
+        assembled_width,
+        assembled_height,
+    );
+    let minimum_span = spec.buildings.minimum_print_span_mm();
     let flag_cavities = spec
         .markers
         .iter()
@@ -109,57 +139,116 @@ pub(super) fn append_building_geometry(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let clipped_buildings = candidates
-        .par_iter()
-        .map(|building| {
-            let local_points = building
-                .points
-                .iter()
-                .map(|point| {
-                    [
-                        point[0] * assembled_width - origin_x,
-                        point[1] * assembled_height - origin_y,
-                    ]
-                })
-                .collect::<Vec<_>>();
-            let clipped = geo_polygon(&local_points).intersection(&piece_polygon);
-            let footprint = MultiPolygon(
-                clipped
-                    .0
-                    .into_iter()
-                    .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
-                    .collect::<Vec<_>>(),
-            );
-            if footprint.0.is_empty() {
-                return None;
-            }
-            let bounds = multi_polygon_bounds(&footprint);
-            let roof_z = building_roof_z(
-                spec,
-                building,
-                height_field,
-                height_range,
-                assembled_width,
-                assembled_height,
-            );
-            Some(ClippedBuilding {
-                footprint,
-                bounds,
-                roof_z,
-                material: building.class.unwrap_or(SurfaceClass::Building),
+    let prepared = if let Some(prepared) = get_buildings(cache_key, minimum_span) {
+        timing.cache_hit = true;
+        prepared
+    } else {
+        let selection_started = std::time::Instant::now();
+        let candidates = surface_field
+            .vector_area_indices_in_bounds(piece_bounds)
+            .into_iter()
+            .filter(|index| {
+                let area = &surface_field.vector_areas[*index];
+                area.building_height_m > 0.0
+                    && area.points.len() >= 3
+                    && bounds_overlap(surface_area_bounds(&area.points), piece_bounds)
+                    && building_passes_detail_filter(spec, area, assembled_width, assembled_height)
             })
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if clipped_buildings.is_empty() {
-        return Ok(MultiPolygon(Vec::new()));
+            .collect::<Vec<_>>();
+        timing.selection_us = elapsed_us(selection_started);
+        let clipping_started = std::time::Instant::now();
+        let clips = candidates
+            .par_iter()
+            .filter_map(|area_index| {
+                let building = &surface_field.vector_areas[*area_index];
+                let local_points = building
+                    .points
+                    .iter()
+                    .map(|point| {
+                        [
+                            point[0] * assembled_width - origin_x,
+                            point[1] * assembled_height - origin_y,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                let clipped = geo_polygon(&local_points).intersection(&piece_polygon);
+                let footprint = MultiPolygon(
+                    clipped
+                        .0
+                        .into_iter()
+                        .filter(|polygon| polygon.unsigned_area() > MINIMUM_OVERLAY_AREA_MM2)
+                        .collect::<Vec<_>>(),
+                );
+                if footprint.0.is_empty() {
+                    return None;
+                }
+                let bounds = multi_polygon_bounds(&footprint);
+                if !building_print_bounds_pass_detail_filter(spec, building, bounds) {
+                    return None;
+                }
+                Some(PreparedBuildingClip {
+                    area_index: *area_index,
+                    footprint,
+                    bounds,
+                })
+            })
+            .collect::<Vec<_>>();
+        timing.clipping_us = elapsed_us(clipping_started);
+        let union_started = std::time::Instant::now();
+        let union = sanitize_footprint_group(
+            unary_union(clips.iter().map(|building| &building.footprint)),
+            false,
+        );
+        timing.union_us = elapsed_us(union_started);
+        let obstacle_started = std::time::Instant::now();
+        let buffered = union
+            .0
+            .par_iter()
+            .map(|polygon| polygon.buffer(OVERLAY_SEPARATION_MM))
+            .collect::<Vec<_>>();
+        let overlay_obstacles = unary_union(buffered.iter());
+        timing.obstacle_us = elapsed_us(obstacle_started);
+        let prepared = std::sync::Arc::new(PreparedBuildings {
+            candidate_count: candidates.len(),
+            clips,
+            union,
+            overlay_obstacles,
+        });
+        put_buildings(cache_key, minimum_span, std::sync::Arc::clone(&prepared));
+        prepared
+    };
+    timing.candidate_count = prepared.candidate_count;
+    timing.clipped_count = prepared.clips.len();
+    timing.component_count = prepared.union.0.len();
+    if prepared.clips.is_empty() {
+        timing.total_us = elapsed_us(total_started);
+        return Ok(BuildingGeometry {
+            footprint: MultiPolygon(Vec::new()),
+            overlay_obstacles: MultiPolygon(Vec::new()),
+            timing,
+        });
     }
-    let footprint_union = sanitize_footprint_group(
-        unary_union(clipped_buildings.iter().map(|building| &building.footprint)),
-        false,
-    );
+    let clipped_buildings = prepared
+        .clips
+        .par_iter()
+        .map(|prepared| {
+            let building = &surface_field.vector_areas[prepared.area_index];
+            ClippedBuilding {
+                footprint: prepared.footprint.clone(),
+                bounds: prepared.bounds,
+                roof_z: building_roof_z(
+                    spec,
+                    building,
+                    height_field,
+                    height_range,
+                    assembled_width,
+                    assembled_height,
+                ),
+                material: building.class.unwrap_or(SurfaceClass::Building),
+            }
+        })
+        .collect::<Vec<_>>();
+    let footprint_union = prepared.union.clone();
     let bottom = |point: [f32; 2]| {
         terrain_z_at(
             spec,
@@ -173,6 +262,7 @@ pub(super) fn append_building_geometry(
     // membership matters: a component's shell keeps only faces covered by
     // its own members, so no two components can ever emit geometry over the
     // same spot even when coordinate rounding nudges their outlines.
+    let assignment_started = std::time::Instant::now();
     let mut component_members: Vec<Vec<&ClippedBuilding>> =
         vec![Vec::new(); footprint_union.0.len()];
     let component_bounds = footprint_union
@@ -184,10 +274,13 @@ pub(super) fn append_building_geometry(
         let anchor = building.footprint.interior_point();
         let component = anchor.and_then(|anchor| {
             let anchor_bounds = [anchor.x() as f32, anchor.y() as f32];
-            footprint_union.0.iter().position(|component| {
-                point_in_bounds(anchor_bounds, polygon_bounds(component))
-                    && component.contains(&anchor)
-            })
+            footprint_union
+                .0
+                .iter()
+                .zip(&component_bounds)
+                .position(|(component, bounds)| {
+                    point_in_bounds(anchor_bounds, *bounds) && component.contains(&anchor)
+                })
         });
         match component {
             Some(component) => component_members[component].push(building),
@@ -203,8 +296,10 @@ pub(super) fn append_building_geometry(
             }
         }
     }
+    timing.assignment_us = elapsed_us(assignment_started);
     // Components are independent, so shell them in parallel and append in
     // the union's stable output order.
+    let shell_started = std::time::Instant::now();
     let shells = footprint_union
         .0
         .par_iter()
@@ -257,7 +352,50 @@ pub(super) fn append_building_geometry(
     for shell in shells {
         mesh.append_isolated(shell);
     }
-    Ok(footprint_union)
+    timing.shell_us = elapsed_us(shell_started);
+    timing.total_us = elapsed_us(total_started);
+    Ok(BuildingGeometry {
+        footprint: footprint_union,
+        overlay_obstacles: prepared.overlay_obstacles.clone(),
+        timing,
+    })
+}
+
+fn building_passes_detail_filter(
+    spec: &GenerationSpec,
+    building: &VectorSurfaceArea,
+    assembled_width: f32,
+    assembled_height: f32,
+) -> bool {
+    let bounds = surface_area_bounds(&building.points);
+    building_print_bounds_pass_detail_filter(
+        spec,
+        building,
+        [
+            bounds[0] * assembled_width,
+            bounds[1] * assembled_height,
+            bounds[2] * assembled_width,
+            bounds[3] * assembled_height,
+        ],
+    )
+}
+
+fn building_print_bounds_pass_detail_filter(
+    spec: &GenerationSpec,
+    building: &VectorSurfaceArea,
+    print_bounds: [f32; 4],
+) -> bool {
+    // A map-selected building is an explicit user choice and must survive
+    // every automatic or custom density filter.
+    if building.class == Some(SurfaceClass::Marker) {
+        return true;
+    }
+    let Some(minimum) = spec.buildings.minimum_print_span_mm() else {
+        return true;
+    };
+    let width = print_bounds[2] - print_bounds[0];
+    let height = print_bounds[3] - print_bounds[1];
+    width >= minimum || height >= minimum
 }
 
 /// Separates member footprints that touch each other (or the union outline)
@@ -801,7 +939,67 @@ mod tests {
 
     use crate::mesh::assert_watertight;
     use crate::piece::build_piece;
-    use crate::spec::{BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
+    use crate::spec::{BuildingDetail, BuildingSpec, ColorOutputSpec, MapMarker, MarkerKind};
+
+    fn test_building(points: &[[f32; 2]], class: Option<SurfaceClass>) -> VectorSurfaceArea {
+        VectorSurfaceArea {
+            points: points.to_vec(),
+            holes: Vec::new(),
+            class,
+            building_height_m: 8.0,
+        }
+    }
+
+    #[test]
+    fn building_detail_defaults_to_all_and_never_drops_marked_buildings() {
+        let tiny = test_building(
+            &[[0.1, 0.1], [0.101, 0.1], [0.101, 0.101], [0.1, 0.101]],
+            None,
+        );
+        let long_thin = test_building(
+            &[[0.1, 0.1], [0.11, 0.1], [0.11, 0.101], [0.1, 0.101]],
+            None,
+        );
+        let marked = test_building(&tiny.points, Some(SurfaceClass::Marker));
+        let mut spec = GenerationSpec::default();
+        assert_eq!(spec.buildings.detail, BuildingDetail::All);
+        assert!(building_passes_detail_filter(&spec, &tiny, 100.0, 100.0));
+
+        spec.buildings.detail = BuildingDetail::Automatic;
+        assert!(!building_passes_detail_filter(&spec, &tiny, 100.0, 100.0));
+        assert!(building_passes_detail_filter(
+            &spec, &long_thin, 100.0, 100.0
+        ));
+        assert!(building_passes_detail_filter(&spec, &marked, 100.0, 100.0));
+    }
+
+    #[test]
+    fn building_detail_filter_rechecks_the_piece_clipped_footprint() {
+        let building = test_building(&[[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], None);
+        let marked = test_building(&building.points, Some(SurfaceClass::Marker));
+        let spec = GenerationSpec {
+            buildings: BuildingSpec {
+                detail: BuildingDetail::Custom,
+                minimum_footprint_mm: 0.2,
+                ..BuildingSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        assert!(building_passes_detail_filter(
+            &spec, &building, 100.0, 100.0
+        ));
+        assert!(!building_print_bounds_pass_detail_filter(
+            &spec,
+            &building,
+            [0.0, 0.0, 0.1, 0.1]
+        ));
+        assert!(building_print_bounds_pass_detail_filter(
+            &spec,
+            &marked,
+            [0.0, 0.0, 0.1, 0.1]
+        ));
+    }
 
     #[test]
     fn highlighted_building_uses_the_marker_material() {
@@ -820,6 +1018,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };
@@ -897,6 +1096,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };
@@ -970,6 +1170,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };
@@ -1042,6 +1243,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             color_output: ColorOutputSpec {
                 enabled: true,
@@ -1088,6 +1290,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::mesh::Mesh;
 use crate::piece::{
-    build_piece_with_height_range, printable_piece_positions, resolved_piece_samples,
-    scaled_building_height_mm,
+    PieceGeometryTiming, build_piece_with_height_range_timed, elapsed_us,
+    printable_piece_positions, resolved_piece_samples, scaled_building_height_mm,
+    summarize_geometry_timing,
 };
 use crate::spec::{GenerationSpec, PrintMaterial, SurfaceClass};
 use crate::surface::SurfaceField;
@@ -44,6 +45,15 @@ struct ModelPreviewMesh {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     materials: Vec<u32>,
+}
+
+struct ModelGeometryBuild {
+    meshes: Vec<ModelPreviewMesh>,
+    bounds: [f32; 6],
+    terrain_bounds: [f32; 4],
+    piece_timings: Vec<PieceGeometryTiming>,
+    piece_phase_us: u64,
+    tray_us: u64,
 }
 
 impl ModelPreviewMesh {
@@ -158,7 +168,7 @@ pub fn build_model_preview_cancellable(
         piece_samples * draft.rows.max(draft.columns) as usize
     };
     preview["model_mesh_samples_across"] = serde_json::json!(assembled_samples);
-    let model_geometry = (|| -> Result<(Vec<ModelPreviewMesh>, [f32; 6], [f32; 4])> {
+    let model_geometry = (|| -> Result<ModelGeometryBuild> {
         ensure_model_preview_active(is_cancelled)?;
         let height_range = height_range_for_spec(&draft, Some(height_field));
         let terrain_in_tray = if draft.tray.enabled {
@@ -174,11 +184,12 @@ pub fn build_model_preview_cancellable(
         let piece_width = draft.width_mm / draft.columns.max(1) as f32;
         let piece_height = draft.height_mm() / draft.rows.max(1) as f32;
         let positions = printable_piece_positions(&draft)?;
-        let mut meshes = positions
+        let piece_phase_started = std::time::Instant::now();
+        let built = positions
             .into_par_iter()
             .map(|(row, column)| {
                 ensure_model_preview_active(is_cancelled)?;
-                let mesh = build_piece_with_height_range(
+                let (mesh, timing) = build_piece_with_height_range_timed(
                     &draft,
                     Some(height_field),
                     height_range,
@@ -193,18 +204,24 @@ pub fn build_model_preview_cancellable(
                 } else {
                     [column as f32 * piece_width, row as f32 * piece_height]
                 };
-                Ok(ModelPreviewMesh::from_mesh(
-                    mesh,
-                    "terrain",
-                    [
-                        terrain_in_tray[0] + piece_offset[0],
-                        terrain_in_tray[1] + piece_offset[1],
-                        terrain_z,
-                    ],
+                Ok((
+                    ModelPreviewMesh::from_mesh(
+                        mesh,
+                        "terrain",
+                        [
+                            terrain_in_tray[0] + piece_offset[0],
+                            terrain_in_tray[1] + piece_offset[1],
+                            terrain_z,
+                        ],
+                    ),
+                    timing,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        let piece_phase_us = elapsed_us(piece_phase_started);
+        let (mut meshes, piece_timings): (Vec<_>, Vec<_>) = built.into_iter().unzip();
 
+        let tray_started = std::time::Instant::now();
         if draft.tray.enabled {
             ensure_model_preview_active(is_cancelled)?;
             let tray_origins = tray_segment_origins(&draft);
@@ -217,6 +234,7 @@ pub fn build_model_preview_cancellable(
                 ));
             }
         }
+        let tray_us = elapsed_us(tray_started);
 
         let mut bounds = [
             f32::INFINITY,
@@ -240,11 +258,34 @@ pub fn build_model_preview_cancellable(
             terrain_in_tray[0] + draft.width_mm,
             terrain_in_tray[1] + draft.height_mm(),
         ];
-        Ok((meshes, bounds, terrain_bounds))
+        Ok(ModelGeometryBuild {
+            meshes,
+            bounds,
+            terrain_bounds,
+            piece_timings,
+            piece_phase_us,
+            tray_us,
+        })
     })();
     match model_geometry {
-        Ok((meshes, bounds, terrain_bounds)) => {
+        Ok(ModelGeometryBuild {
+            meshes,
+            bounds,
+            terrain_bounds,
+            piece_timings,
+            piece_phase_us,
+            tray_us,
+        }) => {
+            let serialization_started = std::time::Instant::now();
             preview["model_meshes"] = serde_json::to_value(meshes)?;
+            let serialization_us = elapsed_us(serialization_started);
+            preview["model_geometry_timing"] = serde_json::to_value(summarize_geometry_timing(
+                &piece_timings,
+                surface_field,
+                piece_phase_us,
+                tray_us,
+                serialization_us,
+            ))?;
             preview["model_bounds_mm"] = serde_json::json!(bounds);
             preview["model_terrain_bounds_mm"] = serde_json::json!(terrain_bounds);
             preview["model_preview_detail"] = serde_json::json!("draft export geometry");
@@ -572,19 +613,33 @@ mod tests {
 
     #[test]
     fn live_model_preview_uses_export_meshes_for_buildings() {
-        let spec = GenerationSpec {
+        let mut spec = GenerationSpec {
             width_mm: 60.0,
             solid_model: true,
             buildings: BuildingSpec {
                 enabled: true,
                 ..BuildingSpec::default()
             },
+            color_output: crate::spec::ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                ..crate::spec::ColorOutputSpec::default()
+            },
             ..GenerationSpec::default()
         };
+        spec.color_output.rail_enabled = false;
+        spec.color_output.aerial_enabled = false;
+        spec.color_output.ferry_enabled = false;
         let height = HeightField::new(33, 33, vec![0.0; 33 * 33], "height").unwrap();
         let mut surface =
             SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "surface").unwrap();
         surface.paint_building(&[[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]], 12.0);
+        surface.paint_polyline(
+            &[[0.1, 0.5], [0.9, 0.5]],
+            spec.width_mm,
+            0.7,
+            SurfaceClass::Road,
+        );
 
         let preview =
             build_model_preview(&spec, &height, Some(&surface), 64, PreviewDetail::Fast).unwrap();
@@ -601,6 +656,18 @@ mod tests {
                 }),
             "the draft must carry the building shell, not a raised raster cell"
         );
+        let timing = &preview["model_geometry_timing"];
+        assert_eq!(timing["piece_count"], 1);
+        assert_eq!(timing["source_building_count"], 1);
+        assert_eq!(timing["source_line_count"], 1);
+        assert_eq!(timing["building_candidate_count"], 1);
+        assert_eq!(timing["clipped_building_count"], 1);
+        assert_eq!(timing["line_candidate_count"], 1);
+        assert_eq!(timing["ribbon_clip_count"], 1);
+        assert_eq!(timing["slowest_pieces"][0]["row"], 1);
+        assert_eq!(timing["slowest_pieces"][0]["column"], 1);
+        assert!(timing["piece_phase_wall_ms"].is_number());
+        assert!(timing["road_building_cutback_work_ms"].is_number());
     }
 
     #[test]
@@ -680,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn model_preview_spec_keeps_features_and_lowers_only_detail() {
+    fn model_preview_spec_keeps_features_and_building_detail() {
         let mut spec = GenerationSpec::default();
         spec.color_output.enabled = true;
         spec.color_output.roads_enabled = true;
@@ -700,6 +767,11 @@ mod tests {
         assert_eq!(draft.mesh_samples_across, None);
         assert_eq!(draft.overlay_samples_across, None);
         assert!(!draft.fine_dem_detail);
+        assert_eq!(draft.buildings.detail, spec.buildings.detail);
+        assert_eq!(
+            draft.buildings.minimum_footprint_mm,
+            spec.buildings.minimum_footprint_mm
+        );
 
         let detailed = model_preview_spec(&spec, PreviewDetail::Detailed);
         assert_eq!(detailed.samples_per_piece, 32);
@@ -707,6 +779,7 @@ mod tests {
         assert_eq!(detailed.mesh_samples_across, None);
         assert_eq!(detailed.overlay_samples_across, None);
         assert!(!detailed.fine_dem_detail);
+        assert_eq!(detailed.buildings.detail, spec.buildings.detail);
 
         let high = model_preview_spec(&spec, PreviewDetail::High);
         assert_eq!(high.samples_per_piece, 48);
@@ -714,6 +787,7 @@ mod tests {
         assert_eq!(high.mesh_samples_across, None);
         assert_eq!(high.overlay_samples_across, None);
         assert!(!high.fine_dem_detail);
+        assert_eq!(high.buildings.detail, spec.buildings.detail);
         assert_eq!(PreviewDetail::Fast.sample_grid(), 128);
         assert_eq!(PreviewDetail::Detailed.sample_grid(), 192);
         assert_eq!(PreviewDetail::High.sample_grid(), 256);

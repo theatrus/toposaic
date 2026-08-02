@@ -5068,6 +5068,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spade",
+ "tracing",
  "ttf-parser",
  "zip 8.6.0",
 ]

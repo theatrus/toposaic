@@ -10,6 +10,8 @@ use crate::spec::{PrintMaterial, SteepForestTarget, SurfaceClass};
 const VECTOR_BUCKET_COLUMNS: usize = 32;
 const VECTOR_BUCKET_COUNT: usize = VECTOR_BUCKET_COLUMNS * VECTOR_BUCKET_COLUMNS;
 pub(crate) const ROAD_VECTOR_STEP_MM: f32 = 0.25;
+const VECTOR_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const VECTOR_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 // Indicator-kriging border smoothing. The estimator interpolates per-class
 // 0/1 indicators from the recovered native-resolution land-cover grid with
@@ -47,6 +49,10 @@ pub struct SurfaceField {
     pub(crate) vector_areas: Vec<VectorSurfaceArea>,
     vector_line_buckets: Vec<Vec<LineBucketEntry>>,
     vector_area_buckets: Vec<Vec<usize>>,
+    /// Stable hash of the vector geometry, widths, classes, and building
+    /// heights painted into this field. Raster samples do not take part:
+    /// prepared planar clips never depend on them.
+    vector_fingerprint: u64,
     /// Per-sample "too steep for standing water", written by the water
     /// slope gate in `demote_steep_classes`. Water polygons painted after
     /// the gate consult it — through `rasterize_area` and the sampler —
@@ -86,6 +92,7 @@ pub(crate) struct VectorSurfaceLine {
     pub(crate) class: SurfaceClass,
     pub(crate) bridge_elevations_m: Option<[f32; 2]>,
     length_mm: f32,
+    pub(crate) geometry_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -255,10 +262,57 @@ impl SurfaceField {
             vector_areas: Vec::new(),
             vector_line_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
             vector_area_buckets: vec![Vec::new(); VECTOR_BUCKET_COUNT],
+            vector_fingerprint: VECTOR_HASH_OFFSET,
             steep_water: None,
             ground_palette: None,
             ground_materials: None,
         })
+    }
+
+    pub(crate) fn vector_fingerprint(&self) -> u64 {
+        self.vector_fingerprint
+    }
+
+    /// Candidate vector areas whose index buckets touch a normalized model
+    /// rectangle. Callers still do their exact bounds or polygon test; this
+    /// only avoids scanning every feature for each puzzle piece.
+    pub(crate) fn vector_area_indices_in_bounds(&self, bounds: [f32; 4]) -> Vec<usize> {
+        let minimum_x = vector_bucket_coordinate(bounds[0]);
+        let minimum_y = vector_bucket_coordinate(bounds[1]);
+        let maximum_x = vector_bucket_coordinate(bounds[2]);
+        let maximum_y = vector_bucket_coordinate(bounds[3]);
+        let mut indices = Vec::new();
+        for y in minimum_y..=maximum_y {
+            for x in minimum_x..=maximum_x {
+                indices.extend_from_slice(&self.vector_area_buckets[y * VECTOR_BUCKET_COLUMNS + x]);
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    /// Candidate vector lines whose segment buckets touch a normalized model
+    /// rectangle. The exact padded line bounds remain the caller's final
+    /// check, so the index cannot change which geometry is selected.
+    pub(crate) fn vector_line_indices_in_bounds(&self, bounds: [f32; 4]) -> Vec<usize> {
+        let minimum_x = vector_bucket_coordinate(bounds[0]);
+        let minimum_y = vector_bucket_coordinate(bounds[1]);
+        let maximum_x = vector_bucket_coordinate(bounds[2]);
+        let maximum_y = vector_bucket_coordinate(bounds[3]);
+        let mut indices = Vec::new();
+        for y in minimum_y..=maximum_y {
+            for x in minimum_x..=maximum_x {
+                indices.extend(
+                    self.vector_line_buckets[y * VECTOR_BUCKET_COLUMNS + x]
+                        .iter()
+                        .map(|entry| entry.line_index),
+                );
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
     }
 
     /// Attaches a resolved ground palette and its per-sample material
@@ -813,6 +867,14 @@ impl SurfaceField {
             .windows(2)
             .map(|segment| (segment[1][0] - segment[0][0]).hypot(segment[1][1] - segment[0][1]))
             .sum();
+        let geometry_id = vector_line_fingerprint(
+            &smooth_points,
+            line_width_mm,
+            print_width_mm,
+            print_height_mm,
+            class,
+            bridge_elevations_m,
+        );
         let line = VectorSurfaceLine {
             points_mm: smooth_points.clone(),
             width_mm: line_width_mm,
@@ -821,6 +883,7 @@ impl SurfaceField {
             class,
             bridge_elevations_m,
             length_mm,
+            geometry_id,
         };
         let half_width = line_width_mm * 0.5;
         let bounds = line.points_mm.iter().fold(
@@ -887,6 +950,8 @@ impl SurfaceField {
                 }
             }
         }
+        vector_hash_u64(&mut self.vector_fingerprint, geometry_id);
+        vector_hash_u64(&mut self.vector_fingerprint, self.vector_lines.len() as u64);
         self.vector_lines.push(line);
     }
 
@@ -923,6 +988,7 @@ impl SurfaceField {
             class: (class != SurfaceClass::Building).then_some(class),
             building_height_m: height_m,
         };
+        vector_hash_area(&mut self.vector_fingerprint, &area);
         let area_index = self.vector_areas.len();
         add_to_vector_buckets(
             &mut self.vector_area_buckets,
@@ -961,6 +1027,7 @@ impl SurfaceField {
             class: Some(class),
             building_height_m: 0.0,
         };
+        vector_hash_area(&mut self.vector_fingerprint, &area);
         let area_index = self.vector_areas.len();
         add_to_vector_buckets(
             &mut self.vector_area_buckets,
@@ -1659,6 +1726,71 @@ pub(crate) fn surface_area_bounds(points: &[[f32; 2]]) -> [f32; 4] {
     )
 }
 
+fn vector_line_fingerprint(
+    points: &[[f32; 2]],
+    width_mm: f32,
+    model_width_mm: f32,
+    model_height_mm: f32,
+    class: SurfaceClass,
+    bridge_elevations_m: Option<[f32; 2]>,
+) -> u64 {
+    let mut state = VECTOR_HASH_OFFSET;
+    vector_hash_u64(&mut state, points.len() as u64);
+    for point in points {
+        vector_hash_u32(&mut state, point[0].to_bits());
+        vector_hash_u32(&mut state, point[1].to_bits());
+    }
+    for value in [width_mm, model_width_mm, model_height_mm] {
+        vector_hash_u32(&mut state, value.to_bits());
+    }
+    vector_hash_u32(&mut state, class.material_index());
+    match bridge_elevations_m {
+        Some(values) => {
+            vector_hash_u32(&mut state, 1);
+            vector_hash_u32(&mut state, values[0].to_bits());
+            vector_hash_u32(&mut state, values[1].to_bits());
+        }
+        None => vector_hash_u32(&mut state, 0),
+    }
+    state
+}
+
+fn vector_hash_area(state: &mut u64, area: &VectorSurfaceArea) {
+    vector_hash_u64(state, area.points.len() as u64);
+    for point in &area.points {
+        vector_hash_u32(state, point[0].to_bits());
+        vector_hash_u32(state, point[1].to_bits());
+    }
+    vector_hash_u64(state, area.holes.len() as u64);
+    for hole in &area.holes {
+        vector_hash_u64(state, hole.len() as u64);
+        for point in hole {
+            vector_hash_u32(state, point[0].to_bits());
+            vector_hash_u32(state, point[1].to_bits());
+        }
+    }
+    vector_hash_u32(
+        state,
+        area.class.map_or(u32::MAX, |class| class.material_index()),
+    );
+    vector_hash_u32(state, area.building_height_m.to_bits());
+}
+
+fn vector_hash_u32(state: &mut u64, value: u32) {
+    vector_hash_bytes(state, &value.to_le_bytes());
+}
+
+fn vector_hash_u64(state: &mut u64, value: u64) {
+    vector_hash_bytes(state, &value.to_le_bytes());
+}
+
+fn vector_hash_bytes(state: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *state ^= u64::from(*byte);
+        *state = state.wrapping_mul(VECTOR_HASH_PRIME);
+    }
+}
+
 fn vector_bucket_coordinate(value: f32) -> usize {
     (value.clamp(0.0, 0.999_999) * VECTOR_BUCKET_COLUMNS as f32) as usize
 }
@@ -1855,6 +1987,51 @@ mod tests {
     use super::*;
     use crate::piece::scaled_building_height_mm;
     use crate::spec::{BuildingSpec, GenerationSpec};
+
+    #[test]
+    fn vector_candidate_queries_cover_features_without_bbox_false_positives() {
+        let mut field =
+            SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "index").unwrap();
+        field.paint_polyline(&[[0.0, 0.0], [1.0, 1.0]], 100.0, 0.5, SurfaceClass::Road);
+        field.paint_building(&[[0.7, 0.7], [0.8, 0.7], [0.8, 0.8], [0.7, 0.8]], 8.0);
+
+        assert_eq!(
+            field.vector_line_indices_in_bounds([0.45, 0.45, 0.55, 0.55]),
+            [0]
+        );
+        assert!(
+            field
+                .vector_line_indices_in_bounds([0.45, 0.0, 0.55, 0.1])
+                .is_empty(),
+            "the line bbox overlaps this box, but no segment does"
+        );
+        assert_eq!(
+            field.vector_area_indices_in_bounds([0.72, 0.72, 0.74, 0.74]),
+            [0]
+        );
+        assert!(
+            field
+                .vector_area_indices_in_bounds([0.1, 0.1, 0.2, 0.2])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn vector_fingerprint_changes_with_print_geometry() {
+        let make = |width| {
+            let mut field = SurfaceField::new(3, 3, vec![SurfaceClass::Rock; 9], "hash").unwrap();
+            field.paint_polyline(&[[0.1, 0.1], [0.9, 0.9]], 100.0, width, SurfaceClass::Road);
+            field
+        };
+        assert_eq!(
+            make(0.7).vector_fingerprint(),
+            make(0.7).vector_fingerprint()
+        );
+        assert_ne!(
+            make(0.7).vector_fingerprint(),
+            make(0.8).vector_fingerprint()
+        );
+    }
 
     #[test]
     fn surface_filter_removes_tiny_color_islands() {
@@ -2904,6 +3081,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 2.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };

@@ -285,10 +285,12 @@ fn run_live_preview(
     detail: PreviewDetail,
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
+    let preview_started = Instant::now();
     let mut preview_spec = toposaic_core::model_preview_spec(spec, detail);
     let samples = detail.sample_grid();
     let mut last_elevation_progress = 0;
     on_progress("elevation", "Loading elevation tiles", 4)?;
+    let elevation_started = Instant::now();
     let mut height_field = elevation::fetch_preview_height_field_with_progress(
         &preview_spec,
         &map_cache_dir.join("elevation"),
@@ -303,8 +305,10 @@ fn run_live_preview(
             Ok(())
         },
     )?;
+    let elevation_ms = elevation_started.elapsed().as_millis() as u64;
     ensure_preview_active(cancellation)?;
 
+    let surface_started = Instant::now();
     let mut surface_field = if preview_spec.needs_surface_field() {
         Some(surface::fetch_surface_field_with_progress_cancellable(
             &preview_spec,
@@ -320,7 +324,9 @@ fn run_live_preview(
         on_progress("surface", "No map overlays needed", 72)?;
         None
     };
+    let surface_ms = surface_started.elapsed().as_millis() as u64;
     ensure_preview_active(cancellation)?;
+    let water_started = Instant::now();
     if let Some(field) = surface_field.as_mut() {
         on_progress("surface", "Applying water levels", 74)?;
         surface::apply_marine_water_cancellable(
@@ -331,9 +337,11 @@ fn run_live_preview(
             cancellation,
         );
     }
+    let water_ms = water_started.elapsed().as_millis() as u64;
     ensure_preview_active(cancellation)?;
     preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
     on_progress("model", "Building draft model", 78)?;
+    let model_started = Instant::now();
     let mut preview = toposaic_core::build_model_preview_cancellable(
         &preview_spec,
         &height_field,
@@ -342,6 +350,7 @@ fn run_live_preview(
         detail,
         &|| cancellation.load(Ordering::Acquire),
     )?;
+    let model_ms = model_started.elapsed().as_millis() as u64;
     ensure_preview_active(cancellation)?;
     on_progress("model", "Preparing 3D scene", 96)?;
     preview["model_preview_tile_row"] = serde_json::json!(spec.adjacent_tile_row);
@@ -352,6 +361,29 @@ fn run_live_preview(
         } else {
             "model"
         });
+    let total_ms = preview_started.elapsed().as_millis() as u64;
+    preview["preview_pipeline_timing"] = serde_json::json!({
+        "elevation_ms": elevation_ms,
+        "surface_ms": surface_ms,
+        "water_ms": water_ms,
+        "model_ms": model_ms,
+        "total_ms": total_ms,
+    });
+    info!(
+        center_lat = spec.center_lat,
+        center_lon = spec.center_lon,
+        ground_span_km = spec.ground_span_km,
+        detail = ?detail,
+        elevation_ms,
+        surface_ms,
+        water_ms,
+        model_ms,
+        total_ms,
+        geometry = %preview
+            .get("model_geometry_timing")
+            .map_or_else(|| "{}".into(), serde_json::Value::to_string),
+        "live preview timing"
+    );
     Ok(preview)
 }
 
@@ -1173,6 +1205,10 @@ fn run_adjacent_grid_job(
             ground_palette_lock = Some(colors);
         }
         let mut terrain_spec = output_plan.terrain_spec(tile_spec);
+        // Grid publishing has always copied only each tile's combined 3MF;
+        // per-piece STLs in the temporary tile directory were discarded.
+        // Do not spend time and disk writing files no user can receive.
+        terrain_spec.export_piece_stls = false;
         // A super-tile exports each requested flag once. Per-tile generation
         // would build and discard the same files in every temporary folder.
         for marker in terrain_spec

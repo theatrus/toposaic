@@ -467,6 +467,13 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(enableBuildings).toBeVisible();
   await expect(enableBuildings).not.toBeChecked();
   await enableBuildings.check();
+  const buildingDetail = buildings.getByLabel("Building detail");
+  await expect(buildingDetail).toHaveValue("all");
+  await buildingDetail.selectOption("custom");
+  await expect(
+    buildings.getByRole("slider", { name: "Minimum building footprint" }),
+  ).toHaveValue("0.2");
+  await buildingDetail.selectOption("all");
   await expect(
     page
       .getByLabel("Surface color legend")
@@ -605,6 +612,12 @@ test("switches between the reflowed control panels", async ({ page }) => {
   await expect(threeMfStyle).toHaveValue("geometry");
   await threeMfStyle.selectOption("project");
   await expect(threeMfStyle).toHaveValue("project");
+  const pieceStls = page.getByRole("checkbox", {
+    name: "Export individual terrain STLs",
+  });
+  await expect(pieceStls).toBeChecked();
+  await pieceStls.uncheck();
+  await expect(pieceStls).not.toBeChecked();
   await expect(
     page.getByRole("link", { name: "Mapterhorn elevation tiles" }),
   ).toHaveAttribute("href", "https://mapterhorn.com/attribution");

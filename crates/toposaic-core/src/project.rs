@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,7 +17,10 @@ use crate::heightfield::{HeightField, height_range_for_spec, validate_height_fra
 use crate::marker::build_flag_template;
 use crate::mesh::Mesh;
 use crate::mount::{build_wall_alignment_spacer, build_wall_hardware};
-use crate::piece::{build_piece_with_height_range, printable_piece_positions};
+use crate::piece::{
+    PieceGeometryTiming, build_piece_with_height_range_timed, elapsed_us,
+    printable_piece_positions, summarize_geometry_timing,
+};
 use crate::preview::{build_preview, preview_sample_count};
 use crate::spec::{GenerationSpec, MapMarker, MarkerKind, PaintedClasses, WallMountStyle};
 use crate::surface::SurfaceField;
@@ -353,62 +357,80 @@ fn generate_project_inner(
     // looks complete.
     let build_completed = AtomicBool::new(false);
     let (mesh_sender, mesh_receiver) = mpsc::sync_channel::<Mesh>(piece_batch_size);
+    let mut piece_timings = Vec::<PieceGeometryTiming>::with_capacity(object_count);
+    let mut piece_build_wall_us = 0_u64;
+    let mut project_serialization_us = 0_u64;
     // However this function exits before the disarm below — error, cancel,
     // or panic — the partial, unfinished project archive is removed.
     let mut partial_archive_guard = RemoveFileOnDrop::new(&project_path);
     std::thread::scope(|scope| -> Result<()> {
         let completed_flag = &build_completed;
         let writer_path = &project_path;
-        let writer = scope.spawn(move || -> Result<()> {
+        let writer = scope.spawn(move || -> Result<u64> {
             // The surface field is finished before any mesh is built, so
             // the palette can be sized from the data the meshes will sample
             // without buffering a single mesh.
+            let started = Instant::now();
             let mut project_writer =
                 ThreeMfWriter::new(spec, PaintedClasses::sampled(surface_field), writer_path)?;
+            let mut serialization_us = elapsed_us(started);
             for mesh in mesh_receiver {
+                let started = Instant::now();
                 project_writer.write_mesh(&mesh)?;
+                serialization_us = serialization_us.saturating_add(elapsed_us(started));
             }
             if !completed_flag.load(Ordering::Acquire) {
                 // The building side failed, was canceled, or panicked; skip
                 // finalizing the archive, its error is reported instead.
-                return Ok(());
+                return Ok(serialization_us);
             }
-            project_writer.finish()
+            let started = Instant::now();
+            project_writer.finish()?;
+            Ok(serialization_us.saturating_add(elapsed_us(started)))
         });
         let build_result = (|| -> Result<()> {
             for batch_start in (0..object_count).step_by(piece_batch_size) {
                 ensure_generation_active(is_cancelled)?;
                 let batch_end = (batch_start + piece_batch_size).min(object_count);
+                let batch_started = Instant::now();
                 let pieces = (batch_start..batch_end)
                     .into_par_iter()
-                    .map(|index| -> Result<(Mesh, Artifact)> {
-                        ensure_generation_active(is_cancelled)?;
-                        let (row, column) = piece_positions[index];
-                        let mesh = build_piece_with_height_range(
-                            spec,
-                            height_field,
-                            height_range,
-                            surface_field,
-                            row,
-                            column,
-                        )
-                        .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
-                        ensure_generation_active(is_cancelled)?;
-                        let name = if spec.solid_model {
-                            "terrain-solid.stl".into()
-                        } else {
-                            format!("piece-{}-{}.stl", row + 1, column + 1)
-                        };
-                        let path = output_dir.join(&name);
-                        write_binary_stl(&mesh, &path)?;
-                        let artifact = file_artifact(&path, "model/stl")?;
-                        Ok((mesh, artifact))
-                    })
+                    .map(
+                        |index| -> Result<(Mesh, Option<Artifact>, PieceGeometryTiming)> {
+                            ensure_generation_active(is_cancelled)?;
+                            let (row, column) = piece_positions[index];
+                            let (mesh, timing) = build_piece_with_height_range_timed(
+                                spec,
+                                height_field,
+                                height_range,
+                                surface_field,
+                                row,
+                                column,
+                            )
+                            .with_context(|| format!("build piece {}, {}", row + 1, column + 1))?;
+                            ensure_generation_active(is_cancelled)?;
+                            let artifact = if spec.export_piece_stls {
+                                let name = if spec.solid_model {
+                                    "terrain-solid.stl".into()
+                                } else {
+                                    format!("piece-{}-{}.stl", row + 1, column + 1)
+                                };
+                                let path = output_dir.join(&name);
+                                write_binary_stl(&mesh, &path)?;
+                                Some(file_artifact(&path, "model/stl")?)
+                            } else {
+                                None
+                            };
+                            Ok((mesh, artifact, timing))
+                        },
+                    )
                     .collect::<Vec<_>>();
+                piece_build_wall_us += elapsed_us(batch_started);
                 for piece in pieces {
                     ensure_generation_active(is_cancelled)?;
-                    let (mesh, artifact) = piece?;
-                    artifacts.push(artifact);
+                    let (mesh, artifact, timing) = piece?;
+                    piece_timings.push(timing);
+                    artifacts.extend(artifact);
                     if mesh_sender.send(mesh).is_err() {
                         // The writer thread dropped the receiver after an
                         // error; the join below reports it.
@@ -430,15 +452,30 @@ fn generate_project_inner(
             Err(payload) => std::panic::resume_unwind(payload),
         };
         build_result?;
-        write_result
+        project_serialization_us = write_result?;
+        Ok(())
     })?;
     partial_archive_guard.disarm();
     artifacts.push(file_artifact(&project_path, "model/3mf")?);
 
+    let tray_started = Instant::now();
     if spec.tray.enabled {
         ensure_generation_active(is_cancelled)?;
         artifacts.extend(generate_tray_artifacts(spec, height_field, output_dir)?);
     }
+    let tray_us = elapsed_us(tray_started);
+    let geometry_timing = summarize_geometry_timing(
+        &piece_timings,
+        surface_field,
+        piece_build_wall_us,
+        tray_us,
+        project_serialization_us,
+    );
+    tracing::info!(
+        target: "toposaic_core::geometry",
+        timing = %serde_json::to_string(&geometry_timing).unwrap_or_else(|_| "{}".into()),
+        "export geometry timing"
+    );
     ensure_generation_active(is_cancelled)?;
     artifacts.extend(generate_wall_mount_artifacts(spec, output_dir)?);
     artifacts.extend(generate_marker_artifacts(spec, output_dir)?);
@@ -739,6 +776,32 @@ mod tests {
         assert!(progress.windows(2).all(|values| values[0] <= values[1]));
         assert_eq!(progress.last().copied(), Some(1.0));
 
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn project_can_skip_individual_terrain_stls() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "toposaic-no-piece-stls-test-{}",
+            std::process::id()
+        ));
+        if output_dir.exists() {
+            std::fs::remove_dir_all(&output_dir).unwrap();
+        }
+        let spec = GenerationSpec {
+            rows: 2,
+            columns: 2,
+            samples_per_piece: 16,
+            export_piece_stls: false,
+            ..GenerationSpec::default()
+        };
+        let manifest = generate_project(&spec, &output_dir).unwrap();
+
+        assert!(output_dir.join("toposaic.3mf").is_file());
+        assert!(!output_dir.join("piece-1-1.stl").exists());
+        assert!(manifest.artifacts.iter().all(
+            |artifact| !artifact.name.starts_with("piece-") || !artifact.name.ends_with(".stl")
+        ));
         std::fs::remove_dir_all(output_dir).unwrap();
     }
 

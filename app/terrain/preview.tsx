@@ -50,12 +50,35 @@ import type { GenerationSpec, PreviewData } from "./contracts";
 import type { PreviewTile } from "./api";
 import { coordinateAtNormalizedPoint, normalizedMapPoint } from "./geo";
 import { normalizedOutlinePoints, pointInNormalizedOutline } from "./outline";
+import { elapsedLabel } from "./time";
 
 // The terrain color the mesh renders when color output is off but trails
 // or buildings still force color materials. The legend must show the same
 // value, not the palette rock color.
 const NEUTRAL_TERRAIN_COLOR = "#74846B";
 const DOT_OVERLAY_HEIGHT_MM = 0.2;
+
+function previewTimingTitle(preview: PreviewData | null) {
+  const pipeline = preview?.preview_pipeline_timing;
+  if (!pipeline) return undefined;
+  const geometry = preview?.model_geometry_timing;
+  const details = [
+    `Elevation ${elapsedLabel(pipeline.elevation_ms)}`,
+    `map data ${elapsedLabel(pipeline.surface_ms)}`,
+    `water ${elapsedLabel(pipeline.water_ms)}`,
+    `model ${elapsedLabel(pipeline.model_ms)}`,
+  ];
+  if (geometry) {
+    details.push(
+      `terrain work ${elapsedLabel(geometry.terrain_work_ms)}`,
+      `buildings work ${elapsedLabel(geometry.buildings_work_ms)}`,
+      `roads work ${elapsedLabel(geometry.roads_work_ms)}`,
+      `building cutback work ${elapsedLabel(geometry.road_building_cutback_work_ms)}`,
+      `weld work ${elapsedLabel(geometry.weld_work_ms)}`,
+    );
+  }
+  return details.join(" · ");
+}
 
 // Palette keys in SurfaceClass::ALL order, so the index a preview reports
 // is the index into this list. See crates/toposaic-core/src/spec.rs.
@@ -1346,7 +1369,7 @@ export function ReliefPreview({
           <div className="preview-status-line">
             <span
               role={previewError ? "alert" : undefined}
-              title={previewError ?? undefined}
+              title={previewError ?? previewTimingTitle(preview)}
             >
               {previewError ??
                 progress?.label ??
@@ -1369,6 +1392,9 @@ export function ReliefPreview({
                 : spec.solid_model
                   ? `${effectiveMeshSamples(spec)} mesh samples`
                   : `${assembledMeshSamples(spec)} mesh samples across model`}
+              {preview?.preview_pipeline_timing
+                ? ` · ${elapsedLabel(preview.preview_pipeline_timing.total_ms)}`
+                : ""}
             </span>
             {(spec.adjacent_rows > 1 || spec.adjacent_columns > 1) && (
               <label className="preview-tile-select">

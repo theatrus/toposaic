@@ -82,8 +82,9 @@ pub async fn run() -> Result<()> {
 pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "toposaic_api=info,tower_http=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "toposaic_api=info,toposaic_core::geometry=info,tower_http=info".into()
+            }),
         )
         .try_init()
         .ok();

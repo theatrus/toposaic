@@ -45,13 +45,13 @@ pub use project::{
     generate_project_with_height_field, generate_tray_artifacts, generate_wall_mount_artifacts,
 };
 pub use spec::{
-    AerialStyle, BorderSpec, BridgeStructure, BuildingSpec, ClassBorders, ColorOutputSpec,
-    DatumReference, DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle, GenerationSpec,
-    GroundColorMode, GroundPaletteSpec, HeightMode, HeightScaleSpec, LabelFont, LineScaleSpec,
-    LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel, MarineSpec,
-    MarkerKind, MarkerSpec, ModelOutlineSpec, OutlineShape, PuzzleRetentionSpec, RailLifecycle,
-    RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget, SuperTileAnchor,
-    SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition, TraySpec,
-    WallMountSpec, WallMountStyle, WallMountTarget,
+    AerialStyle, BorderSpec, BridgeStructure, BuildingDetail, BuildingSpec, ClassBorders,
+    ColorOutputSpec, DatumReference, DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle,
+    GenerationSpec, GroundColorMode, GroundPaletteSpec, HeightMode, HeightScaleSpec, LabelFont,
+    LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel,
+    MarineSpec, MarkerKind, MarkerSpec, ModelOutlineSpec, OutlineShape, PuzzleRetentionSpec,
+    RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
+    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
+    TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

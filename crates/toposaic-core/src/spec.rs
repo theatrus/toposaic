@@ -135,6 +135,10 @@ pub struct GenerationSpec {
     pub solid_model: bool,
     pub straight_piece_sides: bool,
     pub puzzle_tabs: bool,
+    /// Write one plain STL beside the combined 3MF for every terrain object.
+    /// Kept on by default for saved-setup compatibility; most users need only
+    /// the 3MF and can turn this off to avoid the extra disk work.
+    pub export_piece_stls: bool,
     pub place_name: String,
     pub tray: TraySpec,
     pub puzzle_retention: PuzzleRetentionSpec,
@@ -195,6 +199,7 @@ impl Default for GenerationSpec {
             solid_model: false,
             straight_piece_sides: false,
             puzzle_tabs: true,
+            export_piece_stls: true,
             place_name: "Mount Rainier".into(),
             tray: TraySpec::default(),
             puzzle_retention: PuzzleRetentionSpec::default(),
@@ -1542,6 +1547,13 @@ impl ModelOutlineSpec {
 pub struct BuildingSpec {
     pub enabled: bool,
     pub z_scale: f32,
+    /// Which mapped footprints become printable building shells. `All` is
+    /// deliberately the default: no existing setup loses geometry unless
+    /// its owner asks for a print-scale filter.
+    pub detail: BuildingDetail,
+    /// Printed millimetres used by `Custom`. A building is omitted only when
+    /// both of its footprint spans are smaller than this value.
+    pub minimum_footprint_mm: f32,
 }
 
 impl Default for BuildingSpec {
@@ -1549,6 +1561,8 @@ impl Default for BuildingSpec {
         Self {
             enabled: false,
             z_scale: 5.0,
+            detail: BuildingDetail::All,
+            minimum_footprint_mm: 0.2,
         }
     }
 }
@@ -1558,8 +1572,33 @@ impl BuildingSpec {
         if !(0.5..=30.0).contains(&self.z_scale) {
             bail!("building Z scale must be between 0.5 and 30");
         }
+        if self.detail == BuildingDetail::Custom
+            && !(0.05..=2.0).contains(&self.minimum_footprint_mm)
+        {
+            bail!("minimum building footprint must be between 0.05 and 2 mm");
+        }
         Ok(())
     }
+
+    pub(crate) fn minimum_print_span_mm(&self) -> Option<f32> {
+        match self.detail {
+            BuildingDetail::All => None,
+            BuildingDetail::Automatic => Some(0.2),
+            BuildingDetail::Custom => Some(self.minimum_footprint_mm),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildingDetail {
+    /// Keep every valid mapped footprint.
+    #[default]
+    All,
+    /// Omit footprints smaller than a common 0.2 mm print line in both axes.
+    Automatic,
+    /// Use `minimum_footprint_mm` as the two-axis cutoff.
+    Custom,
 }
 
 /// How the model's vertical scale is chosen, and what its zero is.
@@ -3203,11 +3242,11 @@ mod tests {
         let expected = r##"{"center_lat":46.8523,"center_lon":-121.7603,"elevation_source":"mapzen","ground_span_km":18.0,"width_mm":180.0,"rows":3,"columns":3,"base_mm":3.2,"relief_mm":28.0,"elevation_datum_m":null,"elevation_m_per_mm":null,"adjacent_columns":1,"adjacent_rows":1,"super_tile_anchor":"top_left","adjacent_interlocks":false,"adjacent_tile_column":0,"adjacent_tile_row":0,"clearance_mm":0.14,"samples_per_piece":64,"overlay_samples_per_piece":112,"mesh_samples_across":null,"overlay_samples_across":null,"fine_dem_detail":false,"despike_terrain":true,"solid_model":false,"straight_piece_sides":false,"puzzle_tabs":true,"place_name":"Mount Rainier","tray":{"enabled":false,"individual_tiles":false,"contours_enabled":true,"label_enabled":true,"tray_color":"#252822","contour_color":"#E7E4D8","label_color":"#F4F3EC","label_font":"atkinson_hyperlegible","label_height_mm":4.0,"label_position":"center","clearance_mm":0.6,"rim_width_mm":8.0,"floor_mm":2.4,"rim_height_mm":3.2,"contour_count":18,"segment_columns":1,"segment_rows":1},"puzzle_retention":{"enabled":false,"pin_diameter_mm":3.0,"pin_height_mm":1.0,"clearance_mm":0.2},"wall_mount":{"style":"none","target":"terrain","vertical_position_ratio":0.28,"depth_mm":1.6,"thickness_mm":1.2,"wall_offset_mm":0.8,"pin_diameter_mm":4.0,"pin_count":1,"pin_spacing_mm":32.0,"cleat_width_mm":12.0,"export_hardware":true,"fit_clearance_mm":0.2,"screw_hole_diameter_mm":3.5,"screw_countersink_depth_mm":0.8,"screw_head_clearance_mm":0.4,"wide_edge_screws":true},"buildings":{"enabled":false,"z_scale":5.0},"color_output":{"enabled":false,"threemf_style":"project","filament_profile":"generic_pla","forest_color":"#28543A","rock_color":"#7C7468","snow_color":"#F4F3EC","water_color":"#2F76B5","road_color":"#D8A33C","building_color":"#B8A890","trail_color":"#D6336C","trail_width_mm":0.7,"rail_enabled":true,"rail_color":"#C43D3D","rail_width_mm":0.7,"rail_style":"separate","rail_lifecycle":"operational","aerial_enabled":true,"aerial_color":"#6C4CB6","aerial_width_mm":0.7,"aerial_style":"separate","ferry_enabled":true,"ferry_color":"#0F8C8C","ferry_width_mm":0.7,"ferry_style":"separate","roads_enabled":true,"road_detail":"automatic","adaptive_road_widths":true,"scale_line_widths_by_span":true,"close_view_width_multiplier":2.0,"maximum_mapped_width_mm":4.0,"osm_water_enabled":true,"waterway_coverage_percent":12.0,"road_width_mm":0.7,"road_height_mm":0.2,"bridge_structure":"floating","bridge_thickness_mm":1.2,"minimum_patch_mm":1.2,"edge_bleed_mm":0.4,"aviation_enabled":false,"aviation_runways_enabled":true,"aviation_taxiways_enabled":true,"aviation_aprons_enabled":true,"aviation_helipads_enabled":true,"aviation_style":"separate","aviation_color":"#4A4E54","aviation_height_mm":0.2,"maximum_aviation_width_mm":3.0,"aviation_detail_span_km":12.0,"class_borders":"smooth","border_smoothing_range_cells":2.5,"border_smoothing_nugget":0.05,"forest_slope_gate":true,"forest_slope_limit_degrees":55.0,"steep_forest_target":"rock","snow_slope_gate":true,"snow_slope_limit_degrees":65.0,"water_slope_gate":true,"water_slope_limit_degrees":30.0,"osm_water_slope_gate":true,"osm_water_slope_limit_degrees":30.0,"ground_colors":"mapped","ground_color_count":4,"ground_color_minimum_share":0.02,"ground_shadow_normalization":0.0},"trails":[]}"##;
         let expected = expected.replace(
             "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},",
-            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0},\"marker_settings\":{\"color\":\"#E24A33\"},",
+            "\"buildings\":{\"enabled\":false,\"z_scale\":5.0,\"detail\":\"all\",\"minimum_footprint_mm\":0.2},\"marker_settings\":{\"color\":\"#E24A33\"},",
         );
         let expected = expected.replace(
-            "\"z_scale\":5.0},\"marker_settings\"",
-            "\"z_scale\":5.0},\"marine\":{\"geometry\":\"bathymetric_relief\",\"level\":\"msl\",\"custom_offset_m\":0.0},\"marker_settings\"",
+            "\"minimum_footprint_mm\":0.2},\"marker_settings\"",
+            "\"minimum_footprint_mm\":0.2},\"marine\":{\"geometry\":\"bathymetric_relief\",\"level\":\"msl\",\"custom_offset_m\":0.0},\"marker_settings\"",
         );
         let expected = expected.replace("\"trails\":[]}", "\"trails\":[],\"markers\":[]}");
         let expected = expected.replace(
@@ -3225,6 +3264,10 @@ mod tests {
         let expected = expected.replace(
             "\"adjacent_tile_row\":0,",
             "\"adjacent_tile_row\":0,\"puzzle_seed\":0,\"puzzle_tile_column\":0,\"puzzle_tile_row\":0,",
+        );
+        let expected = expected.replace(
+            "\"puzzle_tabs\":true,",
+            "\"puzzle_tabs\":true,\"export_piece_stls\":true,",
         );
         let serialized = serde_json::to_string(&GenerationSpec::default()).unwrap();
         assert_eq!(serialized, expected);
@@ -3423,6 +3466,7 @@ mod tests {
             "solid_model": true,
             "straight_piece_sides": true,
             "puzzle_tabs": false,
+            "export_piece_stls": true,
             "place_name": "Yellowstone",
             "tray": {
                 "enabled": true,
@@ -3467,7 +3511,12 @@ mod tests {
                 "screw_head_clearance_mm": 0.5,
                 "wide_edge_screws": false
             },
-            "buildings": { "enabled": true, "z_scale": 2.0 },
+            "buildings": {
+                "enabled": true,
+                "z_scale": 2.0,
+                "detail": "all",
+                "minimum_footprint_mm": 0.25
+            },
             "marine": {
                 "geometry": "bathymetric_relief",
                 "level": "custom",
@@ -4253,6 +4302,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 5.0,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };
@@ -4291,6 +4341,7 @@ mod tests {
             buildings: BuildingSpec {
                 enabled: true,
                 z_scale: 0.5,
+                ..BuildingSpec::default()
             },
             ..GenerationSpec::default()
         };
@@ -4302,6 +4353,19 @@ mod tests {
         let wide = spec_at(18.0);
         let expected = 100.0 * wide.width_mm / 18_000.0 * 5.0;
         assert!((crate::piece::scaled_building_height_mm(&wide, 100.0) - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn inactive_building_cutoffs_do_not_reject_saved_setups() {
+        let mut spec = GenerationSpec::default();
+        spec.buildings.minimum_footprint_mm = 10.0;
+        assert!(spec.validate().is_ok());
+
+        spec.buildings.detail = BuildingDetail::Automatic;
+        assert!(spec.validate().is_ok());
+
+        spec.buildings.detail = BuildingDetail::Custom;
+        assert!(spec.validate().is_err());
     }
 
     #[test]

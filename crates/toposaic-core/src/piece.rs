@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use anyhow::{Context, Result, bail};
 use geo::{Area, Buffer, Contains, Coord, LineString, MultiPolygon, Point, Polygon};
@@ -45,12 +48,15 @@ struct FlagCavity {
 }
 
 mod buildings;
+mod cache;
 mod labels;
 mod overlays;
+mod timing;
 
 use buildings::append_building_geometry;
 use labels::append_label_geometry;
 use overlays::{append_dot_geometry, append_road_geometry};
+pub(crate) use timing::{PieceGeometryTiming, elapsed_us, summarize_geometry_timing};
 
 #[allow(clippy::too_many_arguments)]
 fn add_forest_boundary_points(
@@ -210,6 +216,25 @@ pub(crate) fn build_piece_with_height_range(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
+    build_piece_with_height_range_timed(
+        spec,
+        height_field,
+        height_range,
+        surface_field,
+        row,
+        column,
+    )
+    .map(|(mesh, _)| mesh)
+}
+
+pub(crate) fn build_piece_with_height_range_timed(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    surface_field: Option<&SurfaceField>,
+    row: u32,
+    column: u32,
+) -> Result<(Mesh, PieceGeometryTiming)> {
     let samples = resolved_piece_samples(spec, height_field);
     let piece_width = if spec.solid_model {
         spec.width_mm
@@ -222,7 +247,7 @@ pub(crate) fn build_piece_with_height_range(
         spec.height_mm() / spec.rows as f32
     };
 
-    build_piece_with_samples(
+    build_piece_with_samples_timed(
         spec,
         height_field,
         height_range,
@@ -248,7 +273,7 @@ pub(crate) fn resolved_piece_samples(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_piece_with_samples(
+fn build_piece_with_samples_timed(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
     height_range: Option<(f32, f32)>,
@@ -258,7 +283,15 @@ fn build_piece_with_samples(
     samples: usize,
     piece_width: f32,
     piece_height: f32,
-) -> Result<Mesh> {
+) -> Result<(Mesh, PieceGeometryTiming)> {
+    let total_started = Instant::now();
+    let terrain_started = Instant::now();
+    let mut timing = PieceGeometryTiming {
+        row,
+        column,
+        samples,
+        ..PieceGeometryTiming::default()
+    };
     let origin_x = if spec.solid_model {
         0.0
     } else {
@@ -660,11 +693,13 @@ fn build_piece_with_samples(
             &spec.puzzle_retention,
         )?);
     }
+    timing.terrain_us = elapsed_us(terrain_started);
     let mut building_union = None;
+    let mut building_obstacles = None;
     if (spec.buildings.enabled || spec.uses_building_markers())
         && let Some(field) = surface_field
     {
-        building_union = Some(append_building_geometry(
+        let building = append_building_geometry(
             &mut mesh,
             spec,
             field,
@@ -675,7 +710,10 @@ fn build_piece_with_samples(
             origin_y,
             assembled_width,
             assembled_height,
-        )?);
+        )?;
+        building_union = Some(building.footprint);
+        building_obstacles = Some(building.overlay_obstacles);
+        timing.buildings = Some(building.timing);
     }
     if ((spec.color_output.enabled && spec.color_output.roads_enabled)
         || spec.uses_trails()
@@ -685,7 +723,7 @@ fn build_piece_with_samples(
         || spec.uses_aviation())
         && let Some(field) = surface_field
     {
-        append_road_geometry(
+        timing.roads = Some(append_road_geometry(
             &mut mesh,
             spec,
             field,
@@ -696,10 +734,11 @@ fn build_piece_with_samples(
             origin_y,
             assembled_width,
             assembled_height,
-            building_union.as_ref(),
-        )?;
+            building_obstacles.as_ref(),
+        )?);
     }
     if spec.uses_dot_markers() {
+        let started = Instant::now();
         append_dot_geometry(
             &mut mesh,
             spec,
@@ -712,8 +751,10 @@ fn build_piece_with_samples(
             assembled_height,
             building_union.as_ref(),
         )?;
+        timing.markers_us = elapsed_us(started);
     }
     if spec.uses_map_labels() {
+        let started = Instant::now();
         append_label_geometry(
             &mut mesh,
             spec,
@@ -725,9 +766,15 @@ fn build_piece_with_samples(
             assembled_width,
             assembled_height,
         )?;
+        timing.labels_us = elapsed_us(started);
     }
+    let weld_started = Instant::now();
     weld_export_mesh(&mut mesh);
-    Ok(mesh)
+    timing.weld_us = elapsed_us(weld_started);
+    timing.total_us = elapsed_us(total_started);
+    timing.vertices = mesh.vertices.len();
+    timing.triangles = mesh.triangles.len();
+    Ok((mesh, timing))
 }
 
 /// The vertex where a piece's terrain color stops bleeding down the side wall
@@ -1907,6 +1954,7 @@ mod tests {
             buildings: crate::spec::BuildingSpec {
                 enabled: true,
                 z_scale: 1.0,
+                ..crate::spec::BuildingSpec::default()
             },
             color_output: crate::spec::ColorOutputSpec {
                 enabled: true,

@@ -1,0 +1,46 @@
+{
+  "center_lat": 47.22069,
+  "center_lon": -122.44934,
+  "elevation_source": "mapzen",
+  "ground_span_km": 18.0,
+  "width_mm": 180.0,
+  "rows": 10,
+  "columns": 10,
+  "base_mm": 3.2,
+  "relief_mm": 28.0,
+  "puzzle_seed": 3140272207,
+  "samples_per_piece": 64,
+  "overlay_samples_per_piece": 112,
+  "mesh_samples_across": 640,
+  "overlay_samples_across": 640,
+  "export_piece_stls": false,
+  "place_name": "Tacoma, Washington",
+  "tray": {
+    "enabled": true
+  },
+  "buildings": {
+    "enabled": true,
+    "z_scale": 5.0,
+    "detail": "all",
+    "minimum_footprint_mm": 0.2
+  },
+  "marine": {
+    "geometry": "bathymetric_relief",
+    "level": "msl",
+    "custom_offset_m": 0.0
+  },
+  "color_output": {
+    "enabled": true,
+    "roads_enabled": true,
+    "road_detail": "automatic",
+    "rail_enabled": true,
+    "rail_style": "separate",
+    "aerial_enabled": true,
+    "aerial_style": "separate",
+    "ferry_enabled": true,
+    "ferry_style": "separate",
+    "osm_water_enabled": true,
+    "waterway_coverage_percent": 12.0,
+    "bridge_structure": "floating"
+  }
+}

@@ -98,6 +98,23 @@ pub struct MeshReport {
     pub name: String,
     pub triangles: usize,
     pub vertices: usize,
+    /// Axis-aligned print bounds: minimum x/y/z, then maximum x/y/z.
+    pub bounds_mm: [f32; 6],
+    /// Total area of every triangle in square millimetres.
+    pub surface_area_mm2: f64,
+    /// Absolute signed-tetrahedron sum for all emitted shells, in cubic
+    /// millimetres. This is a stable output metric, not a Boolean union of
+    /// intentionally embedded terrain and overlay solids.
+    pub volume_mm3: f64,
+    /// Signed tetrahedron sum. A negative value exposes a globally inverted
+    /// mesh, which the edge-manifold checks cannot detect.
+    pub signed_volume_mm3: f64,
+    /// Triangle counts by printable material, used by geometry references to
+    /// catch a layer that vanished or took the wrong filament.
+    pub material_triangles: BTreeMap<String, usize>,
+    /// Surface area by printable material. Unlike triangle counts, this stays
+    /// stable when an equivalent polygon gets a different triangulation.
+    pub material_surface_area_mm2: BTreeMap<String, f64>,
     /// `MeshBuilder::vertex` calls that hit an existing 1e-5 quantization key
     /// holding a different position (only overlay shells and trays run
     /// through `MeshBuilder`; the terrain body does not).
@@ -191,14 +208,14 @@ fn face_normal(corners: [[f32; 3]; 3]) -> [f32; 3] {
 
 fn triangle_area(corners: [[f32; 3]; 3]) -> f64 {
     let ab = [
-        (corners[1][0] - corners[0][0]) as f64,
-        (corners[1][1] - corners[0][1]) as f64,
-        (corners[1][2] - corners[0][2]) as f64,
+        f64::from(corners[1][0]) - f64::from(corners[0][0]),
+        f64::from(corners[1][1]) - f64::from(corners[0][1]),
+        f64::from(corners[1][2]) - f64::from(corners[0][2]),
     ];
     let ac = [
-        (corners[2][0] - corners[0][0]) as f64,
-        (corners[2][1] - corners[0][1]) as f64,
-        (corners[2][2] - corners[0][2]) as f64,
+        f64::from(corners[2][0]) - f64::from(corners[0][0]),
+        f64::from(corners[2][1]) - f64::from(corners[0][1]),
+        f64::from(corners[2][2]) - f64::from(corners[0][2]),
     ];
     let cross = [
         ab[1] * ac[2] - ab[2] * ac[1],
@@ -509,10 +526,53 @@ pub(crate) fn analyze_mesh_views(mesh: &Mesh) -> MeshReport {
         analyze_view(mesh, "stl-weld", &stl_weld_map(mesh)),
         analyze_view(mesh, "3mf-weld", &three_mf_weld_map(mesh)),
     ];
+    let bounds_mm = mesh.vertices.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |bounds, point| {
+            [
+                bounds[0].min(point[0]),
+                bounds[1].min(point[1]),
+                bounds[2].min(point[2]),
+                bounds[3].max(point[0]),
+                bounds[4].max(point[1]),
+                bounds[5].max(point[2]),
+            ]
+        },
+    );
+    let mut surface_area_mm2 = 0.0;
+    let mut signed_volume_mm3 = 0.0;
+    let mut material_triangles = BTreeMap::<String, usize>::new();
+    let mut material_surface_area_mm2 = BTreeMap::<String, f64>::new();
+    for (triangle, material) in mesh.triangles.iter().zip(&mesh.materials) {
+        let corners = triangle.map(|index| mesh.vertices[index as usize]);
+        let area = triangle_area(corners);
+        surface_area_mm2 += area;
+        let [a, b, c] = corners.map(|point| point.map(f64::from));
+        signed_volume_mm3 += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+        let material = format!("{material:?}");
+        *material_triangles.entry(material.clone()).or_default() += 1;
+        *material_surface_area_mm2.entry(material).or_default() += area;
+    }
     MeshReport {
         name: mesh.name.clone(),
         triangles: mesh.triangles.len(),
         vertices: mesh.vertices.len(),
+        bounds_mm,
+        surface_area_mm2,
+        volume_mm3: signed_volume_mm3.abs(),
+        signed_volume_mm3,
+        material_triangles,
+        material_surface_area_mm2,
         quantization_collisions: mesh.quantization_collisions.len(),
         collision_examples: mesh
             .quantization_collisions
@@ -711,7 +771,57 @@ pub fn summarize(scenario: &str, reports: &[MeshReport]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::GenerationSpec;
+    use crate::spec::{BuildingSpec, ColorOutputSpec, GenerationSpec, SurfaceClass};
+    use crate::surface::SurfaceField;
+
+    fn dense_overlay_reference() -> (GenerationSpec, SurfaceField) {
+        let spec = GenerationSpec {
+            width_mm: 60.0,
+            rows: 2,
+            columns: 2,
+            solid_model: true,
+            samples_per_piece: 32,
+            buildings: BuildingSpec {
+                enabled: true,
+                ..BuildingSpec::default()
+            },
+            color_output: ColorOutputSpec {
+                enabled: true,
+                roads_enabled: true,
+                road_width_mm: 0.8,
+                ..ColorOutputSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+        let mut field =
+            SurfaceField::new(65, 65, vec![SurfaceClass::Rock; 65 * 65], "reference").unwrap();
+        for index in 0..8 {
+            let offset = 0.12 + index as f32 * 0.1;
+            field.paint_polyline(
+                &[
+                    [0.03, offset],
+                    [0.28, offset + 0.025],
+                    [0.52, offset - 0.02],
+                    [0.78, offset + 0.03],
+                    [0.97, offset],
+                ],
+                spec.width_mm,
+                spec.color_output.road_width_mm,
+                SurfaceClass::Road,
+            );
+        }
+        for row in 0..4 {
+            for column in 0..5 {
+                let x = 0.09 + column as f32 * 0.18;
+                let y = 0.10 + row as f32 * 0.21;
+                field.paint_building(
+                    &[[x, y], [x + 0.075, y], [x + 0.075, y + 0.09], [x, y + 0.09]],
+                    8.0 + (row * 5 + column) as f32,
+                );
+            }
+        }
+        (spec, field)
+    }
 
     #[test]
     fn clean_piece_reports_no_defects_in_any_view() {
@@ -724,6 +834,90 @@ mod tests {
             );
         }
         assert_eq!(report.quantization_collisions, 0);
+    }
+
+    #[test]
+    fn dense_overlay_geometry_stays_within_the_reviewed_print_tolerance() {
+        let (spec, field) = dense_overlay_reference();
+        let height = HeightField::new(2, 2, vec![0.0; 4], "flat").unwrap();
+        let report = analyze_piece(&spec, Some(&height), Some(&field), 0, 0).unwrap();
+        for view in &report.views {
+            assert!(
+                view.is_clean(),
+                "expected clean {} view: {view:?}",
+                view.view
+            );
+        }
+
+        // These references come from the same fixture on main before the
+        // batched-cutback optimization. Counts may move a little under a
+        // harmless retriangulation; physical dimensions, area, volume, and
+        // per-material coverage may move only below print-scale tolerances.
+        assert!(report.triangles.abs_diff(4_056) <= 64);
+        assert!(report.vertices.abs_diff(2_124) <= 64);
+        let expected_bounds = [0.0, 0.0, 0.0, 60.0, 60.0, 3.65];
+        for (actual, expected) in report.bounds_mm.iter().zip(expected_bounds) {
+            assert!((actual - expected).abs() <= 0.000_01);
+        }
+        assert_close(
+            "surface area",
+            report.surface_area_mm2,
+            9_853.029_271_895_619,
+            0.01,
+        );
+        assert_close("volume", report.volume_mm3, 11_737.982_980_065_78, 0.001);
+        assert_close(
+            "signed volume",
+            report.signed_volume_mm3,
+            11_737.982_980_065_78,
+            0.001,
+        );
+        for (material, expected) in [
+            ("Class(Rock)", 7_967.760_027_306_62),
+            ("Class(Road)", 789.849_410_054_868_6),
+            ("Class(Building)", 1_095.419_933_999_997_7),
+        ] {
+            assert_close(
+                material,
+                *report.material_surface_area_mm2.get(material).unwrap(),
+                expected,
+                0.01,
+            );
+        }
+    }
+
+    fn assert_close(label: &str, actual: f64, expected: f64, tolerance: f64) {
+        let difference = (actual - expected).abs();
+        assert!(
+            difference <= tolerance,
+            "{label} changed by {difference}, expected {expected} +/- {tolerance}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn signed_volume_exposes_a_globally_inverted_mesh() {
+        let mesh = Mesh {
+            name: "tetrahedron".into(),
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]],
+            materials: vec![SurfaceClass::Rock.into(); 4],
+            quantization_collisions: Vec::new(),
+        };
+        let mut inverted = mesh.clone();
+        for triangle in &mut inverted.triangles {
+            triangle.swap(1, 2);
+        }
+
+        let normal = analyze_mesh_views(&mesh);
+        let inverted = analyze_mesh_views(&inverted);
+        assert!(normal.signed_volume_mm3 > 0.0);
+        assert!(inverted.signed_volume_mm3 < 0.0);
+        assert_eq!(normal.volume_mm3, inverted.volume_mm3);
     }
 
     #[test]
