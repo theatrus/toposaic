@@ -335,15 +335,25 @@ Draft, Standard, High, and Ultra use 384, 640, 1,024, and 2,048 samples across
 the model. Ultra creates about four times as many surface triangles as High and
 best suits 0.2 mm nozzles, resin printing, or small high-detail terrain areas.
 Vector roads, waterways, and building edges add local points where they need
-them. Generated browser previews use up to 384 samples across the assembled
-map.
+them.
 
-The preview asks for a 64×64 real elevation sample after the location or ground
-span has been still for 450 ms. This gives the relief pane useful terrain
-before a full mesh job starts. It uses the same tile cache as generation. A
-completed job replaces it with the detailed generated preview. The preview is a
-lit 3D height mesh: drag or use the arrow keys to orbit, and scroll, pinch, or
-use the plus and minus keys to zoom.
+After a setting has been still for 350 ms, the live preview builds a model with
+the same Rust mesh code as export. Settings offers Fast, Detailed, and High
+detail levels. Fast keeps the 128×128 elevation pass and light mesh; Detailed
+and High raise the terrain, overlay, and source sample counts within bounded
+live-view limits. The choice affects only the live view, not generated files.
+The preview shows puzzle cuts, solid outlines, buildings, bridges, labels,
+mount cuts, mapped overlays, and the fitted or split tray before Generate runs.
+The last good model stays visible while a new draft is built, and all input
+downloads use the same cache as generation. The preview names each elevation,
+map, and model stage and shows its progress. A newer preview cancels stale work
+before it starts the next data layer, and the status card can stop the current
+preview. Moving the selected area updates its map outline while you drag, then
+starts one preview when you release it. The map can inspect standard
+OpenStreetMap tiles through zoom level 19. Marker placement and marker moves
+accept a terrain click in either the map or the 3D view. Drag or use the arrow
+keys to orbit; scroll, pinch, or use the plus and minus keys to zoom closely
+into the model.
 
 ## Land cover and color
 
@@ -658,8 +668,11 @@ detail along each wall instead of a blocky whole-map sampling edge.
 The service caches elevation, ESA WorldCover, Sentinel-2 imagery,
 OpenStreetMap, and NOAA tide-station input under the operating system's user
 cache directory. OpenStreetMap entries keep the raw response, so width,
-density, color, and visibility changes reuse the same download. The settings
-pane lists each kind on its own and clears by age or all at once.
+density, color, and visibility changes reuse the same download. A cached
+response for a larger area also serves a smaller nested view when the
+layer and feature filters match; TopoSaic trims it to the new bounds before
+applying density or waterway cutoffs. The settings pane lists each kind on its
+own and clears by age or all at once.
 
 For uncached requests, the service tries a second public Overpass instance when
 the first rejects or cannot serve the request. If both fail, generation

@@ -2,6 +2,7 @@
 
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
   useState,
@@ -22,9 +23,11 @@ import {
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
+  Raycaster,
   Scene,
   Shape,
   SRGBColorSpace,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -44,7 +47,8 @@ import {
   railLineClass,
 } from "./config";
 import type { GenerationSpec, PreviewData } from "./contracts";
-import { normalizedMapPoint } from "./geo";
+import type { PreviewTile } from "./api";
+import { coordinateAtNormalizedPoint, normalizedMapPoint } from "./geo";
 import { normalizedOutlinePoints, pointInNormalizedOutline } from "./outline";
 
 // The terrain color the mesh renders when color output is off but trails
@@ -301,14 +305,46 @@ export function ReliefPreview({
   spec,
   preview,
   previewState,
+  progress,
+  previewError,
+  onCancelPreview,
+  previewTile,
+  onPreviewTileChange,
+  markerPlacementMode,
+  onPlaceMarker,
 }: {
   spec: GenerationSpec;
   preview: PreviewData | null;
-  previewState: "shape" | "loading" | "elevation" | "generated";
+  previewState:
+    | "shape"
+    | "loading"
+    | "live"
+    | "updating"
+    | "paused"
+    | "error"
+    | "generated";
+  progress: { label: string; progress: number } | null;
+  previewError: string | null;
+  onCancelPreview?: () => void;
+  previewTile: PreviewTile;
+  onPreviewTileChange: (tile: PreviewTile) => void;
+  markerPlacementMode: "place" | "move" | null;
+  onPlaceMarker: (longitude: number, latitude: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderErrorRef = useRef<HTMLParagraphElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const placementRef = useRef<
+    ((clientX: number, clientY: number) => {
+      longitude: number;
+      latitude: number;
+    } | null) | null
+  >(null);
+  const placementPointerRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const viewRef = useRef<{
     position: [number, number, number];
     target: [number, number, number];
@@ -354,6 +390,11 @@ export function ReliefPreview({
     ferry_color,
     aviation_color,
   } = spec.color_output;
+  const {
+    tray_color: trayColor,
+    contour_color: trayContourColor,
+    label_color: trayLabelColor,
+  } = spec.tray;
   const markerColor = spec.marker_settings.color;
   const coloredMarkersPresent = markers.some(
     (marker) => !isFlagMarker(marker.kind),
@@ -413,6 +454,7 @@ export function ReliefPreview({
     }
 
     const scene = new Scene();
+    const placementSurfaces: Mesh[] = [];
     const sampleWidth = preview?.width ?? 32;
     const sampleHeight = preview?.height ?? sampleWidth;
     const heightScale = relief_mm / width_mm;
@@ -540,6 +582,80 @@ export function ReliefPreview({
       }
       return palette[key];
     };
+    const modelMeshes = preview?.model_meshes ?? [];
+    const modelBounds = preview?.model_bounds_mm;
+    const hasModelMeshes = modelMeshes.length > 0 && modelBounds !== undefined;
+    const modelScale = modelBounds
+      ? Math.max(
+          1,
+          modelBounds[3] - modelBounds[0],
+          modelBounds[4] - modelBounds[1],
+        )
+      : width_mm;
+    const modelCenterX = modelBounds
+      ? (modelBounds[0] + modelBounds[3]) / 2
+      : width_mm / 2;
+    const modelCenterY = modelBounds
+      ? (modelBounds[1] + modelBounds[4]) / 2
+      : (width_mm * rows) / columns / 2;
+    const modelMinimumZ = modelBounds?.[2] ?? 0;
+    const modelMaximumZ = modelBounds?.[5] ?? relief_mm;
+    canvas.dataset.modelGeometry = hasModelMeshes ? "mesh" : "heightmap";
+    canvas.dataset.modelMeshCount = String(modelMeshes.length);
+
+    if (hasModelMeshes) {
+      for (const previewMesh of modelMeshes) {
+        const meshPositions: number[] = [];
+        const meshColors: number[] = [];
+        for (
+          let triangleIndex = 0;
+          triangleIndex < previewMesh.triangles.length;
+          triangleIndex += 1
+        ) {
+          const triangle = previewMesh.triangles[triangleIndex];
+          const materialIndex = previewMesh.materials[triangleIndex];
+          const color = new Color(
+            previewMesh.kind === "tray"
+              ? materialIndex === 1
+                ? trayContourColor
+                : materialIndex === 2
+                  ? trayLabelColor
+                  : trayColor
+              : classColor(materialIndex),
+          );
+          for (const vertexIndex of triangle) {
+            const point = previewMesh.vertices[vertexIndex];
+            meshPositions.push(
+              (modelCenterX - point[0]) / modelScale,
+              (point[2] - modelMinimumZ) / modelScale,
+              (point[1] - modelCenterY) / modelScale,
+            );
+            meshColors.push(color.r, color.g, color.b);
+          }
+        }
+        const geometry = new BufferGeometry();
+        geometry.setAttribute(
+          "position",
+          new Float32BufferAttribute(meshPositions, 3),
+        );
+        geometry.setAttribute(
+          "color",
+          new Float32BufferAttribute(meshColors, 3),
+        );
+        geometry.computeVertexNormals();
+        const material = new MeshStandardMaterial({
+          color: 0xffffff,
+          metalness: 0,
+          roughness: previewMesh.kind === "tray" ? 0.92 : 0.84,
+          side: DoubleSide,
+          vertexColors: true,
+        });
+        const mesh = new Mesh(geometry, material);
+        mesh.name = previewMesh.name;
+        scene.add(mesh);
+        if (previewMesh.kind === "terrain") placementSurfaces.push(mesh);
+      }
+    }
     const positions: number[] = [];
     const colors: number[] = [];
     const normals: number[] = [];
@@ -617,7 +733,13 @@ export function ReliefPreview({
       vertexColors: true,
     });
     const terrainMesh = new Mesh(terrainGeometry, terrainMaterial);
-    scene.add(terrainMesh);
+    if (!hasModelMeshes) {
+      scene.add(terrainMesh);
+      placementSurfaces.push(terrainMesh);
+    } else {
+      terrainGeometry.dispose();
+      terrainMaterial.dispose();
+    }
 
     const pointOnTerrain = (u: number, v: number) =>
       new Vector3(
@@ -627,8 +749,10 @@ export function ReliefPreview({
       );
 
     const dotMarkers = markers.filter((candidate) => candidate.kind === "dot");
-    canvas.dataset.vectorDotCount = String(dotMarkers.length);
-    for (const marker of dotMarkers) {
+    canvas.dataset.vectorDotCount = String(
+      hasModelMeshes ? 0 : dotMarkers.length,
+    );
+    for (const marker of hasModelMeshes ? [] : dotMarkers) {
       const { u, v } = normalizedMapPoint(
         {
           center_lat,
@@ -700,7 +824,12 @@ export function ReliefPreview({
     if (model_outline.shape === "rectangle") {
       baseMesh.position.y = -baseDepth / 2;
     }
-    scene.add(baseMesh);
+    if (!hasModelMeshes) {
+      scene.add(baseMesh);
+    } else {
+      baseGeometry.dispose();
+      baseMaterial.dispose();
+    }
 
     const lineMaterial = new LineBasicMaterial({
       color: 0x14201d,
@@ -723,11 +852,13 @@ export function ReliefPreview({
       }
       finish();
     };
-    const perimeter = outlinePoints.map(([u, v]) => pointOnTerrain(u, v));
-    perimeter.push(perimeter[0].clone());
-    scene.add(
-      new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
-    );
+    if (!hasModelMeshes) {
+      const perimeter = outlinePoints.map(([u, v]) => pointOnTerrain(u, v));
+      perimeter.push(perimeter[0].clone());
+      scene.add(
+        new Line(new BufferGeometry().setFromPoints(perimeter), lineMaterial),
+      );
+    }
 
     const gridSpec = {
       width_mm,
@@ -741,7 +872,7 @@ export function ReliefPreview({
     const modelHeight = (width_mm * rows) / columns;
     const puzzleTabDepth =
       Math.min(width_mm / columns, modelHeight / rows) * 0.17;
-    if (!solid_model) {
+    if (!solid_model && !hasModelMeshes) {
       for (let edgeColumn = 1; edgeColumn < columns; edgeColumn += 1) {
         for (let row = 0; row < rows; row += 1) {
           const start = puzzleGridPoint(gridSpec, row, edgeColumn);
@@ -835,8 +966,15 @@ export function ReliefPreview({
     scene.add(fillLight);
 
     const camera = new PerspectiveCamera(36, 1, 0.01, 20);
-    const cameraScale = Math.max(1, heightScale * 1.5);
-    const defaultTarget: [number, number, number] = [0, heightScale * 0.35, 0];
+    const visibleHeightScale = hasModelMeshes
+      ? (modelMaximumZ - modelMinimumZ) / modelScale
+      : heightScale;
+    const cameraScale = Math.max(1, visibleHeightScale * 1.5);
+    const defaultTarget: [number, number, number] = [
+      0,
+      visibleHeightScale * 0.35,
+      0,
+    ];
     const savedView = resetViewRef.current ? null : viewRef.current;
     if (savedView) {
       camera.position.fromArray(savedView.position);
@@ -849,7 +987,7 @@ export function ReliefPreview({
     controls.target.fromArray(savedView?.target ?? defaultTarget);
     controls.enableDamping = false;
     controls.enablePan = false;
-    controls.minDistance = 0.72;
+    controls.minDistance = Math.max(0.06, 0.08 * cameraScale);
     controls.maxDistance = 3.1 * cameraScale;
     controls.minPolarAngle = 0.12;
     controls.maxPolarAngle = Math.PI / 2 - 0.025;
@@ -857,6 +995,9 @@ export function ReliefPreview({
     controls.zoomSpeed = 0.85;
     controls.zoomToCursor = true;
     controls.update();
+    canvas.dataset.cameraDistance = camera.position
+      .distanceTo(controls.target)
+      .toFixed(4);
     controlsRef.current = controls;
     canvas.dataset.cameraMoved = savedView ? "true" : "false";
     resetViewRef.current = false;
@@ -878,6 +1019,9 @@ export function ReliefPreview({
       render();
     };
     const onViewChange = () => {
+      canvas.dataset.cameraDistance = camera.position
+        .distanceTo(controls.target)
+        .toFixed(4);
       const positionDelta = camera.position.distanceToSquared(initialPosition);
       const targetDelta = controls.target.distanceToSquared(initialTarget);
       const cameraMoved = positionDelta > 1e-12 || targetDelta > 1e-12;
@@ -895,7 +1039,59 @@ export function ReliefPreview({
     observer.observe(canvas);
     resize();
 
+    const raycaster = new Raycaster();
+    const pointer = new Vector2();
+    const terrainBounds = preview?.model_terrain_bounds_mm ?? [
+      0,
+      0,
+      width_mm,
+      (width_mm * rows) / columns,
+    ];
+    const placeAtPreviewPoint = (clientX: number, clientY: number) => {
+      const bounds = canvas.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return null;
+      pointer.set(
+        ((clientX - bounds.left) / bounds.width) * 2 - 1,
+        -((clientY - bounds.top) / bounds.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster
+        .intersectObjects(placementSurfaces, false)
+        .find((intersection) =>
+          intersection.face
+            ? Math.abs(intersection.face.normal.y) > 0.04
+            : true,
+        );
+      if (!hit) return null;
+      const u = hasModelMeshes
+        ? (modelCenterX - hit.point.x * modelScale - terrainBounds[0]) /
+          Math.max(Number.EPSILON, terrainBounds[2] - terrainBounds[0])
+        : 0.5 - hit.point.x;
+      const v = hasModelMeshes
+        ? (hit.point.z * modelScale + modelCenterY - terrainBounds[1]) /
+          Math.max(Number.EPSILON, terrainBounds[3] - terrainBounds[1])
+        : hit.point.z + 0.5;
+      if (u < 0 || u > 1 || v < 0 || v > 1 || !insideOutline(u, v)) {
+        return null;
+      }
+      return coordinateAtNormalizedPoint(
+        {
+          center_lat,
+          center_lon,
+          ground_span_km,
+          terrain_rotation_degrees,
+          map_frame,
+        },
+        u,
+        v,
+      );
+    };
+    placementRef.current = placeAtPreviewPoint;
+
     return () => {
+      if (placementRef.current === placeAtPreviewPoint) {
+        placementRef.current = null;
+      }
       if (!resetViewRef.current && canvas.dataset.cameraMoved === "true") {
         viewRef.current = {
           position: camera.position.toArray(),
@@ -915,6 +1111,7 @@ export function ReliefPreview({
           materials.forEach((material) => material.dispose());
         }
       });
+      if (hasModelMeshes) lineMaterial.dispose();
       renderer.dispose();
     };
   }, [
@@ -955,7 +1152,32 @@ export function ReliefPreview({
     aviation_color,
     markerColor,
     markers,
+    trayColor,
+    trayContourColor,
+    trayLabelColor,
   ]);
+
+  const previewPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!markerPlacementMode) return;
+    placementPointerRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+  };
+
+  const previewPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const start = placementPointerRef.current;
+    placementPointerRef.current = null;
+    if (!markerPlacementMode || !start || start.pointerId !== event.pointerId) {
+      return;
+    }
+    if (Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > 6) {
+      return;
+    }
+    const point = placementRef.current?.(event.clientX, event.clientY);
+    if (point) onPlaceMarker(point.longitude, point.latitude);
+  };
 
   const keyboardOrbit = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
     const controls = controlsRef.current;
@@ -975,11 +1197,11 @@ export function ReliefPreview({
         break;
       case "+":
       case "=":
-        controls.dollyIn(1.12);
+        controls.dollyOut(1.12);
         break;
       case "-":
       case "_":
-        controls.dollyOut(1.12);
+        controls.dollyIn(1.12);
         break;
       default:
         return;
@@ -992,19 +1214,38 @@ export function ReliefPreview({
     <div className="relief-shell">
       <canvas
         ref={canvasRef}
-        className="relief-canvas"
-        aria-label="Interactive 3D terrain preview"
+        className={`relief-canvas${markerPlacementMode ? " placing-marker" : ""}`}
+        aria-label={
+          markerPlacementMode
+            ? `Interactive 3D terrain preview. Click terrain to ${markerPlacementMode} marker.`
+            : "Interactive 3D terrain preview"
+        }
         data-camera-moved="false"
+        data-marker-placement-mode={markerPlacementMode ?? "none"}
         data-puzzle-tabs={spec.puzzle_tabs}
         data-straight-piece-sides={spec.straight_piece_sides}
         onKeyDown={keyboardOrbit}
+        onPointerCancel={() => {
+          placementPointerRef.current = null;
+        }}
+        onPointerDown={previewPointerDown}
+        onPointerUp={previewPointerUp}
         tabIndex={0}
       />
       <p ref={renderErrorRef} className="preview-render-error" hidden>
         This system could not start the 3D preview.
       </p>
+      {preview?.model_preview_error && (
+        <p className="preview-render-error" role="status">
+          Detailed model preview unavailable; showing the sampled surface.
+        </p>
+      )}
       <div className="preview-orbit-controls" aria-label="3D preview controls">
-        <span>Drag to rotate · Scroll or pinch to zoom</span>
+        <span>
+          {markerPlacementMode
+            ? "Click terrain to place · Drag to rotate · Scroll or pinch to zoom"
+            : "Drag to rotate · Scroll or pinch to zoom"}
+        </span>
         <button
           type="button"
           onClick={() => {
@@ -1101,23 +1342,85 @@ export function ReliefPreview({
         </div>
       )}
       <div className={`preview-label ${previewState}`}>
-        <span>
-          {previewState === "generated"
-            ? "Generated terrain"
-            : previewState === "elevation"
-              ? "Live elevation preview"
-              : previewState === "loading"
-                ? "Sampling preview elevation"
-                : "Fast shape preview"}{" "}
-          ·{" "}
-          {spec.solid_model
-            ? `${effectiveMeshSamples(spec)} mesh samples`
-            : `${assembledMeshSamples(spec)} mesh samples across model`}
-        </span>
+        <div className="preview-status">
+          <div className="preview-status-line">
+            <span
+              role={previewError ? "alert" : undefined}
+              title={previewError ?? undefined}
+            >
+              {previewError ??
+                progress?.label ??
+                (previewState === "generated"
+                  ? "Generated terrain"
+                  : previewState === "live"
+                    ? "Live model preview"
+                    : previewState === "paused"
+                      ? "Preview paused"
+                      : previewState === "updating"
+                        ? "Updating model preview"
+                        : previewState === "loading"
+                          ? "Sampling model preview"
+                          : previewState === "error"
+                            ? "Live model preview could not update"
+                            : "Fast shape preview")}{" "}
+              ·{" "}
+              {preview?.model_mesh_samples_across !== undefined
+                ? `${preview.model_mesh_samples_across} live mesh samples across model`
+                : spec.solid_model
+                  ? `${effectiveMeshSamples(spec)} mesh samples`
+                  : `${assembledMeshSamples(spec)} mesh samples across model`}
+            </span>
+            {(spec.adjacent_rows > 1 || spec.adjacent_columns > 1) && (
+              <label className="preview-tile-select">
+                <span>3D tile</span>
+                <select
+                  aria-label="3D preview super-tile"
+                  value={`${previewTile.row}:${previewTile.column}`}
+                  onChange={(event) => {
+                    const [row, column] = event.target.value
+                      .split(":")
+                      .map(Number);
+                    onPreviewTileChange({ row, column });
+                  }}
+                >
+                  {Array.from({ length: spec.adjacent_rows }, (_, row) =>
+                    Array.from(
+                      { length: spec.adjacent_columns },
+                      (_, column) => (
+                        <option key={`${row}:${column}`} value={`${row}:${column}`}>
+                          {`R${row + 1} · C${column + 1}`}
+                        </option>
+                      ),
+                    ),
+                  )}
+                </select>
+              </label>
+            )}
+            {progress && onCancelPreview && (
+              <button onClick={onCancelPreview} type="button">
+                Cancel preview
+              </button>
+            )}
+          </div>
+          {progress && (
+            <span
+              aria-label={progress.label}
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={progress.progress}
+              className="preview-progress"
+              role="progressbar"
+            >
+              <i style={{ width: `${progress.progress}%` }} />
+            </span>
+          )}
+        </div>
         <strong>
-          {spec.solid_model
-            ? "One solid terrain model"
-            : `${spec.columns} × ${spec.rows} pieces`}
+          {spec.adjacent_rows > 1 || spec.adjacent_columns > 1
+            ? `Tile ${previewTile.row + 1},${previewTile.column + 1}`
+            : spec.solid_model
+              ? "One solid terrain model"
+              : `${spec.columns} × ${spec.rows} pieces`}
         </strong>
       </div>
     </div>

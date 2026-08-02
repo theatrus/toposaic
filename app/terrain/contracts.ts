@@ -422,6 +422,25 @@ export type PreviewData = {
   minimum_elevation_m?: number;
   maximum_elevation_m?: number;
   height_frame_compatible?: boolean;
+  /** Draft meshes made by the same Rust builders used for export. */
+  model_meshes?: Array<{
+    kind: "terrain" | "tray";
+    name: string;
+    vertices: [number, number, number][];
+    triangles: [number, number, number][];
+    /** Raw PrintMaterial indices, one per triangle. */
+    materials: number[];
+  }>;
+  /** min x, min y, min z, max x, max y, max z in assembled print mm. */
+  model_bounds_mm?: [number, number, number, number, number, number];
+  /** Exact terrain footprint inside the assembled preview: min x/y, max x/y. */
+  model_terrain_bounds_mm?: [number, number, number, number];
+  model_preview_detail?: string;
+  model_preview_error?: string;
+  model_mesh_samples_across?: number;
+  model_preview_tile_row?: number;
+  model_preview_tile_column?: number;
+  model_preview_scope?: "model" | "super_tile_member";
 };
 
 export type PlaceResult = {

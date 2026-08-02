@@ -5,6 +5,27 @@ import { mockSetupsService } from "./helpers";
 // The mock cache holds 50 MB of elevation, 10 MB of land cover, 1 MB of
 // OSM, and 2 KB of place search — 61 MB in total.
 
+test("chooses and keeps a higher live preview detail", async ({ page }) => {
+  const state = await mockSetupsService(page, []);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const pane = page.getByRole("dialog", { name: "Settings" });
+  const detail = pane.getByLabel("Preview detail");
+  await expect(detail).toHaveValue("fast");
+  await detail.selectOption("detailed");
+  await expect(detail).toHaveValue("detailed");
+  await expect
+    .poll(() => state.previewDetails.at(-1))
+    .toBe("detailed");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Settings" }).getByLabel("Preview detail"),
+  ).toHaveValue("detailed");
+});
+
 test("opens the settings pane, lists cache sizes, and closes cleanly", async ({
   page,
 }) => {

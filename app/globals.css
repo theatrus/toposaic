@@ -469,6 +469,7 @@ a {
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   display: grid;
+  gap: 12px;
   padding: 10px;
   position: absolute;
   right: 0;
@@ -477,11 +478,18 @@ a {
   z-index: 30;
 }
 
+.settings-section,
 .settings-cache {
   display: grid;
   gap: 8px;
 }
 
+.settings-section + .settings-cache {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.settings-section h2,
 .settings-cache h2 {
   color: var(--moss);
   font-size: 9px;
@@ -489,6 +497,24 @@ a {
   letter-spacing: 0.06em;
   margin: 0;
   text-transform: uppercase;
+}
+
+.settings-preview-detail {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 9px;
+  gap: 8px;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-preview-detail select {
+  font-size: 11px;
+  min-width: 124px;
+  padding: 5px 24px 5px 7px;
+  text-transform: none;
 }
 
 .settings-cache-rows {
@@ -564,6 +590,7 @@ a {
 }
 
 .settings-clear-row select:focus-visible,
+.settings-preview-detail select:focus-visible,
 .settings-clear-row button:focus-visible {
   outline: 2px solid var(--moss);
   outline-offset: 2px;
@@ -1260,6 +1287,11 @@ a {
   cursor: grabbing;
 }
 
+.relief-canvas.placing-marker,
+.relief-canvas.placing-marker:active {
+  cursor: crosshair;
+}
+
 .relief-canvas:focus-visible {
   outline: 3px solid var(--acid);
   outline-offset: -5px;
@@ -1349,23 +1381,48 @@ a {
 
 .preview-label {
   align-items: flex-end;
-  bottom: 22px;
+  background: rgba(255, 254, 248, 0.94);
+  border: 1px solid rgba(20, 32, 29, 0.14);
+  bottom: 12px;
   display: flex;
+  gap: 14px;
   justify-content: space-between;
-  left: 22px;
+  left: clamp(128px, 24%, 150px);
+  padding: 8px 10px;
   position: absolute;
-  right: 22px;
+  right: 12px;
+  z-index: 3;
 }
 
-.preview-label span {
+.preview-status {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.preview-status-line {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.preview-status-line > span {
   color: var(--muted);
+  flex: 1;
   font-size: 10px;
   font-weight: 720;
   letter-spacing: 0.08em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.preview-label.loading span::before {
+.preview-label.loading .preview-status-line > span::before,
+.preview-label.updating .preview-status-line > span::before {
   animation: job-pulse 1.2s ease-in-out infinite;
   background: #d5a744;
   border-radius: 50%;
@@ -1377,10 +1434,74 @@ a {
   width: 7px;
 }
 
+.preview-label.error .preview-status-line > span {
+  color: #9b3f32;
+}
+
+.preview-status-line button {
+  background: transparent;
+  border: 0;
+  color: var(--moss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preview-status-line button:hover {
+  text-decoration: underline;
+}
+
+.preview-tile-select {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.preview-tile-select > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preview-tile-select select {
+  background: var(--panel);
+  border: 1px solid rgba(20, 32, 29, 0.24);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  min-height: 24px;
+  padding: 2px 22px 2px 6px;
+  width: auto;
+}
+
+.preview-progress {
+  background: rgba(20, 32, 29, 0.14);
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.preview-progress i {
+  background: #d5a744;
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  transition: width 180ms ease-out;
+}
+
 .preview-label strong {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 20px;
   font-weight: 400;
+  white-space: nowrap;
 }
 
 .controls {

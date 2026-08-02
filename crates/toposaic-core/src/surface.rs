@@ -900,12 +900,26 @@ impl SurfaceField {
         height_m: f32,
         class: SurfaceClass,
     ) {
+        self.paint_building_with_class_and_holes(points, &[], height_m, class);
+    }
+
+    pub fn paint_building_with_class_and_holes(
+        &mut self,
+        points: &[[f32; 2]],
+        holes: &[Vec<[f32; 2]>],
+        height_m: f32,
+        class: SurfaceClass,
+    ) {
         if points.len() < 3 || !height_m.is_finite() || height_m <= 0.0 {
             return;
         }
         let area = VectorSurfaceArea {
             points: points.to_vec(),
-            holes: Vec::new(),
+            holes: holes
+                .iter()
+                .filter(|hole| hole.len() >= 3)
+                .cloned()
+                .collect(),
             class: (class != SurfaceClass::Building).then_some(class),
             building_height_m: height_m,
         };
@@ -1197,7 +1211,8 @@ impl SurfaceField {
         include_buildings: bool,
     ) -> SurfaceSample {
         let bucket = vector_bucket_index(u, v);
-        let building_height_m = self.building_height_at_in_bucket(u, v, bucket);
+        let building = self.building_at_in_bucket(u, v, bucket);
+        let building_height_m = building.map_or(0.0, |building| building.0);
         let has_marker = self.vector_area_buckets[bucket]
             .iter()
             .rev()
@@ -1213,9 +1228,9 @@ impl SurfaceField {
                 building_height_m,
             };
         }
-        if include_buildings && building_height_m > 0.0 {
+        if include_buildings && let Some((_, class)) = building {
             return SurfaceSample {
-                class: SurfaceClass::Building,
+                class,
                 building_height_m,
             };
         }
@@ -1397,17 +1412,27 @@ impl SurfaceField {
 
     #[cfg(test)]
     fn building_height_at(&self, u: f32, v: f32) -> f32 {
-        self.building_height_at_in_bucket(u, v, vector_bucket_index(u, v))
+        self.building_at_in_bucket(u, v, vector_bucket_index(u, v))
+            .map_or(0.0, |building| building.0)
     }
 
-    fn building_height_at_in_bucket(&self, u: f32, v: f32, bucket: usize) -> f32 {
+    fn building_at_in_bucket(&self, u: f32, v: f32, bucket: usize) -> Option<(f32, SurfaceClass)> {
         self.vector_area_buckets[bucket]
             .iter()
             .map(|index| &self.vector_areas[*index])
             .filter(|area| area.building_height_m > 0.0)
             .filter(|area| area.covers([u, v]))
-            .map(|area| area.building_height_m)
-            .fold(0.0, f32::max)
+            .map(|area| {
+                (
+                    area.building_height_m,
+                    area.class.unwrap_or(SurfaceClass::Building),
+                )
+            })
+            .max_by(|left, right| {
+                left.0.total_cmp(&right.0).then_with(|| {
+                    (left.1 == SurfaceClass::Marker).cmp(&(right.1 == SurfaceClass::Marker))
+                })
+            })
     }
 
     /// Every surface class this field holds, exactly and without sampling:
@@ -2905,6 +2930,23 @@ mod tests {
 
         assert_eq!(field.class_at(0.5, 0.5), SurfaceClass::Marker);
         assert_eq!(field.class_at(0.25, 0.5), SurfaceClass::Road);
+    }
+
+    #[test]
+    fn highlighted_buildings_keep_the_marker_class_in_sampled_previews() {
+        let mut field =
+            SurfaceField::new(21, 21, vec![SurfaceClass::Rock; 21 * 21], "markers").unwrap();
+        field.paint_building_with_class_and_holes(
+            &[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]],
+            &[vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]],
+            12.0,
+            SurfaceClass::Marker,
+        );
+
+        assert_eq!(field.sample(0.3, 0.3).class, SurfaceClass::Marker);
+        assert_eq!(field.sample(0.3, 0.3).building_height_m, 12.0);
+        assert_eq!(field.sample(0.5, 0.5).class, SurfaceClass::Rock);
+        assert_eq!(field.sample(0.5, 0.5).building_height_m, 0.0);
     }
 
     /// A ferry is a raised ribbon over the water, not a recolouring of the

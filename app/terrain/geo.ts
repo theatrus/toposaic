@@ -60,6 +60,38 @@ export function normalizedMapPoint(
   };
 }
 
+export function coordinateAtNormalizedPoint(
+  spec: GeographicFrame,
+  u: number,
+  v: number,
+) {
+  const rotation = canonicalRotation(spec.terrain_rotation_degrees ?? 0);
+  if (rotation !== 0) {
+    return coordinateAtLocalOffset(
+      spec.center_lat,
+      spec.center_lon,
+      (u - 0.5) * spec.ground_span_km,
+      (v - 0.5) * spec.ground_span_km,
+      rotation,
+      spec.map_frame?.origin_lat ?? spec.center_lat,
+    );
+  }
+  const halfLatitude =
+    spec.ground_span_km / (2 * KILOMETRES_PER_LATITUDE_DEGREE);
+  const halfLongitude =
+    spec.ground_span_km /
+    (2 * longitudeScale(spec.map_frame?.origin_lat ?? spec.center_lat));
+  const south = Math.max(-MAX_MODEL_LATITUDE, spec.center_lat - halfLatitude);
+  const north = Math.min(MAX_MODEL_LATITUDE, spec.center_lat + halfLatitude);
+  const unwrappedLongitude =
+    spec.center_lon - halfLongitude + 2 * halfLongitude * u;
+  const longitude = ((unwrappedLongitude + 180) % 360 + 360) % 360 - 180;
+  return {
+    latitude: south + (north - south) * v,
+    longitude,
+  };
+}
+
 function longitudeScale(latitude: number) {
   return Math.max(
     MINIMUM_LONGITUDE_SCALE,
@@ -178,8 +210,9 @@ export function superTileCenter(
   rotationDegrees = 0,
   referenceLatitude = latitude,
 ) {
-  const rowAnchor = anchor === "center" ? (rows - 1) / 2 : 0;
-  const columnAnchor = anchor === "center" ? (columns - 1) / 2 : 0;
+  const rowAnchor = anchor === "center" ? Math.floor((rows - 1) / 2) : 0;
+  const columnAnchor =
+    anchor === "center" ? Math.floor((columns - 1) / 2) : 0;
   return coordinateAtLocalOffset(
     latitude,
     longitude,
@@ -188,6 +221,50 @@ export function superTileCenter(
     rotationDegrees,
     referenceLatitude,
   );
+}
+
+export function superTileMemberSpec(
+  spec: GenerationSpec,
+  row: number,
+  column: number,
+): GenerationSpec {
+  const boundedRow = Math.max(0, Math.min(spec.adjacent_rows - 1, row));
+  const boundedColumn = Math.max(
+    0,
+    Math.min(spec.adjacent_columns - 1, column),
+  );
+  const rowAnchor =
+    spec.super_tile_anchor === "center"
+      ? Math.floor((spec.adjacent_rows - 1) / 2)
+      : 0;
+  const columnAnchor =
+    spec.super_tile_anchor === "center"
+      ? Math.floor((spec.adjacent_columns - 1) / 2)
+      : 0;
+  const frame = mapFrameForSpec(spec);
+  const center = superTileCenter(
+    spec.center_lat,
+    spec.center_lon,
+    spec.ground_span_km,
+    boundedRow,
+    boundedColumn,
+    spec.adjacent_rows,
+    spec.adjacent_columns,
+    spec.super_tile_anchor,
+    spec.terrain_rotation_degrees,
+    frame.origin_lat,
+  );
+  return {
+    ...spec,
+    center_lat: center.latitude,
+    center_lon: center.longitude,
+    map_frame: frame,
+    adjacent_tile_row: boundedRow,
+    adjacent_tile_column: boundedColumn,
+    puzzle_tile_row: spec.puzzle_tile_row + boundedRow - rowAnchor,
+    puzzle_tile_column:
+      spec.puzzle_tile_column + boundedColumn - columnAnchor,
+  };
 }
 
 export function superTileCorners(
@@ -206,10 +283,12 @@ export function superTileCorners(
   column: number,
 ) {
   const rowAnchor =
-    spec.super_tile_anchor === "center" ? (spec.adjacent_rows - 1) / 2 : 0;
+    spec.super_tile_anchor === "center"
+      ? Math.floor((spec.adjacent_rows - 1) / 2)
+      : 0;
   const columnAnchor =
     spec.super_tile_anchor === "center"
-      ? (spec.adjacent_columns - 1) / 2
+      ? Math.floor((spec.adjacent_columns - 1) / 2)
       : 0;
   const centerEast = (column - columnAnchor) * spec.ground_span_km;
   const centerNorth = -(row - rowAnchor) * spec.ground_span_km;

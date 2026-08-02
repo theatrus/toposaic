@@ -117,7 +117,7 @@ test("pans the map without moving the terrain area", async ({ page }) => {
 test("moves the terrain area with the legacy fixed-rectangle pan", async ({
   page,
 }) => {
-  await mockSetupsService(page, []);
+  const service = await mockSetupsService(page, []);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
@@ -138,6 +138,8 @@ test("moves the terrain area with the legacy fixed-rectangle pan", async ({
   if (!mapBounds || !initialSelectionBounds) return;
   const initialLatitude = await latitude.inputValue();
   const initialLongitude = await longitude.inputValue();
+  await expect.poll(() => service.previewRequests).toBeGreaterThan(0);
+  const previewRequestsBeforeDrag = service.previewRequests;
 
   await page.mouse.move(
     mapBounds.x + mapBounds.width * 0.5,
@@ -149,10 +151,19 @@ test("moves the terrain area with the legacy fixed-rectangle pan", async ({
     mapBounds.y + mapBounds.height * 0.5 + 35,
     { steps: 5 },
   );
+  // Pointer samples move only the local map draft. The model spec commits
+  // once on release, so a drag cannot queue five OSM preview requests.
+  await expect(latitude).toHaveValue(initialLatitude);
+  await expect(longitude).toHaveValue(initialLongitude);
+  await page.waitForTimeout(450);
+  expect(service.previewRequests).toBe(previewRequestsBeforeDrag);
   await page.mouse.up();
 
   await expect(latitude).not.toHaveValue(initialLatitude);
   await expect(longitude).not.toHaveValue(initialLongitude);
+  await expect
+    .poll(() => service.previewRequests)
+    .toBe(previewRequestsBeforeDrag + 1);
   const movedSelectionBounds = await selection.boundingBox();
   expect(movedSelectionBounds).not.toBeNull();
   expect(movedSelectionBounds!.x).toBeCloseTo(initialSelectionBounds.x, 0);

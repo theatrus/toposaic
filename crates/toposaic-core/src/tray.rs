@@ -21,6 +21,8 @@ use crate::text::{EmbossedLabel, embossing_fonts, text_metrics};
 const TRAY_CONTOUR_WIDTH_MM: f32 = 0.45;
 const TRAY_CONTOUR_INLAY_MM: f32 = 0.2;
 const TRAY_CONTOUR_SURFACE_OFFSET_MM: f32 = 0.01;
+const TRAY_SURFACE_SPACING_MM: f32 = 0.35;
+const PREVIEW_TRAY_SURFACE_SPACING_MM: f32 = 1.5;
 /// How far inside a segment outline a contour centreline point must sit to
 /// be kept: the ribbon half-width plus the miter allowance
 /// (`add_contour_ribbon` caps a miter at twice the half-width), so no
@@ -68,9 +70,18 @@ impl TrayFrame {
     }
 }
 
+#[cfg(test)]
 fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
+    build_tray_with_spacing(spec, height_field, TRAY_SURFACE_SPACING_MM)
+}
+
+fn build_tray_with_spacing(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    surface_spacing_mm: f32,
+) -> Result<Mesh> {
     if spec.model_outline.shape != crate::spec::OutlineShape::Rectangle {
-        return build_shaped_tray(spec, height_field);
+        return build_shaped_tray(spec, height_field, surface_spacing_mm);
     }
     let tray = &spec.tray;
     let TrayFrame {
@@ -85,8 +96,8 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
         floor_z,
         rim_z,
     } = TrayFrame::from_spec(spec);
-    let mut x_coordinates = regular_coordinates(0.0, outer_width, 0.35);
-    let mut y_coordinates = regular_coordinates(0.0, outer_height, 0.35);
+    let mut x_coordinates = regular_coordinates(0.0, outer_width, surface_spacing_mm);
+    let mut y_coordinates = regular_coordinates(0.0, outer_height, surface_spacing_mm);
     insert_coordinate(&mut x_coordinates, inner_x0);
     insert_coordinate(&mut x_coordinates, inner_x1);
     insert_coordinate(&mut y_coordinates, inner_y0);
@@ -353,7 +364,11 @@ fn build_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Resu
     Ok(mesh.finish("terrain-tray"))
 }
 
-fn build_shaped_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) -> Result<Mesh> {
+fn build_shaped_tray(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    surface_spacing_mm: f32,
+) -> Result<Mesh> {
     let tray = &spec.tray;
     let terrain = geo_polygon(&model_outline_mm(spec, 96));
     let cavity_unshifted = largest_polygon(terrain.buffer(f64::from(tray.clearance_mm)))?;
@@ -425,7 +440,7 @@ fn build_shaped_tray(spec: &GenerationSpec, height_field: Option<&HeightField>) 
             shift_x as f32 - rectangular_origin,
             shift_y as f32 - rectangular_origin,
         ];
-        for mut path in tray_contour_paths(spec, height_field) {
+        for mut path in tray_contour_paths_with_spacing(spec, height_field, surface_spacing_mm) {
             for point in &mut path.points {
                 point[0] += contour_shift[0];
                 point[1] += contour_shift[1];
@@ -489,11 +504,30 @@ pub(crate) fn build_tray_segments(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
 ) -> Result<Vec<Mesh>> {
+    build_tray_segments_with_spacing(spec, height_field, TRAY_SURFACE_SPACING_MM)
+}
+
+pub(crate) fn build_preview_tray_segments(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> Result<Vec<Mesh>> {
+    build_tray_segments_with_spacing(spec, height_field, PREVIEW_TRAY_SURFACE_SPACING_MM)
+}
+
+fn build_tray_segments_with_spacing(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    surface_spacing_mm: f32,
+) -> Result<Vec<Mesh>> {
     let mut segments = if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
-        vec![build_tray(spec, height_field)?]
+        vec![build_tray_with_spacing(
+            spec,
+            height_field,
+            surface_spacing_mm,
+        )?]
     } else {
         let contour_paths = if spec.tray.contours_enabled {
-            tray_contour_paths(spec, height_field)
+            tray_contour_paths_with_spacing(spec, height_field, surface_spacing_mm)
         } else {
             Vec::new()
         };
@@ -520,6 +554,51 @@ pub(crate) fn build_tray_segments(
     Ok(segments)
 }
 
+/// Where each exported tray mesh sits in the assembled display base.
+///
+/// Segmented tray meshes are shifted to their own local origin for printing.
+/// The live preview puts them back so their seams, walls, and interlocks match
+/// the completed base. A one-piece tray already uses the assembled frame.
+pub(crate) fn tray_segment_origins(spec: &GenerationSpec) -> Vec<[f32; 2]> {
+    if spec.tray.segment_columns == 1 && spec.tray.segment_rows == 1 {
+        return vec![[0.0, 0.0]];
+    }
+    let grid = tray_segment_grid(spec);
+    let mut origins =
+        Vec::with_capacity((spec.tray.segment_columns * spec.tray.segment_rows) as usize);
+    for row in 0..spec.tray.segment_rows {
+        for column in 0..spec.tray.segment_columns {
+            let outline = tray_segment_outline(grid, row, column);
+            origins.push([
+                outline
+                    .iter()
+                    .map(|point| point[0])
+                    .fold(f32::INFINITY, f32::min),
+                outline
+                    .iter()
+                    .map(|point| point[1])
+                    .fold(f32::INFINITY, f32::min),
+            ]);
+        }
+    }
+    origins
+}
+
+/// The assembled terrain's lower-left corner inside its fitted tray.
+pub(crate) fn terrain_origin_in_tray(spec: &GenerationSpec) -> Result<[f32; 2]> {
+    if spec.model_outline.shape == crate::spec::OutlineShape::Rectangle {
+        let inset = spec.tray.rim_width_mm + spec.tray.clearance_mm;
+        return Ok([inset, inset]);
+    }
+    let terrain = geo_polygon(&model_outline_mm(spec, 96));
+    let cavity = largest_polygon(terrain.buffer(f64::from(spec.tray.clearance_mm)))?;
+    let outer = largest_polygon(cavity.buffer(f64::from(spec.tray.rim_width_mm)))?;
+    let bounds = outer
+        .bounding_rect()
+        .context("shaped tray has no printable bounds")?;
+    Ok([-bounds.min().x as f32, -bounds.min().y as f32])
+}
+
 fn build_tray_segment(
     spec: &GenerationSpec,
     contour_paths: &[ContourPath],
@@ -530,8 +609,8 @@ fn build_tray_segment(
     let TrayFrame {
         inner_width: _,
         inner_height: _,
-        outer_width,
-        outer_height,
+        outer_width: _,
+        outer_height: _,
         inner_x0,
         inner_y0,
         inner_x1,
@@ -539,24 +618,7 @@ fn build_tray_segment(
         floor_z,
         rim_z,
     } = TrayFrame::from_spec(spec);
-    let segment_grid = TraySegmentGrid {
-        size: [outer_width, outer_height],
-        terrain_bounds: [
-            inner_x0 + tray.clearance_mm,
-            inner_y0 + tray.clearance_mm,
-            inner_x1 - tray.clearance_mm,
-            inner_y1 - tray.clearance_mm,
-        ],
-        rows: tray.segment_rows,
-        columns: tray.segment_columns,
-        puzzle_seed: spec.puzzle_seed,
-        interlocks: spec.adjacent_interlocks,
-        clearance_mm: if spec.adjacent_interlocks {
-            spec.clearance_mm
-        } else {
-            0.0
-        },
-    };
+    let segment_grid = tray_segment_grid(spec);
     let outline = tray_segment_outline(segment_grid, row, column);
     let minimum_x = outline
         .iter()
@@ -692,9 +754,10 @@ fn build_tray_segment(
     Ok(result)
 }
 
-fn tray_contour_paths(
+fn tray_contour_paths_with_spacing(
     spec: &GenerationSpec,
     height_field: Option<&HeightField>,
+    surface_spacing_mm: f32,
 ) -> Vec<ContourPath> {
     let TrayFrame {
         inner_width,
@@ -705,8 +768,8 @@ fn tray_contour_paths(
         inner_y1,
         ..
     } = TrayFrame::from_spec(spec);
-    let x_coordinates = regular_coordinates(inner_x0, inner_x1, 0.35);
-    let y_coordinates = regular_coordinates(inner_y0, inner_y1, 0.35);
+    let x_coordinates = regular_coordinates(inner_x0, inner_x1, surface_spacing_mm);
+    let y_coordinates = regular_coordinates(inner_y0, inner_y1, surface_spacing_mm);
     trace_tray_contours(
         spec,
         height_field,
@@ -729,6 +792,29 @@ struct TraySegmentGrid {
     puzzle_seed: u32,
     interlocks: bool,
     clearance_mm: f32,
+}
+
+fn tray_segment_grid(spec: &GenerationSpec) -> TraySegmentGrid {
+    let tray = &spec.tray;
+    let frame = TrayFrame::from_spec(spec);
+    TraySegmentGrid {
+        size: [frame.outer_width, frame.outer_height],
+        terrain_bounds: [
+            frame.inner_x0 + tray.clearance_mm,
+            frame.inner_y0 + tray.clearance_mm,
+            frame.inner_x1 - tray.clearance_mm,
+            frame.inner_y1 - tray.clearance_mm,
+        ],
+        rows: tray.segment_rows,
+        columns: tray.segment_columns,
+        puzzle_seed: spec.puzzle_seed,
+        interlocks: spec.adjacent_interlocks,
+        clearance_mm: if spec.adjacent_interlocks {
+            spec.clearance_mm
+        } else {
+            0.0
+        },
+    }
 }
 
 fn tray_segment_outline(grid: TraySegmentGrid, row: u32, column: u32) -> Vec<[f32; 2]> {

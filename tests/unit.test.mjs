@@ -41,9 +41,11 @@ import { isVersionNewer } from "../app/updates/version.ts";
 import { describeJobFailure } from "../app/terrain/generation-failure.ts";
 import {
   adjacentCenter,
+  coordinateAtNormalizedPoint,
   mapFrameForSpec,
   matchingTileCenter,
   normalizedMapPoint,
+  superTileMemberSpec,
 } from "../app/terrain/geo.ts";
 
 test("maps vector markers into the model frame across the date line", () => {
@@ -81,6 +83,46 @@ test("maps arbitrary terrain rotations into the fixed model frame", () => {
   assert.equal(mergeSpecDefaults({}).terrain_rotation_degrees, 0);
 });
 
+test("maps a 3D terrain point back into geographic coordinates", () => {
+  const spec = {
+    center_lat: 37.6151,
+    center_lon: -122.4004,
+    ground_span_km: 4,
+    terrain_rotation_degrees: 31,
+  };
+  const geographic = coordinateAtNormalizedPoint(spec, 0.23, 0.78);
+  const normalized = normalizedMapPoint(
+    spec,
+    geographic.latitude,
+    geographic.longitude,
+  );
+  assert.ok(Math.abs(normalized.u - 0.23) < 1e-10);
+  assert.ok(Math.abs(normalized.v - 0.78) < 1e-10);
+});
+
+test("maps an unrotated adjacent tile through its fixed map frame", () => {
+  const spec = {
+    center_lat: 47.0151,
+    center_lon: -122.4004,
+    ground_span_km: 18,
+    terrain_rotation_degrees: 0,
+    map_frame: {
+      origin_lat: 46.8523,
+      origin_lon: -122.4004,
+      origin_tile_column: 0,
+      origin_tile_row: 0,
+    },
+  };
+  const geographic = coordinateAtNormalizedPoint(spec, 0.13, 0.81);
+  const normalized = normalizedMapPoint(
+    spec,
+    geographic.latitude,
+    geographic.longitude,
+  );
+  assert.ok(Math.abs(normalized.u - 0.13) < 1e-10);
+  assert.ok(Math.abs(normalized.v - 0.81) < 1e-10);
+});
+
 test("manual adjacent moves stay on their first tile's map frame", () => {
   const origin = {
     center_lat: 46.8523,
@@ -108,6 +150,36 @@ test("manual adjacent moves stay on their first tile's map frame", () => {
 
   assert.ok(Math.abs(fromEast.latitude - direct.latitude) < 1e-12);
   assert.ok(Math.abs(fromEast.longitude - direct.longitude) < 1e-12);
+});
+
+test("selects a super-tile member in the same fixed map and puzzle frame", () => {
+  const spec = {
+    ...initialSpec,
+    center_lat: 46.8523,
+    center_lon: -121.7603,
+    ground_span_km: 18,
+    terrain_rotation_degrees: 37.5,
+    adjacent_rows: 3,
+    adjacent_columns: 5,
+    super_tile_anchor: "center",
+    puzzle_tile_row: 7,
+    puzzle_tile_column: 11,
+    map_frame: null,
+  };
+  const selected = superTileMemberSpec(spec, 0, 4);
+  const expectedCenter = matchingTileCenter(
+    { ...spec, map_frame: mapFrameForSpec(spec) },
+    13,
+    6,
+  );
+
+  assert.equal(selected.adjacent_tile_row, 0);
+  assert.equal(selected.adjacent_tile_column, 4);
+  assert.equal(selected.puzzle_tile_row, 6);
+  assert.equal(selected.puzzle_tile_column, 13);
+  assert.deepEqual(selected.map_frame, mapFrameForSpec(spec));
+  assert.ok(Math.abs(selected.center_lat - expectedCenter.latitude) < 1e-12);
+  assert.ok(Math.abs(selected.center_lon - expectedCenter.longitude) < 1e-12);
 });
 
 test("compares stable and prerelease app versions", () => {

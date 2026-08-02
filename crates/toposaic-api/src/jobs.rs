@@ -2,6 +2,7 @@
 //! bookkeeping.
 
 use std::{
+    convert::Infallible,
     fs,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -14,17 +15,17 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path as AxumPath, State},
-    http::{HeaderValue, StatusCode, header},
-    response::Response,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, SurfaceField, artifact_path,
-    generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
-    height_frame_for_bounds,
+    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, PreviewDetail, SurfaceField,
+    artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
+    generate_tray_artifacts, height_frame_for_bounds,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -79,6 +80,29 @@ pub(crate) enum JobControlTab {
 pub(crate) struct JobPiece {
     pub(crate) row: u32,
     pub(crate) column: u32,
+}
+
+const PREVIEW_STREAM_CONTENT_TYPE: &str = "application/x-ndjson";
+const PREVIEW_DETAIL_HEADER: &str = "x-toposaic-preview-detail";
+const PREVIEW_ID_HEADER: &str = "x-toposaic-preview-id";
+const PREVIEW_TILE_ROW_HEADER: &str = "x-toposaic-preview-tile-row";
+const PREVIEW_TILE_COLUMN_HEADER: &str = "x-toposaic-preview-tile-column";
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PreviewStreamEvent {
+    Progress {
+        stage: &'static str,
+        label: &'static str,
+        progress: u8,
+    },
+    Complete {
+        preview: serde_json::Value,
+    },
+    Error {
+        error: String,
+    },
+    Canceled,
 }
 
 pub(crate) async fn create_job(
@@ -152,20 +176,323 @@ pub(crate) async fn create_job(
 
 pub(crate) async fn create_preview(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(spec): Json<GenerationSpec>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+) -> Result<Response, (StatusCode, Json<ApiError>)> {
     spec.validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
-    let cache_dir = state.map_cache_dir.join("elevation");
+    let preview_detail = preview_detail(&headers)?;
+    let spec = preview_tile_spec(&spec, &headers)?;
+    let preview_id = headers
+        .get(PREVIEW_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let cancellation = begin_preview(&state, preview_id).map_err(internal_error)?;
+    let map_cache_dir = state.map_cache_dir.clone();
+    let wants_stream = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains(PREVIEW_STREAM_CONTENT_TYPE));
+
+    if wants_stream {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(16);
+        let worker_state = state.clone();
+        let worker_cancellation = cancellation.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = catch_live_preview(
+                &spec,
+                &map_cache_dir,
+                &worker_cancellation,
+                preview_detail,
+                |stage, label, progress| {
+                    send_preview_event(
+                        &sender,
+                        &worker_cancellation,
+                        PreviewStreamEvent::Progress {
+                            stage,
+                            label,
+                            progress,
+                        },
+                    )
+                },
+            );
+            let event = match result {
+                Ok(preview) => PreviewStreamEvent::Complete { preview },
+                Err(_) if worker_cancellation.load(Ordering::Acquire) => {
+                    PreviewStreamEvent::Canceled
+                }
+                Err(error) => PreviewStreamEvent::Error {
+                    error: error.to_string(),
+                },
+            };
+            let _ = send_preview_event(&sender, &worker_cancellation, event);
+            finish_preview(&worker_state, &worker_cancellation);
+        });
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|bytes| (Ok::<Bytes, Infallible>(bytes), receiver))
+        });
+        let mut response = Response::new(Body::from_stream(stream));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PREVIEW_STREAM_CONTENT_TYPE),
+        );
+        return Ok(response);
+    }
+
+    let worker_state = state.clone();
+    let worker_cancellation = cancellation.clone();
     let preview = tokio::task::spawn_blocking(move || {
-        let samples = spec.terrain_samples_per_piece().clamp(64, 128) as usize;
-        let height_field = elevation::fetch_preview_height_field(&spec, &cache_dir, samples)?;
-        toposaic_core::build_height_preview(&spec, &height_field, samples)
+        let result = catch_live_preview(
+            &spec,
+            &map_cache_dir,
+            &worker_cancellation,
+            preview_detail,
+            |_, _, _| Ok(()),
+        );
+        finish_preview(&worker_state, &worker_cancellation);
+        result
     })
     .await
     .map_err(internal_error)?
     .map_err(internal_error)?;
-    Ok(Json(preview))
+    Ok(Json(preview).into_response())
+}
+
+fn catch_live_preview(
+    spec: &GenerationSpec,
+    map_cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    detail: PreviewDetail,
+    on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
+) -> Result<serde_json::Value> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        run_live_preview(spec, map_cache_dir, cancellation, detail, on_progress)
+    })) {
+        Ok(result) => result,
+        Err(payload) => Err(anyhow::anyhow!(panic_message(payload))),
+    }
+}
+
+fn run_live_preview(
+    spec: &GenerationSpec,
+    map_cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    detail: PreviewDetail,
+    mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
+) -> Result<serde_json::Value> {
+    let mut preview_spec = toposaic_core::model_preview_spec(spec, detail);
+    let samples = detail.sample_grid();
+    let mut last_elevation_progress = 0;
+    on_progress("elevation", "Loading elevation tiles", 4)?;
+    let mut height_field = elevation::fetch_preview_height_field_with_progress(
+        &preview_spec,
+        &map_cache_dir.join("elevation"),
+        samples,
+        |fraction| {
+            ensure_preview_active(cancellation)?;
+            let progress = (4.0 + fraction * 24.0).round() as u8;
+            if progress > last_elevation_progress {
+                on_progress("elevation", "Loading elevation tiles", progress)?;
+                last_elevation_progress = progress;
+            }
+            Ok(())
+        },
+    )?;
+    ensure_preview_active(cancellation)?;
+
+    let mut surface_field = if preview_spec.needs_surface_field() {
+        Some(surface::fetch_surface_field_with_progress_cancellable(
+            &preview_spec,
+            &height_field,
+            map_cache_dir,
+            cancellation,
+            |label, fraction| {
+                ensure_preview_active(cancellation)?;
+                on_progress("surface", label, (30.0 + fraction * 42.0).round() as u8)
+            },
+        )?)
+    } else {
+        on_progress("surface", "No map overlays needed", 72)?;
+        None
+    };
+    ensure_preview_active(cancellation)?;
+    if let Some(field) = surface_field.as_mut() {
+        on_progress("surface", "Applying water levels", 74)?;
+        surface::apply_marine_water_cancellable(
+            &preview_spec,
+            &mut height_field,
+            field,
+            map_cache_dir,
+            cancellation,
+        );
+    }
+    ensure_preview_active(cancellation)?;
+    preview_spec = locked_ground_spec(&preview_spec, surface_field.as_ref());
+    on_progress("model", "Building draft model", 78)?;
+    let mut preview = toposaic_core::build_model_preview_cancellable(
+        &preview_spec,
+        &height_field,
+        surface_field.as_ref(),
+        samples,
+        detail,
+        &|| cancellation.load(Ordering::Acquire),
+    )?;
+    ensure_preview_active(cancellation)?;
+    on_progress("model", "Preparing 3D scene", 96)?;
+    preview["model_preview_tile_row"] = serde_json::json!(spec.adjacent_tile_row);
+    preview["model_preview_tile_column"] = serde_json::json!(spec.adjacent_tile_column);
+    preview["model_preview_scope"] =
+        serde_json::json!(if spec.adjacent_rows > 1 || spec.adjacent_columns > 1 {
+            "super_tile_member"
+        } else {
+            "model"
+        });
+    Ok(preview)
+}
+
+fn preview_detail(headers: &HeaderMap) -> Result<PreviewDetail, (StatusCode, Json<ApiError>)> {
+    let Some(value) = headers.get(PREVIEW_DETAIL_HEADER) else {
+        return Ok(PreviewDetail::Fast);
+    };
+    match value.to_str().ok() {
+        Some("fast") => Ok(PreviewDetail::Fast),
+        Some("detailed") => Ok(PreviewDetail::Detailed),
+        Some("high") => Ok(PreviewDetail::High),
+        _ => Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("preview detail must be fast, detailed, or high"),
+        )),
+    }
+}
+
+fn preview_tile_spec(
+    spec: &GenerationSpec,
+    headers: &HeaderMap,
+) -> Result<GenerationSpec, (StatusCode, Json<ApiError>)> {
+    let parse_index = |name: &'static str| {
+        headers
+            .get(name)
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .ok_or_else(|| {
+                        api_error(
+                            StatusCode::BAD_REQUEST,
+                            anyhow::anyhow!("{name} must be a non-negative integer"),
+                        )
+                    })
+            })
+            .transpose()
+    };
+    let requested_row = parse_index(PREVIEW_TILE_ROW_HEADER)?;
+    let requested_column = parse_index(PREVIEW_TILE_COLUMN_HEADER)?;
+    if requested_row.is_some() != requested_column.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("preview tile row and column must be sent together"),
+        ));
+    }
+    let default_row = match spec.super_tile_anchor {
+        toposaic_core::SuperTileAnchor::TopLeft => 0,
+        toposaic_core::SuperTileAnchor::Center => spec.adjacent_rows / 2,
+    };
+    let default_column = match spec.super_tile_anchor {
+        toposaic_core::SuperTileAnchor::TopLeft => 0,
+        toposaic_core::SuperTileAnchor::Center => spec.adjacent_columns / 2,
+    };
+    let row = requested_row.unwrap_or(default_row);
+    let column = requested_column.unwrap_or(default_column);
+    if row >= spec.adjacent_rows || column >= spec.adjacent_columns {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!(
+                "preview tile {},{} is outside the {} by {} super-tile grid",
+                row + 1,
+                column + 1,
+                spec.adjacent_rows,
+                spec.adjacent_columns
+            ),
+        ));
+    }
+    let tile_index = (row * spec.adjacent_columns + column) as usize;
+    let tile_specs = adjacent_tile_specs(spec);
+    Ok(AdjacentGridOutputPlan::new(spec).terrain_spec(&tile_specs[tile_index]))
+}
+
+pub(crate) async fn cancel_preview(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let canceled = cancel_preview_by_id(&state, &id).map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "canceled": canceled })))
+}
+
+fn cancel_preview_by_id(state: &AppState, id: &str) -> Result<bool> {
+    let mut active = state
+        .active_preview
+        .lock()
+        .map_err(|_| anyhow::anyhow!("active preview lock failed"))?;
+    let canceled = active.as_ref().is_some_and(|preview| preview.id == id);
+    if canceled && let Some(preview) = active.take() {
+        preview.cancellation.store(true, Ordering::Release);
+    }
+    Ok(canceled)
+}
+
+fn begin_preview(state: &AppState, id: String) -> Result<Arc<AtomicBool>> {
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let previous = state
+        .active_preview
+        .lock()
+        .map_err(|_| anyhow::anyhow!("active preview lock failed"))?
+        .replace(crate::ActivePreview {
+            id,
+            cancellation: cancellation.clone(),
+        });
+    if let Some(previous) = previous {
+        previous.cancellation.store(true, Ordering::Release);
+    }
+    Ok(cancellation)
+}
+
+fn finish_preview(state: &AppState, cancellation: &Arc<AtomicBool>) {
+    let Ok(mut active) = state.active_preview.lock() else {
+        return;
+    };
+    if active
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(&current.cancellation, cancellation))
+    {
+        active.take();
+    }
+}
+
+fn ensure_preview_active(cancellation: &AtomicBool) -> Result<()> {
+    if cancellation.load(Ordering::Acquire) {
+        anyhow::bail!("preview superseded by newer settings");
+    }
+    Ok(())
+}
+
+fn send_preview_event(
+    sender: &tokio::sync::mpsc::Sender<Bytes>,
+    cancellation: &AtomicBool,
+    event: PreviewStreamEvent,
+) -> Result<()> {
+    let mut line = serde_json::to_vec(&event)?;
+    line.push(b'\n');
+    if sender.blocking_send(Bytes::from(line)).is_err() {
+        cancellation.store(true, Ordering::Release);
+        anyhow::bail!("preview listener closed");
+    }
+    Ok(())
 }
 
 /// The spec with its ground palette pinned to what discovery resolved, or
@@ -655,11 +982,7 @@ fn run_job(
         "generation phase complete"
     );
     update_job(state, id, "running", 40, &[], None)?;
-    let mut surface_field = if spec.color_output.enabled
-        || spec.buildings.enabled
-        || spec.uses_trails()
-        || spec.uses_building_markers()
-    {
+    let mut surface_field = if spec.needs_surface_field() {
         update_job(state, id, "running", 42, &[], None)?;
         let phase_started = Instant::now();
         let field = surface::fetch_surface_field(spec, &height_field, &state.map_cache_dir)?;
@@ -822,11 +1145,7 @@ fn run_adjacent_grid_job(
             }
             None => tile_spec,
         };
-        let mut surface_field = if tile_spec.color_output.enabled
-            || tile_spec.buildings.enabled
-            || tile_spec.uses_trails()
-            || tile_spec.uses_building_markers()
-        {
+        let mut surface_field = if tile_spec.needs_surface_field() {
             Some(surface::fetch_surface_field(
                 tile_spec,
                 height_field,
@@ -1326,5 +1645,98 @@ mod tests {
         assert_eq!(mesh_job_progress(0.0), 65);
         assert_eq!(mesh_job_progress(0.5), 82);
         assert_eq!(mesh_job_progress(1.0), 99);
+    }
+
+    #[test]
+    fn preview_detail_header_selects_quality_and_rejects_unknown_values() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::Fast);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("detailed"));
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::Detailed);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("high"));
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::High);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("huge"));
+        assert_eq!(
+            preview_detail(&headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn preview_tile_defaults_to_the_anchor_and_accepts_an_explicit_member() {
+        let spec = GenerationSpec {
+            adjacent_rows: 3,
+            adjacent_columns: 5,
+            super_tile_anchor: toposaic_core::SuperTileAnchor::Center,
+            puzzle_tile_row: 7,
+            puzzle_tile_column: 11,
+            ..GenerationSpec::default()
+        };
+        let mut headers = HeaderMap::new();
+        let anchor = preview_tile_spec(&spec, &headers).unwrap();
+        assert_eq!(anchor.adjacent_tile_row, 1);
+        assert_eq!(anchor.adjacent_tile_column, 2);
+        assert_eq!(anchor.puzzle_tile_row, 7);
+        assert_eq!(anchor.puzzle_tile_column, 11);
+
+        headers.insert(PREVIEW_TILE_ROW_HEADER, HeaderValue::from_static("0"));
+        headers.insert(PREVIEW_TILE_COLUMN_HEADER, HeaderValue::from_static("4"));
+        let selected = preview_tile_spec(&spec, &headers).unwrap();
+        assert_eq!(selected.adjacent_tile_row, 0);
+        assert_eq!(selected.adjacent_tile_column, 4);
+        assert_eq!(selected.puzzle_tile_row, 6);
+        assert_eq!(selected.puzzle_tile_column, 13);
+
+        headers.insert(PREVIEW_TILE_ROW_HEADER, HeaderValue::from_static("3"));
+        assert_eq!(
+            preview_tile_spec(&spec, &headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn a_new_preview_cancels_only_the_preview_it_replaced() {
+        let state = test_state();
+        let first = begin_preview(&state, "first".into()).unwrap();
+        let second = begin_preview(&state, "second".into()).unwrap();
+
+        assert!(first.load(Ordering::Acquire));
+        assert!(!second.load(Ordering::Acquire));
+        finish_preview(&state, &first);
+        assert!(
+            state
+                .active_preview
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(&active.cancellation, &second))
+        );
+        finish_preview(&state, &second);
+        assert!(state.active_preview.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn canceling_an_old_preview_id_does_not_cancel_its_replacement() {
+        let state = test_state();
+        let current = begin_preview(&state, "current".into()).unwrap();
+
+        assert!(!cancel_preview_by_id(&state, "old").unwrap());
+        assert!(!current.load(Ordering::Acquire));
+        assert!(cancel_preview_by_id(&state, "current").unwrap());
+        assert!(current.load(Ordering::Acquire));
+        assert!(state.active_preview.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_closed_preview_stream_cancels_its_worker() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let cancellation = AtomicBool::new(false);
+
+        assert!(send_preview_event(&sender, &cancellation, PreviewStreamEvent::Canceled).is_err());
+        assert!(cancellation.load(Ordering::Acquire));
     }
 }

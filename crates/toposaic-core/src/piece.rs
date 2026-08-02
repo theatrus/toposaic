@@ -210,12 +210,7 @@ pub(crate) fn build_piece_with_height_range(
     row: u32,
     column: u32,
 ) -> Result<Mesh> {
-    let base_samples = spec.terrain_samples_per_piece() as usize;
-    let requested_samples = base_samples.max(spec.effective_samples_per_piece() as usize);
-    let samples = height_field
-        .map(|field| requested_samples.min(field.samples_per_piece(spec)))
-        .unwrap_or(requested_samples)
-        .max(16);
+    let samples = resolved_piece_samples(spec, height_field);
     let piece_width = if spec.solid_model {
         spec.width_mm
     } else {
@@ -226,6 +221,44 @@ pub(crate) fn build_piece_with_height_range(
     } else {
         spec.height_mm() / spec.rows as f32
     };
+
+    build_piece_with_samples(
+        spec,
+        height_field,
+        height_range,
+        surface_field,
+        row,
+        column,
+        samples,
+        piece_width,
+        piece_height,
+    )
+}
+
+pub(crate) fn resolved_piece_samples(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+) -> usize {
+    let base_samples = spec.terrain_samples_per_piece() as usize;
+    let requested_samples = base_samples.max(spec.effective_samples_per_piece() as usize);
+    height_field
+        .map(|field| requested_samples.min(field.samples_per_piece(spec)))
+        .unwrap_or(requested_samples)
+        .max(16)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_piece_with_samples(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    surface_field: Option<&SurfaceField>,
+    row: u32,
+    column: u32,
+    samples: usize,
+    piece_width: f32,
+    piece_height: f32,
+) -> Result<Mesh> {
     let origin_x = if spec.solid_model {
         0.0
     } else {

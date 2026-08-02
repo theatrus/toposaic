@@ -2,7 +2,63 @@ import { expect, test } from "@playwright/test";
 
 import { appVersion } from "./helpers";
 
+test("renders draft export geometry from the background preview", async ({
+  page,
+}) => {
+  let previewRequests = 0;
+  await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
+    previewRequests += 1;
+    if (previewRequests > 1) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    await route.fulfill({
+      json: {
+        width: 2,
+        height: 2,
+        values: [0, 0, 0, 0.1],
+        model_bounds_mm: [0, 0, 0, 100, 100, 10],
+        model_preview_detail: "draft export geometry",
+        model_meshes: [
+          {
+            kind: "terrain",
+            name: "preview-piece",
+            vertices: [
+              [0, 0, 0],
+              [100, 0, 0],
+              [0, 100, 10],
+            ],
+            triangles: [[0, 1, 2]],
+            materials: [0],
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/");
+  const preview = page.getByLabel("Interactive 3D terrain preview");
+  await expect(preview).toHaveAttribute("data-model-geometry", "mesh");
+  await expect(preview).toHaveAttribute("data-model-mesh-count", "1");
+  await expect(page.getByText("Live model preview")).toBeVisible();
+
+  await page.getByRole("slider", { name: "Terrain height" }).fill("32");
+  await expect(
+    page.getByRole("progressbar", {
+      name: "Waiting for changes to settle",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel preview" }).click();
+  await expect(page.getByRole("button", { name: "Cancel preview" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/Preview paused/)).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(previewRequests).toBe(1);
+  await expect(preview).toHaveAttribute("data-model-geometry", "mesh");
+});
+
 test("switches between the reflowed control panels", async ({ page }) => {
+  test.slow();
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
 
@@ -1007,6 +1063,11 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
   await page.getByRole("button", { name: "Zoom in" }).click();
   await expect(selection).toHaveAttribute("data-map-zoom", "12");
   await expect(groundSpan).toHaveValue("9");
+  for (let level = 13; level <= 19; level += 1) {
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await expect(selection).toHaveAttribute("data-map-zoom", String(level));
+  }
+  await expect(page.getByRole("button", { name: "Zoom in" })).toBeDisabled();
 
   await groundSpan.fill("30");
   await expect(selection).toHaveAttribute(
@@ -1021,9 +1082,15 @@ test("supports linked and map-only zoom controls", async ({ page }) => {
 
 test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   const previewSpecs: Array<Record<string, unknown>> = [];
+  const previewTiles: string[] = [];
   await page.route("http://127.0.0.1:8787/api/preview", async (route) => {
-    const spec = route.request().postDataJSON() as Record<string, unknown>;
+    const request = route.request();
+    const spec = request.postDataJSON() as Record<string, unknown>;
     previewSpecs.push(spec);
+    const headers = request.headers();
+    previewTiles.push(
+      `${headers["x-toposaic-preview-tile-row"]}:${headers["x-toposaic-preview-tile-column"]}`,
+    );
     const moved = Number(spec.center_lon) > -121.7;
     const minimum = moved ? 80 : 100;
     const datum = spec.elevation_datum_m;
@@ -1041,7 +1108,7 @@ test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page.getByText("Live elevation preview")).toBeVisible();
+  await expect(page.getByText("Live model preview")).toBeVisible();
   await page.getByText("Advanced puzzle identity", { exact: true }).click();
   const puzzleSeed = page.getByLabel("Puzzle seed");
   const reseed = page.getByRole("button", { name: "Generate new seed" });
@@ -1107,6 +1174,11 @@ test("locks a height frame and maps a super-tile grid", async ({ page }) => {
   await superTileControls.getByLabel("Across").selectOption("8");
   await superTileControls.getByLabel("Down").selectOption("6");
   await expect(page.getByText(/48 terrain 3MF files/)).toBeVisible();
+  const previewTile = page.getByLabel("3D preview super-tile");
+  await expect(previewTile).toHaveValue("0:0");
+  await previewTile.selectOption("1:2");
+  await expect(page.getByText("Tile 2,3", { exact: true })).toBeVisible();
+  await expect.poll(() => previewTiles.includes("1:2")).toBe(true);
   const mapGrid = page.getByRole("group", {
     name: "Super-tile map: 8 across by 6 down, anchored at top-left tile",
   });
@@ -1216,6 +1288,13 @@ test("rotates, zooms, and resets the interactive 3D preview", async ({
   await preview.focus();
   await page.keyboard.press("ArrowLeft");
   await expect(preview).toHaveAttribute("data-camera-moved", "true");
+
+  for (let step = 0; step < 18; step += 1) {
+    await page.keyboard.press("=");
+  }
+  await expect
+    .poll(async () => Number(await preview.getAttribute("data-camera-distance")))
+    .toBeLessThan(0.5);
 });
 
 test("keeps the map and preview split adjustable from the keyboard", async ({

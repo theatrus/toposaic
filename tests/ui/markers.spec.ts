@@ -1,6 +1,54 @@
 import { expect, test } from "@playwright/test";
 
+test("reports a failed building lookup without leaving the preview pending", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:8787/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/preview") {
+      const spec = request.postDataJSON() as { markers?: unknown[] };
+      if ((spec.markers?.length ?? 0) > 0) {
+        await route.fulfill({
+          contentType: "application/x-ndjson",
+          body: `${JSON.stringify({
+            type: "error",
+            error:
+              "building marker 'Building 1' does not fall inside an OpenStreetMap building footprint",
+          })}\n`,
+        });
+      } else {
+        await route.fulfill({
+          json: { width: 2, height: 2, values: [0, 0.3, 0.7, 1] },
+        });
+      }
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("Live model preview")).toBeVisible();
+  await page.getByRole("tab", { name: "Markers" }).click();
+  await page.getByRole("button", { name: "Highlight building" }).click();
+  await page
+    .getByRole("application", { name: /Terrain map/ })
+    .click({ position: { x: 220, y: 150 } });
+
+  await expect(page.getByRole("alert")).toContainText(
+    "does not fall inside an OpenStreetMap building footprint",
+  );
+  await expect(
+    page.getByRole("progressbar", { name: "Waiting for changes to settle" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".relief-canvas")).toHaveAttribute(
+    "data-model-geometry",
+    "heightmap",
+  );
+});
+
 test("places map markers and submits their print modes", async ({ page }) => {
+  test.slow();
   let jobSpec: Record<string, unknown> = {};
   await page.route("http://127.0.0.1:8787/api/**", async (route) => {
     const request = route.request();
@@ -41,7 +89,18 @@ test("places map markers and submits their print modes", async ({ page }) => {
   await controls.getByLabel("Marker 1 latitude").press("Enter");
 
   await controls.getByRole("button", { name: "Color dot" }).click();
-  await map.click({ position: { x: 260, y: 180 } });
+  const preview3d = page.locator(".relief-canvas");
+  await expect(preview3d).toHaveAttribute("data-marker-placement-mode", "place");
+  const previewBounds = await preview3d.boundingBox();
+  expect(previewBounds).not.toBeNull();
+  if (!previewBounds) return;
+  await preview3d.click({
+    position: {
+      x: previewBounds.width * 0.5,
+      y: previewBounds.height * 0.5,
+    },
+  });
+  await expect(preview3d).toHaveAttribute("data-marker-placement-mode", "none");
   await controls.getByLabel("Marker 2 dot diameter").fill("5");
   await controls.getByRole("button", { name: "Blank flag" }).click();
   await map.click({ position: { x: 300, y: 210 } });
