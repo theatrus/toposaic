@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -21,7 +21,7 @@ use crate::{
     cache, datum,
     geo::{GeoBounds, GeoTransform, normalize_longitude},
     http, imagery,
-    osm::{self, OverpassResponse, OverpassWay, TileLayer},
+    osm::{self, LegacyCache, OverpassResponse, OverpassWay, TileLayer},
 };
 
 #[cfg(test)]
@@ -124,6 +124,15 @@ const FERRY_TILES: TileLayer<'static> = TileLayer::new("ferry-v2", 9);
 const WATER_TILES: TileLayer<'static> = TileLayer::new("water-v2", 10);
 const COASTLINE_TILES: TileLayer<'static> = TileLayer::new("coastline-v2", 8);
 const BUILDING_TILES: TileLayer<'static> = TileLayer::new("buildings-v2", 13);
+const LEGACY_ROAD_MAJOR_PREFIXES: &[&str] = &[
+    "roads-v2-major",
+    "roads-v2-minor",
+    "roads-v2-streets",
+    "roads-v2-all",
+];
+const LEGACY_ROAD_MINOR_PREFIXES: &[&str] = &["roads-v2-minor", "roads-v2-streets", "roads-v2-all"];
+const LEGACY_ROAD_STREET_PREFIXES: &[&str] = &["roads-v2-streets", "roads-v2-all"];
+const LEGACY_ROAD_PATH_PREFIXES: &[&str] = &["roads-v2-all", "roads-v2-path-fallback"];
 /// Working width for a railway whose OSM way has no explicit `width=*`.
 /// Standard gauge is 1.435 m; a representative 3.15 m loading envelope adds
 /// room for the vehicle around it. This is a print-width estimate, not a
@@ -144,6 +153,12 @@ struct RouteCounts {
     detail: ResolvedRoadDetail,
     highway_filter: &'static str,
     fallback: bool,
+    unavailable_layers: Vec<&'static str>,
+}
+
+struct RoadTileFetch {
+    response: OverpassResponse,
+    unavailable_layers: Vec<&'static str>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -564,15 +579,24 @@ fn fetch_surface_field_inner(
                 } else {
                     ""
                 };
+                let unavailable = if counts.unavailable_layers.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; unavailable detail layers={}",
+                        counts.unavailable_layers.join(",")
+                    )
+                };
                 append_source(
                     &mut field.source,
                     format!(
-                        "routes{fallback}: {} roads and streets, {} paths and trails, and {} tagged bridges from OpenStreetMap via Overpass API; detail={}; highway={}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
+                        "routes{fallback}: {} roads and streets, {} paths and trails, and {} tagged bridges from OpenStreetMap via Overpass API; detail={}; highway={}{}; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}",
                         counts.roads,
                         counts.trails,
                         counts.bridges,
                         counts.detail.name(),
                         counts.highway_filter,
+                        unavailable,
                     ),
                 );
             }
@@ -872,6 +896,7 @@ fn fetch_ocean_extent(
     let response = match osm::fetch_tiled_response(
         &map_cache_dir.join("osm"),
         COASTLINE_TILES,
+        LegacyCache::new(&["coastline-v1"]),
         bounds,
         coastline_query_for_bounds,
         cancellation,
@@ -1101,6 +1126,7 @@ fn paint_water(
     let water = osm::fetch_tiled_response(
         cache_dir,
         WATER_TILES,
+        LegacyCache::new(&["water"]),
         bounds,
         water_query_for_bounds,
         cancellation,
@@ -1213,7 +1239,9 @@ fn paint_roads_or_trails(
     let detail = spec.color_output.road_detail.resolve(spec.ground_span_km);
     let highway_filter = road_highway_filter(detail);
     let routes = fetch_road_tiles(bounds, cache_dir, road_tile_layers(detail), cancellation)?;
-    let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, routes);
+    let mut unavailable_layers = routes.unavailable_layers;
+    let (road_count, trail_count, bridge_count) =
+        paint_osm_ways(spec, height_field, field, routes.response);
     if road_count + trail_count > 0 || detail == ResolvedRoadDetail::All {
         return Ok(RouteCounts {
             roads: road_count,
@@ -1222,10 +1250,13 @@ fn paint_roads_or_trails(
             detail,
             highway_filter,
             fallback: false,
+            unavailable_layers,
         });
     }
     let trails = fetch_road_tiles(bounds, cache_dir, &[ROAD_PATH_TILES], cancellation)?;
-    let (road_count, trail_count, bridge_count) = paint_osm_ways(spec, height_field, field, trails);
+    unavailable_layers.extend(trails.unavailable_layers);
+    let (road_count, trail_count, bridge_count) =
+        paint_osm_ways(spec, height_field, field, trails.response);
     Ok(RouteCounts {
         roads: road_count,
         trails: trail_count,
@@ -1233,6 +1264,7 @@ fn paint_roads_or_trails(
         detail,
         highway_filter: PATH_HIGHWAYS,
         fallback: true,
+        unavailable_layers,
     })
 }
 
@@ -1329,6 +1361,7 @@ fn paint_ferries(
     let response = osm::fetch_tiled_response(
         cache_dir,
         FERRY_TILES,
+        LegacyCache::new(&["ferry-v1"]),
         bounds,
         ferry_query_for_bounds,
         cancellation,
@@ -1622,9 +1655,11 @@ fn paint_aviation(
         return Ok(AviationCounts::default());
     }
     let cache_namespace = groups.cache_namespace();
+    let legacy_prefixes = [cache_namespace.as_str()];
     let response = osm::fetch_tiled_response(
         cache_dir,
         TileLayer::new(&cache_namespace, 11),
+        LegacyCache::new(&legacy_prefixes),
         bounds,
         |tile_bounds| aviation_query_for_bounds(tile_bounds, groups),
         cancellation,
@@ -1899,10 +1934,12 @@ fn fetch_rail_ways(
 ) -> Result<Vec<OverpassWay>> {
     let lifecycle = spec.color_output.rail_lifecycle;
     let cache_prefix = rail_cache_prefix(kind, lifecycle);
+    let legacy_prefixes = [cache_prefix.as_str()];
     let layer = TileLayer::new(&cache_prefix, kind.tile_zoom());
     let response = osm::fetch_tiled_response(
         cache_dir,
         layer,
+        LegacyCache::new(&legacy_prefixes),
         bounds,
         |tile_bounds| rail_query_for_bounds(tile_bounds, kind, lifecycle),
         cancellation,
@@ -2168,6 +2205,48 @@ fn road_tile_filter(layer: TileLayer<'_>) -> &'static str {
         ROAD_PATH_TILES => PATH_HIGHWAYS,
         _ => unreachable!("non-road tile layer passed to road_tile_filter"),
     }
+}
+
+fn road_tile_name(layer: TileLayer<'_>) -> &'static str {
+    match layer {
+        ROAD_MAJOR_TILES => "major",
+        ROAD_MINOR_TILES => "minor",
+        ROAD_STREET_TILES => "streets",
+        ROAD_PATH_TILES => "paths",
+        _ => unreachable!("non-road tile layer passed to road_tile_name"),
+    }
+}
+
+fn legacy_road_cache(layer: TileLayer<'_>) -> LegacyCache<'static> {
+    match layer {
+        ROAD_MAJOR_TILES => LegacyCache::filtered(LEGACY_ROAD_MAJOR_PREFIXES, legacy_major_road),
+        ROAD_MINOR_TILES => LegacyCache::filtered(LEGACY_ROAD_MINOR_PREFIXES, legacy_minor_road),
+        ROAD_STREET_TILES => LegacyCache::filtered(LEGACY_ROAD_STREET_PREFIXES, legacy_street_road),
+        ROAD_PATH_TILES => LegacyCache::filtered(LEGACY_ROAD_PATH_PREFIXES, legacy_path),
+        _ => unreachable!("non-road tile layer passed to legacy_road_cache"),
+    }
+}
+
+fn legacy_road_matches(way: &OverpassWay, filter: &str) -> bool {
+    way.tags
+        .get("highway")
+        .is_some_and(|value| filter.split('|').any(|candidate| candidate == value))
+}
+
+fn legacy_major_road(way: &OverpassWay) -> bool {
+    legacy_road_matches(way, MAJOR_HIGHWAYS)
+}
+
+fn legacy_minor_road(way: &OverpassWay) -> bool {
+    legacy_road_matches(way, MINOR_ONLY_HIGHWAYS)
+}
+
+fn legacy_street_road(way: &OverpassWay) -> bool {
+    legacy_road_matches(way, STREET_ONLY_HIGHWAYS)
+}
+
+fn legacy_path(way: &OverpassWay) -> bool {
+    legacy_road_matches(way, PATH_HIGHWAYS)
 }
 
 // The per-segment length sums here and in `waterway_printed_area` look
@@ -2471,6 +2550,7 @@ fn paint_buildings(
     let response = osm::fetch_tiled_response(
         cache_dir,
         BUILDING_TILES,
+        LegacyCache::new(&["buildings"]),
         bounds,
         building_query_for_bounds,
         cancellation,
@@ -2629,21 +2709,52 @@ fn first_number(value: &str) -> Option<f32> {
 fn fetch_road_tiles(
     bounds: GeoBounds,
     cache_dir: &Path,
-    layers: &[TileLayer<'_>],
+    layers: &[TileLayer<'static>],
     cancellation: Option<&AtomicBool>,
-) -> Result<OverpassResponse> {
+) -> Result<RoadTileFetch> {
     let mut responses = Vec::with_capacity(layers.len());
+    let mut unavailable_layers = Vec::new();
+    let mut last_error = None;
     for &layer in layers {
         let highway_filter = road_tile_filter(layer);
-        responses.push(osm::fetch_tiled_response(
+        match osm::fetch_tiled_response(
             cache_dir,
             layer,
+            legacy_road_cache(layer),
             bounds,
             |tile_bounds| overpass_query_for_bounds(tile_bounds, highway_filter),
             cancellation,
-        )?);
+        ) {
+            Ok(response) => responses.push(response),
+            Err(error) => {
+                if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                    return Err(error);
+                }
+                warn!(
+                    %error,
+                    layer = layer.namespace,
+                    "OpenStreetMap road detail layer unavailable; keeping other road layers"
+                );
+                unavailable_layers.push(road_tile_name(layer));
+                last_error = Some(error);
+            }
+        }
     }
-    Ok(osm::merge_responses(responses))
+    finish_road_tile_fetch(responses, unavailable_layers, last_error)
+}
+
+fn finish_road_tile_fetch(
+    responses: Vec<OverpassResponse>,
+    unavailable_layers: Vec<&'static str>,
+    last_error: Option<anyhow::Error>,
+) -> Result<RoadTileFetch> {
+    if responses.is_empty() {
+        return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no road layers were requested")));
+    }
+    Ok(RoadTileFetch {
+        response: osm::merge_responses(responses),
+        unavailable_layers,
+    })
 }
 
 #[cfg(test)]
@@ -3624,6 +3735,48 @@ mod tests {
             .map(|layer| layer.namespace)
             .collect::<HashSet<_>>();
         assert_eq!(namespaces.len(), 4);
+    }
+
+    #[test]
+    fn a_failed_detail_layer_keeps_successful_road_layers() {
+        let retained = OverpassResponse {
+            elements: vec![OverpassWay {
+                id: 42,
+                ..Default::default()
+            }],
+            remark: None,
+        };
+        let fetched = finish_road_tile_fetch(
+            vec![retained],
+            vec![road_tile_name(ROAD_STREET_TILES)],
+            Some(anyhow::anyhow!("street query failed")),
+        )
+        .unwrap();
+        assert_eq!(fetched.response.elements[0].id, 42);
+        assert_eq!(fetched.unavailable_layers, vec!["streets"]);
+
+        let error = finish_road_tile_fetch(
+            Vec::new(),
+            vec![road_tile_name(ROAD_MAJOR_TILES)],
+            Some(anyhow::anyhow!("major query failed")),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("major query failed"));
+    }
+
+    #[test]
+    fn legacy_cumulative_road_responses_are_split_into_new_layers() {
+        let way = |highway: &str| OverpassWay {
+            tags: HashMap::from([("highway".into(), highway.into())]),
+            ..Default::default()
+        };
+        assert!(legacy_major_road(&way("primary")));
+        assert!(!legacy_major_road(&way("residential")));
+        assert!(legacy_minor_road(&way("tertiary")));
+        assert!(!legacy_minor_road(&way("primary")));
+        assert!(legacy_street_road(&way("residential")));
+        assert!(legacy_path(&way("footway")));
     }
 
     #[test]

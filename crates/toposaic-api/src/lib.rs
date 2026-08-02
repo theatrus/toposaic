@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex};
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::info;
 
 mod cache;
 mod database;
@@ -94,7 +94,6 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .with_context(|| format!("create jobs directory {}", jobs_dir.display()))?;
     std::fs::create_dir_all(&map_cache_dir)
         .with_context(|| format!("create map cache directory {}", map_cache_dir.display()))?;
-    sweep_legacy_osm_cache(&map_cache_dir);
     let connection = Connection::open(data_dir.join("toposaic.sqlite3"))?;
     migrate(&connection)?;
     let geocoder = http::async_client(Duration::from_secs(12))?;
@@ -167,30 +166,6 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     Ok(())
 }
 
-/// Overpass data now lives below `osm/tiles`. Every old cache response was
-/// keyed by an exact bounding box and sat as a file directly below `osm`, so
-/// no current fetch can read it. Drop those retired files at startup rather
-/// than counting dead data forever; the nested tile directory stays intact.
-fn sweep_legacy_osm_cache(map_cache_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(map_cache_dir.join("osm")) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_file()
-            && let Err(error) = std::fs::remove_file(entry.path())
-        {
-            warn!(
-                %error,
-                file = %entry.path().display(),
-                "could not remove a legacy OpenStreetMap cache entry"
-            );
-        }
-    }
-}
-
 async fn health() -> Json<Health> {
     Json(Health {
         status: "ok",
@@ -236,29 +211,4 @@ pub(crate) fn canonical_uuid(id: &str) -> Option<String> {
     uuid::Uuid::parse_str(id)
         .ok()
         .map(|value| value.hyphenated().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn osm_cache_migration_removes_bbox_files_and_keeps_tiles() {
-        let root = std::env::temp_dir().join(format!(
-            "toposaic-osm-migration-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let osm = root.join("osm");
-        let legacy = osm.join("roads-v2-old.json");
-        let tile = osm.join("tiles/roads-v3-major/10/164/353.json");
-        std::fs::create_dir_all(tile.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, b"old").unwrap();
-        std::fs::write(&tile, b"current").unwrap();
-
-        sweep_legacy_osm_cache(&root);
-
-        assert!(!legacy.exists());
-        assert!(tile.exists());
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }

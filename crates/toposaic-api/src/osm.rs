@@ -78,6 +78,50 @@ pub(crate) struct TileLayer<'a> {
     pub(crate) zoom: u8,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct LegacyCache<'a> {
+    prefixes: &'a [&'a str],
+    accepts: fn(&OverpassWay) -> bool,
+}
+
+impl<'a> LegacyCache<'a> {
+    pub(crate) const fn new(prefixes: &'a [&'a str]) -> Self {
+        Self {
+            prefixes,
+            accepts: |_| true,
+        }
+    }
+
+    pub(crate) const fn filtered(
+        prefixes: &'a [&'a str],
+        accepts: fn(&OverpassWay) -> bool,
+    ) -> Self {
+        Self { prefixes, accepts }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct LegacyCacheMetadata {
+    version: u8,
+    south: f64,
+    north: f64,
+    west: f64,
+    east: f64,
+    query_variant_hash: u64,
+    response_file: String,
+}
+
+impl LegacyCacheMetadata {
+    fn bounds(&self) -> GeoBounds {
+        GeoBounds {
+            south: self.south,
+            north: self.north,
+            west: self.west,
+            east: self.east,
+        }
+    }
+}
+
 impl<'a> TileLayer<'a> {
     pub(crate) const fn new(namespace: &'a str, zoom: u8) -> Self {
         Self { namespace, zoom }
@@ -96,6 +140,7 @@ pub(crate) struct Tile {
 pub(crate) fn fetch_tiled_response(
     cache_dir: &Path,
     layer: TileLayer<'_>,
+    legacy: LegacyCache<'_>,
     requested_bounds: GeoBounds,
     query_for_bounds: impl Fn(&[GeoBounds]) -> String,
     cancellation: Option<&AtomicBool>,
@@ -118,6 +163,14 @@ pub(crate) fn fetch_tiled_response(
             merge_responses(responses),
             requested_bounds,
         ));
+    }
+
+    // Source bundles made before the tile cache carry one exact-bounds
+    // response plus coverage metadata. Use it when it covers this request so
+    // those bundles still rebuild offline. New bundles carry version 2 and
+    // tiled paths, while the importer keeps reading version 1 for this path.
+    if let Some(response) = read_covering_legacy_response(cache_dir, legacy, requested_bounds)? {
+        return Ok(response);
     }
 
     // Recheck after the pacing lock. Concurrent jobs asking for an
@@ -152,26 +205,148 @@ pub(crate) fn fetch_tiled_response(
             .collect::<Vec<_>>();
         let query = query_for_bounds(&tile_bounds);
         let downloaded = download_response(layer.namespace, &query, cancellation)?;
-        for (&tile, bounds) in tile_batch.iter().zip(tile_bounds) {
-            let tile_response = filtered_response(&downloaded, bounds);
-            let path = tile_cache_path(cache_dir, layer, tile);
-            let bytes = serde_json::to_vec(&tile_response)
-                .with_context(|| format!("serialize OpenStreetMap {} tile", layer.namespace))?;
-            if let Err(error) = cache::store(&path, &bytes) {
-                warn!(
-                    %error,
-                    path = %path.display(),
-                    "could not cache OpenStreetMap tile; using downloaded data"
-                );
-            }
-            responses.push(tile_response);
-        }
+        responses.extend(cache_downloaded_tiles(
+            cache_dir,
+            layer,
+            tile_batch,
+            &tile_bounds,
+            &downloaded,
+            cancellation,
+        )?);
     }
 
     Ok(filter_response(
         merge_responses(responses),
         requested_bounds,
     ))
+}
+
+fn cache_downloaded_tiles(
+    cache_dir: &Path,
+    layer: TileLayer<'_>,
+    tiles: &[Tile],
+    bounds: &[GeoBounds],
+    downloaded: &OverpassResponse,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Vec<OverpassResponse>> {
+    ensure_active(cancellation)?;
+    let mut responses = Vec::with_capacity(tiles.len());
+    for (&tile, &bounds) in tiles.iter().zip(bounds) {
+        ensure_active(cancellation)?;
+        let tile_response = filtered_response(downloaded, bounds);
+        let path = tile_cache_path(cache_dir, layer, tile);
+        let bytes = serde_json::to_vec(&tile_response)
+            .with_context(|| format!("serialize OpenStreetMap {} tile", layer.namespace))?;
+        if let Err(error) = cache::store(&path, &bytes) {
+            warn!(
+                %error,
+                path = %path.display(),
+                "could not cache OpenStreetMap tile; using downloaded data"
+            );
+        }
+        responses.push(tile_response);
+    }
+    Ok(responses)
+}
+
+fn read_covering_legacy_response(
+    cache_dir: &Path,
+    legacy: LegacyCache<'_>,
+    requested_bounds: GeoBounds,
+) -> Result<Option<OverpassResponse>> {
+    if legacy.prefixes.is_empty() {
+        return Ok(None);
+    }
+    let entries = match fs::read_dir(cache_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("scan legacy OpenStreetMap cache {}", cache_dir.display())
+            });
+        }
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".json.meta") {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(%error, path = %path.display(), "could not read legacy OpenStreetMap cache metadata");
+                continue;
+            }
+        };
+        let metadata: LegacyCacheMetadata = match serde_json::from_slice(&bytes) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                warn!(%error, path = %path.display(), "ignoring invalid legacy OpenStreetMap cache metadata");
+                continue;
+            }
+        };
+        if metadata.version != 1 || !bounds_cover(metadata.bounds(), requested_bounds) {
+            continue;
+        }
+        let response_name = Path::new(&metadata.response_file);
+        if response_name.file_name() != Some(response_name.as_os_str())
+            || !legacy.prefixes.iter().any(|prefix| {
+                metadata
+                    .response_file
+                    .strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('-') && suffix.ends_with(".json"))
+            })
+        {
+            continue;
+        }
+        candidates.push((
+            bounds_area(metadata.bounds()),
+            cache_dir.join(response_name),
+            path,
+        ));
+    }
+    candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+    for (_, response_path, metadata_path) in candidates {
+        match read_cached_response(&response_path, "legacy")? {
+            Some(mut response) => {
+                cache::note(&metadata_path);
+                response.elements.retain(|element| {
+                    (legacy.accepts)(element)
+                        && element_intersects_bounds(element, requested_bounds)
+                });
+                response.remark = None;
+                return Ok(Some(response));
+            }
+            None => {
+                let _ = fs::remove_file(metadata_path);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn bounds_cover(cached: GeoBounds, requested: GeoBounds) -> bool {
+    let cached_parts = cached.split_at_antimeridian();
+    requested.split_at_antimeridian().iter().all(|requested| {
+        cached_parts.iter().any(|cached| {
+            cached.south <= requested.south
+                && cached.north >= requested.north
+                && cached.west <= requested.west
+                && cached.east >= requested.east
+        })
+    })
+}
+
+fn bounds_area(bounds: GeoBounds) -> f64 {
+    bounds
+        .split_at_antimeridian()
+        .iter()
+        .map(|part| (part.north - part.south) * (part.east - part.west))
+        .sum()
 }
 
 pub(crate) fn merge_responses(responses: Vec<OverpassResponse>) -> OverpassResponse {
@@ -340,15 +515,85 @@ fn geometry_intersects_bounds(points: &[OverpassPoint], bounds: GeoBounds) -> bo
         // -179.9 then spans 179.9..180.1 for the eastern part and
         // -180.1..-179.9 for the western one, instead of looking world-wide.
         let center = (part.west + part.east) * 0.5;
-        let (west, east) =
-            points
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(west, east), point| {
-                    let longitude = center + normalize_longitude(point.lon - center);
-                    (west.min(longitude), east.max(longitude))
-                });
-        east >= part.west && west <= part.east
+        if points
+            .iter()
+            .any(|point| point_inside_bounds(unwrapped_point(*point, center), *part))
+            || points.windows(2).any(|segment| {
+                segment_intersects_bounds(
+                    unwrapped_point(segment[0], center),
+                    unwrapped_point(segment[1], center),
+                    *part,
+                )
+            })
+        {
+            return true;
+        }
+        let closed = points.len() >= 4
+            && points
+                .first()
+                .zip(points.last())
+                .is_some_and(|(first, last)| first.lat == last.lat && first.lon == last.lon);
+        closed && ring_contains_point(points, [center, (part.south + part.north) * 0.5], center)
     })
+}
+
+fn unwrapped_point(point: OverpassPoint, center: f64) -> [f64; 2] {
+    [center + normalize_longitude(point.lon - center), point.lat]
+}
+
+fn point_inside_bounds(point: [f64; 2], bounds: GeoBounds) -> bool {
+    point[0] >= bounds.west
+        && point[0] <= bounds.east
+        && point[1] >= bounds.south
+        && point[1] <= bounds.north
+}
+
+fn segment_intersects_bounds(start: [f64; 2], end: [f64; 2], bounds: GeoBounds) -> bool {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let mut enter: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for (direction, distance) in [
+        (-delta[0], start[0] - bounds.west),
+        (delta[0], bounds.east - start[0]),
+        (-delta[1], start[1] - bounds.south),
+        (delta[1], bounds.north - start[1]),
+    ] {
+        if direction == 0.0 {
+            if distance < 0.0 {
+                return false;
+            }
+            continue;
+        }
+        let ratio = distance / direction;
+        if direction < 0.0 {
+            enter = enter.max(ratio);
+        } else {
+            exit = exit.min(ratio);
+        }
+        if enter > exit {
+            return false;
+        }
+    }
+    true
+}
+
+fn ring_contains_point(ring: &[OverpassPoint], point: [f64; 2], center: f64) -> bool {
+    let mut inside = false;
+    let mut previous = ring.len() - 1;
+    for current in 0..ring.len() {
+        let (a, b) = (
+            unwrapped_point(ring[current], center),
+            unwrapped_point(ring[previous], center),
+        );
+        if (a[1] > point[1]) != (b[1] > point[1]) {
+            let longitude = a[0] + (point[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if point[0] < longitude {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
 }
 
 fn read_cached_response(path: &Path, cache_prefix: &str) -> Result<Option<OverpassResponse>> {
@@ -509,6 +754,58 @@ mod tests {
     }
 
     #[test]
+    fn a_geometry_bounding_box_is_not_treated_as_an_intersection() {
+        let bounds = GeoBounds {
+            south: -0.25,
+            north: 0.25,
+            west: -0.25,
+            east: 0.25,
+        };
+        let bent_around_the_view = vec![
+            OverpassPoint {
+                lat: -1.0,
+                lon: -1.0,
+            },
+            OverpassPoint {
+                lat: 1.0,
+                lon: -1.0,
+            },
+            OverpassPoint { lat: 1.0, lon: 1.0 },
+        ];
+        assert!(!geometry_intersects_bounds(&bent_around_the_view, bounds));
+    }
+
+    #[test]
+    fn a_closed_area_that_contains_the_view_is_kept() {
+        let bounds = GeoBounds {
+            south: -0.25,
+            north: 0.25,
+            west: -0.25,
+            east: 0.25,
+        };
+        let surrounding_ring = vec![
+            OverpassPoint {
+                lat: -1.0,
+                lon: -1.0,
+            },
+            OverpassPoint {
+                lat: -1.0,
+                lon: 1.0,
+            },
+            OverpassPoint { lat: 1.0, lon: 1.0 },
+            OverpassPoint {
+                lat: 1.0,
+                lon: -1.0,
+            },
+            OverpassPoint {
+                lat: -1.0,
+                lon: -1.0,
+            },
+        ];
+        assert!(geometry_intersects_bounds(&surrounding_ring, bounds));
+    }
+
+    #[test]
     fn merging_tiles_deduplicates_ids_and_keeps_the_richer_copy() {
         let sparse = point(42, 46.8, -121.8);
         let mut rich = sparse.clone();
@@ -544,6 +841,7 @@ mod tests {
         let response = fetch_tiled_response(
             &root,
             layer,
+            LegacyCache::new(&[]),
             bounds,
             |_| panic!("a complete empty cache must not reach Overpass"),
             None,
@@ -554,17 +852,95 @@ mod tests {
     }
 
     #[test]
+    fn a_covering_legacy_bundle_response_still_serves_offline() {
+        let root =
+            std::env::temp_dir().join(format!("toposaic-osm-legacy-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let requested = GeoBounds::around(46.8523, -121.7603, 0.25);
+        let cached = GeoBounds::around(46.8523, -121.7603, 2.0);
+        let response_name = "roads-v2-major-deadbeef.json";
+        let response_path = root.join(response_name);
+        cache::store(
+            &response_path,
+            &serde_json::to_vec(&OverpassResponse {
+                elements: vec![point(42, 46.8523, -121.7603)],
+                remark: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        cache::store(
+            &root.join(format!("{response_name}.meta")),
+            &serde_json::to_vec(&LegacyCacheMetadata {
+                version: 1,
+                south: cached.south,
+                north: cached.north,
+                west: cached.west,
+                east: cached.east,
+                query_variant_hash: 0,
+                response_file: response_name.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response = fetch_tiled_response(
+            &root,
+            TileLayer::new("roads-v3-major", 10),
+            LegacyCache::new(&["roads-v2-major"]),
+            requested,
+            |_| panic!("a covering legacy response must not reach Overpass"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response.elements.len(), 1);
+        assert_eq!(response.elements[0].id, 42);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancelled_preview_never_queues_an_overpass_request() {
         let cancelled = AtomicBool::new(true);
         let error = fetch_tiled_response(
             Path::new("/unused"),
             TileLayer::new("test-v1", 10),
+            LegacyCache::new(&[]),
             GeoBounds::around(46.8523, -121.7603, 0.25),
             |_| panic!("a cancelled preview must not build a query"),
             Some(&cancelled),
         )
         .unwrap_err();
         assert!(error.to_string().contains("preview superseded"));
+    }
+
+    #[test]
+    fn cancellation_after_a_download_skips_tile_splitting() {
+        let root = std::env::temp_dir().join(format!(
+            "toposaic-osm-cancelled-split-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let layer = TileLayer::new("test-v1", 10);
+        let tile = Tile {
+            zoom: 10,
+            x: 164,
+            y: 353,
+        };
+        let cancelled = AtomicBool::new(true);
+        let error = cache_downloaded_tiles(
+            &root,
+            layer,
+            &[tile],
+            &[tile.bounds()],
+            &OverpassResponse {
+                elements: vec![point(42, 46.8, -121.8)],
+                remark: None,
+            },
+            Some(&cancelled),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("preview superseded"));
+        assert!(!tile_cache_path(&root, layer, tile).exists());
     }
 
     #[test]
