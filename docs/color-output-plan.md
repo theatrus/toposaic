@@ -102,9 +102,11 @@ SurfaceField = classified raster plus indexed vector lines and areas
 ColorOutputSpec = enabled, palette, minimum patch size, side color
 ```
 
-The API fetches land-cover tiles and caches Overpass road, trail, water, and
-building responses beside the elevation cache. The job manifest records each
-data set, license, source URL, and class mapping.
+The API fetches land-cover tiles and caches fixed Overpass tiles for roads,
+trails, water, rail, ferries, airports, and buildings beside the elevation
+cache. Road detail tiers stay separate, so a close view can add streets and
+paths while reusing its major-road tiles. The job manifest records each tile,
+license, source URL, and class mapping.
 
 Mesh generation classifies top triangles in global assembled coordinates. This
 keeps color boundaries continuous across neighboring pieces. Bottom and side

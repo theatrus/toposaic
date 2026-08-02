@@ -24,6 +24,7 @@ mod grid;
 mod http;
 mod imagery;
 mod jobs;
+mod osm;
 mod settings;
 mod setups;
 mod sources;
@@ -166,23 +167,21 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     Ok(())
 }
 
-/// The road cache prefixes moved to roads-v2-*, and the rail ones to
-/// rail-v2-* when railways and aerialways split into separate fetches — a
-/// rail-v1 response carried both key families, so it can never answer a
-/// railway-only request. Files with any of the retired prefixes can never be
-/// read again, so drop them once at startup instead of letting them sit in
-/// the cache forever.
+/// Overpass data now lives below `osm/tiles`. Every old cache response was
+/// keyed by an exact bounding box and sat as a file directly below `osm`, so
+/// no current fetch can read it. Drop those retired files at startup rather
+/// than counting dead data forever; the nested tile directory stays intact.
 fn sweep_legacy_osm_cache(map_cache_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(map_cache_dir.join("osm")) else {
         return;
     };
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let legacy = (name.starts_with("roads-") && !name.starts_with("roads-v2-"))
-            || name.starts_with("trails-")
-            || name.starts_with("rail-v1-");
-        if legacy && let Err(error) = std::fs::remove_file(entry.path()) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file()
+            && let Err(error) = std::fs::remove_file(entry.path())
+        {
             warn!(
                 %error,
                 file = %entry.path().display(),
@@ -237,4 +236,29 @@ pub(crate) fn canonical_uuid(id: &str) -> Option<String> {
     uuid::Uuid::parse_str(id)
         .ok()
         .map(|value| value.hyphenated().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osm_cache_migration_removes_bbox_files_and_keeps_tiles() {
+        let root = std::env::temp_dir().join(format!(
+            "toposaic-osm-migration-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let osm = root.join("osm");
+        let legacy = osm.join("roads-v2-old.json");
+        let tile = osm.join("tiles/roads-v3-major/10/164/353.json");
+        std::fs::create_dir_all(tile.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, b"old").unwrap();
+        std::fs::write(&tile, b"current").unwrap();
+
+        sweep_legacy_osm_cache(&root);
+
+        assert!(!legacy.exists());
+        assert!(tile.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

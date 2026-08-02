@@ -667,21 +667,25 @@ detail along each wall instead of a blocky whole-map sampling edge.
 
 The service caches elevation, ESA WorldCover, Sentinel-2 imagery,
 OpenStreetMap, and NOAA tide-station input under the operating system's user
-cache directory. OpenStreetMap entries keep the raw response, so width,
-density, color, and visibility changes reuse the same download. A cached
-response for a larger area also serves a smaller nested view when the
-layer and feature filters match; TopoSaic trims it to the new bounds before
-applying density or waterway cutoffs. The settings pane lists each kind on its
-own and clears by age or all at once.
+cache directory. OpenStreetMap data uses fixed geographic tiles, so panning,
+zooming, rotating the outline, and neighboring super tiles reuse their shared
+area. Roads use separate major, minor, street, and path tile sets: a close
+view adds local detail without fetching the major network again. Water,
+coastlines, railways, aerialways, ferries, airports, and buildings use the same
+tiled cache. Width, density, color, and visibility changes reuse the downloaded
+geometry. The settings pane lists each kind on its own and clears by age or all
+at once.
 
 For uncached requests, the service tries a second public Overpass instance when
 the first rejects or cannot serve the request. If both fail, generation
 continues without that OSM layer. WorldCover water and terrain output remain
-available. Concurrent jobs share each cache fill, and the service tries the
-last working public instance first on its next request. It retries a failed
-fetch once and rejects HTTP 200 responses that contain an Overpass timeout
-remark, so it never caches a partial building set. Set `OVERPASS_BASE_URL` to
-use one specific Overpass instance.
+available. Missing tiles are grouped into bounded requests instead of sent as
+a burst, and empty tiles are cached as valid results. Concurrent jobs recheck
+the cache after the shared request lock, and the service tries the last working
+public instance first on its next request. It retries a failed fetch once and
+rejects HTTP 200 responses that contain an Overpass timeout remark, so it never
+caches a partial layer. Set `OVERPASS_BASE_URL` to use one specific Overpass
+instance.
 
 ### Source bundles
 
@@ -883,8 +887,8 @@ Downloaded map inputs use the standard per-user cache path:
 
 Set `TOPOSAIC_CACHE_DIR` to override that path. The cache keeps Mapzen elevation
 PNGs, Mapterhorn elevation WebPs, full ESA WorldCover GeoTIFF tiles, and
-OpenStreetMap route responses. Writes use a temporary file and an atomic rename,
-so a stopped download does not leave a valid-looking partial tile.
+OpenStreetMap vector tiles. Writes use a temporary file and an atomic rename, so
+a stopped download does not leave a valid-looking partial tile.
 
 The browser uses `NEXT_PUBLIC_TOPOSAIC_API_URL` when set. See `.env.example`.
 The old `TERRAIN_*` names still work, so existing setups do not break.

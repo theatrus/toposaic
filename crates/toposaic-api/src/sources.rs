@@ -459,7 +459,7 @@ mod tests {
         let target_cache = root.join("target-cache");
         write(&source_cache.join("elevation/8/1/2.png"), b"tile-bytes");
         write(
-            &source_cache.join("osm/roads-v2-abc.json"),
+            &source_cache.join("osm/tiles/roads-v3-major/10/164/353.json"),
             b"{\"elements\":[]}",
         );
         write(&source_cache.join("world-cover/tile-a.tif"), b"geotiff");
@@ -471,7 +471,7 @@ mod tests {
                     bytes: 10,
                 },
                 SourceFile {
-                    path: "osm/roads-v2-abc.json".into(),
+                    path: "osm/tiles/roads-v3-major/10/164/353.json".into(),
                     bytes: 15,
                 },
                 SourceFile {
@@ -596,7 +596,7 @@ mod tests {
             "elevation/8/1/2.png",
             "elevation/mapterhorn/8/1/2.webp",
             "world-cover/tile-a.tif",
-            "osm/roads-v2-a.json",
+            "osm/tiles/roads-v3-major/10/164/353.json",
             "imagery/s2rgbnir-a.bin",
             "datum/coops-stations-v1.json",
         ] {

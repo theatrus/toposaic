@@ -37,7 +37,7 @@ src-tauri ------------------------------------+
 - Change job storage in `crates/toposaic-api/src/database.rs`.
 - Change place search in `crates/toposaic-api/src/geocoding.rs`.
 - Change downloaded elevation or surface data in
-  `crates/toposaic-api/src/elevation.rs` or
+  `crates/toposaic-api/src/elevation.rs`, `crates/toposaic-api/src/osm.rs`, or
   `crates/toposaic-api/src/surface.rs`.
 - Change generated mesh or 3MF output in `crates/toposaic-core/src/lib.rs`.
 
@@ -59,6 +59,8 @@ src-tauri ------------------------------------+
 | Update checks and install flow | `app/updates` |
 | SQLite schema and job storage | `crates/toposaic-api/src/database.rs` |
 | Place search and its cache | `crates/toposaic-api/src/geocoding.rs` |
+| OpenStreetMap tile selection, fetching, and cache merging | `crates/toposaic-api/src/osm.rs` |
+| OpenStreetMap query filters and surface painting | `crates/toposaic-api/src/surface.rs` |
 | Runtime settings | `crates/toposaic-api/src/settings.rs` |
 | Web-only setup | `app/layout.tsx` or the root web build files |
 | Desktop-only setup | `desktop` or `src-tauri` |
