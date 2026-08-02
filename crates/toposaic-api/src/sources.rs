@@ -41,7 +41,8 @@ const BUNDLE_DATA_PREFIX: &str = "cache/";
 /// Bumped when the layout changes in a way an older reader would get wrong.
 /// An importer that meets a version it does not know refuses the file rather
 /// than guessing at its shape.
-const BUNDLE_VERSION: u32 = 1;
+const BUNDLE_VERSION: u32 = 2;
+const OLDEST_SUPPORTED_BUNDLE_VERSION: u32 = 1;
 
 /// Cache subdirectories a bundle may carry, and so the only places an import
 /// will write. Deliberately the same set the cache summary reports, minus
@@ -296,10 +297,11 @@ pub fn import_bundle<R: Read + std::io::Seek>(
             .context("read the bundle manifest")?;
         serde_json::from_str(&text).context("parse the bundle manifest")?
     };
-    if manifest.version != BUNDLE_VERSION {
+    if !(OLDEST_SUPPORTED_BUNDLE_VERSION..=BUNDLE_VERSION).contains(&manifest.version) {
         bail!(
-            "this bundle is version {}, and this build reads version {BUNDLE_VERSION}",
-            manifest.version
+            "this bundle is version {}, and this build reads versions \
+             {OLDEST_SUPPORTED_BUNDLE_VERSION} through {BUNDLE_VERSION}",
+            manifest.version,
         );
     }
 
@@ -459,7 +461,7 @@ mod tests {
         let target_cache = root.join("target-cache");
         write(&source_cache.join("elevation/8/1/2.png"), b"tile-bytes");
         write(
-            &source_cache.join("osm/roads-v2-abc.json"),
+            &source_cache.join("osm/tiles/roads-v3-major/10/164/353.json"),
             b"{\"elements\":[]}",
         );
         write(&source_cache.join("world-cover/tile-a.tif"), b"geotiff");
@@ -471,7 +473,7 @@ mod tests {
                     bytes: 10,
                 },
                 SourceFile {
-                    path: "osm/roads-v2-abc.json".into(),
+                    path: "osm/tiles/roads-v3-major/10/164/353.json".into(),
                     bytes: 15,
                 },
                 SourceFile {
@@ -501,6 +503,48 @@ mod tests {
             fs::read(target_cache.join("world-cover/tile-a.tif")).unwrap(),
             b"geotiff"
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_version_one_bundle_is_still_accepted() {
+        let root = temporary_dir();
+        let cache = root.join("cache");
+        let mut buffer = Vec::new();
+        {
+            let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let manifest = BundleManifest {
+                version: 1,
+                place_name: "Legacy".into(),
+                files: vec![SourceFile {
+                    path: "osm/roads-v2-major-deadbeef.json".into(),
+                    bytes: 15,
+                }],
+                categories: BTreeMap::from([("osm".into(), 1)]),
+                data_sources: Vec::new(),
+            };
+            zip.start_file(BUNDLE_MANIFEST_NAME, options).unwrap();
+            zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+                .unwrap();
+            zip.start_file(BUNDLE_SETUP_NAME, options).unwrap();
+            zip.write_all(&serde_json::to_vec(&sample_spec()).unwrap())
+                .unwrap();
+            zip.start_file(
+                format!("{BUNDLE_DATA_PREFIX}osm/roads-v2-major-deadbeef.json"),
+                options,
+            )
+            .unwrap();
+            zip.write_all(br#"{"elements":[]}"#).unwrap();
+            zip.finish().unwrap();
+        }
+
+        let (report, restored) = import_bundle(Cursor::new(&buffer), &cache).unwrap();
+        assert_eq!(report.added, 1);
+        assert_eq!(restored.place_name, "Mount Rainier");
+        assert!(cache.join("osm/roads-v2-major-deadbeef.json").is_file());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -596,7 +640,7 @@ mod tests {
             "elevation/8/1/2.png",
             "elevation/mapterhorn/8/1/2.webp",
             "world-cover/tile-a.tif",
-            "osm/roads-v2-a.json",
+            "osm/tiles/roads-v3-major/10/164/353.json",
             "imagery/s2rgbnir-a.bin",
             "datum/coops-stations-v1.json",
         ] {

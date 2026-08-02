@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tokio::{net::TcpListener, sync::Mutex as AsyncMutex};
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn};
+use tracing::info;
 
 mod cache;
 mod database;
@@ -24,6 +24,7 @@ mod grid;
 mod http;
 mod imagery;
 mod jobs;
+mod osm;
 mod settings;
 mod setups;
 mod sources;
@@ -93,7 +94,6 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
         .with_context(|| format!("create jobs directory {}", jobs_dir.display()))?;
     std::fs::create_dir_all(&map_cache_dir)
         .with_context(|| format!("create map cache directory {}", map_cache_dir.display()))?;
-    sweep_legacy_osm_cache(&map_cache_dir);
     let connection = Connection::open(data_dir.join("toposaic.sqlite3"))?;
     migrate(&connection)?;
     let geocoder = http::async_client(Duration::from_secs(12))?;
@@ -164,32 +164,6 @@ pub async fn run_with(data_dir: PathBuf, address: String) -> Result<()> {
     );
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// The road cache prefixes moved to roads-v2-*, and the rail ones to
-/// rail-v2-* when railways and aerialways split into separate fetches — a
-/// rail-v1 response carried both key families, so it can never answer a
-/// railway-only request. Files with any of the retired prefixes can never be
-/// read again, so drop them once at startup instead of letting them sit in
-/// the cache forever.
-fn sweep_legacy_osm_cache(map_cache_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(map_cache_dir.join("osm")) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let legacy = (name.starts_with("roads-") && !name.starts_with("roads-v2-"))
-            || name.starts_with("trails-")
-            || name.starts_with("rail-v1-");
-        if legacy && let Err(error) = std::fs::remove_file(entry.path()) {
-            warn!(
-                %error,
-                file = %entry.path().display(),
-                "could not remove a legacy OpenStreetMap cache entry"
-            );
-        }
-    }
 }
 
 async fn health() -> Json<Health> {
