@@ -23,9 +23,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use toposaic_core::{
-    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, SurfaceField, artifact_path,
-    generate_marker_artifacts, generate_project_with_fields_cancellable, generate_tray_artifacts,
-    height_frame_for_bounds,
+    Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, PreviewDetail, SurfaceField,
+    artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
+    generate_tray_artifacts, height_frame_for_bounds,
 };
 use tracing::{error, info};
 use uuid::Uuid;
@@ -83,6 +83,7 @@ pub(crate) struct JobPiece {
 }
 
 const PREVIEW_STREAM_CONTENT_TYPE: &str = "application/x-ndjson";
+const PREVIEW_DETAIL_HEADER: &str = "x-toposaic-preview-detail";
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -177,6 +178,7 @@ pub(crate) async fn create_preview(
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
     spec.validate()
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
+    let preview_detail = preview_detail(&headers)?;
     let cancellation = begin_preview(&state).map_err(internal_error)?;
     let map_cache_dir = state.map_cache_dir.clone();
     let wants_stream = headers
@@ -193,6 +195,7 @@ pub(crate) async fn create_preview(
                 &spec,
                 &map_cache_dir,
                 &worker_cancellation,
+                preview_detail,
                 |stage, label, progress| {
                     send_preview_event(
                         &sender,
@@ -234,13 +237,13 @@ pub(crate) async fn create_preview(
     let worker_state = state.clone();
     let worker_cancellation = cancellation.clone();
     let preview = tokio::task::spawn_blocking(move || {
-        let result =
-            catch_live_preview(
-                &spec,
-                &map_cache_dir,
-                &worker_cancellation,
-                |_, _, _| Ok(()),
-            );
+        let result = catch_live_preview(
+            &spec,
+            &map_cache_dir,
+            &worker_cancellation,
+            preview_detail,
+            |_, _, _| Ok(()),
+        );
         finish_preview(&worker_state, &worker_cancellation);
         result
     })
@@ -254,10 +257,11 @@ fn catch_live_preview(
     spec: &GenerationSpec,
     map_cache_dir: &std::path::Path,
     cancellation: &AtomicBool,
+    detail: PreviewDetail,
     on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
     match catch_unwind(AssertUnwindSafe(|| {
-        run_live_preview(spec, map_cache_dir, cancellation, on_progress)
+        run_live_preview(spec, map_cache_dir, cancellation, detail, on_progress)
     })) {
         Ok(result) => result,
         Err(payload) => Err(anyhow::anyhow!(panic_message(payload))),
@@ -268,10 +272,11 @@ fn run_live_preview(
     spec: &GenerationSpec,
     map_cache_dir: &std::path::Path,
     cancellation: &AtomicBool,
+    detail: PreviewDetail,
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
-    let mut preview_spec = toposaic_core::model_preview_spec(spec);
-    let samples = 128;
+    let mut preview_spec = toposaic_core::model_preview_spec(spec, detail);
+    let samples = detail.sample_grid();
     let mut last_elevation_progress = 0;
     on_progress("elevation", "Loading elevation tiles", 4)?;
     let mut height_field = elevation::fetch_preview_height_field_with_progress(
@@ -321,10 +326,26 @@ fn run_live_preview(
         &height_field,
         surface_field.as_ref(),
         samples,
+        detail,
     )?;
     ensure_preview_active(cancellation)?;
     on_progress("model", "Preparing 3D scene", 96)?;
     Ok(preview)
+}
+
+fn preview_detail(headers: &HeaderMap) -> Result<PreviewDetail, (StatusCode, Json<ApiError>)> {
+    let Some(value) = headers.get(PREVIEW_DETAIL_HEADER) else {
+        return Ok(PreviewDetail::Fast);
+    };
+    match value.to_str().ok() {
+        Some("fast") => Ok(PreviewDetail::Fast),
+        Some("detailed") => Ok(PreviewDetail::Detailed),
+        Some("high") => Ok(PreviewDetail::High),
+        _ => Err(api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("preview detail must be fast, detailed, or high"),
+        )),
+    }
 }
 
 fn begin_preview(state: &AppState) -> Result<Arc<AtomicBool>> {
@@ -1531,6 +1552,24 @@ mod tests {
         assert_eq!(mesh_job_progress(0.0), 65);
         assert_eq!(mesh_job_progress(0.5), 82);
         assert_eq!(mesh_job_progress(1.0), 99);
+    }
+
+    #[test]
+    fn preview_detail_header_selects_quality_and_rejects_unknown_values() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::Fast);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("detailed"));
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::Detailed);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("high"));
+        assert_eq!(preview_detail(&headers).unwrap(), PreviewDetail::High);
+
+        headers.insert(PREVIEW_DETAIL_HEADER, HeaderValue::from_static("huge"));
+        assert_eq!(
+            preview_detail(&headers).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]

@@ -469,6 +469,7 @@ a {
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   display: grid;
+  gap: 12px;
   padding: 10px;
   position: absolute;
   right: 0;
@@ -477,11 +478,18 @@ a {
   z-index: 30;
 }
 
+.settings-section,
 .settings-cache {
   display: grid;
   gap: 8px;
 }
 
+.settings-section + .settings-cache {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.settings-section h2,
 .settings-cache h2 {
   color: var(--moss);
   font-size: 9px;
@@ -489,6 +497,24 @@ a {
   letter-spacing: 0.06em;
   margin: 0;
   text-transform: uppercase;
+}
+
+.settings-preview-detail {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 9px;
+  gap: 8px;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-preview-detail select {
+  font-size: 11px;
+  min-width: 124px;
+  padding: 5px 24px 5px 7px;
+  text-transform: none;
 }
 
 .settings-cache-rows {
@@ -564,6 +590,7 @@ a {
 }
 
 .settings-clear-row select:focus-visible,
+.settings-preview-detail select:focus-visible,
 .settings-clear-row button:focus-visible {
   outline: 2px solid var(--moss);
   outline-offset: 2px;

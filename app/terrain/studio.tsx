@@ -24,7 +24,12 @@ import {
   checkSignedUpdateVersion,
   downloadAndInstallSignedUpdate,
 } from "../updates/desktop";
-import { IS_TAURI, terrainApi, type PreviewProgress } from "./api";
+import {
+  IS_TAURI,
+  terrainApi,
+  type PreviewDetail,
+  type PreviewProgress,
+} from "./api";
 import { ExternalLink } from "./external-link";
 import {
   DEFAULT_DOT_MARKER_STYLE,
@@ -114,6 +119,7 @@ const MAP_SHARE_KEYBOARD_STEP = 4;
 const VISUAL_RESIZER_WIDTH_PX = 14;
 
 const SETUPS_EXPORT_VERSION = 1;
+const PREVIEW_DETAIL_STORAGE_KEY = "toposaic-preview-detail";
 
 type SetupsExport = {
   version: number;
@@ -152,6 +158,10 @@ function isImportableSetup(
   );
 }
 
+function previewKey(spec: GenerationSpec, detail: PreviewDetail) {
+  return JSON.stringify([detail, spec]);
+}
+
 const ADJACENT_GRID_SIZES = Array.from(
   { length: MAX_SUPER_TILE_SIDE },
   (_, index) => index + 1,
@@ -182,6 +192,16 @@ export function TerrainStudio() {
   const [visualHeightPercent, setVisualHeightPercent] = useState(
     DEFAULT_VISUAL_HEIGHT_PERCENT,
   );
+  const [previewDetail, setPreviewDetail] = useState<PreviewDetail>(() => {
+    if (typeof window === "undefined") return "fast";
+    try {
+      const saved = window.localStorage.getItem(PREVIEW_DETAIL_STORAGE_KEY);
+      if (saved === "detailed" || saved === "high") return saved;
+    } catch {
+      // Storage may be unavailable in a locked-down browser.
+    }
+    return "fast";
+  });
   const [activeSection, setActiveSection] =
     useState<GenerationControlTab>("model");
   const [markerPlacementKind, setMarkerPlacementKind] =
@@ -278,6 +298,16 @@ export function TerrainStudio() {
   // "__first" focuses the first enabled item; a setup id focuses that row.
   const setupFocusRef = useRef<string | null>(null);
   const skipSetupNameBlurRef = useRef(false);
+
+  const changePreviewDetail = useCallback((detail: PreviewDetail) => {
+    setPreviewDetail(detail);
+    setGeneratedPreview(null);
+    try {
+      window.localStorage.setItem(PREVIEW_DETAIL_STORAGE_KEY, detail);
+    } catch {
+      // The choice still lasts for this session when storage is unavailable.
+    }
+  }, []);
 
   useEffect(() => {
     if (seededInitialSetup.current) return;
@@ -1054,7 +1084,7 @@ export function TerrainStudio() {
   useEffect(() => {
     const controller = new AbortController();
     previewAbortRef.current = controller;
-    const previewSpecKey = JSON.stringify(spec);
+    const previewSpecKey = previewKey(spec, previewDetail);
     const requestId = ++previewRequestIdRef.current;
     const timer = window.setTimeout(async () => {
       if (
@@ -1084,6 +1114,7 @@ export function TerrainStudio() {
             }
             setPreviewActivity({ ...progress, specKey: previewSpecKey });
           },
+          previewDetail,
         );
         if (
           controller.signal.aborted ||
@@ -1125,15 +1156,15 @@ export function TerrainStudio() {
         previewAbortRef.current = null;
       }
     };
-  }, [spec]);
+  }, [previewDetail, spec]);
 
   const cancelPreview = useCallback(() => {
     previewRequestIdRef.current += 1;
     previewAbortRef.current?.abort();
     previewAbortRef.current = null;
-    setPreviewCanceledSpecKey(JSON.stringify(spec));
+    setPreviewCanceledSpecKey(previewKey(spec, previewDetail));
     setPreviewActivity(null);
-  }, [spec]);
+  }, [previewDetail, spec]);
 
   const searchPlaces = async () => {
     const query = placeQuery.trim();
@@ -1948,7 +1979,7 @@ export function TerrainStudio() {
       model_preview_error: elevationPreview?.model_preview_error,
     };
   }, [elevationPreview, generatedPreview]);
-  const currentSpecKey = JSON.stringify(spec);
+  const currentSpecKey = previewKey(spec, previewDetail);
   const previewPaused = previewCanceledSpecKey === currentSpecKey;
   const previewStale =
     elevationPreview !== null &&
@@ -2352,7 +2383,10 @@ export function TerrainStudio() {
               type="file"
             />
           </div>
-          <SettingsMenu />
+          <SettingsMenu
+            onPreviewDetailChange={changePreviewDetail}
+            previewDetail={previewDetail}
+          />
           {availableUpdate && !updateDismissed && (
             <aside
               className={`update-notice ${availableUpdate.urgency}`}

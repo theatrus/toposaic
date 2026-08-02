@@ -337,9 +337,12 @@ best suits 0.2 mm nozzles, resin printing, or small high-detail terrain areas.
 Vector roads, waterways, and building edges add local points where they need
 them.
 
-After a setting has been still for 350 ms, the live preview reads a 128×128
-elevation sample and builds a lower-detail model with the same Rust mesh code
-as export. It shows puzzle cuts, solid outlines, buildings, bridges, labels,
+After a setting has been still for 350 ms, the live preview builds a model with
+the same Rust mesh code as export. Settings offers Fast, Detailed, and High
+detail levels. Fast keeps the 128×128 elevation pass and light mesh; Detailed
+and High raise the terrain, overlay, and source sample counts within bounded
+live-view limits. The choice affects only the live view, not generated files.
+The preview shows puzzle cuts, solid outlines, buildings, bridges, labels,
 mount cuts, mapped overlays, and the fitted or split tray before Generate runs.
 The last good model stays visible while a new draft is built, and all input
 downloads use the same cache as generation. The preview names each elevation,

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::heightfield::{HeightField, height_range_for_spec, normalized_height};
 use crate::mesh::Mesh;
@@ -13,6 +13,28 @@ use crate::tray::{build_preview_tray_segments, terrain_origin_in_tray, tray_segm
 
 const MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE: u32 = 16;
 const MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE: u32 = 32;
+const DETAILED_MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE: u32 = 32;
+const DETAILED_MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE: u32 = 64;
+const HIGH_MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE: u32 = 48;
+const HIGH_MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE: u32 = 96;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PreviewDetail {
+    Fast,
+    Detailed,
+    High,
+}
+
+impl PreviewDetail {
+    pub const fn sample_grid(self) -> usize {
+        match self {
+            Self::Fast => 128,
+            Self::Detailed => 192,
+            Self::High => 256,
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct ModelPreviewMesh {
@@ -63,16 +85,34 @@ pub fn build_height_preview(
     ))
 }
 
-/// Keeps every model choice while lowering only sampling work for the live
-/// background pass. Data fetching and mesh construction must use the same
-/// draft spec or thin overlays can vanish between the two grids.
-pub fn model_preview_spec(spec: &GenerationSpec) -> GenerationSpec {
+/// Keeps every model choice while using the chosen bounded sample budget for
+/// the live background pass. Data fetching and mesh construction must use the
+/// same draft spec or thin overlays can vanish between the two grids.
+pub fn model_preview_spec(spec: &GenerationSpec, detail: PreviewDetail) -> GenerationSpec {
     let mut draft = spec.clone();
-    draft.samples_per_piece = MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE;
-    draft.overlay_samples_per_piece = MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE;
-    draft.mesh_samples_across = None;
-    draft.overlay_samples_across = None;
-    draft.fine_dem_detail = false;
+    match detail {
+        PreviewDetail::Fast => {
+            draft.samples_per_piece = MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE;
+            draft.overlay_samples_per_piece = MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE;
+            draft.mesh_samples_across = None;
+            draft.overlay_samples_across = None;
+            draft.fine_dem_detail = false;
+        }
+        PreviewDetail::Detailed => {
+            draft.samples_per_piece = DETAILED_MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE;
+            draft.overlay_samples_per_piece = DETAILED_MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE;
+            draft.mesh_samples_across = None;
+            draft.overlay_samples_across = None;
+            draft.fine_dem_detail = false;
+        }
+        PreviewDetail::High => {
+            draft.samples_per_piece = HIGH_MODEL_PREVIEW_TERRAIN_SAMPLES_PER_PIECE;
+            draft.overlay_samples_per_piece = HIGH_MODEL_PREVIEW_OVERLAY_SAMPLES_PER_PIECE;
+            draft.mesh_samples_across = None;
+            draft.overlay_samples_across = None;
+            draft.fine_dem_detail = false;
+        }
+    }
     draft
 }
 
@@ -87,15 +127,16 @@ pub fn build_model_preview(
     height_field: &HeightField,
     surface_field: Option<&SurfaceField>,
     size: usize,
+    detail: PreviewDetail,
 ) -> Result<serde_json::Value> {
     spec.validate()?;
-    let draft = model_preview_spec(spec);
+    let draft = model_preview_spec(spec, detail);
 
     let mut preview = build_preview(
         &draft,
         Some(height_field),
         surface_field,
-        size.clamp(32, 192),
+        size.clamp(32, detail.sample_grid()),
     );
     let model_geometry = (|| -> Result<(Vec<ModelPreviewMesh>, [f32; 6], [f32; 4])> {
         let height_range = height_range_for_spec(&draft, Some(height_field));
@@ -514,7 +555,8 @@ mod tests {
             SurfaceField::new(33, 33, vec![SurfaceClass::Rock; 33 * 33], "surface").unwrap();
         surface.paint_building(&[[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]], 12.0);
 
-        let preview = build_model_preview(&spec, &height, Some(&surface), 64).unwrap();
+        let preview =
+            build_model_preview(&spec, &height, Some(&surface), 64, PreviewDetail::Fast).unwrap();
         let meshes = preview["model_meshes"].as_array().unwrap();
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0]["kind"], "terrain");
@@ -561,7 +603,8 @@ mod tests {
             SurfaceClass::Marker,
         );
 
-        let preview = build_model_preview(&spec, &height, Some(&surface), 64).unwrap();
+        let preview =
+            build_model_preview(&spec, &height, Some(&surface), 64, PreviewDetail::Fast).unwrap();
         let materials = preview["model_meshes"][0]["materials"].as_array().unwrap();
         assert!(materials.iter().any(|material| {
             material.as_u64() == Some(u64::from(SurfaceClass::Marker.material_index()))
@@ -589,7 +632,7 @@ mod tests {
         spec.tray.contours_enabled = false;
         let height = HeightField::new(33, 33, vec![0.0; 33 * 33], "height").unwrap();
 
-        let preview = build_model_preview(&spec, &height, None, 64).unwrap();
+        let preview = build_model_preview(&spec, &height, None, 64, PreviewDetail::Fast).unwrap();
         let meshes = preview["model_meshes"].as_array().unwrap();
         assert!(meshes.iter().any(|mesh| mesh["kind"] == "terrain"));
         assert!(meshes.iter().any(|mesh| mesh["kind"] == "tray"));
@@ -616,7 +659,7 @@ mod tests {
         spec.overlay_samples_across = Some(2_048);
         spec.fine_dem_detail = true;
 
-        let draft = model_preview_spec(&spec);
+        let draft = model_preview_spec(&spec, PreviewDetail::Fast);
         assert!(draft.color_output.enabled);
         assert!(draft.color_output.roads_enabled);
         assert!(draft.buildings.enabled);
@@ -626,6 +669,23 @@ mod tests {
         assert_eq!(draft.mesh_samples_across, None);
         assert_eq!(draft.overlay_samples_across, None);
         assert!(!draft.fine_dem_detail);
+
+        let detailed = model_preview_spec(&spec, PreviewDetail::Detailed);
+        assert_eq!(detailed.samples_per_piece, 32);
+        assert_eq!(detailed.overlay_samples_per_piece, 64);
+        assert_eq!(detailed.mesh_samples_across, None);
+        assert_eq!(detailed.overlay_samples_across, None);
+        assert!(!detailed.fine_dem_detail);
+
+        let high = model_preview_spec(&spec, PreviewDetail::High);
+        assert_eq!(high.samples_per_piece, 48);
+        assert_eq!(high.overlay_samples_per_piece, 96);
+        assert_eq!(high.mesh_samples_across, None);
+        assert_eq!(high.overlay_samples_across, None);
+        assert!(!high.fine_dem_detail);
+        assert_eq!(PreviewDetail::Fast.sample_grid(), 128);
+        assert_eq!(PreviewDetail::Detailed.sample_grid(), 192);
+        assert_eq!(PreviewDetail::High.sample_grid(), 256);
     }
 
     #[test]
@@ -638,7 +698,7 @@ mod tests {
         spec.tray.enabled = true;
         let height = HeightField::new(129, 129, vec![0.0; 129 * 129], "height").unwrap();
 
-        let preview = build_model_preview(&spec, &height, None, 128).unwrap();
+        let preview = build_model_preview(&spec, &height, None, 128, PreviewDetail::Fast).unwrap();
         assert_eq!(preview["model_meshes"].as_array().unwrap().len(), 101);
         let bytes = serde_json::to_vec(&preview).unwrap().len();
         assert!(

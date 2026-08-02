@@ -100,6 +100,8 @@ export type PreviewProgress = {
   progress: number;
 };
 
+export type PreviewDetail = "fast" | "detailed" | "high";
+
 type PreviewStreamEvent =
   | ({ type: "progress" } & PreviewProgress)
   | { type: "complete"; preview: PreviewData }
@@ -110,12 +112,14 @@ async function previewRequest(
   spec: GenerationSpec,
   signal?: AbortSignal,
   onProgress?: (progress: PreviewProgress) => void,
+  detail: PreviewDetail = "fast",
 ) {
   const response = await fetch(`${API_URL}/api/preview`, {
     method: "POST",
     headers: {
       accept: "application/x-ndjson",
       "content-type": "application/json",
+      "x-toposaic-preview-detail": detail,
     },
     body: JSON.stringify(spec),
     signal,
@@ -183,8 +187,9 @@ export const terrainApi = {
     spec: GenerationSpec,
     signal?: AbortSignal,
     onProgress?: (progress: PreviewProgress) => void,
+    detail: PreviewDetail = "fast",
   ) {
-    return previewRequest(spec, signal, onProgress);
+    return previewRequest(spec, signal, onProgress, detail);
   },
   searchPlaces(query: string) {
     return requestJson<PlaceResult[]>(

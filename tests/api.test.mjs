@@ -94,6 +94,7 @@ test("preview streams stage progress before returning the model", () => {
   return withFetch(
     async (_url, init) => {
       assert.equal(init?.headers.accept, "application/x-ndjson");
+      assert.equal(init?.headers["x-toposaic-preview-detail"], "fast");
       return new Response(body, {
         status: 200,
         headers: { "content-type": "application/x-ndjson" },

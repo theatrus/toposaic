@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { terrainApi } from "./api";
+import { terrainApi, type PreviewDetail } from "./api";
 import { formatBytes } from "./config";
 import type { CacheCategoryKey, CacheStats } from "./contracts";
 import { useOutsideDismiss } from "./use-outside-dismiss";
@@ -29,7 +29,15 @@ function entriesLabel(count: number) {
   return `${count} ${count === 1 ? "entry" : "entries"}`;
 }
 
-export function SettingsMenu() {
+type SettingsMenuProps = {
+  previewDetail: PreviewDetail;
+  onPreviewDetailChange: (detail: PreviewDetail) => void;
+};
+
+export function SettingsMenu({
+  previewDetail,
+  onPreviewDetailChange,
+}: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [cache, setCache] = useState<
     | { phase: "loading" }
@@ -144,6 +152,26 @@ export function SettingsMenu() {
           ref={paneRef}
           role="dialog"
         >
+          <section aria-label="Live preview" className="settings-section">
+            <h2>Live preview</h2>
+            <label className="settings-preview-detail">
+              Preview detail
+              <select
+                onChange={(event) =>
+                  onPreviewDetailChange(event.target.value as PreviewDetail)
+                }
+                value={previewDetail}
+              >
+                <option value="fast">Fast</option>
+                <option value="detailed">Detailed</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <p className="settings-note">
+              Detailed and High use finer live terrain and overlay meshes.
+              Higher levels take longer and do not change generated files.
+            </p>
+          </section>
           <section aria-label="Map data cache" className="settings-cache">
             <h2>Map data cache</h2>
             {cache.phase === "loading" && (
