@@ -106,6 +106,9 @@ pub struct MeshReport {
     /// millimetres. This is a stable output metric, not a Boolean union of
     /// intentionally embedded terrain and overlay solids.
     pub volume_mm3: f64,
+    /// Signed tetrahedron sum. A negative value exposes a globally inverted
+    /// mesh, which the edge-manifold checks cannot detect.
+    pub signed_volume_mm3: f64,
     /// Triangle counts by printable material, used by geometry references to
     /// catch a layer that vanished or took the wrong filament.
     pub material_triangles: BTreeMap<String, usize>,
@@ -567,6 +570,7 @@ pub(crate) fn analyze_mesh_views(mesh: &Mesh) -> MeshReport {
         bounds_mm,
         surface_area_mm2,
         volume_mm3: signed_volume_mm3.abs(),
+        signed_volume_mm3,
         material_triangles,
         material_surface_area_mm2,
         quantization_collisions: mesh.quantization_collisions.len(),
@@ -862,6 +866,12 @@ mod tests {
             0.01,
         );
         assert_close("volume", report.volume_mm3, 11_737.982_980_065_78, 0.001);
+        assert_close(
+            "signed volume",
+            report.signed_volume_mm3,
+            11_737.982_980_065_78,
+            0.001,
+        );
         for (material, expected) in [
             ("Class(Rock)", 7_967.760_027_306_62),
             ("Class(Road)", 789.849_410_054_868_6),
@@ -882,6 +892,32 @@ mod tests {
             difference <= tolerance,
             "{label} changed by {difference}, expected {expected} +/- {tolerance}, got {actual}"
         );
+    }
+
+    #[test]
+    fn signed_volume_exposes_a_globally_inverted_mesh() {
+        let mesh = Mesh {
+            name: "tetrahedron".into(),
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]],
+            materials: vec![SurfaceClass::Rock.into(); 4],
+            quantization_collisions: Vec::new(),
+        };
+        let mut inverted = mesh.clone();
+        for triangle in &mut inverted.triangles {
+            triangle.swap(1, 2);
+        }
+
+        let normal = analyze_mesh_views(&mesh);
+        let inverted = analyze_mesh_views(&inverted);
+        assert!(normal.signed_volume_mm3 > 0.0);
+        assert!(inverted.signed_volume_mm3 < 0.0);
+        assert_eq!(normal.volume_mm3, inverted.volume_mm3);
     }
 
     #[test]

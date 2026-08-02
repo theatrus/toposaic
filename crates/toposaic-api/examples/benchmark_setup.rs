@@ -1,7 +1,7 @@
 //! Repeats a real saved setup against the normal map cache.
 //!
-//! The first run warms source and prepared-geometry caches. The reported
-//! value is the median of the measured release runs, not the warm-up.
+//! Source data is warmed before timing. The first timed run then measures a
+//! cold prepared-geometry cache, and later runs report the warm-cache median.
 
 use std::{env, fs, path::PathBuf, time::Instant};
 
@@ -37,30 +37,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     fs::create_dir_all(&root)?;
 
-    let mut elapsed = Vec::with_capacity(measured_runs);
-    for run in 0..=measured_runs {
-        let output = root.join(format!("run-{run}"));
+    println!("warming source caches");
+    let mut source_height =
+        fetch_height_field_with_progress(&spec, &cache.join("elevation"), |_| Ok(()))?;
+    let mut source_surface = fetch_surface_field(&spec, &source_height, &cache)?;
+    apply_marine_water(&spec, &mut source_height, &mut source_surface, &cache);
+    drop((source_height, source_surface));
+
+    let run = |label: &str,
+               output: &std::path::Path|
+     -> Result<std::time::Duration, Box<dyn std::error::Error>> {
         let started = Instant::now();
         let mut height =
             fetch_height_field_with_progress(&spec, &cache.join("elevation"), |_| Ok(()))?;
         let mut surface = fetch_surface_field(&spec, &height, &cache)?;
         apply_marine_water(&spec, &mut height, &mut surface, &cache);
-        generate_project_with_fields(&spec, &height, Some(&surface), &output)?;
+        generate_project_with_fields(&spec, &height, Some(&surface), output)?;
         let duration = started.elapsed();
-        println!(
-            "{} run {run}: {:.3}s",
-            if run == 0 { "warm-up" } else { "measured" },
-            duration.as_secs_f64()
-        );
-        fs::remove_dir_all(&output)?;
-        if run > 0 {
-            elapsed.push(duration);
-        }
+        println!("{label}: {:.3}s", duration.as_secs_f64());
+        fs::remove_dir_all(output)?;
+        Ok(duration)
+    };
+
+    let cold = run("cold geometry run", &root.join("cold"))?;
+    let mut elapsed = Vec::with_capacity(measured_runs);
+    for run_index in 1..=measured_runs {
+        elapsed.push(run(
+            &format!("warm geometry run {run_index}"),
+            &root.join(format!("warm-{run_index}")),
+        )?);
     }
     elapsed.sort_unstable();
     let median = elapsed[elapsed.len() / 2];
     println!(
-        "median of {measured_runs} measured runs: {:.3}s",
+        "cold geometry: {:.3}s; warm median of {measured_runs} runs: {:.3}s",
+        cold.as_secs_f64(),
         median.as_secs_f64()
     );
     fs::remove_dir_all(root)?;

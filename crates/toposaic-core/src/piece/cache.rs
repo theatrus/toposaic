@@ -15,6 +15,8 @@ use geo::{MultiPolygon, Polygon};
 use crate::surface::SurfaceField;
 
 const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const ORDER_COMPACTION_MULTIPLIER: usize = 4;
+const ORDER_COMPACTION_SLACK: usize = 64;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -70,6 +72,23 @@ struct PreparedGeometryCache {
 }
 
 impl PreparedGeometryCache {
+    fn compact_order_if_needed(&mut self) {
+        let maximum_records = self
+            .entries
+            .len()
+            .saturating_mul(ORDER_COMPACTION_MULTIPLIER)
+            .saturating_add(ORDER_COMPACTION_SLACK);
+        if self.order.len() <= maximum_records {
+            return;
+        }
+        let entries = &self.entries;
+        self.order.retain(|(stamp, key)| {
+            entries
+                .get(key)
+                .is_some_and(|entry| entry.touched == *stamp)
+        });
+    }
+
     fn touch(&mut self, key: CacheKey) {
         self.clock = self.clock.wrapping_add(1);
         let touched = self.clock;
@@ -77,6 +96,7 @@ impl PreparedGeometryCache {
             entry.touched = touched;
             self.order.push_back((touched, key));
         }
+        self.compact_order_if_needed();
     }
 
     fn insert(&mut self, key: CacheKey, value: CacheValue, bytes: usize) {
@@ -98,6 +118,7 @@ impl PreparedGeometryCache {
             },
         );
         self.order.push_back((touched, key));
+        self.compact_order_if_needed();
         while self.bytes > MAX_CACHE_BYTES {
             let Some((stamp, oldest)) = self.order.pop_front() else {
                 break;
@@ -289,5 +310,37 @@ mod tests {
         let changed = piece_cache_key(&changed, &outline, 0.0, 0.0, 20.0, 20.0);
         assert!(get_ribbons(changed).is_none());
         clear_for_tests();
+    }
+
+    #[test]
+    fn repeated_cache_hits_keep_lru_metadata_bounded() {
+        let field = SurfaceField::new(2, 2, vec![SurfaceClass::Rock; 4], "cache").unwrap();
+        let outline = [[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]];
+        let key = piece_cache_key(&field, &outline, 0.0, 0.0, 20.0, 20.0);
+        let cache_key = CacheKey::Ribbons(key);
+        let mut cache = PreparedGeometryCache::default();
+        cache.insert(
+            cache_key,
+            CacheValue::Ribbons(Arc::new(PreparedRibbons {
+                clips: HashMap::new(),
+            })),
+            0,
+        );
+
+        for _ in 0..10_000 {
+            cache.touch(cache_key);
+        }
+
+        assert!(
+            cache.order.len()
+                <= cache
+                    .entries
+                    .len()
+                    .saturating_mul(ORDER_COMPACTION_MULTIPLIER)
+                    .saturating_add(ORDER_COMPACTION_SLACK),
+            "{} LRU records for {} live entries",
+            cache.order.len(),
+            cache.entries.len()
+        );
     }
 }

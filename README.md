@@ -735,9 +735,10 @@ cargo run --release -p toposaic-core --example profile_generation -- 6 6 96
 
 The checked-in Slow Tacoma case exercises a 10×10 urban puzzle with mapped
 buildings, roads, rail, water, color, and a tray. It uses the normal OS map
-cache, runs one warm-up, then reports the median of three measured release
-runs. Individual terrain STLs are off in this fixture, so it measures the
-model and combined 3MF instead of duplicate file writes:
+cache, warms source data before timing, then reports both a cold-geometry run
+and the median of three warm-geometry runs. Individual terrain STLs are off in
+this fixture, so it measures the model and combined 3MF instead of duplicate
+file writes:
 
 ```bash
 bash scripts/benchmark-slow-tacoma.sh

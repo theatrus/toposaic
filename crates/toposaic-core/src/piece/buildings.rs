@@ -183,6 +183,9 @@ pub(super) fn append_building_geometry(
                     return None;
                 }
                 let bounds = multi_polygon_bounds(&footprint);
+                if !building_print_bounds_pass_detail_filter(spec, building, bounds) {
+                    return None;
+                }
                 Some(PreparedBuildingClip {
                     area_index: *area_index,
                     footprint,
@@ -364,6 +367,24 @@ fn building_passes_detail_filter(
     assembled_width: f32,
     assembled_height: f32,
 ) -> bool {
+    let bounds = surface_area_bounds(&building.points);
+    building_print_bounds_pass_detail_filter(
+        spec,
+        building,
+        [
+            bounds[0] * assembled_width,
+            bounds[1] * assembled_height,
+            bounds[2] * assembled_width,
+            bounds[3] * assembled_height,
+        ],
+    )
+}
+
+fn building_print_bounds_pass_detail_filter(
+    spec: &GenerationSpec,
+    building: &VectorSurfaceArea,
+    print_bounds: [f32; 4],
+) -> bool {
     // A map-selected building is an explicit user choice and must survive
     // every automatic or custom density filter.
     if building.class == Some(SurfaceClass::Marker) {
@@ -372,9 +393,8 @@ fn building_passes_detail_filter(
     let Some(minimum) = spec.buildings.minimum_print_span_mm() else {
         return true;
     };
-    let bounds = surface_area_bounds(&building.points);
-    let width = (bounds[2] - bounds[0]) * assembled_width;
-    let height = (bounds[3] - bounds[1]) * assembled_height;
+    let width = print_bounds[2] - print_bounds[0];
+    let height = print_bounds[3] - print_bounds[1];
     width >= minimum || height >= minimum
 }
 
@@ -951,6 +971,34 @@ mod tests {
             &spec, &long_thin, 100.0, 100.0
         ));
         assert!(building_passes_detail_filter(&spec, &marked, 100.0, 100.0));
+    }
+
+    #[test]
+    fn building_detail_filter_rechecks_the_piece_clipped_footprint() {
+        let building = test_building(&[[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], None);
+        let marked = test_building(&building.points, Some(SurfaceClass::Marker));
+        let spec = GenerationSpec {
+            buildings: BuildingSpec {
+                detail: BuildingDetail::Custom,
+                minimum_footprint_mm: 0.2,
+                ..BuildingSpec::default()
+            },
+            ..GenerationSpec::default()
+        };
+
+        assert!(building_passes_detail_filter(
+            &spec, &building, 100.0, 100.0
+        ));
+        assert!(!building_print_bounds_pass_detail_filter(
+            &spec,
+            &building,
+            [0.0, 0.0, 0.1, 0.1]
+        ));
+        assert!(building_print_bounds_pass_detail_filter(
+            &spec,
+            &marked,
+            [0.0, 0.0, 0.1, 0.1]
+        ));
     }
 
     #[test]

@@ -922,8 +922,9 @@ fn aviation_area_footprint(
         )
     };
     let outlines = field
-        .vector_areas
-        .iter()
+        .vector_area_indices_in_bounds(piece_bounds)
+        .into_iter()
+        .map(|index| &field.vector_areas[index])
         .filter(|area| area.class == Some(SurfaceClass::Aviation) && area.points.len() >= 3)
         .filter(|area| bounds_overlap(surface_area_bounds(&area.points), piece_bounds))
         .map(|area| {
