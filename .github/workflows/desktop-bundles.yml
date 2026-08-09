@@ -45,6 +45,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # Windows moved out to its own job (`bundle-windows`) because Authenticode
+  # signing needs the `release` environment and a job can name only one.
   bundle:
     name: Bundle ${{ matrix.label }}
     if: >-
@@ -56,10 +58,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Windows
-            os: windows-latest
-            bundles: msi,nsis
-            arch: x64
           - label: Linux
             os: ubuntu-22.04
             bundles: appimage
@@ -142,8 +140,156 @@ jobs:
             --config ${{ runner.temp }}/toposaic-updater.json
           uploadWorkflowArtifacts: false
 
+      - name: Stage Linux file
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(target/release/bundle/appimage/*.AppImage)
+          if [[ "${#appimages[@]}" -ne 1 ]]; then
+            echo "::error::Expected one AppImage, found ${#appimages[@]}."
+            exit 1
+          fi
+          mkdir -p release-artifacts
+          cp "${appimages[0]}" \
+            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+          chmod +x \
+            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test -s "${appimages[0]}.sig"
+            cp "${appimages[0]}.sig" \
+              "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage.sig"
+          fi
+
+      - name: Upload Linux AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage
+          path: release-artifacts/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Linux updater signature
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage.sig
+          path: release-artifacts/*.AppImage.sig
+          if-no-files-found: error
+          compression-level: 0
+
+  bundle-windows:
+    name: Bundle Windows
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: test
+    # Authenticode signing authenticates to Entra over OIDC, and the federated
+    # credential's subject is exactly
+    # `repo:theatrus/toposaic:environment:release`. A classic federated
+    # credential requires an exact subject match -- `refs/tags/v*` cannot be
+    # written as a wildcard -- so this job has to run in the `release`
+    # environment or azure/login fails.
+    #
+    # A job may name only one environment, which is why Windows is no longer
+    # part of the `bundle` matrix: Linux still needs `signing` for the updater
+    # key. The three TAURI_* secrets must therefore also exist in `release`;
+    # the guard in "Write updater build config" says so out loud if they do not.
+    environment: >-
+      ${{ (startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch') && 'release' || '' }}
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # For the OIDC exchange with Entra. No Azure secret is stored in this
+      # repository.
+      id-token: write
+    env:
+      # Sign on tags -- what people download -- and on a manual dispatch, which
+      # exists to exercise this path without cutting a release. Not on pull
+      # requests or main pushes: nobody installs those artifacts, and every
+      # signature spends the Basic tier's 5,000-a-month quota.
+      #
+      # The variable check keeps forks building, unsigned, instead of failing:
+      # a fork has neither the variables nor access to the federated credential.
+      SIGN_WINDOWS: >-
+        ${{ (startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'workflow_dispatch') &&
+        vars.AZURE_CLIENT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      - name: Read app version
+        shell: bash
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          printf 'APP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "v$APP_VERSION" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app version $APP_VERSION."
+            exit 1
+          fi
+
+      - name: Write updater build config
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TOPOSAIC_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" || -z "$TOPOSAIC_UPDATER_PUBLIC_KEY" ]]; then
+            echo "::error::TAURI_UPDATER_PUBLIC_KEY, TAURI_SIGNING_PRIVATE_KEY and"
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD must exist in the"
+            echo "::error::'release' environment as well as 'signing'. This job runs"
+            echo "::error::in 'release' because the Entra federated credential is"
+            echo "::error::bound to that environment, and a job sees only its own"
+            echo "::error::environment's secrets."
+            exit 1
+          fi
+          node scripts/write-updater-config.mjs \
+            "$RUNNER_TEMP/toposaic-updater.json"
+
+      # Windows builds in two passes so the executable can be signed before it
+      # is packaged. Bundling in one pass would seal an unsigned program inside
+      # a signed installer: the download looks fine, but toposaic-desktop.exe --
+      # the thing a user actually runs afterwards -- would carry no publisher
+      # identity, and enterprise unsigned-binary scans would flag it after
+      # install.
+      #
+      # This replaces tauri-apps/tauri-action for Windows. The action builds and
+      # bundles in one call, so it leaves no point between the two at which to
+      # sign. Calling the CLI directly costs nothing here: the action's other
+      # jobs -- installing toolchains and dependencies -- are already done by the
+      # steps above, and artifact upload was switched off anyway.
+      - name: Compile the desktop app, without bundling
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--no-bundle)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            args+=(--config "$RUNNER_TEMP/toposaic-updater.json")
+          fi
+          npm run tauri -- build "${args[@]}"
+
       - name: Verify Windows executable
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -190,8 +336,198 @@ jobs:
             throw "The Windows executable would open a console window."
           }
 
+      # toposaic-desktop.exe is the only executable the installers carry: the
+      # Sign through Tauri's own signCommand rather than signing the
+      # executable ourselves beforehand.
+      #
+      # The obvious sequence -- sign target\release\toposaic-desktop.exe, then
+      # bundle -- was tried first and does not work. Proven on psf-guard, which
+      # has the same shape: `tauri bundle` rewrites the main executable as it
+      # packages it, so the copy sealed inside the installer carries a
+      # signature whose digest no longer matches (0x80096010). Confirmed there
+      # with signtool on the runner and osslsigncode locally, and isolated by a
+      # second binary from the same installer, unpacked by the same 7z, coming
+      # out byte-identical and valid. Only the main executable is affected,
+      # which is why the approach looks correct until you open the installer.
+      #
+      # signCommand is the right hook because Tauri invokes it on each artifact
+      # at the moment it packages it -- after any rewriting, and again for the
+      # installers themselves. Microsoft's action cannot be one, being an
+      # action rather than a command. `dotnet sign` can, and authenticates
+      # through DefaultAzureCredential, so no secret is stored here either.
+      #
+      # The --no-bundle split above now earns its keep for a different reason:
+      # the OIDC client assertion lives five minutes and the compile takes far
+      # longer, so compiling first keeps every Azure call within a couple of
+      # minutes of this login.
+      - name: Authenticate to Azure for code signing
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install dotnet sign
+        if: env.SIGN_WINDOWS == 'true'
+        shell: bash
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/dotnet-sign" --prerelease sign
+          echo "SIGN_TOOL=$(cygpath -w "$RUNNER_TEMP/dotnet-sign/sign.exe")" >> "$GITHUB_ENV"
+
+      # One config for the bundle step, whatever the trigger.
+      #
+      # The updater settings were previously passed only on tags, so a dry run
+      # got no --config at all. That is fine while the config carries only
+      # updater fields, but signCommand has to be present on every signed run
+      # or the dry run silently produces unsigned installers -- the exact class
+      # of quietly-wrong result this work exists to remove. So: start from the
+      # updater config when there is one, add signCommand, and always pass the
+      # result.
+      #
+      # The tool path is NOT quoted. Tauri splits signCommand on whitespace and
+      # takes the first token as the program name, so quotes end up inside the
+      # filename and bundling dies with os error 123, ERROR_INVALID_NAME.
+      # RUNNER_TEMP contains no spaces, so quoting is unnecessary.
+      - name: Build the bundling config
+        if: env.SIGN_WINDOWS == 'true'
+        shell: bash
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/toposaic-bundle.json"
+          src="$RUNNER_TEMP/toposaic-updater.json"
+          node -e '
+            const fs = require("fs");
+            const [src, out] = process.argv.slice(1);
+            const cfg = fs.existsSync(src) ? JSON.parse(fs.readFileSync(src, "utf8")) : {};
+            cfg.bundle ??= {};
+            cfg.bundle.windows ??= {};
+            cfg.bundle.windows.signCommand =
+              `${process.env.SIGN_TOOL} code artifact-signing`
+              + ` --azure-credential-type azure-cli`
+              + ` --artifact-signing-endpoint ${process.env.SIGNING_ENDPOINT}`
+              + ` --artifact-signing-account ${process.env.SIGNING_ACCOUNT}`
+              + ` --artifact-signing-certificate-profile ${process.env.SIGNING_PROFILE}`
+              + ` --timestamp-url http://timestamp.acs.microsoft.com`
+              + ` %1`;
+            fs.writeFileSync(out, JSON.stringify(cfg, null, 2) + "\n");
+            console.log(cfg.bundle.windows.signCommand);
+          ' "$src" "$out"
+          echo "BUNDLE_CONFIG=$out" >> "$GITHUB_ENV"
+
+      # `tauri bundle` packages the already-compiled executable rather than
+      # recompiling, and invokes signCommand on each artifact as it goes, so
+      # the executable inside the installers and the installers themselves all
+      # come out signed.
+      - name: Bundle the Windows installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--bundles msi,nsis)
+          if [[ -n "${BUNDLE_CONFIG:-}" ]]; then
+            args+=(--config "$BUNDLE_CONFIG")
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            args+=(--config "$RUNNER_TEMP/toposaic-updater.json")
+          fi
+          npm run tauri -- bundle "${args[@]}"
+
+      # No separate installer-signing step: signCommand already signed them as
+      # Tauri produced them. Signing again would spend quota twice and append a
+      # second signature to files that already carry a valid one. If Tauri ever
+      # stops invoking signCommand for installers, the verification below fails
+      # rather than letting unsigned ones through.
+
+      # The updater signature has to cover the signed installer. Tauri wrote a
+      # .sig during bundling, over the bytes as they stood before Authenticode
+      # touched them; that one is now stale and would make every installed copy
+      # refuse the update. Write it again over the final file.
+      - name: Sign the updater artifact again, over the signed installer
+        if: >-
+          env.SIGN_WINDOWS == 'true' &&
+          startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          exes=(target/release/bundle/nsis/*.exe)
+          test "${#exes[@]}" -eq 1
+          rm -f "${exes[0]}.sig"
+          npm run tauri -- signer sign "${exes[0]}"
+          test -s "${exes[0]}.sig"
+
+      # Without this the failure is invisible: a wrongly configured profile, or
+      # an installer whose .sig covers the wrong bytes, leaves CI green and the
+      # artifacts looking fine while every existing install quietly refuses to
+      # update.
+      - name: Verify Windows signatures
+        if: env.SIGN_WINDOWS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          signtool=$(find "/c/Program Files (x86)/Windows Kits/10/bin" \
+                       -name signtool.exe -path "*x64*" | sort | tail -1)
+          echo "using: $signtool"
+
+          exes=(target/release/bundle/nsis/*.exe)
+          msis=(target/release/bundle/msi/*.msi)
+          test "${#exes[@]}" -eq 1
+          test "${#msis[@]}" -eq 1
+
+          verify() {
+            local file="$1"
+            test -s "$file" || { echo "::error::Missing artifact $file."; exit 1; }
+            echo "--- $file"
+            "$signtool" verify //pa //v "$file" | tee "$RUNNER_TEMP/verify.txt"
+            grep -q "StackFoundry LLC" "$RUNNER_TEMP/verify.txt" \
+              || { echo "::error::Unexpected signing identity for $file."; exit 1; }
+          }
+
+          # What a person downloads.
+          verify "${exes[0]}"
+          verify "${msis[0]}"
+
+          # And the program that actually ends up installed and run.
+          #
+          # Note this is NOT target/release/toposaic-desktop.exe. Under
+          # signCommand, Tauri signs the copies it packages, so the loose build
+          # output stays unsigned by design and checking it fails with "No
+          # signature found" -- which is what an earlier version of this step
+          # did. That loose file ships to nobody; the copy inside the installer
+          # is the one that matters, and verifying the installer alone would
+          # pass happily while shipping unsigned code within it.
+          extract="$RUNNER_TEMP/nsis-contents"
+          rm -rf "$extract"
+          7z x -o"$extract" "${exes[0]}" > /dev/null
+          inner=$(find "$extract" -iname "toposaic-desktop.exe" -print -quit)
+          test -n "$inner" || {
+            echo "::error::toposaic-desktop.exe was not found inside the installer."
+            exit 1
+          }
+          echo "--- (inside installer) $inner"
+          verify "$inner"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test -s "${exes[0]}.sig" || {
+              echo "::error::No updater signature for ${exes[0]}."
+              exit 1
+            }
+            if [[ "${exes[0]}" -nt "${exes[0]}.sig" ]]; then
+              echo "::error::The installer is newer than its .sig, so the .sig"
+              echo "::error::covers pre-Authenticode bytes and updates would break."
+              exit 1
+            fi
+          fi
+          echo "OK: the NSIS installer, the MSI, and the executable inside them are signed as StackFoundry LLC."
+
       - name: Stage Windows files
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $msi = @(Get-ChildItem "target\release\bundle\msi" -Filter *.msi)
@@ -207,78 +543,36 @@ jobs:
           }
           New-Item -ItemType Directory -Force "release-artifacts" | Out-Null
           Copy-Item $msi[0].FullName `
-            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.msi"
+            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-x64.msi"
           Copy-Item $exe[0].FullName `
-            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe"
+            "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-x64.exe"
           if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
             Copy-Item $exeSig.FullName `
-              "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-${{ matrix.arch }}.exe.sig"
+              "release-artifacts\TopoSaic-${env:APP_VERSION}-windows-x64.exe.sig"
           }
 
-      - name: Stage Linux file
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          appimages=(target/release/bundle/appimage/*.AppImage)
-          if [[ "${#appimages[@]}" -ne 1 ]]; then
-            echo "::error::Expected one AppImage, found ${#appimages[@]}."
-            exit 1
-          fi
-          mkdir -p release-artifacts
-          cp "${appimages[0]}" \
-            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
-          chmod +x \
-            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test -s "${appimages[0]}.sig"
-            cp "${appimages[0]}.sig" \
-              "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage.sig"
-          fi
-
       - name: Upload Windows MSI
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.msi
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-x64.msi
           path: release-artifacts/*.msi
           if-no-files-found: error
           compression-level: 0
 
       - name: Upload Windows executable
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.exe
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-x64.exe
           path: release-artifacts/*.exe
           if-no-files-found: error
           compression-level: 0
 
-      - name: Upload Linux AppImage
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage
-          path: release-artifacts/*.AppImage
-          if-no-files-found: error
-          compression-level: 0
-
       - name: Upload Windows updater signature
-        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
-          name: TopoSaic-${{ env.APP_VERSION }}-windows-${{ matrix.arch }}.exe.sig
+          name: TopoSaic-${{ env.APP_VERSION }}-windows-x64.exe.sig
           path: release-artifacts/*.exe.sig
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload Linux updater signature
-        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v7
-        with:
-          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage.sig
-          path: release-artifacts/*.AppImage.sig
           if-no-files-found: error
           compression-level: 0
 
@@ -584,7 +878,7 @@ jobs:
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, bundle, bundle-macos]
+    needs: [test, bundle, bundle-windows, bundle-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
