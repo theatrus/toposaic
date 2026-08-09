@@ -481,19 +481,38 @@ jobs:
           test "${#exes[@]}" -eq 1
           test "${#msis[@]}" -eq 1
 
-          # Three files, not two. The installers are what a person downloads;
-          # toposaic-desktop.exe is what ends up installed and run, and is the
-          # copy sealed inside them. Checking only the installers would pass
-          # happily while shipping an unsigned program inside a signed wrapper.
-          for file in "${exes[0]}" \
-                      "${msis[0]}" \
-                      target/release/toposaic-desktop.exe; do
+          verify() {
+            local file="$1"
             test -s "$file" || { echo "::error::Missing artifact $file."; exit 1; }
             echo "--- $file"
             "$signtool" verify //pa //v "$file" | tee "$RUNNER_TEMP/verify.txt"
             grep -q "StackFoundry LLC" "$RUNNER_TEMP/verify.txt" \
               || { echo "::error::Unexpected signing identity for $file."; exit 1; }
-          done
+          }
+
+          # What a person downloads.
+          verify "${exes[0]}"
+          verify "${msis[0]}"
+
+          # And the program that actually ends up installed and run.
+          #
+          # Note this is NOT target/release/toposaic-desktop.exe. Under
+          # signCommand, Tauri signs the copies it packages, so the loose build
+          # output stays unsigned by design and checking it fails with "No
+          # signature found" -- which is what an earlier version of this step
+          # did. That loose file ships to nobody; the copy inside the installer
+          # is the one that matters, and verifying the installer alone would
+          # pass happily while shipping unsigned code within it.
+          extract="$RUNNER_TEMP/nsis-contents"
+          rm -rf "$extract"
+          7z x -o"$extract" "${exes[0]}" > /dev/null
+          inner=$(find "$extract" -iname "toposaic-desktop.exe" -print -quit)
+          test -n "$inner" || {
+            echo "::error::toposaic-desktop.exe was not found inside the installer."
+            exit 1
+          }
+          echo "--- (inside installer) $inner"
+          verify "$inner"
 
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             test -s "${exes[0]}.sig" || {
@@ -506,7 +525,7 @@ jobs:
               exit 1
             fi
           fi
-          echo "OK: installer, MSI and executable signed as StackFoundry LLC."
+          echo "OK: the NSIS installer, the MSI, and the executable inside them are signed as StackFoundry LLC."
 
       - name: Stage Windows files
         shell: pwsh
