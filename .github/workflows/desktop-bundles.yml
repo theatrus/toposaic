@@ -267,14 +267,6 @@ jobs:
           node scripts/write-updater-config.mjs \
             "$RUNNER_TEMP/toposaic-updater.json"
 
-      - name: Authenticate to Azure for code signing
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
       # Windows builds in two passes so the executable can be signed before it
       # is packaged. Bundling in one pass would seal an unsigned program inside
       # a signed installer: the download looks fine, but toposaic-desktop.exe --
@@ -350,6 +342,23 @@ jobs:
       # files-folder over target/release, which is full of incidental .exe files
       # (build scripts, dependency binaries, test harnesses) that nobody ships
       # and that would burn signing quota.
+      # Immediately before signing, and again before the second signing step
+      # further down, rather than once earlier in the job. The GitHub OIDC
+      # token azure/login exchanges is a client assertion valid for only five
+      # minutes; the Windows compile above takes far longer than that, so a
+      # login placed before it leaves the az CLI holding a dead assertion and
+      # signing fails with AADSTS700024, "Client assertion is not within its
+      # valid time range". That error reads like a misconfiguration but is
+      # purely about elapsed time. A five-minute credential has to be acquired
+      # next to where it is used.
+      - name: Authenticate to Azure (for executable signing)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Sign the desktop executable, before bundling
         if: env.SIGN_WINDOWS == 'true'
         uses: azure/trusted-signing-action@v0
@@ -412,6 +421,15 @@ jobs:
             echo "TOPOSAIC_SIGN_FILES"
           } >> "$GITHUB_ENV"
           printf 'will sign:\n%s\n%s\n' "${exes[0]}" "${msis[0]}"
+
+      # Fresh assertion again: bundling sits between this and the login above.
+      - name: Authenticate to Azure (for installer signing)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign the Windows installers
         if: env.SIGN_WINDOWS == 'true'
