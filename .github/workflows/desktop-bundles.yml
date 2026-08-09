@@ -337,21 +337,30 @@ jobs:
           }
 
       # toposaic-desktop.exe is the only executable the installers carry: the
-      # workspace declares no other bin target, and the Tauri config has no
-      # sidecars or externalBin. Named one by one on purpose -- never
-      # files-folder over target/release, which is full of incidental .exe files
-      # (build scripts, dependency binaries, test harnesses) that nobody ships
-      # and that would burn signing quota.
-      # Immediately before signing, and again before the second signing step
-      # further down, rather than once earlier in the job. The GitHub OIDC
-      # token azure/login exchanges is a client assertion valid for only five
-      # minutes; the Windows compile above takes far longer than that, so a
-      # login placed before it leaves the az CLI holding a dead assertion and
-      # signing fails with AADSTS700024, "Client assertion is not within its
-      # valid time range". That error reads like a misconfiguration but is
-      # purely about elapsed time. A five-minute credential has to be acquired
-      # next to where it is used.
-      - name: Authenticate to Azure (for executable signing)
+      # Sign through Tauri's own signCommand rather than signing the
+      # executable ourselves beforehand.
+      #
+      # The obvious sequence -- sign target\release\toposaic-desktop.exe, then
+      # bundle -- was tried first and does not work. Proven on psf-guard, which
+      # has the same shape: `tauri bundle` rewrites the main executable as it
+      # packages it, so the copy sealed inside the installer carries a
+      # signature whose digest no longer matches (0x80096010). Confirmed there
+      # with signtool on the runner and osslsigncode locally, and isolated by a
+      # second binary from the same installer, unpacked by the same 7z, coming
+      # out byte-identical and valid. Only the main executable is affected,
+      # which is why the approach looks correct until you open the installer.
+      #
+      # signCommand is the right hook because Tauri invokes it on each artifact
+      # at the moment it packages it -- after any rewriting, and again for the
+      # installers themselves. Microsoft's action cannot be one, being an
+      # action rather than a command. `dotnet sign` can, and authenticates
+      # through DefaultAzureCredential, so no secret is stored here either.
+      #
+      # The --no-bundle split above now earns its keep for a different reason:
+      # the OIDC client assertion lives five minutes and the compile takes far
+      # longer, so compiling first keeps every Azure call within a couple of
+      # minutes of this login.
+      - name: Authenticate to Azure for code signing
         if: env.SIGN_WINDOWS == 'true'
         uses: azure/login@v2
         with:
@@ -359,89 +368,78 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign the desktop executable, before bundling
+      - name: Install dotnet sign
         if: env.SIGN_WINDOWS == 'true'
-        uses: azure/trusted-signing-action@v0
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\target\release\toposaic-desktop.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+        shell: bash
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/dotnet-sign" --prerelease sign
+          echo "SIGN_TOOL=$(cygpath -w "$RUNNER_TEMP/dotnet-sign/sign.exe")" >> "$GITHUB_ENV"
 
-      # `tauri bundle` packages the executable already built above rather than
-      # recompiling it, so the signature applied a moment ago survives into the
-      # MSI and the NSIS installer.
+      # One config for the bundle step, whatever the trigger.
+      #
+      # The updater settings were previously passed only on tags, so a dry run
+      # got no --config at all. That is fine while the config carries only
+      # updater fields, but signCommand has to be present on every signed run
+      # or the dry run silently produces unsigned installers -- the exact class
+      # of quietly-wrong result this work exists to remove. So: start from the
+      # updater config when there is one, add signCommand, and always pass the
+      # result.
+      #
+      # The tool path is NOT quoted. Tauri splits signCommand on whitespace and
+      # takes the first token as the program name, so quotes end up inside the
+      # filename and bundling dies with os error 123, ERROR_INVALID_NAME.
+      # RUNNER_TEMP contains no spaces, so quoting is unnecessary.
+      - name: Build the bundling config
+        if: env.SIGN_WINDOWS == 'true'
+        shell: bash
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/toposaic-bundle.json"
+          src="$RUNNER_TEMP/toposaic-updater.json"
+          node -e '
+            const fs = require("fs");
+            const [src, out] = process.argv.slice(1);
+            const cfg = fs.existsSync(src) ? JSON.parse(fs.readFileSync(src, "utf8")) : {};
+            cfg.bundle ??= {};
+            cfg.bundle.windows ??= {};
+            cfg.bundle.windows.signCommand =
+              `${process.env.SIGN_TOOL} code artifact-signing`
+              + ` --azure-credential-type azure-cli`
+              + ` --artifact-signing-endpoint ${process.env.SIGNING_ENDPOINT}`
+              + ` --artifact-signing-account ${process.env.SIGNING_ACCOUNT}`
+              + ` --artifact-signing-certificate-profile ${process.env.SIGNING_PROFILE}`
+              + ` --timestamp-url http://timestamp.acs.microsoft.com`
+              + ` %1`;
+            fs.writeFileSync(out, JSON.stringify(cfg, null, 2) + "\n");
+            console.log(cfg.bundle.windows.signCommand);
+          ' "$src" "$out"
+          echo "BUNDLE_CONFIG=$out" >> "$GITHUB_ENV"
+
+      # `tauri bundle` packages the already-compiled executable rather than
+      # recompiling, and invokes signCommand on each artifact as it goes, so
+      # the executable inside the installers and the installers themselves all
+      # come out signed.
       - name: Bundle the Windows installers
         shell: bash
         run: |
           set -euo pipefail
           args=(--bundles msi,nsis)
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ -n "${BUNDLE_CONFIG:-}" ]]; then
+            args+=(--config "$BUNDLE_CONFIG")
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             args+=(--config "$RUNNER_TEMP/toposaic-updater.json")
           fi
           npm run tauri -- bundle "${args[@]}"
 
-      # Sign here rather than through Tauri's bundle.windows.signCommand. That
-      # route needs a signing tool runnable as a plain shell command; the
-      # community trusted-signing-cli fits but hard-requires
-      # --azure-client-secret and has no OIDC path, which would mean keeping a
-      # signing secret in this repository. Microsoft's own action authenticates
-      # through DefaultAzureCredential and rides the azure/login session above,
-      # but, being an action, cannot serve as a signCommand.
-      #
-      # The installers only. toposaic-desktop.exe was signed before bundling;
-      # signing it again here would spend quota twice and append a second
-      # signature to a file that already carries a good one.
-      - name: Resolve the installers to sign
-        if: env.SIGN_WINDOWS == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          exes=(target/release/bundle/nsis/*.exe)
-          msis=(target/release/bundle/msi/*.msi)
-          if [[ "${#exes[@]}" -ne 1 ]]; then
-            echo "::error::Expected one NSIS installer, found ${#exes[@]}."
-            exit 1
-          fi
-          if [[ "${#msis[@]}" -ne 1 ]]; then
-            echo "::error::Expected one MSI, found ${#msis[@]}."
-            exit 1
-          fi
-          # The action wants absolute Windows paths.
-          workspace=$(cygpath -w "$GITHUB_WORKSPACE")
-          {
-            echo "SIGN_FILES<<TOPOSAIC_SIGN_FILES"
-            for file in "${exes[0]}" "${msis[0]}"; do
-              echo "$workspace\\$(echo "$file" | tr '/' '\\')"
-            done
-            echo "TOPOSAIC_SIGN_FILES"
-          } >> "$GITHUB_ENV"
-          printf 'will sign:\n%s\n%s\n' "${exes[0]}" "${msis[0]}"
-
-      # Fresh assertion again: bundling sits between this and the login above.
-      - name: Authenticate to Azure (for installer signing)
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Sign the Windows installers
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/trusted-signing-action@v0
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
-          files: ${{ env.SIGN_FILES }}
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      # No separate installer-signing step: signCommand already signed them as
+      # Tauri produced them. Signing again would spend quota twice and append a
+      # second signature to files that already carry a valid one. If Tauri ever
+      # stops invoking signCommand for installers, the verification below fails
+      # rather than letting unsigned ones through.
 
       # The updater signature has to cover the signed installer. Tauri wrote a
       # .sig during bundling, over the bytes as they stood before Authenticode
