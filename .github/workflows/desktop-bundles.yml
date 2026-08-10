@@ -435,9 +435,27 @@ jobs:
       # come out signed.
       - name: Bundle the Windows installers
         shell: bash
+        env:
+          # Tauri writes the updater .sig during bundling, so it needs the
+          # updater key here and not merely when the config is written. The
+          # step never carried these before, and never needed to: on a tag the
+          # job used to fail earlier, at "Write updater build config", so
+          # bundling was never reached with an updater config in hand. With
+          # that fixed, bundling got as far as signing the installer with
+          # Authenticode and then stopped on "A public key has been found, but
+          # no private key".
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           args=(--bundles msi,nsis)
+          # Fail loudly rather than letting Tauri emit an unsigned bundle if
+          # the key is ever absent on a tag build.
+          if [[ "$GITHUB_REF" == refs/tags/v* && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is unset on a tag build;"
+            echo "::error::the updater signature would be missing."
+            exit 1
+          fi
           if [[ -n "${BUNDLE_CONFIG:-}" ]]; then
             args+=(--config "$BUNDLE_CONFIG")
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
