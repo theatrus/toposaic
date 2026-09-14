@@ -1,0 +1,88 @@
+# On-demand check that Windows code signing still works end to end.
+#
+# The real signing path only runs on a `v*` tag, so without this the first live
+# exercise of the credential chain would be a real release. This isolates the
+# parts most likely to break -- the OIDC subject match, the Certificate Profile
+# Signer role, and the endpoint/account/profile values -- and checks them
+# against a throwaway binary in a couple of minutes rather than a full build.
+#
+# Worth keeping rather than deleting after the first run: re-run it after any
+# change to the Entra app, the federated credential, the certificate profile,
+# or the signing account, and find out immediately instead of at the next
+# release.
+name: Signing smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoke:
+    name: Azure Artifact Signing smoke test
+    runs-on: windows-latest
+    # Load-bearing: must match the Entra federated credential subject
+    # `repo:theatrus/toposaic:environment:signing`. Remove this and OIDC
+    # fails with an unhelpful audience/subject error.
+    environment: signing
+    steps:
+      - name: Show what we are about to use
+        shell: bash
+        run: |
+          echo "client id set : ${{ vars.AZURE_CLIENT_ID != '' }}"
+          echo "endpoint      : ${{ vars.SIGNING_ENDPOINT }}"
+          echo "account       : ${{ vars.SIGNING_ACCOUNT }}"
+          echo "profile       : ${{ vars.SIGNING_PROFILE }}"
+
+      # Failure here means the OIDC subject did not match the federated
+      # credential. That is the single most likely thing to be wrong.
+      - name: Authenticate to Azure (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm the identity we ended up as
+        shell: bash
+        run: az account show --query "{sub:name,user:user.name,type:user.type}" -o json
+
+      # A throwaway PE to sign. Rust is preinstalled on the runner, so this is
+      # far cheaper than building the real app just to test the credential path.
+      - name: Build a throwaway binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo new --bin "$RUNNER_TEMP/sigtest" --vcs none
+          cd "$RUNNER_TEMP/sigtest"
+          cargo build --release
+          cp target/release/sigtest.exe "$GITHUB_WORKSPACE/sigtest.exe"
+          ls -l "$GITHUB_WORKSPACE/sigtest.exe"
+
+      # Same action and inputs as release.yml, or this stops testing the thing
+      # it claims to test. Microsoft's action authenticates through
+      # DefaultAzureCredential and so rides the azure/login session above.
+      - name: Sign it
+        uses: azure/trusted-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\sigtest.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the signature and publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          signtool=$(find "/c/Program Files (x86)/Windows Kits/10/bin" \
+                       -name signtool.exe -path "*x64*" | sort | tail -1)
+          echo "using: $signtool"
+          "$signtool" verify //pa //v "$GITHUB_WORKSPACE/sigtest.exe" | tee "$RUNNER_TEMP/verify.txt"
+          grep -q "StackFoundry LLC" "$RUNNER_TEMP/verify.txt" \
+            || { echo "FAIL: expected publisher StackFoundry LLC"; exit 1; }
+          echo "OK: signed and chains to a trusted root as StackFoundry LLC"
