@@ -63,7 +63,7 @@ test("builds Tauri and website feeds from inline signatures", async () => {
   const version = "1.2.3";
   const signatures = {
     "windows-x86_64": `TopoSaic-${version}-windows-x64.exe`,
-    "linux-x86_64": `TopoSaic-${version}-linux-x86_64.AppImage`,
+    "linux-x86_64": `TopoSaic-${version}-x86_64.AppImage`,
     "darwin-aarch64": `TopoSaic-${version}-macos-aarch64.app.tar.gz`,
   };
   for (const [target, fileName] of Object.entries(signatures)) {

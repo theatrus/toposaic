@@ -1,6 +1,6 @@
 {
   "name": "toposaic-web",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "license": "Apache-2.0",
   "private": true,
   "engines": {
@@ -18,10 +18,10 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern target --ignore-pattern .next --ignore-pattern .claude"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/api": "~2.12.0",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tauri-apps/plugin-updater": "~2.12.0",
     "next": "16.2.11",
     "react": "19.2.6",
     "react-dom": "19.2.6",
@@ -31,7 +31,7 @@
     "@cloudflare/vite-plugin": "1.37.1",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "4.2.1",
-    "@tauri-apps/cli": "^2.9.6",
+    "@tauri-apps/cli": "^2.12.0",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",

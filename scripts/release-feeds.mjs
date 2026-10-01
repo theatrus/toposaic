@@ -6,7 +6,7 @@ export const NOTICE_SCHEMA_VERSION = 1;
 
 const platformAssets = (version) => ({
   "windows-x86_64": `TopoSaic-${version}-windows-x64.exe`,
-  "linux-x86_64": `TopoSaic-${version}-linux-x86_64.AppImage`,
+  "linux-x86_64": `TopoSaic-${version}-x86_64.AppImage`,
   "darwin-aarch64": `TopoSaic-${version}-macos-aarch64.app.tar.gz`,
 });
 

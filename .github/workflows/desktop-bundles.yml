@@ -87,6 +87,22 @@ jobs:
             libssl-dev \
             patchelf
 
+      # The bundler downloads AppRun into ~/.cache/tauri as mode 0770 and
+      # copies it into the AppImage, mode and all. A sandbox that runs the
+      # AppImage as another user (the AppImage catalog tests under firejail)
+      # then cannot execute AppRun.wrapped. The bundler reuses a cached file,
+      # so place one there first with the right mode.
+      - name: Seed AppRun with a world-executable mode
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$HOME/.cache/tauri"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/AppRun-${{ matrix.arch }}" \
+            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-${{ matrix.arch }}"
+          chmod 0755 "$tools/AppRun-${{ matrix.arch }}"
+
       - run: npm ci
 
       - name: Read app version
@@ -153,20 +169,20 @@ jobs:
           fi
           mkdir -p release-artifacts
           cp "${appimages[0]}" \
-            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+            "release-artifacts/TopoSaic-${APP_VERSION}-${{ matrix.arch }}.AppImage"
           chmod +x \
-            "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage"
+            "release-artifacts/TopoSaic-${APP_VERSION}-${{ matrix.arch }}.AppImage"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test -s "${appimages[0]}.sig"
             cp "${appimages[0]}.sig" \
-              "release-artifacts/TopoSaic-${APP_VERSION}-linux-${{ matrix.arch }}.AppImage.sig"
+              "release-artifacts/TopoSaic-${APP_VERSION}-${{ matrix.arch }}.AppImage.sig"
           fi
 
       - name: Upload Linux AppImage
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage
+          name: TopoSaic-${{ env.APP_VERSION }}-${{ matrix.arch }}.AppImage
           path: release-artifacts/*.AppImage
           if-no-files-found: error
           compression-level: 0
@@ -175,7 +191,7 @@ jobs:
         if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
-          name: TopoSaic-${{ env.APP_VERSION }}-linux-${{ matrix.arch }}.AppImage.sig
+          name: TopoSaic-${{ env.APP_VERSION }}-${{ matrix.arch }}.AppImage.sig
           path: release-artifacts/*.AppImage.sig
           if-no-files-found: error
           compression-level: 0
@@ -934,8 +950,8 @@ jobs:
             "TopoSaic-${version}-macos-aarch64.dmg"
             "TopoSaic-${version}-macos-aarch64.app.tar.gz"
             "TopoSaic-${version}-macos-aarch64.app.tar.gz.sig"
-            "TopoSaic-${version}-linux-x86_64.AppImage"
-            "TopoSaic-${version}-linux-x86_64.AppImage.sig"
+            "TopoSaic-${version}-x86_64.AppImage"
+            "TopoSaic-${version}-x86_64.AppImage.sig"
           )
           for file in "${required[@]}"; do
             if [[ ! -s "release-artifacts/$file" ]]; then
