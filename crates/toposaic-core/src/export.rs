@@ -623,7 +623,10 @@ mod tests {
 
     fn archive_names(bytes: &[u8]) -> Vec<String> {
         let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        archive.file_names().map(str::to_owned).collect()
+        archive
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect()
     }
 
     fn archive_entry(bytes: &[u8], name: &str) -> String {
