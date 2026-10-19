@@ -326,7 +326,14 @@ pub fn import_bundle<R: Read + std::io::Seek>(
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_string();
+        let name = match entry.name() {
+            Ok(name) => name.into_owned(),
+            Err(error) => {
+                warn!(%error, "bundle entry has an unreadable name; skipped");
+                report.rejected += 1;
+                continue;
+            }
+        };
         let Some(relative) = name.strip_prefix(BUNDLE_DATA_PREFIX) else {
             // The manifest and the setup live at the root; anything else
             // there is not ours to place.
