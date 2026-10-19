@@ -13,13 +13,13 @@ detail, surface colors, mapped lines, buildings, trays, and export style.
 ## Download
 
 The current desktop release is
-[TopoSaic v0.8.0](https://github.com/theatrus/toposaic/releases/tag/v0.8.0).
+[TopoSaic v0.8.3](https://github.com/theatrus/toposaic/releases/tag/v0.8.3).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.8.2/TopoSaic-0.8.2-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.8.2/TopoSaic-0.8.2-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.8.2/TopoSaic-0.8.2-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.8.2/TopoSaic-0.8.2-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.8.2/TopoSaic-0.8.2-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
