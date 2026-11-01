@@ -14,11 +14,11 @@ chrono = { version = "0.4", features = ["serde"] }
 directories = "6"
 futures-util = { version = "0.3", default-features = false }
 geo = "0.33"
-geotiff-reader = { version = "0.8", default-features = false, features = ["cog"] }
+geotiff-reader = { version = "0.9", default-features = false, features = ["cog"] }
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rayon = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 spade = "2.15"
