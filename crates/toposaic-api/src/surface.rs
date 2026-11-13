@@ -103,7 +103,7 @@ const MINIMUM_LINE_WIDTH_MM: f32 = 0.4;
 /// Cache stem for airport surfaces. Its own and versioned, so switching a
 /// group on re-asks rather than serving a response fetched for a narrower
 /// set of groups.
-const AVIATION_CACHE_PREFIX: &str = "aeroway-v2";
+const AVIATION_CACHE_PREFIX: &str = "aeroway-v3";
 /// Linear `aeroway=*` values drawn as centre lines with a width.
 const AVIATION_STRIP_WAYS: &str = "runway|airstrip";
 const AVIATION_TAXI_WAYS: &str = "taxiway|taxilane";
@@ -125,7 +125,7 @@ const ROAD_PATH_TILES: TileLayer<'static> = TileLayer::new("roads-v3-paths", 12)
 const FERRY_TILES: TileLayer<'static> = TileLayer::new("ferry-v2", 9);
 const WATER_TILES: TileLayer<'static> = TileLayer::new("water-v2", 10);
 const COASTLINE_TILES: TileLayer<'static> = TileLayer::new("coastline-v2", 8);
-const BUILDING_TILES: TileLayer<'static> = TileLayer::new("buildings-v2", 13);
+const BUILDING_TILES: TileLayer<'static> = TileLayer::new("buildings-v3", 13);
 const LEGACY_ROAD_MAJOR_PREFIXES: &[&str] = &[
     "roads-v2-major",
     "roads-v2-minor",
@@ -1536,7 +1536,9 @@ fn aviation_query_for_bounds(bounds: &[GeoBounds], groups: AviationGroups) -> St
     // `aeroway=aerodrome` is deliberately absent. Its boundary is the whole
     // airport including grass, car parks, and fields; painting it would put
     // pavement over most of a map that happens to contain an airport.
-    format!("[out:json][timeout:60];({selectors});out tags geom;")
+    // `out geom` rather than `out tags geom`: the `tags` mode drops a relation's
+    // member list, so multipolygon outlines arrived as bare tags and were lost.
+    format!("[out:json][timeout:60];({selectors});out geom;")
 }
 
 /// The physical width of a linear aeroway, and whether it was mapped.
@@ -2836,7 +2838,9 @@ fn building_query_for_bounds(bounds: &[GeoBounds]) -> String {
             )
         })
         .collect::<String>();
-    format!("[out:json][timeout:60];({elements});out tags geom;")
+    // `out geom` rather than `out tags geom`: the `tags` mode drops a relation's
+    // member list, so multipolygon outlines arrived as bare tags and were lost.
+    format!("[out:json][timeout:60];({elements});out geom;")
 }
 
 #[cfg(test)]
@@ -5084,6 +5088,8 @@ mod tests {
         ] {
             assert!(all.contains(wanted), "query is missing {wanted}\n{all}");
         }
+        // Relation outlines arrive only in the full `out geom` mode.
+        assert!(all.ends_with("out geom;"), "{all}");
         assert!(
             !all.contains("aerodrome"),
             "the aerodrome boundary is the whole airport, grass and car parks included"
@@ -5189,7 +5195,8 @@ mod tests {
         assert!(query.contains("[\"building\"]"));
         assert!(query.contains("[\"building\"!=\"no\"]"));
         assert!(query.contains("relation[\"building\"]"));
-        assert!(query.contains("out tags geom"));
+        // Relations keep their member outlines only in the full `out geom` mode.
+        assert!(query.ends_with("out geom;"));
         assert_eq!(
             building_height_m(&HashMap::from([("height".into(), "12.5 m".into())])),
             12.5
