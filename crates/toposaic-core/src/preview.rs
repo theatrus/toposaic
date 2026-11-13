@@ -402,6 +402,7 @@ pub(crate) fn build_preview(
         // Indices past the fixed classes name a discovered ground color, in
         // this order. Absent when the ground colors are the mapped ones.
         if let Some(palette) = field.ground_palette() {
+            preview["ground_material_offset"] = serde_json::json!(SurfaceClass::ALL.len());
             preview["ground_palette"] = serde_json::json!(
                 palette
                     .entries
@@ -478,6 +479,23 @@ pub(crate) fn build_preview(
             preview["surface_coverage"]["aviation"] =
                 serde_json::json!(coverage[SurfaceClass::Aviation.material_index() as usize]);
         }
+        if spec.color_output.enabled && spec.color_output.neighborhood_surfaces.enabled {
+            let colors = &spec.color_output.neighborhood_surfaces;
+            for (key, class, color) in [
+                ("grass", SurfaceClass::Grass, &colors.grass_color),
+                ("pavement", SurfaceClass::Pavement, &colors.pavement_color),
+                ("sport", SurfaceClass::Sport, &colors.sport_color),
+                (
+                    "playground",
+                    SurfaceClass::Playground,
+                    &colors.playground_color,
+                ),
+            ] {
+                preview["surface_palette"][key] = serde_json::json!(color);
+                preview["surface_coverage"][key] =
+                    serde_json::json!(coverage[class.material_index() as usize]);
+            }
+        }
         preview["surface_source"] = serde_json::json!(field.source);
     }
     preview
@@ -487,6 +505,33 @@ pub(crate) fn build_preview(
 mod tests {
     use super::*;
     use crate::spec::{BuildingSpec, MapMarker, MarkerKind};
+
+    #[test]
+    fn neighborhood_preview_uses_new_material_indices_and_category_colors() {
+        let mut spec = GenerationSpec::default();
+        spec.color_output.enabled = true;
+        spec.color_output.neighborhood_surfaces.enabled = true;
+        let field = SurfaceField::new(
+            2,
+            2,
+            vec![
+                SurfaceClass::Grass,
+                SurfaceClass::Pavement,
+                SurfaceClass::Sport,
+                SurfaceClass::Playground,
+            ],
+            "mapped areas",
+        )
+        .unwrap();
+        let preview = build_preview(&spec, None, Some(&field), 2);
+        assert_eq!(
+            preview["surface_classes"],
+            serde_json::json!([13, 14, 15, 16])
+        );
+        assert_eq!(preview["surface_palette"]["grass"], "#76A542");
+        assert_eq!(preview["surface_palette"]["sport"], "#2F76B5");
+        assert_eq!(preview["surface_coverage"]["playground"], 25.0);
+    }
 
     /// The 3D preview has to show the pavement the generated model will
     /// carry — same class, same color, and standing proud like a road —

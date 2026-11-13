@@ -39,6 +39,10 @@ fn class_color(class: SurfaceClass) -> [u8; 3] {
         SurfaceClass::Ferry => [0x0F, 0x8C, 0x8C],
         SurfaceClass::Aviation => [0x4A, 0x4E, 0x54],
         SurfaceClass::Rock => [0x7C, 0x74, 0x68],
+        SurfaceClass::Grass => [0x76, 0xA5, 0x42],
+        SurfaceClass::Pavement => [0x4A, 0x4E, 0x54],
+        SurfaceClass::Sport => [0x2F, 0x76, 0xB5],
+        SurfaceClass::Playground => [0x9A, 0x6C, 0x42],
     }
 }
 

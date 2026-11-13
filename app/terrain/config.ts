@@ -183,6 +183,13 @@ export const initialSpec: GenerationSpec = {
   },
   color_output: {
     enabled: true,
+    neighborhood_surfaces: {
+      enabled: false,
+      grass_color: "#76A542",
+      pavement_color: "#4A4E54",
+      sport_color: "#2F76B5",
+      playground_color: "#9A6C42",
+    },
     // "project" keeps today's output — embedded filament colors and purge
     // settings for one-click Bambu color setups. mergeSpecDefaults fills it
     // into setups saved before the field existed.
@@ -342,6 +349,10 @@ export function mergeSpecDefaults(
   const colorOutput = normalizeMappedWidthCap({
     ...initialSpec.color_output,
     ...savedColorOutput,
+    neighborhood_surfaces: {
+      ...initialSpec.color_output.neighborhood_surfaces,
+      ...savedColorOutput?.neighborhood_surfaces,
+    },
     // Old setups painted mapped trails as routes. Preserve a custom route
     // color rather than replacing it with today's default.
     route_trail_color:

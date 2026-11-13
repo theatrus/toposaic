@@ -277,6 +277,30 @@ export function ColorsPanel({
         </small>
       </fieldset>
 
+      {spec.color_output.neighborhood_surfaces.enabled && (
+        <ColorGroup
+          title="Neighborhood surfaces"
+          description="Category colors for automatic mapped areas. These do not reproduce painted markings."
+        >
+          {([
+            ["Grass / lawns", "grass_color"],
+            ["Paved areas", "pavement_color"],
+            ["Sports surfaces", "sport_color"],
+            ["Playgrounds", "playground_color"],
+          ] as const).map(([label, key]) => (
+            <HexColorField
+              key={key}
+              label={label}
+              value={spec.color_output.neighborhood_surfaces[key]}
+              onChange={(value) => updateColor("neighborhood_surfaces", {
+                ...spec.color_output.neighborhood_surfaces,
+                [key]: value,
+              })}
+            />
+          ))}
+        </ColorGroup>
+      )}
+
       <ColorGroup
         title="Terrain and land cover"
         description="Mapped surface classes. Sides and bottoms use rock."
