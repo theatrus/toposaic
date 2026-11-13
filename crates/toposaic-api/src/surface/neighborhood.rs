@@ -37,7 +37,8 @@ fn query(bounds: &[GeoBounds]) -> String {
             selectors.push_str(&format!("way{selector}{bbox};relation{selector}{bbox};"));
         }
     }
-    format!("[out:json][timeout:60];({selectors});out tags geom;")
+    // `out tags geom` would drop multipolygon member outlines.
+    format!("[out:json][timeout:60];({selectors});out geom;")
 }
 
 fn class_for(tags: &HashMap<String, String>) -> Option<SurfaceClass> {
@@ -356,6 +357,7 @@ mod tests {
         assert!(q.contains("playground"));
         assert!(!q.contains("[\"amenity\"=\"school\"]"));
         assert!(!q.contains("[\"leisure\"=\"park\"]"));
+        assert!(q.ends_with("out geom;"));
     }
 
     #[test]
