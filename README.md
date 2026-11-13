@@ -219,6 +219,24 @@ road, and building materials ready for a color print. See
 
 ## Solid terrain and piece layouts
 
+Enable **Surface → Distinguish neighborhood surfaces** to separate WorldCover
+grassland from trees and import mapped grass, woodland, schoolyards, parking
+areas, sports surfaces, and playgrounds from OpenStreetMap. This option is off
+by default. Whole school and park boundaries are not filled. Roads and buildings
+take precedence over these ground areas. Missing map layers fall back to land
+cover, with a note in the data sources.
+
+Four color controls appear together under **Colors → Neighborhood surfaces**:
+grass/lawns, paved areas, sports surfaces, and playgrounds. These are category
+colors, not observed paint colors. Mapped grass sports fields use grass rather
+than the sports color. Exact court markings and road stripes are not generated.
+Share colors between categories to fit your loaded filaments. Availability
+depends on local mapping, and small features may not survive the print scale.
+Sports surfaces initially share the water color to save a filament slot.
+Neighborhood categories, including grass, keep their fixed colors in satellite
+and hybrid modes too. Track ways require explicit area tagging so a running
+oval drawn as a line does not fill its infield.
+
 Solid terrain mode exports the same mapped relief as one watertight STL and 3MF
 model with no puzzle seams. A model can keep its rectangular edge, use a round
 circle, fill the selected area with an ellipse, or follow a polygon drawn on

@@ -24,6 +24,8 @@ use crate::{
     osm::{self, LegacyCache, OverpassResponse, OverpassWay, TileLayer},
 };
 
+mod neighborhood;
+
 #[cfg(test)]
 use crate::osm::{OverpassMember, OverpassPoint, Tile};
 
@@ -313,6 +315,11 @@ fn fetch_surface_field_inner(
     let mut source = String::new();
 
     if spec.color_output.enabled {
+        let classify: fn(u8) -> SurfaceClass = if spec.color_output.neighborhood_surfaces.enabled {
+            classify_neighborhood_cover
+        } else {
+            classify_world_cover
+        };
         on_progress("Loading land cover", 0.04)?;
         let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
         for row in 0..height {
@@ -351,6 +358,7 @@ fn fetch_surface_field_inner(
                 height,
                 &mut classes,
                 &map_cache_dir.join("world-cover"),
+                classify,
             ) {
                 warn!(%error, tile = %tile_name, "ESA WorldCover tile unavailable; using rock");
                 missing_tiles.push(tile_name.clone());
@@ -393,6 +401,11 @@ fn fetch_surface_field_inner(
                         width,
                         height,
                         &map_cache_dir.join("world-cover"),
+                        if spec.color_output.neighborhood_surfaces.enabled {
+                            classify_neighborhood_cover
+                        } else {
+                            classify_world_cover
+                        },
                     )
                 });
                 let smoothed_native = match native {
@@ -524,6 +537,33 @@ fn fetch_surface_field_inner(
         field.filter_small_patches(spec.width_mm, spec.color_output.minimum_patch_mm);
         if let Some(edges) = &source_edges {
             field.restore_raster_edge_classes(edges)?;
+        }
+        if spec.color_output.neighborhood_surfaces.enabled {
+            on_progress("Loading neighborhood surfaces", 0.26)?;
+            match neighborhood::paint(
+                spec,
+                bounds,
+                &map_cache_dir.join("osm"),
+                &mut field,
+                cancellation,
+            ) {
+                Ok(count) => append_source(
+                    &mut field.source,
+                    format!(
+                        "neighborhood surfaces: {count} mapped areas from OpenStreetMap via Overpass; grass from WorldCover class 30; category colors, not observed paint colors; © OpenStreetMap contributors, ODbL; {OPENSTREETMAP_COPYRIGHT_URL}"
+                    ),
+                ),
+                Err(error) => {
+                    if cancellation.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                        return Err(error);
+                    }
+                    warn!(%error, "neighborhood surfaces unavailable; using land cover");
+                    append_source(
+                        &mut field.source,
+                        "OpenStreetMap neighborhood surfaces unavailable; used land cover only",
+                    );
+                }
+            }
         }
         if spec.color_output.osm_water_enabled {
             on_progress("Loading waterways", 0.28)?;
@@ -2995,6 +3035,7 @@ fn fetch_native_class_grid(
     sample_width: usize,
     sample_height: usize,
     cache_dir: &Path,
+    classify: fn(u8) -> SurfaceClass,
 ) -> Result<NativeClassGrid> {
     let plan = plan_native_window(bounds, sample_width, sample_height);
     let mut classes = vec![SurfaceClass::Rock; plan.width * plan.height];
@@ -3046,7 +3087,7 @@ fn fetch_native_class_grid(
                 }
                 let window_column =
                     (read.global_column + column as i64 - plan.column_start) as usize;
-                classes[flipped_row * plan.width + window_column] = classify_world_cover(value);
+                classes[flipped_row * plan.width + window_column] = classify(value);
             }
         }
     }
@@ -3128,6 +3169,7 @@ fn sample_tile(
     target_height: usize,
     output: &mut [SurfaceClass],
     cache_dir: &Path,
+    classify: fn(u8) -> SurfaceClass,
 ) -> Result<()> {
     let geotiff = open_world_cover_tile(tile_name, cache_dir)?;
 
@@ -3229,7 +3271,7 @@ fn sample_tile(
         if value == 0 {
             continue;
         }
-        output[point.output_index] = classify_world_cover(value);
+        output[point.output_index] = classify(value);
     }
     Ok(())
 }
@@ -3263,6 +3305,22 @@ fn classify_world_cover(value: u8) -> SurfaceClass {
         80 => SurfaceClass::Water,
         _ => SurfaceClass::Rock,
     }
+}
+
+fn classify_neighborhood_cover(value: u8) -> SurfaceClass {
+    if value == 30 {
+        return SurfaceClass::Grass;
+    }
+    classify_world_cover(value)
+}
+
+#[cfg(test)]
+#[test]
+fn neighborhood_grass_classification_does_not_change_legacy_or_built_up_land() {
+    assert_eq!(classify_world_cover(30), SurfaceClass::Rock);
+    assert_eq!(classify_neighborhood_cover(30), SurfaceClass::Grass);
+    assert_eq!(classify_neighborhood_cover(10), SurfaceClass::Forest);
+    assert_eq!(classify_neighborhood_cover(50), SurfaceClass::Rock);
 }
 
 fn world_cover_tile(longitude: f64, latitude: f64) -> String {

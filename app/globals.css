@@ -3932,6 +3932,22 @@ fieldset.control-section .road-options {
   }
 }
 
+.neighborhood-surfaces {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.neighborhood-surfaces small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .filament-order {
   border: 1px solid var(--line);
   margin-top: 10px;

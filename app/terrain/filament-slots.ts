@@ -26,6 +26,10 @@ export const DEFAULT_CLASS_ORDER: readonly SurfaceClassKey[] = [
   "route_trail",
   "ferry",
   "aviation",
+  "grass",
+  "pavement",
+  "sport",
+  "playground",
 ];
 
 const CLASS_LABELS: Record<SurfaceClassKey, string> = {
@@ -42,6 +46,10 @@ const CLASS_LABELS: Record<SurfaceClassKey, string> = {
   route_trail: "Trail",
   ferry: "Ferry",
   aviation: "Airport surface",
+  grass: "Grass / lawns",
+  pavement: "Paved areas",
+  sport: "Sports surfaces",
+  playground: "Playgrounds",
 };
 
 export type FilamentSlotEntry = {
@@ -84,6 +92,10 @@ export function filamentSlotEntries(
     route_trail: spec.color_output.route_trail_color,
     ferry: spec.color_output.ferry_color,
     aviation: spec.color_output.aviation_color,
+    grass: spec.color_output.neighborhood_surfaces.grass_color,
+    pavement: spec.color_output.neighborhood_surfaces.pavement_color,
+    sport: spec.color_output.neighborhood_surfaces.sport_color,
+    playground: spec.color_output.neighborhood_surfaces.playground_color,
   };
   // Mirrors GenerationSpec::emits_class. The rail and aerial layers ride on
   // color output the way roads do, and each takes a slot only when its
@@ -91,6 +103,10 @@ export function filamentSlotEntries(
   // railways paints in the rail class and costs nothing.
   const output = spec.color_output;
   const emits: Record<SurfaceClassKey, boolean> = {
+    grass: output.enabled && output.neighborhood_surfaces.enabled,
+    pavement: output.enabled && output.neighborhood_surfaces.enabled,
+    sport: output.enabled && output.neighborhood_surfaces.enabled,
+    playground: output.enabled && output.neighborhood_surfaces.enabled,
     rock: true,
     forest: true,
     snow: true,

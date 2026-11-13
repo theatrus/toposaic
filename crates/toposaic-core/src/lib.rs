@@ -49,9 +49,9 @@ pub use spec::{
     ColorOutputSpec, DatumReference, DotMarkerStyle, ElevationSource, FerryStyle, FlagMarkerStyle,
     GenerationSpec, GroundColorMode, GroundPaletteSpec, HeightMode, HeightScaleSpec, LabelFont,
     LineScaleSpec, LineStyle, MapFrame, MapLabelStyle, MapMarker, MarineGeometry, MarineLevel,
-    MarineSpec, MarkerKind, MarkerSpec, ModelOutlineSpec, OutlineShape, PuzzleRetentionSpec,
-    RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec, SteepForestTarget,
-    SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont, TrayLabelPosition,
-    TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
+    MarineSpec, MarkerKind, MarkerSpec, ModelOutlineSpec, NeighborhoodSurfacesSpec, OutlineShape,
+    PuzzleRetentionSpec, RailLifecycle, RailStyle, ResolvedRoadDetail, RoadDetail, SlopeGateSpec,
+    SteepForestTarget, SuperTileAnchor, SurfaceClass, ThreeMfStyle, TrailRoute, TrayLabelFont,
+    TrayLabelPosition, TraySpec, WallMountSpec, WallMountStyle, WallMountTarget,
 };
 pub use surface::{NativeClassGrid, SlopeGateDemotion, SlopeGates, SurfaceField};

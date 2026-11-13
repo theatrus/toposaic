@@ -32,6 +32,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { previewGroundColor } from "./preview-ground-color";
 
 import {
   previewInitialCameraPosition,
@@ -96,6 +97,10 @@ const CLASS_KEYS = [
   "route_trail",
   "ferry",
   "aviation",
+  "grass",
+  "pavement",
+  "sport",
+  "playground",
 ] as const;
 
 function cubicBezier(
@@ -452,6 +457,7 @@ export function ReliefPreview({
       spec.color_output.aviation_aprons_enabled ||
       spec.color_output.aviation_helipads_enabled);
   const aviationClassDrawn = aviationDrawn && aviationClass === "aviation";
+  const neighborhoodSurfaces = spec.color_output.neighborhood_surfaces;
   const roadClassDrawn =
     spec.color_output.roads_enabled ||
     (railDrawn && railClass === "road") ||
@@ -564,7 +570,6 @@ export function ReliefPreview({
       return bottom * (1 - ty) + top * ty;
     };
 
-    const groundPalette = preview?.ground_palette;
     const palette = {
       rock: preview?.surface_palette?.rock ?? rock_color,
       forest: preview?.surface_palette?.forest ?? forest_color,
@@ -579,6 +584,10 @@ export function ReliefPreview({
       ferry: preview?.surface_palette?.ferry ?? ferry_color,
       aviation: preview?.surface_palette?.aviation ?? aviation_color,
       marker: preview?.surface_palette?.marker ?? markerColor,
+      grass: preview?.surface_palette?.grass ?? neighborhoodSurfaces.grass_color,
+      pavement: preview?.surface_palette?.pavement ?? neighborhoodSurfaces.pavement_color,
+      sport: preview?.surface_palette?.sport ?? neighborhoodSurfaces.sport_color,
+      playground: preview?.surface_palette?.playground ?? neighborhoodSurfaces.playground_color,
     };
     const classColor = (surfaceClass?: number) => {
       // Preview classes are raw SurfaceClass material indices, in the
@@ -589,14 +598,8 @@ export function ReliefPreview({
       // when their layer is drawn in its own color.
       // An index past the fixed classes names a satellite-discovered ground
       // color, in the order the job resolved them.
-      if (
-        surfaceClass !== undefined &&
-        surfaceClass >= CLASS_KEYS.length &&
-        groundPalette
-      ) {
-        const discovered = groundPalette[surfaceClass - CLASS_KEYS.length];
-        if (discovered) return discovered;
-      }
+      const discovered = previewGroundColor(preview, surfaceClass);
+      if (discovered) return discovered;
       const key =
         surfaceClass === undefined ? undefined : CLASS_KEYS[surfaceClass];
       // With color output off the mesh shows neutral terrain, not rock.
@@ -1173,6 +1176,7 @@ export function ReliefPreview({
     aerial_color,
     ferry_color,
     aviation_color,
+    neighborhoodSurfaces,
     markerColor,
     markers,
     trayColor,
@@ -1300,9 +1304,16 @@ export function ReliefPreview({
               ["Ferry", "ferry", spec.color_output.ferry_color],
               ["Airport", "aviation", spec.color_output.aviation_color],
               ["Marker", "marker", spec.marker_settings.color],
+              ["Grass", "grass", neighborhoodSurfaces.grass_color],
+              ["Pavement", "pavement", neighborhoodSurfaces.pavement_color],
+              ["Sports", "sport", neighborhoodSurfaces.sport_color],
+              ["Playgrounds", "playground", neighborhoodSurfaces.playground_color],
             ] as const
           )
             .filter(([, key]) => {
+              if (["grass", "pavement", "sport", "playground"].includes(key)) {
+                return spec.color_output.enabled && neighborhoodSurfaces.enabled;
+              }
               if (key === "trail") {
                 return trailsPresent;
               }

@@ -115,19 +115,22 @@ const WRITE_BATCH_ELEMENTS: usize = 1024 * 1024;
 // extruder number n as a nibble stream: n = 1 or 2 fits one nibble,
 // hex(n << 2) — "4", "8". From n = 3 up the state nibble saturates at 0xC
 // and an extension nibble carries n - 3, written before the marker —
-// "0C" through "AC" for extruders 3 to 13.
+// "0C" through "EC" for extruders 3 to 17. Larger states use continuation
+// nibbles: subtract 15 for each F, then write the remainder before that
+// stream, e.g. 18 = "0FC". This follows BambuStudio TriangleSelector::serialize.
 // Keep the standard 3MF color properties too, for consumers that support
 // them.
 //
 // The index here is the archive's DENSE filament slot, not the surface
 // class: extruder number = slot + 1. A spec that emits six classes only ever
 // reaches "3C" whichever six they are.
-const ORCA_PAINT_CODES: [&str; 13] = [
-    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "AC",
+const ORCA_PAINT_CODES: [&str; MATERIAL_SLOTS] = [
+    "4", "8", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "AC", "BC", "CC", "DC",
+    "EC", "0FC", "1FC", "2FC", "3FC", "4FC", "5FC", "6FC", "7FC",
 ];
 const _: () = assert!(
-    ORCA_PAINT_CODES.len() == crate::spec::SurfaceClass::ALL.len(),
-    "every surface class needs a face-paint code"
+    ORCA_PAINT_CODES.len() == MATERIAL_SLOTS,
+    "every class and satellite palette slot needs a face-paint code"
 );
 
 impl<'a> ThreeMfWriter<'a> {
@@ -818,7 +821,8 @@ mod tests {
             let derived = if extruder <= 2 {
                 format!("{:X}", extruder << 2)
             } else {
-                format!("{:X}C", extruder - 3)
+                let extension = extruder - 3;
+                format!("{:X}{}C", extension % 15, "F".repeat(extension / 15))
             };
             assert_eq!(derived, expected, "extruder {extruder}");
         }
@@ -829,7 +833,9 @@ mod tests {
         assert_eq!(ORCA_PAINT_CODES[6], "4C");
         assert_eq!(ORCA_PAINT_CODES[7], "5C");
         assert_eq!(ORCA_PAINT_CODES[8], "6C");
-        assert_eq!(ORCA_PAINT_CODES.len(), SurfaceClass::ALL.len());
+        assert_eq!(ORCA_PAINT_CODES.len(), MATERIAL_SLOTS);
+        assert_eq!(ORCA_PAINT_CODES[17], "0FC");
+        assert_eq!(ORCA_PAINT_CODES[24], "7FC");
 
         // The codes are indexed by DENSE SLOT, not by class, so the code a
         // class gets moves with the palette. A separately-styled rail layer
@@ -1342,6 +1348,11 @@ mod tests {
         spec.overlay_samples_per_piece = 32;
         spec.buildings.enabled = true;
         spec.color_output.route_trail_color = Some("#875A2C".into());
+        spec.color_output.neighborhood_surfaces.enabled = true;
+        spec.color_output.neighborhood_surfaces.grass_color = "#123451".into();
+        spec.color_output.neighborhood_surfaces.pavement_color = "#123452".into();
+        spec.color_output.neighborhood_surfaces.sport_color = "#123453".into();
+        spec.color_output.neighborhood_surfaces.playground_color = "#123454".into();
         spec.trails = vec![crate::spec::TrailRoute {
             name: "Loop".into(),
             points: vec![[46.8, -121.8], [46.9, -121.7]],
@@ -1400,6 +1411,21 @@ mod tests {
             SurfaceClass::Marker,
         );
 
+        for (index, class) in [
+            SurfaceClass::Grass,
+            SurfaceClass::Pavement,
+            SurfaceClass::Sport,
+            SurfaceClass::Playground,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let u = 0.1 + index as f32 * 0.2;
+            field.paint_surface_area(
+                &[[u, 0.01], [u + 0.05, 0.01], [u + 0.05, 0.05], [u, 0.05]],
+                class,
+            );
+        }
         let contained = field.contained_classes();
         assert!(
             contained[..SurfaceClass::ALL.len()]
@@ -1435,6 +1461,10 @@ mod tests {
             SurfaceClass::Building,
             SurfaceClass::Marker,
             SurfaceClass::RouteTrail,
+            SurfaceClass::Grass,
+            SurfaceClass::Pavement,
+            SurfaceClass::Sport,
+            SurfaceClass::Playground,
         ] {
             assert!(
                 mesh.materials.contains(&class.into()),

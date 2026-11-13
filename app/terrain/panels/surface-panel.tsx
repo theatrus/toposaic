@@ -48,6 +48,25 @@ export function SurfacePanel({
       {spec.color_output.enabled && (
         <>
           <SurfaceTerrainSection spec={spec} updateColor={updateColor} />
+          <section className="neighborhood-surfaces" aria-label="Neighborhood surfaces">
+            <label className="option-toggle">
+              <input
+                type="checkbox"
+                checked={spec.color_output.neighborhood_surfaces.enabled}
+                onChange={(event) => updateColor("neighborhood_surfaces", {
+                  ...spec.color_output.neighborhood_surfaces,
+                  enabled: event.target.checked,
+                })}
+              />
+              <span>Distinguish neighborhood surfaces</span>
+            </label>
+            <small>
+              Separate grass from trees and add mapped schoolyards, parking,
+              sports surfaces, and playgrounds. Uses existing map data only.
+              Park and school boundaries are not filled. Colors are categories,
+              not detected paint colors. Choose their filaments in Colors.
+            </small>
+          </section>
           <SurfaceWaterSection
             spec={spec}
             updateColor={updateColor}

@@ -1008,6 +1008,12 @@ impl GenerationSpec {
             }
             SurfaceClass::Ferry => self.uses_separate_ferry(),
             SurfaceClass::Aviation => self.uses_separate_aviation(),
+            SurfaceClass::Grass
+            | SurfaceClass::Pavement
+            | SurfaceClass::Sport
+            | SurfaceClass::Playground => {
+                self.color_output.enabled && self.color_output.neighborhood_surfaces.enabled
+            }
         }
     }
 
@@ -1019,6 +1025,10 @@ impl GenerationSpec {
             SurfaceClass::Water => &self.color_output.water_color,
             SurfaceClass::Road => &self.color_output.road_color,
             SurfaceClass::Building => &self.color_output.building_color,
+            SurfaceClass::Grass => &self.color_output.neighborhood_surfaces.grass_color,
+            SurfaceClass::Pavement => &self.color_output.neighborhood_surfaces.pavement_color,
+            SurfaceClass::Sport => &self.color_output.neighborhood_surfaces.sport_color,
+            SurfaceClass::Playground => &self.color_output.neighborhood_surfaces.playground_color,
             SurfaceClass::Trail => &self.color_output.trail_color,
             SurfaceClass::Rail => &self.color_output.rail_color,
             SurfaceClass::Aerial => &self.color_output.aerial_color,
@@ -2490,6 +2500,8 @@ impl FilamentProfile {
 #[serde(default)]
 pub struct ColorOutputSpec {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "NeighborhoodSurfacesSpec::is_default")]
+    pub neighborhood_surfaces: NeighborhoodSurfacesSpec,
     /// Which 3MF flavour to write. `#[serde(default)]` on the struct fills
     /// this with `Project` for specs saved before the field existed, so
     /// existing users keep today's one-click color behavior unchanged.
@@ -2905,11 +2917,40 @@ impl GroundPaletteSpec {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NeighborhoodSurfacesSpec {
+    pub enabled: bool,
+    pub grass_color: String,
+    pub pavement_color: String,
+    pub sport_color: String,
+    pub playground_color: String,
+}
+
+impl Default for NeighborhoodSurfacesSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grass_color: "#76A542".into(),
+            pavement_color: "#4A4E54".into(),
+            sport_color: "#2F76B5".into(),
+            playground_color: "#9A6C42".into(),
+        }
+    }
+}
+
+impl NeighborhoodSurfacesSpec {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 impl Default for ColorOutputSpec {
     fn default() -> Self {
         Self {
             enabled: false,
             threemf_style: ThreeMfStyle::default(),
+            neighborhood_surfaces: NeighborhoodSurfacesSpec::default(),
             filament_profile: FilamentProfile::default(),
             filament_order: Vec::new(),
             forest_color: "#28543A".into(),
@@ -2973,6 +3014,16 @@ impl ColorOutputSpec {
             ("water", self.water_color.as_str()),
             ("road", self.road_color.as_str()),
             ("building", self.building_color.as_str()),
+            ("grass", self.neighborhood_surfaces.grass_color.as_str()),
+            (
+                "pavement",
+                self.neighborhood_surfaces.pavement_color.as_str(),
+            ),
+            ("sport", self.neighborhood_surfaces.sport_color.as_str()),
+            (
+                "playground",
+                self.neighborhood_surfaces.playground_color.as_str(),
+            ),
             (
                 "mapped trail",
                 self.route_trail_color
@@ -3069,6 +3120,10 @@ pub enum SurfaceClass {
     /// spools on a distinction nobody asked for. The class only appears when
     /// `aviation_style` is `separate`.
     Aviation,
+    Grass,
+    Pavement,
+    Sport,
+    Playground,
 }
 
 impl SurfaceClass {
@@ -3079,7 +3134,7 @@ impl SurfaceClass {
     /// 3MF packs whichever of these classes a spec actually emits into
     /// consecutive slots, so a class that never appears costs nothing. See
     /// [`GenerationSpec::material_palette`].
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Rock,
         Self::Forest,
         Self::Snow,
@@ -3093,11 +3148,16 @@ impl SurfaceClass {
         Self::RouteTrail,
         Self::Ferry,
         Self::Aviation,
+        Self::Grass,
+        Self::Pavement,
+        Self::Sport,
+        Self::Playground,
     ];
 
     /// Whether a satellite-discovered ground color may stand in for this
-    /// class. Land cover yes; anything drawn from the map on top of the
-    /// ground, no — see `SurfaceField::print_material_at`.
+    /// class. The original four land-cover classes accept imagery shades.
+    /// Neighborhood surfaces keep their fixed category colors, including
+    /// raster grass — see `SurfaceField::print_material_at`.
     pub fn takes_ground_color(self) -> bool {
         matches!(self, Self::Rock | Self::Forest | Self::Snow | Self::Water)
     }
@@ -3117,6 +3177,10 @@ impl SurfaceClass {
             Self::RouteTrail => 10,
             Self::Ferry => 11,
             Self::Aviation => 12,
+            Self::Grass => 13,
+            Self::Pavement => 14,
+            Self::Sport => 15,
+            Self::Playground => 16,
         }
     }
 }
@@ -3124,6 +3188,30 @@ impl SurfaceClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighborhood_surfaces_are_opt_in_and_validate_their_colors() {
+        let mut spec: GenerationSpec = serde_json::from_str("{}").unwrap();
+        assert!(!spec.color_output.neighborhood_surfaces.enabled);
+        assert_eq!(
+            spec.material_palette(any_class()).slot(SurfaceClass::Grass),
+            None
+        );
+        spec.color_output.enabled = true;
+        spec.color_output.neighborhood_surfaces.enabled = true;
+        assert!(
+            spec.material_palette(any_class())
+                .slot(SurfaceClass::Grass)
+                .is_some()
+        );
+        spec.color_output.neighborhood_surfaces.grass_color = "invalid".into();
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("grass color")
+        );
+    }
 
     /// Nothing ruled out by the data, so the settings alone decide the
     /// palette. Used to test what a spec CAN emit, apart from any map.

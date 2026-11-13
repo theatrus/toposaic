@@ -21,6 +21,10 @@ fn class_color(class: SurfaceClass) -> [u8; 3] {
         SurfaceClass::Water => [47, 118, 181],
         SurfaceClass::Road => [216, 163, 60],
         SurfaceClass::Building => [184, 168, 144],
+        SurfaceClass::Grass => [118, 165, 66],
+        SurfaceClass::Pavement => [74, 78, 84],
+        SurfaceClass::Sport => [47, 118, 181],
+        SurfaceClass::Playground => [154, 108, 66],
         _ => {
             let name = format!("{class:?}");
             match name.as_str() {

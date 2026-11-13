@@ -57,7 +57,11 @@ export type SurfaceClassKey =
   | "ferry"
   | "marker"
   | "route_trail"
-  | "aviation";
+  | "aviation"
+  | "grass"
+  | "pavement"
+  | "sport"
+  | "playground";
 
 export type GenerationSpec = {
   center_lat: number;
@@ -178,6 +182,13 @@ export type GenerationSpec = {
   };
   color_output: {
     enabled: boolean;
+    neighborhood_surfaces: {
+      enabled: boolean;
+      grass_color: string;
+      pavement_color: string;
+      sport_color: string;
+      playground_color: string;
+    };
     threemf_style: "painted" | "project" | "geometry";
     // The slicer filament preset every slot of a "project" 3MF names. Left
     // unnamed, OrcaSlicer and Bambu Studio pick a material themselves.
@@ -393,6 +404,8 @@ export type PreviewData = {
   // Satellite-discovered ground colors, in palette order. A surface_classes
   // index at or past the fixed class count names one of these.
   ground_palette?: string[];
+  /** Absent in older previews, whose satellite indices begin at 13. */
+  ground_material_offset?: number;
   surface_palette?: {
     rock: string;
     forest: string;
@@ -407,6 +420,10 @@ export type PreviewData = {
     ferry?: string;
     aviation?: string;
     marker?: string;
+    grass?: string;
+    pavement?: string;
+    sport?: string;
+    playground?: string;
   };
   surface_coverage?: {
     rock: number;
@@ -422,6 +439,10 @@ export type PreviewData = {
     ferry?: number;
     aviation?: number;
     marker?: number;
+    grass?: number;
+    pavement?: number;
+    sport?: number;
+    playground?: number;
   };
   surface_source?: string;
   minimum_elevation_m?: number;
