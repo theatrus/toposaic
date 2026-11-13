@@ -68,7 +68,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut painted = 0usize;
     let mut fallback = 0usize;
     for y in 0..size {
-        let v = y as f32 / (size - 1) as f32;
+        // Image rows grow downward, while model V grows toward its top edge.
+        let v = 1.0 - y as f32 / (size - 1) as f32;
         for x in 0..size {
             let u = x as f32 / (size - 1) as f32;
             match field.ground_material_at(u, v) {
