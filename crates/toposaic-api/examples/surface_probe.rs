@@ -36,6 +36,11 @@ fn class_color(class: SurfaceClass) -> [u8; 3] {
     }
 }
 
+fn image_row_v(row: usize, size: usize, bottom: f32, top: f32) -> f32 {
+    // Image rows grow downward, while model V grows toward its top edge.
+    top + (bottom - top) * row as f32 / (size - 1) as f32
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let setup = env::args().nth(1).expect("setup json path");
     let output = env::args().nth(2).expect("output ppm path");
@@ -67,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = 1400usize;
     let mut pixels = Vec::with_capacity(size * size * 3);
     for y in 0..size {
-        let v = v0 + (v1 - v0) * y as f32 / (size - 1) as f32;
+        let v = image_row_v(y, size, v0, v1);
         for x in 0..size {
             let u = u0 + (u1 - u0) * x as f32 / (size - 1) as f32;
             match mode {
@@ -117,4 +122,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&output, ppm)?;
     eprintln!("wrote {output}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_top_is_north_and_crop_bounds_stay_in_model_coordinates() {
+        let transform = GenerationSpec::default().geo_transform();
+        let (top_lat, _) = transform.coordinate_at_uv(0.5, image_row_v(0, 5, 0.0, 1.0) as f64);
+        let (bottom_lat, _) = transform.coordinate_at_uv(0.5, image_row_v(4, 5, 0.0, 1.0) as f64);
+        assert!(top_lat > bottom_lat);
+        assert_eq!(image_row_v(0, 5, 0.25, 0.75), 0.75);
+        assert_eq!(image_row_v(4, 5, 0.25, 0.75), 0.25);
+        assert_eq!(image_row_v(2, 5, 0.25, 0.75), 0.5);
+    }
 }
