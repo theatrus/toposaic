@@ -88,7 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = 1400usize;
     let mut pixels = Vec::with_capacity(size * size * 3);
     for y in 0..size {
-        let v = y as f32 / (size - 1) as f32;
+        // Image rows grow downward, while model V grows toward its top edge.
+        let v = 1.0 - y as f32 / (size - 1) as f32;
         for x in 0..size {
             let u = x as f32 / (size - 1) as f32;
             pixels.extend(class_color(field.class_at(u, v)));
