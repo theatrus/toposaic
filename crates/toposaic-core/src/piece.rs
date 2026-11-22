@@ -257,7 +257,48 @@ pub(crate) fn build_piece_with_height_range_timed(
         samples,
         piece_width,
         piece_height,
+        None,
     )
+}
+
+/// A piece cut to an arbitrary outline in assembled map millimetres rather
+/// than to a cell of the puzzle grid. Globe tiles use it: each tile traces its
+/// own outline onto the map and is built by the same terrain, overlay,
+/// building, marker, and color passes as a puzzle piece.
+pub(crate) struct OutlinePiece<'a> {
+    pub(crate) outline: &'a [[f32; 2]],
+    pub(crate) spacing_mm: f32,
+    pub(crate) name: String,
+}
+
+pub(crate) fn build_outline_piece(
+    spec: &GenerationSpec,
+    height_field: Option<&HeightField>,
+    height_range: Option<(f32, f32)>,
+    surface_field: Option<&SurfaceField>,
+    piece: &OutlinePiece,
+) -> Result<Mesh> {
+    anyhow::ensure!(
+        !spec.wall_mount.cuts_terrain() && !spec.puzzle_retention.active(spec.tray.enabled),
+        "outline pieces cannot carry a wall mount or tray retention back"
+    );
+    anyhow::ensure!(
+        piece.outline.len() >= 3 && piece.spacing_mm > 0.0,
+        "outline pieces need a closed outline and a positive sample spacing"
+    );
+    build_piece_with_samples_timed(
+        spec,
+        height_field,
+        height_range,
+        surface_field,
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        Some(piece),
+    )
+    .map(|(mesh, _)| mesh)
 }
 
 pub(crate) fn resolved_piece_samples(
@@ -283,6 +324,7 @@ fn build_piece_with_samples_timed(
     samples: usize,
     piece_width: f32,
     piece_height: f32,
+    outline_piece: Option<&OutlinePiece>,
 ) -> Result<(Mesh, PieceGeometryTiming)> {
     let total_started = Instant::now();
     let terrain_started = Instant::now();
@@ -292,19 +334,21 @@ fn build_piece_with_samples_timed(
         samples,
         ..PieceGeometryTiming::default()
     };
-    let origin_x = if spec.solid_model {
+    let origin_x = if spec.solid_model || outline_piece.is_some() {
         0.0
     } else {
         column as f32 * piece_width
     };
-    let origin_y = if spec.solid_model {
+    let origin_y = if spec.solid_model || outline_piece.is_some() {
         0.0
     } else {
         row as f32 * piece_height
     };
     let assembled_width = spec.width_mm;
     let assembled_height = spec.height_mm();
-    let outline = if spec.solid_model {
+    let outline = if let Some(piece) = outline_piece {
+        piece.outline.to_vec()
+    } else if spec.solid_model {
         solid_outline(spec, samples)?
     } else {
         local_piece_outline(spec, row, column)?
@@ -320,10 +364,16 @@ fn build_piece_with_samples_timed(
     } else {
         spec.samples_per_piece as usize
     };
-    let terrain_spacing = piece_width.min(piece_height) / samples as f32;
-    let boundary_spacing = piece_width.min(piece_height) / outline_samples as f32;
+    let (terrain_spacing, boundary_spacing) = match outline_piece {
+        Some(piece) => (piece.spacing_mm, piece.spacing_mm),
+        None => (
+            piece_width.min(piece_height) / samples as f32,
+            piece_width.min(piece_height) / outline_samples as f32,
+        ),
+    };
     let outline = densify_outline_for_triangulation(&outline, boundary_spacing);
-    let mounted_piece_back = spec.wall_mount.cuts_terrain() && !spec.solid_model;
+    let mounted_piece_back =
+        spec.wall_mount.cuts_terrain() && !spec.solid_model && outline_piece.is_none();
     let mount_frame = [
         -origin_x,
         -origin_y,
@@ -354,14 +404,20 @@ fn build_piece_with_samples_timed(
             uv[0] * assembled_width - origin_x,
             uv[1] * assembled_height - origin_y,
         ];
-        let nominal_owner = nominal_flag_marker_piece(spec, uv);
-        if !spec.solid_model
-            && (row.abs_diff(nominal_owner.0) > 1 || column.abs_diff(nominal_owner.1) > 1)
-        {
-            continue;
-        }
-        if flag_marker_owner(spec, uv)? != (row, column) {
-            continue;
+        if outline_piece.is_some() {
+            if !point_in_polygon(requested_center, &outline) {
+                continue;
+            }
+        } else {
+            let nominal_owner = nominal_flag_marker_piece(spec, uv);
+            if !spec.solid_model
+                && (row.abs_diff(nominal_owner.0) > 1 || column.abs_diff(nominal_owner.1) > 1)
+            {
+                continue;
+            }
+            if flag_marker_owner(spec, uv)? != (row, column) {
+                continue;
+            }
         }
         let flag_style = marker.flag_style();
         let radius = flag_style.hole_diameter_mm * 0.5;
@@ -433,7 +489,8 @@ fn build_piece_with_samples_timed(
     // query from roughly one grid row's worth of edges instead of the whole
     // outline while returning exactly what point_in_polygon would.
     let outline_index = PolygonStripIndex::new(&outline, grid_rows.max(1))?;
-    let shaped_outline = (spec.model_outline.shape != crate::spec::OutlineShape::Rectangle)
+    let shaped_outline = (outline_piece.is_some()
+        || spec.model_outline.shape != crate::spec::OutlineShape::Rectangle)
         .then(|| polygon_from_outline(&outline));
     let contains_outline = |point: [f32; 2]| {
         shaped_outline.as_ref().map_or_else(
@@ -664,7 +721,9 @@ fn build_piece_with_samples_timed(
     }
 
     let mut mesh = Mesh {
-        name: if spec.solid_model {
+        name: if let Some(piece) = outline_piece {
+            piece.name.clone()
+        } else if spec.solid_model {
             "Solid Terrain".into()
         } else {
             format!("Piece {}-{}", row + 1, column + 1)

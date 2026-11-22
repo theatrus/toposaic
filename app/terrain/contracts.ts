@@ -63,7 +63,70 @@ export type SurfaceClassKey =
   | "sport"
   | "playground";
 
+export type GlobeSpec = {
+  exterior: "faceted" | "rounded";
+  source: "fit_test" | "small_world" | "whole_earth";
+  earth_grid: "half_degree" | "quarter_degree";
+  full_shell: boolean;
+  seam_gap_mm: number;
+  wrap_degrees: number;
+  relief_mm: number;
+  full_wrap: boolean;
+  /** Latitude span of the 360° Small World band: 144, 120, 90, or 60. */
+  band_degrees: number;
+  surface_colors: boolean;
+  texture_mm: number;
+  diameter_mm: number;
+  bed_mm: number;
+  clip_fit_mm: number;
+  frame_depth_mm: number;
+  locator_clearance_mm: number;
+  subdivision: number;
+  samples_per_edge: number;
+  batch: { first_tile: number; tile_count: number } | null;
+  whole_earth_detail: boolean;
+  /** Play between each dovetail key and its frame slots, per side. */
+  key_clearance_mm: number;
+  /** Screwed brackets under each frame joint, behind the dovetail key. */
+  screw_brackets: boolean;
+  /** Screw each tile to its frame module from inside the globe. */
+  tile_screws: boolean;
+  insert: { screw_mm: number; hole_diameter_mm: number; length_mm: number };
+};
+
+type GlobePoint = [number, number, number];
+
+export type GlobeLandmark = {
+  id: number;
+  name: string;
+  shape: "tower" | "pyramid" | "city_marker";
+  latitude: number;
+  longitude: number;
+  width_mm: number;
+  height_mm: number;
+};
+
+export type GlobeLandmarkPlacement = GlobeLandmark & {
+  tile: number;
+  seat: { latitude: number; longitude: number; offset_mm: number } | null;
+  requested_position: GlobePoint;
+  insert_position: GlobePoint | null;
+};
+
+export type GlobePreviewMesh = {
+  name: string;
+  kind: "tile" | "frame" | "joint" | "key" | "clip" | "landmark";
+  top_triangles?: number;
+  vertices: GlobePoint[];
+  triangles: [number, number, number][];
+  outward: GlobePoint[];
+  materials?: number[];
+  poses: { origin: GlobePoint; x_axis: GlobePoint; y_axis: GlobePoint; z_axis: GlobePoint }[];
+};
+
 export type GenerationSpec = {
+  globe?: GlobeSpec;
+  globe_landmarks?: GlobeLandmark[];
   center_lat: number;
   center_lon: number;
   elevation_source: "mapzen" | "mapterhorn";
@@ -394,6 +457,19 @@ export type Job = {
 };
 
 export type PreviewData = {
+  globe_meshes?: GlobePreviewMesh[];
+  globe_landmarks?: GlobeLandmarkPlacement[];
+  globe_palette?: Record<number, string>;
+  globe_surface_samples?: number;
+  globe_exterior?: GlobeSpec["exterior"];
+  globe_source?: GlobeSpec["source"];
+  globe_tiles?: number[];
+  globe_layout_size?: number;
+  /** Most tiles one job may build at this mesh detail. */
+  globe_batch_limit?: number;
+  /** The full globe is over the limit: only the layout came back. */
+  globe_batch_required?: boolean;
+  globe_overview?: [GlobePoint, GlobePoint, GlobePoint][];
   width: number;
   height: number;
   values: number[];

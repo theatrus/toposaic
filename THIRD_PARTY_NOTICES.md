@@ -79,6 +79,11 @@ project.
   manifest and consult <https://mapterhorn.com/attribution/>. Data access and
   tile format details are at <https://mapterhorn.com/data-access/>.
 
+- The Whole Earth globe bundles a derivative of NOAA NCEI ETOPO 2022 ice-surface
+  elevations and the public-domain Natural Earth I with Shaded Relief and Water
+  raster. See [Whole Earth globe data](assets/globe/README.md) for sources and
+  the reproducible conversion.
+
 When a physical print or static image is shared publicly, place the required
 credits near the work or in its packaging or accompanying documentation. Do
 not rely on the software license as a substitute for data attribution.

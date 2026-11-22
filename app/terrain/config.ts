@@ -80,6 +80,33 @@ export function closeViewLineScale(
   return 1 + (multiplier - 1) * progress;
 }
 
+export const defaultGlobe = {
+  exterior: "faceted",
+  source: "fit_test",
+  earth_grid: "quarter_degree",
+  full_shell: true,
+  seam_gap_mm: 0.4,
+  wrap_degrees: 110,
+  relief_mm: 8,
+  full_wrap: false,
+  band_degrees: 120,
+  surface_colors: false,
+  texture_mm: 0,
+  diameter_mm: 200,
+  bed_mm: 180,
+  clip_fit_mm: 0.4,
+  frame_depth_mm: 5,
+  locator_clearance_mm: 0.25,
+  subdivision: 0,
+  samples_per_edge: 48,
+  batch: null,
+  whole_earth_detail: false,
+  key_clearance_mm: 0.15,
+  screw_brackets: false,
+  tile_screws: false,
+  insert: { screw_mm: 3, hole_diameter_mm: 4, length_mm: 4 },
+} as const satisfies NonNullable<GenerationSpec["globe"]>;
+
 export const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
   center_lon: -121.7603,
@@ -363,6 +390,7 @@ export function mergeSpecDefaults(
   return {
     ...initialSpec,
     ...saved,
+    globe: saved.globe ? { ...defaultGlobe, ...saved.globe, earth_grid: saved.globe.earth_grid ?? "half_degree" } : undefined,
     // The wire type is Option<u32>: an explicit null means "backend picks".
     // Spreading keeps nulls, so coalesce them to the client defaults here.
     mesh_samples_across:

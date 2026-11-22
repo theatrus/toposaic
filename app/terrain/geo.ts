@@ -281,6 +281,8 @@ export function superTileCorners(
   >,
   row: number,
   column: number,
+  /** Draw only a centered strip of the tile, this fraction of its height. */
+  heightFraction = 1,
 ) {
   const rowAnchor =
     spec.super_tile_anchor === "center"
@@ -293,12 +295,13 @@ export function superTileCorners(
   const centerEast = (column - columnAnchor) * spec.ground_span_km;
   const centerNorth = -(row - rowAnchor) * spec.ground_span_km;
   const half = spec.ground_span_km / 2;
+  const halfNorth = half * heightFraction;
   const referenceLatitude = spec.map_frame?.origin_lat ?? spec.center_lat;
   return [
-    [-half, half],
-    [half, half],
-    [half, -half],
-    [-half, -half],
+    [-half, halfNorth],
+    [half, halfNorth],
+    [half, -halfNorth],
+    [-half, -halfNorth],
   ].map(([east, north]) =>
     coordinateAtLocalOffset(
       spec.center_lat,

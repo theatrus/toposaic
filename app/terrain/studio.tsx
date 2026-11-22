@@ -46,6 +46,7 @@ import {
   isMapLabel,
   markerNeedsSurfaceData,
   limitPlaceName,
+  defaultGlobe,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
   randomPuzzleSeed,
@@ -84,12 +85,17 @@ import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ColorsPanel } from "./panels/colors-panel";
 import { ModelPanel } from "./panels/model-panel";
+import { GlobeLandmarksPanel } from "./panels/globe-landmarks-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
 import { MountingPanel } from "./panels/mounting-panel";
 import { MarkersPanel } from "./panels/markers-panel";
 import { OutputPanel } from "./panels/output-panel";
 import { SurfacePanel } from "./panels/surface-panel";
 import { displayVersion, isVersionNewer } from "../updates/version";
+
+const GlobePreview = lazy(() =>
+  import("./globe-preview").then(({ GlobePreview: component }) => ({ default: component })),
+);
 
 const ReliefPreview = lazy(() =>
   import("./preview").then(({ ReliefPreview: component }) => ({
@@ -169,6 +175,16 @@ function previewKey(
   return JSON.stringify([detail, tile.row, tile.column, spec]);
 }
 
+/** The globe settings that decide which tiles a preview shows and where. */
+function globeLayoutKey(spec: GenerationSpec) {
+  const globe = spec.globe;
+  if (!globe) return null;
+  return JSON.stringify([
+    globe.source, globe.exterior, globe.diameter_mm, globe.bed_mm, globe.subdivision,
+    globe.batch, globe.full_wrap, globe.band_degrees, globe.wrap_degrees,
+  ]);
+}
+
 function anchorPreviewTile(spec: GenerationSpec): PreviewTile {
   return spec.super_tile_anchor === "center"
     ? {
@@ -242,6 +258,9 @@ export function TerrainStudio() {
     null,
   );
   const [previewedSpecKey, setPreviewedSpecKey] = useState<string | null>(null);
+  const [previewedGlobeLayout, setPreviewedGlobeLayout] = useState<string | null>(null);
+  // Bumped to rebuild a paused preview without changing any setting.
+  const [previewRetry, setPreviewRetry] = useState(0);
   const [previewActivity, setPreviewActivity] = useState<
     (PreviewProgress & { specKey: string }) | null
   >(null);
@@ -323,6 +342,14 @@ export function TerrainStudio() {
     setGeneratedPreview(null);
     setSpec(next);
   }, []);
+
+  const setModelType = (type: "puzzle" | "solid" | "globe") => {
+    changeSpec((current) => type === "globe"
+      ? { ...current, globe: current.globe ?? defaultGlobe }
+      : { ...current, globe: undefined, solid_model: type === "solid" });
+    setMarkerPlacementKind(null);
+    setMovingMarkerIndex(null);
+  };
 
   const changePreviewDetail = useCallback((detail: PreviewDetail) => {
     setPreviewDetail(detail);
@@ -1163,6 +1190,7 @@ export function TerrainStudio() {
           return;
         }
         setPreviewedSpecKey(previewSpecKey);
+        setPreviewedGlobeLayout(globeLayoutKey(spec));
         setElevationPreview(nextPreview);
       } catch (error) {
         // Keep the last good mesh in view when a background refresh fails.
@@ -1202,7 +1230,7 @@ export function TerrainStudio() {
         previewServerIdRef.current = null;
       }
     };
-  }, [previewDetail, previewTile, spec]);
+  }, [previewDetail, previewRetry, previewTile, spec]);
 
   const cancelPreview = useCallback(() => {
     previewRequestIdRef.current += 1;
@@ -1798,7 +1826,9 @@ export function TerrainStudio() {
         "save_all_artifacts",
         {
           jobId: job.id,
-          folderName: job.spec.place_name.trim() || "toposaic",
+          folderName: job.spec.globe
+            ? job.artifacts.find((artifact) => artifact.name.startsWith("globe-tiles-") && artifact.name.endsWith(".zip"))?.name.slice(0, -4) ?? "TopoSaic globe"
+            : job.spec.place_name.trim() || "toposaic",
           artifactNames,
         },
       );
@@ -1826,7 +1856,7 @@ export function TerrainStudio() {
   // Asked for once a job finishes, so the Output tab can say how large the
   // source data is before anyone commits to packing it.
   useEffect(() => {
-    if (job?.status !== "complete") return;
+    if (job?.status !== "complete" || (job.spec.globe && job.spec.globe.source !== "small_world" && !job.spec.globe.whole_earth_detail)) return;
     const jobId = job.id;
     const controller = new AbortController();
     terrainApi
@@ -1836,7 +1866,7 @@ export function TerrainStudio() {
       // route, simply has no bundle to offer. Nothing to report.
       .catch(() => {});
     return () => controller.abort();
-  }, [job?.id, job?.status]);
+  }, [job?.id, job?.spec.globe, job?.status]);
 
   const jobSourceBundle =
     job && sourceBundle?.jobId === job.id ? sourceBundle.summary : null;
@@ -1918,6 +1948,13 @@ export function TerrainStudio() {
     }
     if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
+    if (job.spec.globe) {
+      if (job.progress < 40) {
+        if (job.spec.globe.whole_earth_detail) return "Loading Earth elevation blocks…";
+        if (job.spec.globe.source === "small_world") return "Loading regional map data…";
+      }
+      return job.progress < 84 ? "Building globe tiles and frame…" : "Packing the globe print kit…";
+    }
     if (job.progress < 8) return "Preparing source data…";
     if (job.progress < 40) {
       return "Sampling elevation and fetching source tiles…";
@@ -1964,7 +2001,11 @@ export function TerrainStudio() {
       job.spec.buildings.enabled ||
       job.spec.trails.length > 0 ||
       job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind));
-    const stages = [
+    const stages = job.spec.globe ? [
+      ...(job.spec.globe.source === "small_world" || job.spec.globe.whole_earth_detail ? [{ key: "elevation", label: "Map data", start: 0, end: 40 }] : []),
+      { key: "geometry", label: "Globe and frame", start: job.spec.globe.source === "small_world" || job.spec.globe.whole_earth_detail ? 40 : 0, end: 84 },
+      { key: "files", label: "Print kit", start: 84, end: 100 },
+    ] : [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
       ...(hasSurface
         ? [{ key: "surface", label: "Map details", start: 40, end: 65 }]
@@ -2016,13 +2057,17 @@ export function TerrainStudio() {
     });
   }, [job]);
 
-  const preview = useMemo(() => {
+  const preview = (() => {
     // Mesh material indexes and discovered ground palettes form one payload.
     // Never combine a live mesh with a generated job's independently sampled
     // palette: the same index can name a different filament in the two passes.
+    if (spec.globe) {
+      return elevationPreview?.globe_meshes ? elevationPreview : null;
+    }
     if (elevationPreview?.model_meshes?.length) return elevationPreview;
-    return generatedPreview ?? elevationPreview;
-  }, [elevationPreview, generatedPreview]);
+    return (generatedPreview?.globe_meshes ? null : generatedPreview)
+      ?? (elevationPreview?.globe_meshes ? null : elevationPreview);
+  })();
   const currentSpecKey = previewKey(spec, previewDetail, previewTile);
   const previewPaused = previewCanceledSpecKey === currentSpecKey;
   const previewStale =
@@ -2112,6 +2157,42 @@ export function TerrainStudio() {
       : markerPlacementKind
         ? "place"
         : null;
+
+  const smallWorld = spec.globe?.source === "small_world";
+  // A Small World is a terrain model wrapped onto the globe, so it keeps
+  // every terrain section except mounting. Other globes keep only Model.
+  const globeSection = (section: typeof activeSection) =>
+    !spec.globe || section === "model" || section === "output"
+      || (smallWorld && section !== "mounting");
+  const visibleSection = globeSection(activeSection) ? activeSection : "model";
+  const terrainSectionHidden = (section: typeof activeSection) =>
+    !globeSection(section) || visibleSection !== section;
+  const showRegionMap = !spec.globe || smallWorld;
+  // A 360° band wraps the middle strip of the square map: one full turn
+  // across, and its latitude span's share of a turn high.
+  const bandFraction = smallWorld && spec.globe?.full_wrap
+    ? (spec.globe.band_degrees ?? 120) / 360
+    : 1;
+  const mapSpec = smallWorld ? {
+    ...spec,
+    adjacent_rows: 1,
+    adjacent_columns: 1,
+    rows: 1,
+    columns: 1,
+    solid_model: true,
+    map_frame: null,
+    model_outline: initialSpec.model_outline,
+  } : spec;
+  // Never leave an old globe on screen after the tile layout changes: a
+  // paused or still-loading preview of another layout shows nothing instead.
+  const globePreview = preview && previewedGlobeLayout === globeLayoutKey(spec) ? preview : null;
+  const globePreviewStatus = currentPreviewActivity?.label ?? (
+    globePreview?.globe_batch_required
+      ? `This globe has ${globePreview.globe_layout_size} tiles. Choose a numbered tile batch of up to ${globePreview.globe_batch_limit} tiles.`
+      : previewPaused
+        ? globePreview ? "Preview paused" : "Preview paused. Resume to show these settings."
+        : globePreview?.globe_meshes ? "Drag to rotate" : "Preparing globe preview…"
+  );
 
   return (
     <main className="studio">
@@ -2516,8 +2597,8 @@ export function TerrainStudio() {
         }
       >
         <section
-          className="visual-column"
-          aria-label="Place and model preview"
+          className={`visual-column${showRegionMap ? "" : " globe-layout"}`}
+          aria-label={showRegionMap ? "Place and model preview" : "Globe assembly preview"}
           ref={visualColumnRef}
           style={
             {
@@ -2526,45 +2607,50 @@ export function TerrainStudio() {
             } as CSSProperties
           }
         >
-          <TerrainMap
-            spec={spec}
-            markerPlacementMode={markerPlacementMode}
-            onPlaceMarker={placeMarker}
-            onCenterChange={onCenterChange}
-            onGroundSpanChange={(groundSpanKm) =>
-              update("ground_span_km", groundSpanKm)
-            }
-            onOutlineChange={(points) =>
-              update("model_outline", {
-                shape: "polygon",
-                points,
-              })
-            }
-            recallCount={setupRecallCount}
-          />
-          <div
-            aria-label="Resize map and preview panes"
-            aria-orientation="vertical"
-            aria-valuemax={MAX_MAP_SHARE_PERCENT}
-            aria-valuemin={MIN_MAP_SHARE_PERCENT}
-            aria-valuenow={Math.round(mapSharePercent)}
-            aria-valuetext={`${Math.round(mapSharePercent)}% map width`}
-            className="visual-resizer"
-            onDoubleClick={() => setMapSharePercent(DEFAULT_MAP_SHARE_PERCENT)}
-            onKeyDown={visualResizeKeyDown}
-            onLostPointerCapture={() => {
-              visualResizePointerRef.current = null;
-            }}
-            onPointerCancel={() => {
-              visualResizePointerRef.current = null;
-            }}
-            onPointerDown={visualResizePointerDown}
-            onPointerMove={visualResizePointerMove}
-            onPointerUp={visualResizePointerUp}
-            role="separator"
-            tabIndex={0}
-            title="Drag to resize the map and 3D preview panes"
-          />
+          {showRegionMap && (
+            <>
+              <TerrainMap
+                spec={mapSpec}
+                markerPlacementMode={markerPlacementMode}
+                onPlaceMarker={placeMarker}
+                onCenterChange={onCenterChange}
+                onGroundSpanChange={(groundSpanKm) =>
+                  update("ground_span_km", groundSpanKm)
+                }
+                onOutlineChange={(points) =>
+                  update("model_outline", {
+                    shape: "polygon",
+                    points,
+                  })
+                }
+                recallCount={setupRecallCount}
+                selectionHeightFraction={bandFraction}
+              />
+              <div
+                aria-label="Resize map and preview panes"
+                aria-orientation="vertical"
+                aria-valuemax={MAX_MAP_SHARE_PERCENT}
+                aria-valuemin={MIN_MAP_SHARE_PERCENT}
+                aria-valuenow={Math.round(mapSharePercent)}
+                aria-valuetext={`${Math.round(mapSharePercent)}% map width`}
+                className="visual-resizer"
+                onDoubleClick={() => setMapSharePercent(DEFAULT_MAP_SHARE_PERCENT)}
+                onKeyDown={visualResizeKeyDown}
+                onLostPointerCapture={() => {
+                  visualResizePointerRef.current = null;
+                }}
+                onPointerCancel={() => {
+                  visualResizePointerRef.current = null;
+                }}
+                onPointerDown={visualResizePointerDown}
+                onPointerMove={visualResizePointerMove}
+                onPointerUp={visualResizePointerUp}
+                role="separator"
+                tabIndex={0}
+                title="Drag to resize the map and 3D preview panes"
+              />
+            </>
+          )}
           <Suspense
             fallback={
               <section className="relief-shell" aria-label="3D terrain preview">
@@ -2574,18 +2660,36 @@ export function TerrainStudio() {
               </section>
             }
           >
-            <ReliefPreview
-              spec={previewSpec}
-              preview={preview}
-              previewState={previewState}
-              progress={previewProgress}
-              previewError={currentPreviewFailure}
-              onCancelPreview={previewProgress ? cancelPreview : undefined}
-              previewTile={previewTile}
-              onPreviewTileChange={setRequestedPreviewTile}
-              markerPlacementMode={markerPlacementMode}
-              onPlaceMarker={placeMarker}
-            />
+            {spec.globe ? (
+              <GlobePreview
+                meshes={globePreview?.globe_meshes}
+                palette={globePreview?.globe_palette}
+                tiles={globePreview?.globe_tiles}
+                layoutSize={globePreview?.globe_layout_size}
+                overview={globePreview?.globe_overview}
+                source={globePreview?.globe_source}
+                exterior={globePreview?.globe_exterior}
+                surfaceSamples={globePreview?.globe_surface_samples}
+                landmarks={globePreview?.globe_landmarks}
+                status={globePreviewStatus}
+                error={currentPreviewFailure}
+                onCancel={currentPreviewActivity ? cancelPreview : undefined}
+                onResume={previewPaused ? () => setPreviewRetry((count) => count + 1) : undefined}
+              />
+            ) : (
+              <ReliefPreview
+                spec={previewSpec}
+                preview={preview}
+                previewState={previewState}
+                progress={previewProgress}
+                previewError={currentPreviewFailure}
+                onCancelPreview={previewProgress ? cancelPreview : undefined}
+                previewTile={previewTile}
+                onPreviewTileChange={setRequestedPreviewTile}
+                markerPlacementMode={markerPlacementMode}
+                onPlaceMarker={placeMarker}
+              />
+            )}
           </Suspense>
         </section>
 
@@ -2618,8 +2722,8 @@ export function TerrainStudio() {
         <form className="controls" id="terrain-controls" onSubmit={submit}>
           <div className="panel-heading">
             <div>
-              <h1>Shape your terrain</h1>
-              <p>Choose a section. Generate stays within reach.</p>
+              <h1>{spec.globe ? "Build a globe" : "Shape your terrain"}</h1>
+              {!spec.globe && <p>Choose a section. Generate stays within reach.</p>}
             </div>
           </div>
 
@@ -2638,13 +2742,13 @@ export function TerrainStudio() {
                 ["mounting", "Mounting"],
                 ["output", "Output"],
               ] as const
-            ).map(([key, label]) => (
+            ).filter(([key]) => globeSection(key)).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
                 role="tab"
-                aria-selected={activeSection === key}
-                className={activeSection === key ? "active" : ""}
+                aria-selected={visibleSection === key}
+                className={visibleSection === key ? "active" : ""}
                 onClick={() => showSection(key)}
               >
                 {label}
@@ -2655,7 +2759,7 @@ export function TerrainStudio() {
             ))}
           </div>
 
-          {generationFailure && activeSection !== "output" && (
+          {generationFailure && visibleSection !== "output" && (
             <section className="generation-error-banner" role="alert">
               <span className="status-dot" aria-hidden="true" />
               <div className="generation-error-copy">
@@ -2664,7 +2768,7 @@ export function TerrainStudio() {
               </div>
               <div className="generation-error-actions">
                 {generationFailure.control_tab &&
-                  generationFailure.control_tab !== activeSection &&
+                  generationFailure.control_tab !== visibleSection &&
                   generationFailure.control_tab !== "output" && (
                     <button
                       type="button"
@@ -2682,13 +2786,33 @@ export function TerrainStudio() {
             </section>
           )}
 
+          <ModelTypePanel
+            hidden={visibleSection !== "model"}
+            globeLayoutSize={preview?.globe_layout_size}
+            globeBatchLimit={globePreview?.globe_batch_limit}
+            onModelTypeChange={setModelType}
+            setPieceLayout={setPieceLayout}
+            spec={spec}
+            update={update}
+          />
+
+          {spec.globe?.source === "whole_earth" && (
+            <GlobeLandmarksPanel
+              hidden={visibleSection !== "model"}
+              landmarks={spec.globe_landmarks ?? []}
+              placements={preview?.globe_landmarks}
+              update={(landmarks) => update("globe_landmarks", landmarks.length ? landmarks : undefined)}
+            />
+          )}
+
           <ModelPanel
             adjacentMessage={adjacentMessage}
             choosePlace={choosePlace}
             heightFrameCompatible={heightFrameCompatible}
             heightFrameLocked={heightFrameLocked}
-            hidden={activeSection !== "model"}
+            hidden={(Boolean(spec.globe) && !smallWorld) || visibleSection !== "model"}
             lockHeightFrame={lockHeightFrame}
+            mapOnly={smallWorld}
             moveToAdjacentTile={moveToAdjacentTile}
             placeMessage={placeMessage}
             placeQuery={placeQuery}
@@ -2707,7 +2831,7 @@ export function TerrainStudio() {
           />
 
           <SurfacePanel
-            hidden={activeSection !== "surface"}
+            hidden={terrainSectionHidden("surface")}
             importTrailFiles={importTrailFiles}
             removeTrail={removeTrail}
             spec={spec}
@@ -2717,13 +2841,13 @@ export function TerrainStudio() {
           />
 
           <BuildingsPanel
-            hidden={activeSection !== "buildings"}
+            hidden={terrainSectionHidden("buildings")}
             spec={spec}
             updateBuildings={updateBuildings}
           />
 
           <MarkersPanel
-            hidden={activeSection !== "markers"}
+            hidden={terrainSectionHidden("markers")}
             movingMarkerIndex={movingMarkerIndex}
             moveMarker={moveMarker}
             placementKind={markerPlacementKind}
@@ -2735,22 +2859,15 @@ export function TerrainStudio() {
 
           <ColorsPanel
             discoveredGround={discoveredGround}
-            hidden={activeSection !== "colors"}
+            hidden={terrainSectionHidden("colors")}
             spec={spec}
             updateColor={updateColor}
             updateMarkerSettings={updateMarkerSettings}
             updateTray={updateTray}
           />
 
-          <ModelTypePanel
-            hidden={activeSection !== "model"}
-            setPieceLayout={setPieceLayout}
-            spec={spec}
-            update={update}
-          />
-
           <MountingPanel
-            hidden={activeSection !== "mounting"}
+            hidden={terrainSectionHidden("mounting")}
             spec={spec}
             update={update}
             updateTray={updateTray}
@@ -2764,7 +2881,7 @@ export function TerrainStudio() {
             buildingSourceBundle={buildingSourceBundle}
             failure={generationFailure}
             generationStages={generationStages}
-            hidden={activeSection !== "output"}
+            hidden={visibleSection !== "output"}
             job={job}
             message={message}
             noteWebDownload={noteWebDownload}

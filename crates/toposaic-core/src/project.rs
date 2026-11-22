@@ -313,6 +313,23 @@ fn generate_project_inner(
     is_cancelled: &(dyn Fn() -> bool + Sync),
     on_progress: &(dyn Fn(f32) -> Result<()> + Sync),
 ) -> Result<ProjectManifest> {
+    if spec.globe.is_some() {
+        let map = crate::globe::small_world_map_spec(spec);
+        return crate::globe::generate_globe_project(
+            spec,
+            crate::globe::GlobeData {
+                map_spec: map.as_ref(),
+                height: height_field,
+                cover: surface_field,
+                earth_detail: None,
+            },
+            output_dir,
+            |progress| {
+                ensure_generation_active(is_cancelled)?;
+                on_progress(progress)
+            },
+        );
+    }
     spec.validate()?;
     ensure_generation_active(is_cancelled)?;
     if spec.color_output.enabled && surface_field.is_none() {
@@ -544,7 +561,7 @@ fn ensure_generation_active(is_cancelled: &(dyn Fn() -> bool + Sync)) -> Result<
     Ok(())
 }
 
-fn file_artifact(path: &Path, media_type: &str) -> Result<Artifact> {
+pub(crate) fn file_artifact(path: &Path, media_type: &str) -> Result<Artifact> {
     Ok(Artifact {
         name: path
             .file_name()

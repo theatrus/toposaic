@@ -198,10 +198,13 @@ export function ArtifactDownloads({
 }) {
   const printFiles = job.artifacts.filter(
     (artifact) =>
-      artifact.name.endsWith(".3mf") || artifact.name === "manifest.json",
+      job.spec.globe
+        ? ["globe-print-kit.zip", "ASSEMBLY.md", "LANDMARKS.md", "manifest.json"].includes(artifact.name)
+          || (artifact.name.startsWith("globe-tiles-") && artifact.name.endsWith(".zip"))
+        : artifact.name.endsWith(".3mf") || artifact.name === "manifest.json",
   );
   const stlFiles = job.artifacts.filter((artifact) =>
-    artifact.name.endsWith(".stl"),
+    !job.spec.globe && artifact.name.endsWith(".stl"),
   );
   return (
     <div className="downloads">

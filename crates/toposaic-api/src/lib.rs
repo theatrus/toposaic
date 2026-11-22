@@ -20,6 +20,7 @@ mod datum;
 mod elevation;
 mod geo;
 mod geocoding;
+mod globe;
 mod grid;
 mod http;
 mod imagery;

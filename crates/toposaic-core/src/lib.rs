@@ -3,6 +3,7 @@ pub mod analysis;
 mod coastline;
 mod export;
 mod geography;
+pub mod globe;
 mod heightfield;
 mod jigsaw;
 mod marine;

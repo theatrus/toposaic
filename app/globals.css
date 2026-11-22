@@ -859,6 +859,47 @@ a {
   touch-action: none;
 }
 
+.visual-column.globe-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.globe-preview-toolbar {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 12px;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  padding: 8px 12px;
+  position: absolute;
+}
+
+.globe-preview-toolbar select {
+  margin-inline-start: 8px;
+}
+
+.globe-controls p {
+  align-self: end;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.globe-controls .globe-map-note {
+  align-self: start;
+  color: var(--muted);
+  font-size: 12px;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.globe-controls input[type="range"] {
+  accent-color: var(--moss);
+}
+
 .visual-resizer::before {
   background: rgba(48, 64, 57, 0.28);
   border-radius: 999px;
@@ -3122,7 +3163,7 @@ fieldset.control-section .road-options {
   display: grid;
   gap: 8px;
   grid-column: 1 / -1;
-  grid-template-columns: 72px repeat(2, minmax(180px, 300px)) 1fr;
+  grid-template-columns: 72px repeat(3, minmax(0, 260px)) 1fr;
   margin: 0;
   padding: 15px 0 0;
 }
@@ -3183,9 +3224,15 @@ fieldset.control-section .road-options {
   grid-template-columns: 1fr 1fr;
 }
 
+.globe-mark,
 .puzzle-mark i,
 .solid-mark {
   border: 1px solid currentColor;
+}
+
+.globe-mark {
+  border-radius: 50%;
+  display: block;
 }
 
 .solid-mark {
@@ -4028,4 +4075,64 @@ fieldset.control-section .road-options {
   display: block;
   font-size: 10px;
   line-height: 1.45;
+}
+
+.globe-detail {
+  grid-column: 1 / -1;
+}
+
+.globe-detail-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-top: 8px;
+}
+
+.adjacent-actions.globe-batch-actions {
+  align-self: start;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.globe-batch-actions button {
+  font-size: 11px;
+  height: auto;
+  min-height: 34px;
+  padding: 4px 8px;
+}
+
+.globe-batch-actions button:disabled {
+  opacity: 0.45;
+}
+
+.globe-landmarks .globe-landmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.globe-landmarks button {
+  align-self: end;
+  background: transparent;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  min-height: 34px;
+  padding: 4px 10px;
+}
+
+.globe-landmarks button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.globe-landmarks summary {
+  cursor: pointer;
+}
+
+.globe-landmarks details > p {
+  color: var(--muted);
+  font-size: 12px;
 }
