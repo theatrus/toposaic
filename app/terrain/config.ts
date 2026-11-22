@@ -80,6 +80,15 @@ export function closeViewLineScale(
   return 1 + (multiplier - 1) * progress;
 }
 
+export const defaultGlobe = {
+  exterior: "faceted",
+  source: "fit_test",
+  full_shell: false,
+  seam_gap_mm: 0.4,
+  wrap_degrees: 110,
+  relief_mm: 8,
+} as const satisfies NonNullable<GenerationSpec["globe"]>;
+
 export const initialSpec: GenerationSpec = {
   center_lat: 46.8523,
   center_lon: -121.7603,
@@ -363,6 +372,7 @@ export function mergeSpecDefaults(
   return {
     ...initialSpec,
     ...saved,
+    globe: saved.globe ? { ...defaultGlobe, ...saved.globe } : undefined,
     // The wire type is Option<u32>: an explicit null means "backend picks".
     // Spreading keeps nulls, so coalesce them to the client defaults here.
     mesh_samples_across:

@@ -46,6 +46,7 @@ import {
   isMapLabel,
   markerNeedsSurfaceData,
   limitPlaceName,
+  defaultGlobe,
   mergeSpecDefaults,
   normalizeMappedWidthCap,
   randomPuzzleSeed,
@@ -84,7 +85,7 @@ import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ColorsPanel } from "./panels/colors-panel";
 import { ModelPanel } from "./panels/model-panel";
-import { defaultGlobe, ModelTypePanel } from "./panels/model-type-panel";
+import { ModelTypePanel } from "./panels/model-type-panel";
 import { MountingPanel } from "./panels/mounting-panel";
 import { MarkersPanel } from "./panels/markers-panel";
 import { OutputPanel } from "./panels/output-panel";
@@ -1838,7 +1839,7 @@ export function TerrainStudio() {
   // Asked for once a job finishes, so the Output tab can say how large the
   // source data is before anyone commits to packing it.
   useEffect(() => {
-    if (job?.status !== "complete" || job.spec.globe) return;
+    if (job?.status !== "complete" || job.spec.globe?.source === "fit_test") return;
     const jobId = job.id;
     const controller = new AbortController();
     terrainApi
@@ -1930,7 +1931,10 @@ export function TerrainStudio() {
     }
     if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
-    if (job.spec.globe) return job.progress < 84 ? "Building globe tiles and frame…" : "Packing the globe print kit…";
+    if (job.spec.globe) {
+      if (job.spec.globe.source === "small_world" && job.progress < 40) return "Loading regional elevation…";
+      return job.progress < 84 ? "Building globe tiles and frame…" : "Packing the globe print kit…";
+    }
     if (job.progress < 8) return "Preparing source data…";
     if (job.progress < 40) {
       return "Sampling elevation and fetching source tiles…";
@@ -1978,7 +1982,8 @@ export function TerrainStudio() {
       job.spec.trails.length > 0 ||
       job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind));
     const stages = job.spec.globe ? [
-      { key: "geometry", label: "Globe and frame", start: 0, end: 84 },
+      ...(job.spec.globe.source === "small_world" ? [{ key: "elevation", label: "Regional elevation", start: 0, end: 40 }] : []),
+      { key: "geometry", label: "Globe and frame", start: job.spec.globe.source === "small_world" ? 40 : 0, end: 84 },
       { key: "files", label: "Print kit", start: 84, end: 100 },
     ] : [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
@@ -2037,11 +2042,6 @@ export function TerrainStudio() {
     // Never combine a live mesh with a generated job's independently sampled
     // palette: the same index can name a different filament in the two passes.
     if (spec.globe) {
-      if (generatedPreview?.globe_meshes &&
-        spec.globe.exterior === job?.spec.globe?.exterior &&
-        spec.globe.full_shell === job.spec.globe.full_shell &&
-        spec.globe.seam_gap_mm === job.spec.globe.seam_gap_mm
-      ) return generatedPreview;
       return elevationPreview?.globe_meshes ? elevationPreview : null;
     }
     if (elevationPreview?.model_meshes?.length) return elevationPreview;
@@ -2139,6 +2139,16 @@ export function TerrainStudio() {
         : null;
 
   const visibleSection = spec.globe && activeSection !== "output" ? "model" : activeSection;
+  const smallWorld = spec.globe?.source === "small_world";
+  const showRegionMap = !spec.globe || smallWorld;
+  const mapSpec = smallWorld ? {
+    ...spec,
+    adjacent_rows: 1,
+    adjacent_columns: 1,
+    map_frame: null,
+    model_outline: initialSpec.model_outline,
+    markers: [],
+  } : spec;
   const globePreviewStatus = currentPreviewActivity?.label ?? (
     previewPaused ? "Preview paused" : preview?.globe_meshes ? "Drag to rotate" : "Preparing globe preview…"
   );
@@ -2546,8 +2556,8 @@ export function TerrainStudio() {
         }
       >
         <section
-          className={`visual-column${spec.globe ? " globe-layout" : ""}`}
-          aria-label={spec.globe ? "Globe assembly preview" : "Place and model preview"}
+          className={`visual-column${showRegionMap ? "" : " globe-layout"}`}
+          aria-label={showRegionMap ? "Place and model preview" : "Globe assembly preview"}
           ref={visualColumnRef}
           style={
             {
@@ -2556,10 +2566,10 @@ export function TerrainStudio() {
             } as CSSProperties
           }
         >
-          {!spec.globe && (
+          {showRegionMap && (
             <>
               <TerrainMap
-                spec={spec}
+                spec={mapSpec}
                 markerPlacementMode={markerPlacementMode}
                 onPlaceMarker={placeMarker}
                 onCenterChange={onCenterChange}

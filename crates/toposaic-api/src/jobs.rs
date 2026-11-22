@@ -22,6 +22,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use toposaic_core::globe::GlobeSource;
 use toposaic_core::{
     Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, PreviewDetail, SurfaceField,
     artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
@@ -286,8 +287,16 @@ fn run_live_preview(
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
     if let Some(globe) = spec.globe {
-        on_progress("model", "Building globe and snap-on frame", 25)?;
-        let preview = toposaic_core::globe::build_globe_preview(&globe)?;
+        let field = globe_height_field(spec, map_cache_dir, |fraction| {
+            ensure_preview_active(cancellation)?;
+            on_progress(
+                "elevation",
+                "Loading regional elevation",
+                4 + (60.0 * fraction) as u8,
+            )
+        })?;
+        on_progress("model", "Building globe and snap-on frame", 75)?;
+        let preview = toposaic_core::globe::build_globe_preview(&globe, field.as_ref())?;
         ensure_preview_active(cancellation)?;
         return Ok(preview);
     }
@@ -391,6 +400,32 @@ fn run_live_preview(
         "live preview timing"
     );
     Ok(preview)
+}
+
+fn globe_height_field(
+    spec: &GenerationSpec,
+    cache_dir: &std::path::Path,
+    on_progress: impl FnMut(f32) -> Result<()>,
+) -> Result<Option<toposaic_core::HeightField>> {
+    if !spec
+        .globe
+        .is_some_and(|globe| globe.source == GlobeSource::SmallWorld)
+    {
+        return Ok(None);
+    }
+    let mut region = spec.clone();
+    region.map_frame = None;
+    region.adjacent_columns = 1;
+    region.adjacent_rows = 1;
+    // One regional grid feeds preview and export, so both show the same relief.
+    elevation::fetch_preview_height_field_with_progress(
+        &region,
+        &cache_dir.join("elevation"),
+        160,
+        on_progress,
+    )
+    .context("load Small World elevation")
+    .map(Some)
 }
 
 fn preview_detail(headers: &HeaderMap) -> Result<PreviewDetail, (StatusCode, Json<ApiError>)> {
@@ -998,22 +1033,43 @@ fn run_job(
     cancellation: &AtomicBool,
 ) -> Result<()> {
     if spec.globe.is_some() {
+        let mut previous_progress = 0;
+        let mut progress = |next| {
+            ensure_job_active(cancellation)?;
+            if next > previous_progress {
+                update_job(state, id, "running", next, &[], None)?;
+                previous_progress = next;
+            }
+            Ok(())
+        };
+        progress(5)?;
+        let field = globe_height_field(spec, &state.map_cache_dir, |fraction| {
+            progress(5 + (35.0 * fraction) as i64)
+        })?;
+        let geometry_start = if field.is_some() { 40 } else { 5 };
+        let output_dir = state.jobs_dir.join(id);
         let manifest = toposaic_core::globe::generate_globe_project(
             spec,
-            &state.jobs_dir.join(id),
+            field.as_ref(),
+            &output_dir,
             |fraction| {
-                ensure_job_active(cancellation)?;
-                update_job(
-                    state,
-                    id,
-                    "running",
-                    5 + (94.0 * fraction) as i64,
-                    &[],
-                    None,
-                )
+                let next = if fraction < 0.85 {
+                    geometry_start + ((84 - geometry_start) as f32 * fraction / 0.85) as i64
+                } else {
+                    84 + (15.0 * (fraction - 0.85) / 0.15) as i64
+                };
+                progress(next)
             },
         )?;
         ensure_job_active(cancellation)?;
+        if field.is_some() {
+            sources::write_source_list(
+                &output_dir,
+                &state.map_cache_dir,
+                &manifest_data_sources(&manifest),
+                spec,
+            );
+        }
         update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
         return Ok(());
     }

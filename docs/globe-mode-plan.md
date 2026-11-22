@@ -6,6 +6,8 @@ Globe mode makes a complete printable globe from numbered, flat-backed terrain t
 
 In Studio, open **Model → Globe**. Choose the three-tile fit test or 20-tile globe, select a rounded or faceted exterior, and adjust the seam clearance. The preview provides assembled, frame-only, exploded, and single-tile views. **Generate** builds a ZIP with the individual STLs and 3MFs, assembly guide, and assembled OBJ. The prototype uses a plain surface and a 200 mm reference diameter.
 
+Choose **Small World** as the globe source to use the elevation from the map selection. Zoom to set the selection size, then set how far the corners wrap and how tall the relief can print. Elevation fades near the selection edges into the rest of the globe. Small World uses the same back, frame, and snap hardware as the plain prototype, and its job can export an elevation source bundle.
+
 For command-line generation, run:
 
 ```sh

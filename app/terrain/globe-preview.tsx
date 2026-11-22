@@ -88,7 +88,9 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
     controls.target.copy(center);
     controls.minDistance = radius * 0.35;
     controls.maxDistance = radius * 12;
-    const direction = new Vector3(1.35, 0.9, 1.45).normalize();
+    const focus = meshes.find((part) => part.name === (visibleView.startsWith("tile-") ? visibleView : "tile-01"));
+    const [x, y, z] = focus?.outward[0] ?? [0.55, -0.55, 0.55];
+    const direction = new Vector3(x + 0.25, z + 0.32, -y + 0.15).normalize();
     let initialSize = true;
     const draw = () => renderer.render(scene, camera);
     const resize = () => {

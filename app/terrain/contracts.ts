@@ -65,8 +65,11 @@ export type SurfaceClassKey =
 
 export type GlobeSpec = {
   exterior: "faceted" | "rounded";
+  source: "fit_test" | "small_world";
   full_shell: boolean;
   seam_gap_mm: number;
+  wrap_degrees: number;
+  relief_mm: number;
 };
 
 type GlobePoint = [number, number, number];

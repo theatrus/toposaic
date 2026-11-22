@@ -1,6 +1,4 @@
-import type { GenerationSpec } from "../contracts";
-
-const defaultGlobe = { exterior: "faceted", full_shell: false, seam_gap_mm: 0.4 } as const;
+import type { GenerationSpec, GlobeSpec } from "../contracts";
 
 export function ModelTypePanel({
   hidden,
@@ -193,16 +191,24 @@ export function ModelTypePanel({
   );
 }
 
-export { defaultGlobe };
-
 function GlobeControls({ hidden, globe, update }: {
   hidden: boolean;
-  globe: NonNullable<GenerationSpec["globe"]>;
-  update: (globe: NonNullable<GenerationSpec["globe"]>) => void;
+  globe: GlobeSpec;
+  update: (globe: GlobeSpec) => void;
 }) {
   return (
     <fieldset className="control-section globe-controls" hidden={hidden}>
-      <legend>Globe prototype</legend>
+      <legend>Globe settings</legend>
+      <label className="road-detail-field">
+        Globe source
+        <select aria-label="Globe source" value={globe.source} onChange={(event) => {
+          const source = event.target.value === "small_world" ? "small_world" : "fit_test";
+          update({ ...globe, source, full_shell: source === "small_world" || globe.full_shell });
+        }}>
+          <option value="fit_test">Plain fit test</option>
+          <option value="small_world">Small World</option>
+        </select>
+      </label>
       <label className="road-detail-field">
         Globe exterior
         <select aria-label="Globe exterior" value={globe.exterior} onChange={(event) => update({ ...globe, exterior: event.target.value === "rounded" ? "rounded" : "faceted" })}>
@@ -221,7 +227,20 @@ function GlobeControls({ hidden, globe, update }: {
         Seam clearance · {globe.seam_gap_mm.toFixed(2)} mm
         <input aria-label="Seam clearance" type="range" min="0.2" max="1.2" step="0.05" value={globe.seam_gap_mm} onChange={(event) => update({ ...globe, seam_gap_mm: event.target.valueAsNumber })} />
       </label>
-      <p>200 mm reference diameter. The plain surface is for testing the clip and frame fit.</p>
+      {globe.source === "small_world" ? (
+        <>
+          <label className="road-detail-field">
+            Regional wrap · {globe.wrap_degrees}°
+            <input aria-label="Regional wrap" type="range" min="45" max="140" step="5" value={globe.wrap_degrees} onChange={(event) => update({ ...globe, wrap_degrees: event.target.valueAsNumber })} />
+            <small>Angle from the center of the region to a map corner.</small>
+          </label>
+          <label className="road-detail-field">
+            Terrain relief · {globe.relief_mm.toFixed(1)} mm
+            <input aria-label="Terrain relief" type="range" min="0" max="12" step="0.5" value={globe.relief_mm} onChange={(event) => update({ ...globe, relief_mm: event.target.valueAsNumber })} />
+          </label>
+          <p>Select the region on the map. Its elevation fades at the edges into the 200 mm globe.</p>
+        </>
+      ) : <p>200 mm reference diameter. The plain surface is for testing the clip and frame fit.</p>}
     </fieldset>
   );
 }

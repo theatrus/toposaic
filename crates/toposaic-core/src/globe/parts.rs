@@ -2,6 +2,7 @@ use anyhow::Result;
 use geo::Polygon;
 
 use super::layout::{Face, Loop, Pose, Vec3, add, dot, sub, unit};
+use super::region::Region;
 use super::{GlobeExterior, GlobePrototypeSpec};
 use crate::mesh::{Mesh, MeshBuilder, weld_export_mesh};
 use crate::planar_mesh::{add_horizontal_polygons, closed_ring, polygon_from_outline};
@@ -97,23 +98,37 @@ fn weights(corners: [[f32; 2]; 3], weights: [f32; 3]) -> [f32; 2] {
     std::array::from_fn(|axis| corners.iter().zip(weights).map(|(p, w)| p[axis] * w).sum())
 }
 
-pub(super) fn build_tile(face: &Face, spec: &GlobePrototypeSpec) -> Result<Mesh> {
+pub(super) fn build_tile(
+    face: &Face,
+    spec: &GlobePrototypeSpec,
+    region: Option<&Region>,
+) -> Result<Mesh> {
     let outline = face.outline_at(0.0, spec.seam_gap_mm / 2.0);
-    let segments = if spec.exterior == GlobeExterior::Rounded {
+    let segments = if region.is_some() {
+        40
+    } else if spec.exterior == GlobeExterior::Rounded {
         24
     } else {
         1
     };
     let mut mesh = MeshBuilder::default();
     let base_radius = dot(face.pose.origin, face.pose.z_axis);
+    let nominal_outline = face.outline_at(0.0, 0.0);
     let surface = |i, j| {
         let u = i as f32 / segments as f32;
         let v = j as f32 / segments as f32;
         let [x, y] = weights(outline, [1.0 - u - v, u, v]);
-        let factor = match spec.exterior {
+        let mut factor = match spec.exterior {
             GlobeExterior::Faceted => face.chord_radius / base_radius,
             GlobeExterior::Rounded => face.radius / x.hypot(y).hypot(base_radius),
         };
+        if let Some(region) = region {
+            // Sample the uncut triangle, so both sides of a seam receive
+            // the same terrain before the physical clearance is applied.
+            let [sample_x, sample_y] = weights(nominal_outline, [1.0 - u - v, u, v]);
+            let direction = unit(face.pose.to_globe([sample_x, sample_y, 0.0]));
+            factor += region.height(direction) / x.hypot(y).hypot(base_radius);
+        }
         [x * factor, y * factor, base_radius * (factor - 1.0)]
     };
     for i in 0..segments {

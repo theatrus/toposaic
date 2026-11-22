@@ -2,6 +2,7 @@
 
 mod layout;
 mod parts;
+mod region;
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -12,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 use self::layout::{Face, Pose, cross, dot, unit};
+use self::region::Region;
+use crate::HeightField;
 use crate::analysis::analyze_mesh_views;
 use crate::export::{write_binary_stl, write_single_mesh_3mf};
 use crate::mesh::Mesh;
@@ -28,10 +31,21 @@ pub enum GlobeExterior {
     Rounded,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GlobeSource {
+    #[default]
+    FitTest,
+    SmallWorld,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobePrototypeSpec {
     pub exterior: GlobeExterior,
+    pub source: GlobeSource,
+    pub wrap_degrees: f32,
+    pub relief_mm: f32,
     pub full_shell: bool,
     /// Combined inset from the two tiles, measured in their back planes.
     pub seam_gap_mm: f32,
@@ -43,6 +57,14 @@ impl GlobePrototypeSpec {
             (0.2..=1.2).contains(&self.seam_gap_mm),
             "prototype seam gap must be between 0.2 and 1.2 mm"
         );
+        ensure!(
+            (45.0..=140.0).contains(&self.wrap_degrees),
+            "Small World wrap must be between 45 and 140 degrees"
+        );
+        ensure!(
+            (0.0..=12.0).contains(&self.relief_mm),
+            "Small World relief must be between 0 and 12 mm"
+        );
         Ok(())
     }
 }
@@ -51,6 +73,9 @@ impl Default for GlobePrototypeSpec {
     fn default() -> Self {
         Self {
             exterior: GlobeExterior::Faceted,
+            source: GlobeSource::FitTest,
+            wrap_degrees: 110.0,
+            relief_mm: 8.0,
             full_shell: false,
             seam_gap_mm: 0.4,
         }
@@ -80,9 +105,21 @@ struct PartManifest<'a> {
     assembled_poses: &'a [Pose],
 }
 
-fn prototype_parts(spec: &GlobePrototypeSpec) -> Result<(Vec<Part>, Vec<usize>)> {
+fn globe_parts(
+    spec: &GlobePrototypeSpec,
+    field: Option<&HeightField>,
+) -> Result<(Vec<Part>, Vec<usize>)> {
     spec.validate()?;
     let faces = Face::all(DIAMETER_MM / 2.0, BACKING_MM);
+    let region = match spec.source {
+        GlobeSource::FitTest => None,
+        GlobeSource::SmallWorld => Some(Region::new(
+            field.context("Small World requires a regional elevation field")?,
+            &faces[0],
+            spec.wrap_degrees,
+            spec.relief_mm,
+        )),
+    };
     let selected = if spec.full_shell {
         faces.iter().collect::<Vec<_>>()
     } else {
@@ -103,7 +140,7 @@ fn prototype_parts(spec: &GlobePrototypeSpec) -> Result<(Vec<Part>, Vec<usize>)>
             .iter()
             .filter_map(|other| face.edge_with(other))
             .collect();
-        let tile = parts::build_tile(face, spec)?;
+        let tile = parts::build_tile(face, spec, region.as_ref())?;
         verify_tile_insertion(face, &tile)?;
         parts.push(Part::single(tile, face.pose));
         let (frame, pose) = parts::build_frame(face, &edges)?;
@@ -178,7 +215,7 @@ fn validate_part(mesh: &Mesh) -> Result<[f32; 6]> {
 /// Export the synthetic mechanical fixture or full shell. The numbered parts
 /// are ready to slice, and the OBJ and manifest describe the assembled poses.
 pub fn export_globe_prototype(spec: &GlobePrototypeSpec, output: &Path) -> Result<()> {
-    let (parts, install_order) = prototype_parts(spec)?;
+    let (parts, install_order) = globe_parts(spec, None)?;
     write_parts(spec, output, &parts, &install_order, |_| Ok(()))?;
     Ok(())
 }
@@ -264,8 +301,11 @@ fn write_parts(
     Ok(artifacts)
 }
 
-pub fn build_globe_preview(spec: &GlobePrototypeSpec) -> Result<serde_json::Value> {
-    let (parts, _) = prototype_parts(spec)?;
+pub fn build_globe_preview(
+    spec: &GlobePrototypeSpec,
+    field: Option<&HeightField>,
+) -> Result<serde_json::Value> {
+    let (parts, _) = globe_parts(spec, field)?;
     preview_with_parts(&parts)
 }
 
@@ -310,6 +350,7 @@ fn preview_with_parts(parts: &[Part]) -> Result<serde_json::Value> {
 /// Publish a globe job through the same artifact and saved-setup contracts as terrain.
 pub fn generate_globe_project(
     spec: &GenerationSpec,
+    field: Option<&HeightField>,
     output: &Path,
     mut on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<ProjectManifest> {
@@ -318,7 +359,7 @@ pub fn generate_globe_project(
         .globe
         .context("globe project requires globe settings")?;
     on_progress(0.0)?;
-    let (parts, order) = prototype_parts(&globe)?;
+    let (parts, order) = globe_parts(&globe, field)?;
     let files = write_parts(&globe, output, &parts, &order, |fraction| {
         on_progress(0.85 * fraction)
     })?;
@@ -340,7 +381,12 @@ pub fn generate_globe_project(
     let manifest_path = output.join("manifest.json");
     let mut manifest = ProjectManifest {
         generator: format!("toposaic/{}", env!("CARGO_PKG_VERSION")),
-        terrain_source: "Synthetic globe fit geometry".into(),
+        terrain_source: field
+            .filter(|_| globe.source == GlobeSource::SmallWorld)
+            .map_or_else(
+                || "Synthetic globe fit geometry".into(),
+                |field| field.source.clone(),
+            ),
         surface_source: None,
         spec: spec.clone(),
         artifacts: vec![file_artifact(&archive_path, "application/zip")?],
@@ -383,7 +429,7 @@ mod tests {
 
     #[test]
     fn fixture_contains_two_joints_and_installs_the_middle_tile_last() {
-        let (parts, order) = prototype_parts(&GlobePrototypeSpec::default()).unwrap();
+        let (parts, order) = globe_parts(&GlobePrototypeSpec::default(), None).unwrap();
         assert_eq!(order, [2, 5, 1]);
         assert_eq!(parts.len(), 9);
         assert_eq!(parts.last().unwrap().poses.len(), 3);
@@ -400,7 +446,7 @@ mod tests {
                 full_shell: true,
                 ..GlobePrototypeSpec::default()
             };
-            let (parts, order) = prototype_parts(&spec).unwrap();
+            let (parts, order) = globe_parts(&spec, None).unwrap();
             assert_eq!(order.len(), 20);
             assert_eq!(parts.len(), 20 + 20 + 30 + 1);
             assert_eq!(parts.last().unwrap().poses.len(), 20);
@@ -408,5 +454,39 @@ mod tests {
                 validate_part(&part.mesh).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn small_world_adds_regional_heights_above_the_same_frame() {
+        let field = HeightField::new(
+            3,
+            3,
+            vec![0.0, 200.0, 0.0, 400.0, 1_000.0, 200.0, 0.0, 100.0, 0.0],
+            "test ridge",
+        )
+        .unwrap();
+        let blank = GlobePrototypeSpec::default();
+        let (blank_parts, _) = globe_parts(&blank, None).unwrap();
+        let spec = GlobePrototypeSpec {
+            source: GlobeSource::SmallWorld,
+            ..blank
+        };
+        assert!(globe_parts(&spec, None).is_err());
+        let (mapped, _) = globe_parts(&spec, Some(&field)).unwrap();
+        for (mapped, blank) in mapped.iter().zip(&blank_parts) {
+            validate_part(&mapped.mesh).unwrap();
+            if mapped.mesh.name.starts_with("tile-") {
+                assert!(mapped.mesh.vertices.len() > blank.mesh.vertices.len());
+            } else {
+                assert_eq!(mapped.mesh.vertices, blank.mesh.vertices);
+            }
+        }
+        let faces = Face::all(DIAMETER_MM / 2.0, BACKING_MM);
+        let region = Region::new(&field, &faces[0], spec.wrap_degrees, spec.relief_mm);
+        assert!((region.height(faces[0].pose.z_axis) - spec.relief_mm).abs() < 1.0e-5);
+        assert_eq!(
+            region.height(layout::scale(faces[0].pose.z_axis, -1.0)),
+            0.0
+        );
     }
 }
