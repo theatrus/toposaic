@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 pub(super) type Vec3 = [f32; 3];
@@ -87,14 +89,15 @@ impl Pose {
         }
     }
 
-    pub(super) fn to_globe(self, [x, y, z]: Vec3) -> Vec3 {
+    pub(super) fn rotate(self, [x, y, z]: Vec3) -> Vec3 {
         add(
-            self.origin,
-            add(
-                scale(self.x_axis, x),
-                add(scale(self.y_axis, y), scale(self.z_axis, z)),
-            ),
+            scale(self.x_axis, x),
+            add(scale(self.y_axis, y), scale(self.z_axis, z)),
         )
+    }
+
+    pub(super) fn to_globe(self, point: Vec3) -> Vec3 {
+        add(self.origin, self.rotate(point))
     }
 
     pub(super) fn to_local(self, point: Vec3) -> Vec3 {
@@ -107,6 +110,8 @@ impl Pose {
     }
 }
 
+pub(super) const ICOSAHEDRON_CHORD_RATIO: f32 = 0.794_654_5;
+
 pub(super) struct Face {
     pub(super) id: usize,
     pub(super) vertices: [usize; 3],
@@ -114,12 +119,55 @@ pub(super) struct Face {
     pub(super) chord_radius: f32,
     pub(super) radius: f32,
     pub(super) triangle: [[f32; 2]; 3],
+    incenter: [f32; 2],
+    inradius: f32,
 }
 
 impl Face {
-    pub(super) fn all(radius: f32, backing: f32) -> Vec<Self> {
-        let vertices = VERTICES.map(|point| scale(unit(point), radius));
-        FACES
+    pub(super) fn all(radius: f32, backing: f32, frequency: u8) -> Vec<Self> {
+        let corners = VERTICES.map(|point| scale(unit(point), radius));
+        let mut vertices = Vec::new();
+        let mut vertex_ids = HashMap::new();
+        let divisions = usize::from(frequency);
+        let faces = FACES
+            .iter()
+            .flat_map(|&ids| {
+                let mut point = |i, j| {
+                    let weights = [divisions - i - j, i, j];
+                    let mut key = [(0, 0); 3];
+                    for (index, (id, weight)) in ids
+                        .into_iter()
+                        .zip(weights)
+                        .filter(|(_, weight)| *weight != 0)
+                        .enumerate()
+                    {
+                        key[index] = (id + 1, weight);
+                    }
+                    key.sort_unstable();
+                    *vertex_ids.entry(key).or_insert_with(|| {
+                        let sum = key
+                            .into_iter()
+                            .filter(|&(id, _)| id > 0)
+                            .fold([0.0; 3], |sum, (id, weight)| {
+                                add(sum, scale(corners[id - 1], weight as f32))
+                            });
+                        vertices.push(scale(unit(sum), radius));
+                        vertices.len() - 1
+                    })
+                };
+                let mut triangles = Vec::with_capacity(divisions * divisions);
+                for i in 0..divisions {
+                    for j in 0..divisions - i {
+                        triangles.push([point(i, j), point(i + 1, j), point(i, j + 1)]);
+                        if i + j + 1 < divisions {
+                            triangles.push([point(i + 1, j), point(i + 1, j + 1), point(i, j + 1)]);
+                        }
+                    }
+                }
+                triangles
+            })
+            .collect::<Vec<_>>();
+        faces
             .iter()
             .enumerate()
             .map(|(id, &indices)| {
@@ -127,11 +175,28 @@ impl Face {
                 let along = unit(sub(b, a));
                 let normal = unit(cross(along, sub(c, a)));
                 let chord_radius = dot(normal, a);
-                let pose = Pose::new(scale(normal, chord_radius - backing), along, normal);
+                let pose = Pose::new(
+                    scale(
+                        normal,
+                        chord_radius - backing * chord_radius / (radius * ICOSAHEDRON_CHORD_RATIO),
+                    ),
+                    along,
+                    normal,
+                );
                 let triangle = [a, b, c].map(|point| {
                     let [x, y, _] = pose.to_local(point);
                     [x, y]
                 });
+                let opposite = [sub(c, b), sub(a, c), sub(b, a)].map(|edge| dot(edge, edge).sqrt());
+                let perimeter: f32 = opposite.iter().sum();
+                let incenter = std::array::from_fn(|axis| {
+                    triangle
+                        .iter()
+                        .zip(opposite)
+                        .map(|(p, length)| p[axis] * length / perimeter)
+                        .sum()
+                });
+                let double_area = dot(cross(sub(b, a), sub(c, a)), normal);
                 Self {
                     id: id + 1,
                     vertices: indices,
@@ -139,6 +204,8 @@ impl Face {
                     chord_radius,
                     radius,
                     triangle,
+                    incenter,
+                    inradius: double_area / perimeter,
                 }
             })
             .collect()
@@ -146,12 +213,29 @@ impl Face {
 
     pub(super) fn outline_at(&self, z: f32, inset: f32) -> [[f32; 2]; 3] {
         let plane_radius = dot(self.pose.origin, self.pose.z_axis) + z;
-        // The faces are equilateral. A homothetic inset moves each edge by
-        // the same distance because the origin is the triangle's incenter.
-        let [a, b, _] = self.triangle;
-        let inradius = ((a[0] - b[0]).hypot(a[1] - b[1])) / (2.0 * 3.0_f32.sqrt());
-        let factor = plane_radius / self.chord_radius - inset / inradius;
-        self.triangle.map(|point| point.map(|value| value * factor))
+        self.triangle.map(|point| {
+            std::array::from_fn(|axis| {
+                point[axis] * plane_radius / self.chord_radius
+                    + (self.incenter[axis] - point[axis]) * inset / self.inradius
+            })
+        })
+    }
+
+    pub(super) fn depth_scale(&self) -> f32 {
+        self.chord_radius / (self.radius * ICOSAHEDRON_CHORD_RATIO)
+    }
+
+    pub(super) fn inradius(&self) -> f32 {
+        self.inradius
+    }
+
+    pub(super) fn edge_width(&self) -> f32 {
+        (0..3)
+            .map(|i| {
+                let [a, b] = [self.triangle[i], self.triangle[(i + 1) % 3]];
+                (a[0] - b[0]).hypot(a[1] - b[1])
+            })
+            .fold(0.0, f32::max)
     }
 
     pub(super) fn adjacent(&self, other: &Self) -> bool {

@@ -314,10 +314,19 @@ fn generate_project_inner(
     on_progress: &(dyn Fn(f32) -> Result<()> + Sync),
 ) -> Result<ProjectManifest> {
     if spec.globe.is_some() {
-        return crate::globe::generate_globe_project(spec, height_field, output_dir, |progress| {
-            ensure_generation_active(is_cancelled)?;
-            on_progress(progress)
-        });
+        return crate::globe::generate_globe_project(
+            spec,
+            crate::globe::GlobeData {
+                height: height_field,
+                cover: surface_field,
+                earth_detail: None,
+            },
+            output_dir,
+            |progress| {
+                ensure_generation_active(is_cancelled)?;
+                on_progress(progress)
+            },
+        );
     }
     spec.validate()?;
     ensure_generation_active(is_cancelled)?;

@@ -296,6 +296,92 @@ pub fn fetch_surface_field_with_progress_cancellable(
     )
 }
 
+pub(crate) fn fetch_globe_land_cover(
+    spec: &GenerationSpec,
+    size: usize,
+    map_cache_dir: &Path,
+    on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<SurfaceField> {
+    let (classes, source) = read_world_cover(
+        transform_for(spec),
+        size,
+        size,
+        map_cache_dir,
+        classify_neighborhood_cover,
+        on_progress,
+    )?;
+    SurfaceField::new(size, size, classes, source)
+}
+
+fn read_world_cover(
+    transform: GeoTransform,
+    width: usize,
+    height: usize,
+    map_cache_dir: &Path,
+    classify: fn(u8) -> SurfaceClass,
+    mut on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<(Vec<SurfaceClass>, String)> {
+    let mut classes = vec![SurfaceClass::Rock; width * height];
+    on_progress("Loading land cover", 0.04)?;
+    let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
+    for row in 0..height {
+        let v = row as f64 / (height - 1) as f64;
+        for column in 0..width {
+            let u = column as f64 / (width - 1) as f64;
+            let (latitude, longitude) = transform.coordinate_at_uv(u, v);
+            tiles
+                .entry(world_cover_tile(longitude, latitude))
+                .or_default()
+                .push(SamplePoint {
+                    output_index: row * width + column,
+                    longitude,
+                    latitude,
+                });
+        }
+    }
+    let mut tile_names = tiles.keys().cloned().collect::<Vec<_>>();
+    tile_names.sort();
+    // A tile that fails (missing over open ocean, outside coverage, or a
+    // download error) degrades to the default Rock class instead of
+    // failing the whole generation, matching the other overlays.
+    let mut missing_tiles = Vec::new();
+    for (tile_index, tile_name) in tile_names.iter().enumerate() {
+        on_progress(
+            "Loading land cover",
+            0.04 + 0.12 * tile_index as f32 / tile_names.len().max(1) as f32,
+        )?;
+        let points = tiles
+            .remove(tile_name)
+            .context("land-cover tile group disappeared")?;
+        if let Err(error) = sample_tile(
+            tile_name,
+            &points,
+            width,
+            height,
+            &mut classes,
+            &map_cache_dir.join("world-cover"),
+            classify,
+        ) {
+            warn!(%error, tile = %tile_name, "ESA WorldCover tile unavailable; using rock");
+            missing_tiles.push(tile_name.clone());
+        }
+    }
+    let mut source = format!(
+        "ESA WorldCover 2021 v200, 10 m, EPSG:4326, tiles {}; CC BY 4.0; source: {WORLD_COVER_INFO_URL}; {WORLD_COVER_ATTRIBUTION}",
+        tile_names.join(", ")
+    );
+    if !missing_tiles.is_empty() {
+        append_source(
+            &mut source,
+            format!(
+                "WorldCover unavailable for tiles {}; defaulted to rock",
+                missing_tiles.join(", ")
+            ),
+        );
+    }
+    Ok((classes, source))
+}
+
 fn fetch_surface_field_inner(
     spec: &GenerationSpec,
     height_field: &HeightField,
@@ -311,73 +397,23 @@ fn fetch_surface_field_inner(
     let (width, height) = spec.sample_grid_dimensions(samples);
     let transform = transform_for(spec);
     let bounds = transform.bounds();
-    let mut classes = vec![SurfaceClass::Rock; width * height];
-    let mut source = String::new();
-
-    if spec.color_output.enabled {
-        let classify: fn(u8) -> SurfaceClass = if spec.color_output.neighborhood_surfaces.enabled {
+    let (classes, source) = if spec.color_output.enabled {
+        let classify = if spec.color_output.neighborhood_surfaces.enabled {
             classify_neighborhood_cover
         } else {
             classify_world_cover
         };
-        on_progress("Loading land cover", 0.04)?;
-        let mut tiles = HashMap::<String, Vec<SamplePoint>>::new();
-        for row in 0..height {
-            let v = row as f64 / (height - 1) as f64;
-            for column in 0..width {
-                let u = column as f64 / (width - 1) as f64;
-                let (latitude, longitude) = transform.coordinate_at_uv(u, v);
-                tiles
-                    .entry(world_cover_tile(longitude, latitude))
-                    .or_default()
-                    .push(SamplePoint {
-                        output_index: row * width + column,
-                        longitude,
-                        latitude,
-                    });
-            }
-        }
-        let mut tile_names = tiles.keys().cloned().collect::<Vec<_>>();
-        tile_names.sort();
-        // A tile that fails (missing over open ocean, outside coverage, or a
-        // download error) degrades to the default Rock class instead of
-        // failing the whole generation, matching the other overlays.
-        let mut missing_tiles = Vec::new();
-        for (tile_index, tile_name) in tile_names.iter().enumerate() {
-            on_progress(
-                "Loading land cover",
-                0.04 + 0.12 * tile_index as f32 / tile_names.len().max(1) as f32,
-            )?;
-            let points = tiles
-                .remove(tile_name)
-                .context("land-cover tile group disappeared")?;
-            if let Err(error) = sample_tile(
-                tile_name,
-                &points,
-                width,
-                height,
-                &mut classes,
-                &map_cache_dir.join("world-cover"),
-                classify,
-            ) {
-                warn!(%error, tile = %tile_name, "ESA WorldCover tile unavailable; using rock");
-                missing_tiles.push(tile_name.clone());
-            }
-        }
-        source = format!(
-            "ESA WorldCover 2021 v200, 10 m, EPSG:4326, tiles {}; CC BY 4.0; source: {WORLD_COVER_INFO_URL}; {WORLD_COVER_ATTRIBUTION}",
-            tile_names.join(", ")
-        );
-        if !missing_tiles.is_empty() {
-            append_source(
-                &mut source,
-                format!(
-                    "WorldCover unavailable for tiles {}; defaulted to rock",
-                    missing_tiles.join(", ")
-                ),
-            );
-        }
-    }
+        read_world_cover(
+            transform,
+            width,
+            height,
+            map_cache_dir,
+            classify,
+            &mut on_progress,
+        )?
+    } else {
+        (vec![SurfaceClass::Rock; width * height], String::new())
+    };
 
     on_progress("Classifying terrain", 0.18)?;
     let mut field = SurfaceField::new(width, height, classes, source)?;

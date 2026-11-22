@@ -1023,7 +1023,7 @@ impl GenerationSpec {
         }
     }
 
-    fn class_color(&self, class: SurfaceClass) -> &str {
+    pub(crate) fn class_color(&self, class: SurfaceClass) -> &str {
         match class {
             SurfaceClass::Rock => &self.color_output.rock_color,
             SurfaceClass::Forest => &self.color_output.forest_color,

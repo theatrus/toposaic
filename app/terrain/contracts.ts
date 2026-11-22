@@ -65,11 +65,23 @@ export type SurfaceClassKey =
 
 export type GlobeSpec = {
   exterior: "faceted" | "rounded";
-  source: "fit_test" | "small_world";
+  source: "fit_test" | "small_world" | "whole_earth";
   full_shell: boolean;
   seam_gap_mm: number;
   wrap_degrees: number;
   relief_mm: number;
+  full_wrap: boolean;
+  surface_colors: boolean;
+  texture_mm: number;
+  diameter_mm: number;
+  bed_mm: number;
+  clip_fit_mm: number;
+  frame_depth_mm: number;
+  locator_clearance_mm: number;
+  subdivision: number;
+  samples_per_edge: number;
+  batch: { first_tile: number; tile_count: number } | null;
+  whole_earth_detail: boolean;
 };
 
 type GlobePoint = [number, number, number];
@@ -80,6 +92,7 @@ export type GlobePreviewMesh = {
   vertices: GlobePoint[];
   triangles: [number, number, number][];
   outward: GlobePoint[];
+  materials?: number[];
   poses: { origin: GlobePoint; x_axis: GlobePoint; y_axis: GlobePoint; z_axis: GlobePoint }[];
 };
 
@@ -416,6 +429,10 @@ export type Job = {
 
 export type PreviewData = {
   globe_meshes?: GlobePreviewMesh[];
+  globe_palette?: Record<number, string>;
+  globe_tiles?: number[];
+  globe_layout_size?: number;
+  globe_overview?: [GlobePoint, GlobePoint, GlobePoint][];
   width: number;
   height: number;
   values: number[];

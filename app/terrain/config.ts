@@ -87,6 +87,18 @@ export const defaultGlobe = {
   seam_gap_mm: 0.4,
   wrap_degrees: 110,
   relief_mm: 8,
+  full_wrap: false,
+  surface_colors: false,
+  texture_mm: 0,
+  diameter_mm: 200,
+  bed_mm: 180,
+  clip_fit_mm: 0.4,
+  frame_depth_mm: 5,
+  locator_clearance_mm: 0.25,
+  subdivision: 0,
+  samples_per_edge: 48,
+  batch: null,
+  whole_earth_detail: false,
 } as const satisfies NonNullable<GenerationSpec["globe"]>;
 
 export const initialSpec: GenerationSpec = {

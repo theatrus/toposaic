@@ -1811,7 +1811,9 @@ export function TerrainStudio() {
         "save_all_artifacts",
         {
           jobId: job.id,
-          folderName: job.spec.globe ? "TopoSaic globe" : job.spec.place_name.trim() || "toposaic",
+          folderName: job.spec.globe
+            ? job.artifacts.find((artifact) => artifact.name.startsWith("globe-tiles-") && artifact.name.endsWith(".zip"))?.name.slice(0, -4) ?? "TopoSaic globe"
+            : job.spec.place_name.trim() || "toposaic",
           artifactNames,
         },
       );
@@ -1839,7 +1841,7 @@ export function TerrainStudio() {
   // Asked for once a job finishes, so the Output tab can say how large the
   // source data is before anyone commits to packing it.
   useEffect(() => {
-    if (job?.status !== "complete" || job.spec.globe?.source === "fit_test") return;
+    if (job?.status !== "complete" || (job.spec.globe && job.spec.globe.source !== "small_world" && !job.spec.globe.whole_earth_detail)) return;
     const jobId = job.id;
     const controller = new AbortController();
     terrainApi
@@ -1932,7 +1934,10 @@ export function TerrainStudio() {
     if (job.status === "canceled") return "Generation canceled.";
     if (job.status === "queued") return "Waiting for the generator…";
     if (job.spec.globe) {
-      if (job.spec.globe.source === "small_world" && job.progress < 40) return "Loading regional elevation…";
+      if (job.progress < 40) {
+        if (job.spec.globe.whole_earth_detail) return "Loading Earth elevation blocks…";
+        if (job.spec.globe.source === "small_world") return "Loading regional map data…";
+      }
       return job.progress < 84 ? "Building globe tiles and frame…" : "Packing the globe print kit…";
     }
     if (job.progress < 8) return "Preparing source data…";
@@ -1982,8 +1987,8 @@ export function TerrainStudio() {
       job.spec.trails.length > 0 ||
       job.spec.markers.some((marker) => markerNeedsSurfaceData(marker.kind));
     const stages = job.spec.globe ? [
-      ...(job.spec.globe.source === "small_world" ? [{ key: "elevation", label: "Regional elevation", start: 0, end: 40 }] : []),
-      { key: "geometry", label: "Globe and frame", start: job.spec.globe.source === "small_world" ? 40 : 0, end: 84 },
+      ...(job.spec.globe.source === "small_world" || job.spec.globe.whole_earth_detail ? [{ key: "elevation", label: "Map data", start: 0, end: 40 }] : []),
+      { key: "geometry", label: "Globe and frame", start: job.spec.globe.source === "small_world" || job.spec.globe.whole_earth_detail ? 40 : 0, end: 84 },
       { key: "files", label: "Print kit", start: 84, end: 100 },
     ] : [
       { key: "elevation", label: "Elevation", start: 0, end: 40 },
@@ -2621,6 +2626,10 @@ export function TerrainStudio() {
             {spec.globe ? (
               <GlobePreview
                 meshes={preview?.globe_meshes}
+                palette={preview?.globe_palette}
+                tiles={preview?.globe_tiles}
+                layoutSize={preview?.globe_layout_size}
+                overview={preview?.globe_overview}
                 status={globePreviewStatus}
                 error={currentPreviewFailure}
                 onCancel={currentPreviewActivity ? cancelPreview : undefined}
@@ -2737,6 +2746,7 @@ export function TerrainStudio() {
 
           <ModelTypePanel
             hidden={visibleSection !== "model"}
+            globeLayoutSize={preview?.globe_layout_size}
             onModelTypeChange={setModelType}
             setPieceLayout={setPieceLayout}
             spec={spec}

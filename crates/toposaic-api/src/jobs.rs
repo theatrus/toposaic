@@ -22,7 +22,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use toposaic_core::globe::GlobeSource;
+use toposaic_core::globe::{EarthDetail, GlobeData, GlobeSource};
 use toposaic_core::{
     Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, PreviewDetail, SurfaceField,
     artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
@@ -111,6 +111,7 @@ pub(crate) async fn create_job(
     Json(spec): Json<GenerationSpec>,
 ) -> Result<(StatusCode, Json<Job>), (StatusCode, Json<ApiError>)> {
     spec.validate()
+        .and_then(|()| spec.globe.map_or(Ok(()), |globe| globe.validate_layout()))
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
 
     let id = Uuid::new_v4().to_string();
@@ -181,6 +182,7 @@ pub(crate) async fn create_preview(
     Json(spec): Json<GenerationSpec>,
 ) -> Result<Response, (StatusCode, Json<ApiError>)> {
     spec.validate()
+        .and_then(|()| spec.globe.map_or(Ok(()), |globe| globe.validate_layout()))
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
     let preview_detail = preview_detail(&headers)?;
     let spec = preview_tile_spec(&spec, &headers)?;
@@ -286,17 +288,20 @@ fn run_live_preview(
     detail: PreviewDetail,
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
-    if let Some(globe) = spec.globe {
-        let field = globe_height_field(spec, map_cache_dir, |fraction| {
+    if spec.globe.is_some() {
+        let inputs = globe_fields(spec, map_cache_dir, |stage, fraction| {
             ensure_preview_active(cancellation)?;
-            on_progress(
-                "elevation",
-                "Loading regional elevation",
-                4 + (60.0 * fraction) as u8,
-            )
+            let label = match stage {
+                "elevation" if spec.globe.is_some_and(|globe| globe.whole_earth_detail) => {
+                    "Loading Earth elevation blocks"
+                }
+                "elevation" => "Loading regional elevation",
+                _ => "Loading regional land cover",
+            };
+            on_progress(stage, label, 4 + (66.0 * fraction) as u8)
         })?;
         on_progress("model", "Building globe and snap-on frame", 75)?;
-        let preview = toposaic_core::globe::build_globe_preview(&globe, field.as_ref())?;
+        let preview = toposaic_core::globe::build_globe_preview(spec, inputs.as_data())?;
         ensure_preview_active(cancellation)?;
         return Ok(preview);
     }
@@ -402,30 +407,83 @@ fn run_live_preview(
     Ok(preview)
 }
 
-fn globe_height_field(
+#[derive(Default)]
+struct GlobeInputs {
+    height: Option<toposaic_core::HeightField>,
+    cover: Option<SurfaceField>,
+    earth_detail: Option<EarthDetail>,
+}
+
+impl GlobeInputs {
+    fn as_data(&self) -> GlobeData<'_> {
+        GlobeData {
+            height: self.height.as_ref(),
+            cover: self.cover.as_ref(),
+            earth_detail: self.earth_detail.as_ref(),
+        }
+    }
+
+    fn uses_cached_sources(&self) -> bool {
+        self.height.is_some() || self.earth_detail.is_some()
+    }
+}
+
+fn globe_fields(
     spec: &GenerationSpec,
     cache_dir: &std::path::Path,
-    on_progress: impl FnMut(f32) -> Result<()>,
-) -> Result<Option<toposaic_core::HeightField>> {
-    if !spec
-        .globe
-        .is_some_and(|globe| globe.source == GlobeSource::SmallWorld)
-    {
-        return Ok(None);
+    mut on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<GlobeInputs> {
+    let Some(globe) = spec.globe else {
+        return Ok(GlobeInputs::default());
+    };
+    if globe.whole_earth_detail {
+        let earth_detail = crate::globe::fetch_detail(&globe, cache_dir, |fraction| {
+            on_progress("elevation", fraction)
+        })?;
+        return Ok(GlobeInputs {
+            earth_detail: Some(earth_detail),
+            ..GlobeInputs::default()
+        });
+    }
+    if globe.source != GlobeSource::SmallWorld {
+        return Ok(GlobeInputs::default());
     }
     let mut region = spec.clone();
     region.map_frame = None;
     region.adjacent_columns = 1;
     region.adjacent_rows = 1;
     // One regional grid feeds preview and export, so both show the same relief.
-    elevation::fetch_preview_height_field_with_progress(
+    let size = if globe.samples_per_edge > 48 {
+        256
+    } else {
+        160
+    };
+    let needs_cover = globe.surface_colors || globe.texture_mm > 0.0;
+    let elevation_fraction = if needs_cover { 0.65 } else { 1.0 };
+    let field = elevation::fetch_preview_height_field_with_progress(
         &region,
         &cache_dir.join("elevation"),
-        160,
-        on_progress,
+        size,
+        |fraction| on_progress("elevation", elevation_fraction * fraction),
     )
-    .context("load Small World elevation")
-    .map(Some)
+    .context("load Small World elevation")?;
+    let cover = if needs_cover {
+        let field = surface::fetch_globe_land_cover(&region, size, cache_dir, |_, fraction| {
+            on_progress(
+                "surface",
+                0.65 + 0.35 * ((fraction - 0.04) / 0.12).clamp(0.0, 1.0),
+            )
+        })?;
+        on_progress("surface", 1.0)?;
+        Some(field)
+    } else {
+        None
+    };
+    Ok(GlobeInputs {
+        height: Some(field),
+        cover,
+        earth_detail: None,
+    })
 }
 
 fn preview_detail(headers: &HeaderMap) -> Result<PreviewDetail, (StatusCode, Json<ApiError>)> {
@@ -1043,14 +1101,14 @@ fn run_job(
             Ok(())
         };
         progress(5)?;
-        let field = globe_height_field(spec, &state.map_cache_dir, |fraction| {
+        let inputs = globe_fields(spec, &state.map_cache_dir, |_, fraction| {
             progress(5 + (35.0 * fraction) as i64)
         })?;
-        let geometry_start = if field.is_some() { 40 } else { 5 };
+        let geometry_start = if inputs.uses_cached_sources() { 40 } else { 5 };
         let output_dir = state.jobs_dir.join(id);
         let manifest = toposaic_core::globe::generate_globe_project(
             spec,
-            field.as_ref(),
+            inputs.as_data(),
             &output_dir,
             |fraction| {
                 let next = if fraction < 0.85 {
@@ -1062,7 +1120,7 @@ fn run_job(
             },
         )?;
         ensure_job_active(cancellation)?;
-        if field.is_some() {
+        if inputs.uses_cached_sources() {
             sources::write_source_list(
                 &output_dir,
                 &state.map_cache_dir,

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Box3,
   BufferGeometry,
+  Color,
   DirectionalLight,
   Float32BufferAttribute,
   HemisphereLight,
@@ -15,12 +16,16 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { GlobePreviewMesh } from "./contracts";
+import type { GlobePreviewMesh, PreviewData } from "./contracts";
 
 const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", clip: "#d5a258" };
 
-export function GlobePreview({ meshes, status, error, onCancel }: {
+export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, status, error, onCancel }: {
   meshes?: GlobePreviewMesh[];
+  palette?: Record<number, string>;
+  tiles?: number[];
+  layoutSize?: number;
+  overview?: PreviewData["globe_overview"];
   status: string;
   error?: string | null;
   onCancel?: () => void;
@@ -28,9 +33,9 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [view, setView] = useState("assembled");
   const [rendererError, setRendererError] = useState(false);
-  const visibleView = view.startsWith("tile-") && !meshes?.some((mesh) => mesh.name === view)
-    ? "assembled"
-    : view;
+  const viewUnavailable = (view === "layout" && !overview)
+    || (view.startsWith("tile-") && !meshes?.some((mesh) => mesh.name === view));
+  const visibleView = viewUnavailable ? "assembled" : view;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -52,7 +57,31 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
     scene.add(key, new HemisphereLight(0xf3f7ff, 0x5e675d, 1.85));
     const bounds = new Box3();
     const rendered: Mesh[] = [];
+    if (visibleView === "layout" && overview) {
+      const highlights = new Set(tiles);
+      const selected = new Color("#e2a346");
+      const available = new Color("#8da49e");
+      const positions: number[] = [];
+      const colors: number[] = [];
+      for (const [index, face] of overview.entries()) {
+        const { r, g, b } = highlights.has(index + 1) ? selected : available;
+        for (const [x, y, z] of face) {
+          positions.push(x, z, -y);
+          colors.push(r, g, b);
+        }
+      }
+      const geometry = new BufferGeometry();
+      geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+      geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      if (geometry.boundingBox) bounds.union(geometry.boundingBox);
+      const mesh = new Mesh(geometry, new MeshStandardMaterial({ vertexColors: true, flatShading: true }));
+      rendered.push(mesh);
+      scene.add(mesh);
+    }
     for (const part of meshes) {
+      if (visibleView === "layout") break;
       if (visibleView === "frame" && part.kind === "tile") continue;
       if (visibleView.startsWith("tile-") && part.name !== visibleView) continue;
       part.poses.forEach((pose, index) => {
@@ -63,12 +92,29 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
           return [point[0], point[2], -point[1]];
         });
         const geometry = new BufferGeometry();
-        geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
-        geometry.setIndex(part.triangles.flat());
+        const painted = Boolean(part.materials?.length && palette);
+        if (painted && part.materials && palette) {
+          const rgb = Object.fromEntries(Object.entries(palette).map(([slot, hex]) => [slot, new Color(hex)]));
+          const fallback = new Color(PART_COLORS[part.kind]);
+          const flatPositions: number[] = [];
+          const flatColors: number[] = [];
+          for (const [i, triangle] of part.triangles.entries()) {
+            const { r, g, b } = rgb[part.materials[i]] ?? fallback;
+            for (const vertex of triangle) {
+              flatPositions.push(positions[vertex * 3], positions[vertex * 3 + 1], positions[vertex * 3 + 2]);
+              flatColors.push(r, g, b);
+            }
+          }
+          geometry.setAttribute("position", new Float32BufferAttribute(flatPositions, 3));
+          geometry.setAttribute("color", new Float32BufferAttribute(flatColors, 3));
+        } else {
+          geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+          geometry.setIndex(part.triangles.flat());
+        }
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
         if (geometry.boundingBox) bounds.union(geometry.boundingBox);
-        const material = new MeshStandardMaterial({ color: PART_COLORS[part.kind], roughness: 0.85, flatShading: true });
+        const material = new MeshStandardMaterial({ color: painted ? 0xffffff : PART_COLORS[part.kind], vertexColors: painted, roughness: 0.85, flatShading: true });
         const mesh = new Mesh(geometry, material);
         rendered.push(mesh);
         scene.add(mesh);
@@ -85,10 +131,13 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
       }
     }
     const radius = Math.sqrt(radiusSquared);
+    camera.near = Math.max(0.05, radius / 1000);
+    camera.far = radius * 30;
     controls.target.copy(center);
     controls.minDistance = radius * 0.35;
     controls.maxDistance = radius * 12;
-    const focus = meshes.find((part) => part.name === (visibleView.startsWith("tile-") ? visibleView : "tile-01"));
+    const focus = meshes.find((part) => part.name === (visibleView.startsWith("tile-") ? visibleView : "tile-01"))
+      ?? meshes.find((part) => part.kind === "tile");
     const [x, y, z] = focus?.outward[0] ?? [0.55, -0.55, 0.55];
     const direction = new Vector3(x + 0.25, z + 0.32, -y + 0.15).normalize();
     let initialSize = true;
@@ -137,16 +186,20 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
       }
       renderer.dispose();
     };
-  }, [meshes, visibleView]);
+  }, [meshes, overview, palette, tiles, visibleView]);
 
   return (
     <section className="relief-shell globe-preview" aria-label="3D globe preview">
       <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} aria-label="Globe assembly" tabIndex={0} />
       <div className="globe-preview-toolbar">
+        {tiles && layoutSize && (
+          <span>{tiles.length === layoutSize ? `${layoutSize} tiles` : `${tiles.length} of ${layoutSize} tiles`}</span>
+        )}
         <label>
           View
           <select aria-label="Assembly view" value={visibleView} onChange={(event) => setView(event.target.value)} disabled={!meshes?.length}>
             <option value="assembled">Assembled</option>
+            {overview && <option value="layout">Whole globe layout</option>}
             <option value="frame">Frame only</option>
             <option value="exploded">Exploded</option>
             {meshes?.filter((mesh) => mesh.kind === "tile").map((mesh) => (
