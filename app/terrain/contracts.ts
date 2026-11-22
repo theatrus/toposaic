@@ -66,6 +66,7 @@ export type SurfaceClassKey =
 export type GlobeSpec = {
   exterior: "faceted" | "rounded";
   source: "fit_test" | "small_world" | "whole_earth";
+  earth_grid: "half_degree" | "quarter_degree";
   full_shell: boolean;
   seam_gap_mm: number;
   wrap_degrees: number;
@@ -430,6 +431,9 @@ export type Job = {
 export type PreviewData = {
   globe_meshes?: GlobePreviewMesh[];
   globe_palette?: Record<number, string>;
+  globe_surface_samples?: number;
+  globe_exterior?: GlobeSpec["exterior"];
+  globe_source?: GlobeSpec["source"];
   globe_tiles?: number[];
   globe_layout_size?: number;
   globe_overview?: [GlobePoint, GlobePoint, GlobePoint][];

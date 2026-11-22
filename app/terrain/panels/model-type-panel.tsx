@@ -235,6 +235,7 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
           const withTerrain = source !== "fit_test";
           update({ ...globe, source, full_shell: withTerrain || globe.full_shell,
             whole_earth_detail: source === "whole_earth" && globe.whole_earth_detail,
+            samples_per_edge: globe.source !== "whole_earth" && source === "whole_earth" ? 96 : globe.samples_per_edge,
             surface_colors: globe.source === "fit_test" && withTerrain ? true : globe.surface_colors });
         }}>
           <option value="fit_test">Plain fit test</option>
@@ -317,6 +318,15 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
       )}
       {mapped && (
         <>
+          {globe.source === "whole_earth" && (
+            <label className="road-detail-field">
+              Bundled Earth map
+              <select aria-label="Bundled Earth map" value={globe.earth_grid} onChange={(event) => update({ ...globe, earth_grid: event.target.value === "quarter_degree" ? "quarter_degree" : "half_degree" })}>
+                <option value="quarter_degree">Fine · 15 arc-minute grid</option>
+                <option value="half_degree">Original · 30 arc-minute grid</option>
+              </select>
+            </label>
+          )}
           <label className="road-detail-field">
             Terrain mesh detail
             <select aria-label="Terrain mesh detail" value={globe.samples_per_edge} onChange={(event) => update({ ...globe, samples_per_edge: Number(event.target.value) })}>

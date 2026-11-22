@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack the reproducible half-degree Whole Earth raster with its print classes."""
+"""Pack a reproducible Whole Earth raster with its print classes."""
 
 import argparse
 import csv
@@ -7,9 +7,6 @@ import math
 import struct
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
-
-WIDTH, HEIGHT = 720, 360
-
 
 def print_class(red, green, blue):
     if blue - green >= 13 and green - red >= 13:
@@ -26,12 +23,16 @@ def print_class(red, green, blue):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elevation', type=Path, help='NOAA ERDDAP CSV described in assets/globe/README.md')
-    parser.add_argument('land_cover', type=Path, help='720 x 360 RGB bytes in north-to-south order')
+    parser.add_argument('land_cover', type=Path, help='RGB bytes in north-to-south order at the requested grid resolution')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--arcminutes', type=int, choices=[15, 30], default=30)
     args = parser.parse_args()
+    width, height = 21600 // args.arcminutes, 10800 // args.arcminutes
+    step = args.arcminutes / 60
+    offset = ((args.arcminutes - 1) // 2 + 0.5) / 60
     rgb = args.land_cover.read_bytes()
-    if len(rgb) != WIDTH * HEIGHT * 3:
-        raise ValueError('expected a 720 x 360 RGB raster')
+    if len(rgb) != width * height * 3:
+        raise ValueError(f'expected a {width} x {height} RGB raster')
     raster = bytearray()
     with args.elevation.open(newline='') as source:
         rows = csv.reader(source)
@@ -40,15 +41,15 @@ def main():
         next(rows)  # Unit row returned by ERDDAP.
         for index, row in enumerate(rows):
             latitude, longitude, elevation = map(float, row)
-            x, y = index % WIDTH, index // WIDTH
-            if not (math.isclose(longitude, 0.2416666667 + x / 2, abs_tol=1e-6)
-                    and math.isclose(latitude, -89.7583333333 + y / 2, abs_tol=1e-6)
+            x, y = index % width, index // width
+            if not (math.isclose(longitude, offset + x * step, abs_tol=1e-6)
+                    and math.isclose(latitude, -90 + offset + y * step, abs_tol=1e-6)
                     and -12000 <= elevation <= 10000):
                 raise ValueError(f'unexpected elevation sample {row}')
-            rgb_index = ((HEIGHT - y - 1) * WIDTH + (x + WIDTH // 2) % WIDTH) * 3
+            rgb_index = ((height - y - 1) * width + (x + width // 2) % width) * 3
             material = print_class(*rgb[rgb_index:rgb_index + 3])
             raster.extend(struct.pack('<hB', round(elevation), material))
-    if len(raster) != WIDTH * HEIGHT * 3:
+    if len(raster) != width * height * 3:
         raise ValueError('elevation raster is incomplete')
     with ZipFile(args.output, 'w') as archive:
         archive.writestr(ZipInfo('earth.bin'), raster, compress_type=ZIP_DEFLATED, compresslevel=9)

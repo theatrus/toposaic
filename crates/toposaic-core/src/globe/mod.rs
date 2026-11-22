@@ -48,11 +48,20 @@ pub enum GlobeSource {
     WholeEarth,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EarthGrid {
+    #[default]
+    HalfDegree,
+    QuarterDegree,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobePrototypeSpec {
     pub exterior: GlobeExterior,
     pub source: GlobeSource,
+    pub earth_grid: EarthGrid,
     pub wrap_degrees: f32,
     pub relief_mm: f32,
     pub full_wrap: bool,
@@ -139,6 +148,14 @@ impl GlobePrototypeSpec {
         Ok(())
     }
 
+    fn preview_samples(self, tiles: usize) -> u8 {
+        // Keep the original detail for a normal globe or a small batch.
+        // For a large batch, bound the total top-surface triangles sent to Studio.
+        const PREVIEW_TRIANGLES: f32 = 20.0 * 96.0 * 96.0;
+        self.samples_per_edge
+            .min((PREVIEW_TRIANGLES / tiles.max(1) as f32).sqrt() as u8)
+    }
+
     pub fn validate_layout(self) -> Result<()> {
         Layout::new(&self).map(|_| ())
     }
@@ -175,6 +192,7 @@ impl Default for GlobePrototypeSpec {
         Self {
             exterior: GlobeExterior::Faceted,
             source: GlobeSource::FitTest,
+            earth_grid: EarthGrid::HalfDegree,
             wrap_degrees: 110.0,
             relief_mm: 8.0,
             full_wrap: false,
@@ -305,7 +323,11 @@ fn build_parts(
                 !spec.whole_earth_detail || data.earth_detail.is_some(),
                 "missing detailed Earth elevation for this batch"
             );
-            Terrain::Earth(world::World::new(spec.relief_mm, data.earth_detail)?)
+            Terrain::Earth(world::World::new(
+                spec.earth_grid,
+                spec.relief_mm,
+                data.earth_detail,
+            )?)
         }
         GlobeSource::SmallWorld => Terrain::Regional(Region::new(
             data.height
@@ -545,17 +567,24 @@ fn write_parts(
 pub fn build_globe_preview(
     generation: &GenerationSpec,
     data: GlobeData,
+    on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<serde_json::Value> {
     let spec = generation
         .globe
         .context("globe preview requires globe settings")?;
+    let count = Layout::new(&spec)?.selected.len();
     let draft = GlobePrototypeSpec {
-        samples_per_edge: spec.samples_per_edge.min(32),
+        samples_per_edge: spec.preview_samples(count),
         ..spec
     };
-    let (parts, order, layout_size) = globe_parts(&draft, data)?;
-    let mut preview =
-        preview_with_parts(&parts, &print_spec(generation, &spec), &order, layout_size)?;
+    let (parts, order, layout_size) = build_parts(&draft, data, on_progress)?;
+    let mut preview = preview_with_parts(
+        &parts,
+        &print_spec(generation, &spec),
+        &order,
+        layout_size,
+        draft,
+    )?;
     if spec.batch.is_some() {
         // The overview needs only three nominal points per seat, even for a
         // large job. Actual terrain meshes stay limited to the chosen batch.
@@ -588,6 +617,7 @@ fn preview_with_parts(
     print: &GenerationSpec,
     tiles: &[usize],
     layout_size: usize,
+    draft: GlobePrototypeSpec,
 ) -> Result<serde_json::Value> {
     #[derive(Serialize)]
     struct PreviewPart<'a> {
@@ -641,6 +671,9 @@ fn preview_with_parts(
     };
     Ok(serde_json::json!({
         "globe_palette": palette,
+        "globe_surface_samples": parts::tile_segments(&draft),
+        "globe_exterior": draft.exterior,
+        "globe_source": draft.source,
         "globe_tiles": tiles,
         "globe_layout_size": layout_size,
         "width": 0, "height": 0, "values": [], "rows": 0, "columns": 0,
@@ -675,7 +708,7 @@ pub fn generate_globe_project(
     let preview_path = output.join("preview.json");
     fs::write(
         &preview_path,
-        serde_json::to_vec(&build_globe_preview(spec, data)?)?,
+        serde_json::to_vec(&build_globe_preview(spec, data, |_| on_progress(0.85))?)?,
     )?;
 
     let terrain_source = match globe.source {
@@ -683,10 +716,10 @@ pub fn generate_globe_project(
             if globe.whole_earth_detail {
                 format!(
                     "{} with NOAA five-arc-minute elevation blocks",
-                    world::ELEVATION_SOURCE
+                    world::elevation_source(globe.earth_grid)
                 )
             } else {
-                world::ELEVATION_SOURCE.into()
+                world::elevation_source(globe.earth_grid)
             }
         }
         GlobeSource::SmallWorld => data
@@ -772,6 +805,26 @@ fn write_assembled_obj(parts: &[Part], mut writer: impl Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_earth_preview_keeps_print_detail_for_twenty_tiles() {
+        let old: GlobePrototypeSpec = serde_json::from_str(r#"{"source":"whole_earth"}"#).unwrap();
+        assert_eq!(old.earth_grid, EarthGrid::HalfDegree);
+        let fine = GlobePrototypeSpec {
+            earth_grid: EarthGrid::QuarterDegree,
+            samples_per_edge: 96,
+            ..old
+        };
+        assert_eq!(fine.preview_samples(20), 96);
+        assert_eq!(fine.preview_samples(80), 48);
+        let spec = GenerationSpec {
+            globe: Some(fine),
+            ..GenerationSpec::default()
+        };
+        let preview = build_globe_preview(&spec, GlobeData::default(), |_| Ok(())).unwrap();
+        assert_eq!(preview["globe_surface_samples"], 96);
+        assert_eq!(preview["globe_layout_size"], 20);
+    }
 
     #[test]
     fn fixture_contains_two_joints_and_installs_the_middle_tile_last() {
@@ -928,7 +981,7 @@ mod tests {
 
     #[test]
     fn earth_colors_use_bundled_geography_and_full_wrap_matches_at_the_join() {
-        let earth = world::World::new(8.0, None).unwrap();
+        let earth = world::World::new(EarthGrid::QuarterDegree, 8.0, None).unwrap();
         let direction = |latitude: f32, longitude: f32| {
             let (sin_lat, cos_lat) = latitude.to_radians().sin_cos();
             let (sin_lon, cos_lon) = longitude.to_radians().sin_cos();

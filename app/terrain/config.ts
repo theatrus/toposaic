@@ -83,6 +83,7 @@ export function closeViewLineScale(
 export const defaultGlobe = {
   exterior: "faceted",
   source: "fit_test",
+  earth_grid: "quarter_degree",
   full_shell: false,
   seam_gap_mm: 0.4,
   wrap_degrees: 110,
@@ -384,7 +385,7 @@ export function mergeSpecDefaults(
   return {
     ...initialSpec,
     ...saved,
-    globe: saved.globe ? { ...defaultGlobe, ...saved.globe } : undefined,
+    globe: saved.globe ? { ...defaultGlobe, ...saved.globe, earth_grid: saved.globe.earth_grid ?? "half_degree" } : undefined,
     // The wire type is Option<u32>: an explicit null means "backend picks".
     // Spreading keeps nulls, so coalesce them to the client defaults here.
     mesh_samples_across:

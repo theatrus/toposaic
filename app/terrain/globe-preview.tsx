@@ -20,12 +20,15 @@ import type { GlobePreviewMesh, PreviewData } from "./contracts";
 
 const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", clip: "#d5a258" };
 
-export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, status, error, onCancel }: {
+export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, source, exterior, surfaceSamples, status, error, onCancel }: {
   meshes?: GlobePreviewMesh[];
   palette?: Record<number, string>;
   tiles?: number[];
   layoutSize?: number;
   overview?: PreviewData["globe_overview"];
+  source?: PreviewData["globe_source"];
+  exterior?: PreviewData["globe_exterior"];
+  surfaceSamples?: number;
   status: string;
   error?: string | null;
   onCancel?: () => void;
@@ -93,28 +96,51 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sta
         });
         const geometry = new BufferGeometry();
         const painted = Boolean(part.materials?.length && palette);
-        if (painted && part.materials && palette) {
-          const rgb = Object.fromEntries(Object.entries(palette).map(([slot, hex]) => [slot, new Color(hex)]));
+        const topTriangles = part.kind === "tile" && exterior === "rounded" && surfaceSamples
+          ? Math.min(surfaceSamples ** 2, part.triangles.length)
+          : 0;
+        const sourcePositions = new Float32BufferAttribute(positions, 3);
+        let topGeometry: BufferGeometry | undefined;
+        if (topTriangles) {
+          // Smooth only the terrain surface. Tile seams, flat backs and snap
+          // cavities should keep their own face normals.
+          topGeometry = new BufferGeometry();
+          topGeometry.setAttribute("position", sourcePositions);
+          topGeometry.setIndex(part.triangles.slice(0, topTriangles).flat());
+          topGeometry.computeVertexNormals();
+        }
+        if (painted || topGeometry) {
+          const rgb = Object.fromEntries(Object.entries(palette ?? {}).map(([slot, hex]) => [slot, new Color(hex)]));
           const fallback = new Color(PART_COLORS[part.kind]);
           const flatPositions: number[] = [];
           const flatColors: number[] = [];
           for (const [i, triangle] of part.triangles.entries()) {
-            const { r, g, b } = rgb[part.materials[i]] ?? fallback;
+            const color = part.materials ? rgb[part.materials[i]] ?? fallback : fallback;
             for (const vertex of triangle) {
               flatPositions.push(positions[vertex * 3], positions[vertex * 3 + 1], positions[vertex * 3 + 2]);
-              flatColors.push(r, g, b);
+              if (painted) flatColors.push(color.r, color.g, color.b);
             }
           }
           geometry.setAttribute("position", new Float32BufferAttribute(flatPositions, 3));
-          geometry.setAttribute("color", new Float32BufferAttribute(flatColors, 3));
+          if (painted) geometry.setAttribute("color", new Float32BufferAttribute(flatColors, 3));
         } else {
-          geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+          geometry.setAttribute("position", sourcePositions);
           geometry.setIndex(part.triangles.flat());
         }
         geometry.computeVertexNormals();
+        if (topGeometry) {
+          const smooth = topGeometry.getAttribute("normal");
+          const normals = geometry.getAttribute("normal");
+          for (let i = 0; i < topTriangles; i += 1) {
+            part.triangles[i].forEach((vertex, corner) => {
+              normals.setXYZ(i * 3 + corner, smooth.getX(vertex), smooth.getY(vertex), smooth.getZ(vertex));
+            });
+          }
+          topGeometry.dispose();
+        }
         geometry.computeBoundingBox();
         if (geometry.boundingBox) bounds.union(geometry.boundingBox);
-        const material = new MeshStandardMaterial({ color: painted ? 0xffffff : PART_COLORS[part.kind], vertexColors: painted, roughness: 0.85, flatShading: true });
+        const material = new MeshStandardMaterial({ color: painted ? 0xffffff : PART_COLORS[part.kind], vertexColors: painted, roughness: 0.85, flatShading: topTriangles === 0 });
         const mesh = new Mesh(geometry, material);
         rendered.push(mesh);
         scene.add(mesh);
@@ -139,7 +165,9 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sta
     const focus = meshes.find((part) => part.name === (visibleView.startsWith("tile-") ? visibleView : "tile-01"))
       ?? meshes.find((part) => part.kind === "tile");
     const [x, y, z] = focus?.outward[0] ?? [0.55, -0.55, 0.55];
-    const direction = new Vector3(x + 0.25, z + 0.32, -y + 0.15).normalize();
+    const direction = source === "whole_earth" && visibleView === "assembled" && tiles?.length === layoutSize
+      ? new Vector3(1, 0.35, -0.44).normalize()
+      : new Vector3(x + 0.25, z + 0.32, -y + 0.15).normalize();
     let initialSize = true;
     const draw = () => renderer.render(scene, camera);
     const resize = () => {
@@ -186,11 +214,11 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sta
       }
       renderer.dispose();
     };
-  }, [meshes, overview, palette, tiles, visibleView]);
+  }, [exterior, layoutSize, meshes, overview, palette, source, surfaceSamples, tiles, visibleView]);
 
   return (
     <section className="relief-shell globe-preview" aria-label="3D globe preview">
-      <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} aria-label="Globe assembly" tabIndex={0} />
+      <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} data-globe-samples={surfaceSamples} aria-label="Globe assembly" tabIndex={0} />
       <div className="globe-preview-toolbar">
         {tiles && layoutSize && (
           <span>{tiles.length === layoutSize ? `${layoutSize} tiles` : `${tiles.length} of ${layoutSize} tiles`}</span>

@@ -109,6 +109,16 @@ fn weights(corners: [[f32; 2]; 3], weights: [f32; 3]) -> [f32; 2] {
     std::array::from_fn(|axis| corners.iter().zip(weights).map(|(p, w)| p[axis] * w).sum())
 }
 
+pub(super) fn tile_segments(spec: &GlobePrototypeSpec) -> usize {
+    if spec.source != GlobeSource::FitTest {
+        usize::from(spec.samples_per_edge)
+    } else if spec.exterior == GlobeExterior::Rounded {
+        24
+    } else {
+        1
+    }
+}
+
 pub(super) fn build_tile(
     face: &Face,
     spec: &GlobePrototypeSpec,
@@ -118,13 +128,7 @@ pub(super) fn build_tile(
     let outline = face.outline_at(0.0, spec.seam_gap_mm / 2.0);
     let nominal_outline = face.outline_at(0.0, 0.0);
     let mapped = spec.source != GlobeSource::FitTest;
-    let segments = if mapped {
-        usize::from(spec.samples_per_edge)
-    } else if spec.exterior == GlobeExterior::Rounded {
-        24
-    } else {
-        1
-    };
+    let segments = tile_segments(spec);
     let mut mesh = MeshBuilder::default();
     let base_radius = dot(face.pose.origin, face.pose.z_axis);
     let direction = |u, v| {

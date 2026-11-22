@@ -2630,6 +2630,9 @@ export function TerrainStudio() {
                 tiles={preview?.globe_tiles}
                 layoutSize={preview?.globe_layout_size}
                 overview={preview?.globe_overview}
+                source={preview?.globe_source}
+                exterior={preview?.globe_exterior}
+                surfaceSamples={preview?.globe_surface_samples}
                 status={globePreviewStatus}
                 error={currentPreviewFailure}
                 onCancel={currentPreviewActivity ? cancelPreview : undefined}

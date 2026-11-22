@@ -301,7 +301,15 @@ fn run_live_preview(
             on_progress(stage, label, 4 + (66.0 * fraction) as u8)
         })?;
         on_progress("model", "Building globe and snap-on frame", 75)?;
-        let preview = toposaic_core::globe::build_globe_preview(spec, inputs.as_data())?;
+        let preview =
+            toposaic_core::globe::build_globe_preview(spec, inputs.as_data(), |fraction| {
+                ensure_preview_active(cancellation)?;
+                on_progress(
+                    "model",
+                    "Building globe and snap-on frame",
+                    75 + (20.0 * fraction) as u8,
+                )
+            })?;
         ensure_preview_active(cancellation)?;
         return Ok(preview);
     }

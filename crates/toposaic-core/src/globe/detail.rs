@@ -78,15 +78,12 @@ fn coordinates([x, y, z]: Vec3) -> Option<([[usize; 2]; 4], [f32; 2])> {
 pub fn earth_detail_blocks(spec: &GlobePrototypeSpec) -> Result<Vec<EarthDetailBlock>> {
     let layout = Layout::new(spec)?;
     let mut blocks = BTreeSet::new();
+    let preview_samples = usize::from(spec.preview_samples(layout.selected.len()));
     for index in layout.selected {
         let face = &layout.faces[index];
         request_face(face, usize::from(spec.samples_per_edge), &mut blocks);
         // Draft preview and final export can use different sample lattices.
-        request_face(
-            face,
-            usize::from(spec.samples_per_edge.min(32)),
-            &mut blocks,
-        );
+        request_face(face, preview_samples, &mut blocks);
     }
     ensure!(
         blocks.len() <= 96,
