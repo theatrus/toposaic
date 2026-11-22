@@ -70,15 +70,16 @@ export function OutputPanel({
       <div className="output-intro" hidden={hidden}>
         <strong>{job ? statusLabel : "No generation job yet."}</strong>
         <p>
-          Generate a model to collect its color 3MF, tray, manifest, and
-          optional STL files here.
+          {spec.globe
+            ? "Generate a print kit with the tiles, frame, clips, and assembly guide."
+            : "Generate a model to collect its color 3MF, tray, manifest, and optional STL files here."}
         </p>
       </div>
 
       <fieldset
         className="control-section"
         aria-label="3MF export style"
-        hidden={hidden}
+        hidden={hidden || Boolean(spec.globe)}
       >
         <label className="road-detail-field">
           3MF style
@@ -119,7 +120,7 @@ export function OutputPanel({
       <fieldset
         className="control-section"
         aria-label="Extra export files"
-        hidden={hidden}
+        hidden={hidden || Boolean(spec.globe)}
       >
         <label className="option-toggle feature-enable-toggle">
           <input
@@ -141,7 +142,7 @@ export function OutputPanel({
         </label>
       </fieldset>
 
-      <div className="engine-note" hidden={hidden}>
+      <div className="engine-note" hidden={hidden || Boolean(spec.globe)}>
         <span>Print source</span>
         <strong>
           <ExternalLink

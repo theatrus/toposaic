@@ -1,12 +1,16 @@
 import type { GenerationSpec } from "../contracts";
 
+const defaultGlobe = { exterior: "faceted", full_shell: false, seam_gap_mm: 0.4 } as const;
+
 export function ModelTypePanel({
   hidden,
+  onModelTypeChange,
   setPieceLayout,
   spec,
   update,
 }: {
   hidden: boolean;
+  onModelTypeChange: (type: "puzzle" | "solid" | "globe") => void;
   setPieceLayout: (count: number) => void;
   spec: GenerationSpec;
   update: <Key extends keyof GenerationSpec>(
@@ -25,8 +29,9 @@ export function ModelTypePanel({
         <strong className="model-mode-label">Model type</strong>
         <button
           type="button"
-          className={!spec.solid_model ? "active" : ""}
-          onClick={() => update("solid_model", false)}
+          className={!spec.globe && !spec.solid_model ? "active" : ""}
+          aria-pressed={!spec.globe && !spec.solid_model}
+          onClick={() => onModelTypeChange("puzzle")}
         >
           <span className="mode-mark puzzle-mark" aria-hidden="true">
             <i />
@@ -45,8 +50,9 @@ export function ModelTypePanel({
         </button>
         <button
           type="button"
-          className={spec.solid_model ? "active" : ""}
-          onClick={() => update("solid_model", true)}
+          className={!spec.globe && spec.solid_model ? "active" : ""}
+          aria-pressed={!spec.globe && spec.solid_model}
+          onClick={() => onModelTypeChange("solid")}
         >
           <span className="mode-mark solid-mark" aria-hidden="true" />
           <span>
@@ -54,9 +60,23 @@ export function ModelTypePanel({
             <small>One watertight model, no cuts</small>
           </span>
         </button>
+        <button
+          type="button"
+          className={spec.globe ? "active" : ""}
+          aria-pressed={Boolean(spec.globe)}
+          onClick={() => onModelTypeChange("globe")}
+        >
+          <span className="mode-mark globe-mark" aria-hidden="true" />
+          <span>
+            <strong>Globe</strong>
+            <small>Snap-on tiles and backing frame</small>
+          </span>
+        </button>
       </div>
 
-      {!spec.solid_model && (
+      {spec.globe && <GlobeControls hidden={hidden} globe={spec.globe} update={(globe) => update("globe", globe)} />}
+
+      {!spec.globe && !spec.solid_model && (
         <fieldset className="piece-grid" hidden={hidden}>
           <legend>Piece layout</legend>
           {[4, 6, 8, 10, 12].map((count) => (
@@ -170,5 +190,38 @@ export function ModelTypePanel({
         </fieldset>
       )}
     </>
+  );
+}
+
+export { defaultGlobe };
+
+function GlobeControls({ hidden, globe, update }: {
+  hidden: boolean;
+  globe: NonNullable<GenerationSpec["globe"]>;
+  update: (globe: NonNullable<GenerationSpec["globe"]>) => void;
+}) {
+  return (
+    <fieldset className="control-section globe-controls" hidden={hidden}>
+      <legend>Globe prototype</legend>
+      <label className="road-detail-field">
+        Globe exterior
+        <select aria-label="Globe exterior" value={globe.exterior} onChange={(event) => update({ ...globe, exterior: event.target.value === "rounded" ? "rounded" : "faceted" })}>
+          <option value="faceted">Faceted</option>
+          <option value="rounded">Rounded</option>
+        </select>
+      </label>
+      <label className="road-detail-field">
+        Print layout
+        <select aria-label="Print layout" value={globe.full_shell ? "full" : "fixture"} onChange={(event) => update({ ...globe, full_shell: event.target.value === "full" })}>
+          <option value="fixture">3-tile fit test</option>
+          <option value="full">20-tile globe</option>
+        </select>
+      </label>
+      <label className="road-detail-field">
+        Seam clearance · {globe.seam_gap_mm.toFixed(2)} mm
+        <input aria-label="Seam clearance" type="range" min="0.2" max="1.2" step="0.05" value={globe.seam_gap_mm} onChange={(event) => update({ ...globe, seam_gap_mm: event.target.valueAsNumber })} />
+      </label>
+      <p>200 mm reference diameter. The plain surface is for testing the clip and frame fit.</p>
+    </fieldset>
   );
 }

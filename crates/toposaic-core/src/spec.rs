@@ -80,6 +80,8 @@ impl MapFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GenerationSpec {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub globe: Option<crate::globe::GlobePrototypeSpec>,
     pub center_lat: f64,
     pub center_lon: f64,
     pub elevation_source: ElevationSource,
@@ -164,6 +166,7 @@ pub struct GenerationSpec {
 impl Default for GenerationSpec {
     fn default() -> Self {
         Self {
+            globe: None,
             center_lat: 46.8523,
             center_lon: -121.7603,
             elevation_source: ElevationSource::Mapzen,
@@ -216,6 +219,9 @@ impl Default for GenerationSpec {
 
 impl GenerationSpec {
     pub fn validate(&self) -> Result<()> {
+        if let Some(globe) = self.globe {
+            globe.validate()?;
+        }
         if !(-85.0..=85.0).contains(&self.center_lat) {
             bail!("center latitude must be between -85 and 85 degrees");
         }

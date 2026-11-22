@@ -285,6 +285,12 @@ fn run_live_preview(
     detail: PreviewDetail,
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
+    if let Some(globe) = spec.globe {
+        on_progress("model", "Building globe and snap-on frame", 25)?;
+        let preview = toposaic_core::globe::build_globe_preview(&globe)?;
+        ensure_preview_active(cancellation)?;
+        return Ok(preview);
+    }
     let preview_started = Instant::now();
     let mut preview_spec = toposaic_core::model_preview_spec(spec, detail);
     let samples = detail.sample_grid();
@@ -406,6 +412,9 @@ fn preview_tile_spec(
     spec: &GenerationSpec,
     headers: &HeaderMap,
 ) -> Result<GenerationSpec, (StatusCode, Json<ApiError>)> {
+    if spec.globe.is_some() {
+        return Ok(spec.clone());
+    }
     let parse_index = |name: &'static str| {
         headers
             .get(name)
@@ -961,6 +970,9 @@ pub(crate) async fn download(
         Some("stl") => "model/stl",
         Some("3mf") => "model/3mf",
         Some("json") => "application/json",
+        Some("zip") => "application/zip",
+        Some("md") => "text/markdown",
+        Some("obj") => "model/obj",
         _ => "application/octet-stream",
     };
     let mut response = Response::new(Body::from_stream(tokio_util::io::ReaderStream::new(file)));
@@ -985,6 +997,26 @@ fn run_job(
     spec: &GenerationSpec,
     cancellation: &AtomicBool,
 ) -> Result<()> {
+    if spec.globe.is_some() {
+        let manifest = toposaic_core::globe::generate_globe_project(
+            spec,
+            &state.jobs_dir.join(id),
+            |fraction| {
+                ensure_job_active(cancellation)?;
+                update_job(
+                    state,
+                    id,
+                    "running",
+                    5 + (94.0 * fraction) as i64,
+                    &[],
+                    None,
+                )
+            },
+        )?;
+        ensure_job_active(cancellation)?;
+        update_job(state, id, "complete", 100, &manifest.artifacts, None)?;
+        return Ok(());
+    }
     if spec.adjacent_columns > 1 || spec.adjacent_rows > 1 {
         return run_adjacent_grid_job(state, id, spec, cancellation);
     }
@@ -1476,6 +1508,52 @@ mod tests {
         };
         insert_job(state, &job).unwrap();
         job
+    }
+
+    #[tokio::test]
+    async fn globe_settings_preview_and_publish_a_print_kit_without_map_data() {
+        let state = test_state();
+        let spec = GenerationSpec {
+            globe: Some(toposaic_core::globe::GlobePrototypeSpec::default()),
+            ..GenerationSpec::default()
+        };
+        let response = create_preview(State(state.clone()), HeaderMap::new(), Json(spec.clone()))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 2_000_000)
+            .await
+            .unwrap();
+        let preview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(preview["globe_meshes"].as_array().unwrap().len(), 9);
+
+        let (_, Json(job)) = create_job(State(state.clone()), Json(spec)).await.unwrap();
+        let job = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let current = find_job(&state, &job.id).unwrap().unwrap();
+                if matches!(current.status.as_str(), "complete" | "failed") {
+                    break current;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(job.status, "complete", "{:?}", job.error);
+        let download = download(
+            State(state.clone()),
+            AxumPath((job.id.clone(), "globe-print-kit.zip".into())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(download.headers()[header::CONTENT_TYPE], "application/zip");
+        let data = axum::body::to_bytes(download.into_body(), 2_000_000)
+            .await
+            .unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).unwrap();
+        assert!(zip.by_name("frame-01.stl").is_ok());
+        assert!(zip.by_name("snap-clip.3mf").is_ok());
+        assert!(zip.by_name("ASSEMBLY.md").is_ok());
+        fs::remove_dir_all(state.jobs_dir.join(&job.id)).unwrap();
     }
 
     #[tokio::test]

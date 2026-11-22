@@ -859,6 +859,35 @@ a {
   touch-action: none;
 }
 
+.visual-column.globe-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.globe-preview-toolbar {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 12px;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  padding: 8px 12px;
+  position: absolute;
+}
+
+.globe-preview-toolbar select {
+  margin-inline-start: 8px;
+}
+
+.globe-controls p {
+  align-self: end;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .visual-resizer::before {
   background: rgba(48, 64, 57, 0.28);
   border-radius: 999px;
@@ -3122,7 +3151,7 @@ fieldset.control-section .road-options {
   display: grid;
   gap: 8px;
   grid-column: 1 / -1;
-  grid-template-columns: 72px repeat(2, minmax(180px, 300px)) 1fr;
+  grid-template-columns: 72px repeat(3, minmax(0, 260px)) 1fr;
   margin: 0;
   padding: 15px 0 0;
 }
@@ -3183,9 +3212,15 @@ fieldset.control-section .road-options {
   grid-template-columns: 1fr 1fr;
 }
 
+.globe-mark,
 .puzzle-mark i,
 .solid-mark {
   border: 1px solid currentColor;
+}
+
+.globe-mark {
+  border-radius: 50%;
+  display: block;
 }
 
 .solid-mark {

@@ -63,7 +63,25 @@ export type SurfaceClassKey =
   | "sport"
   | "playground";
 
+export type GlobeSpec = {
+  exterior: "faceted" | "rounded";
+  full_shell: boolean;
+  seam_gap_mm: number;
+};
+
+type GlobePoint = [number, number, number];
+
+export type GlobePreviewMesh = {
+  name: string;
+  kind: "tile" | "frame" | "joint" | "clip";
+  vertices: GlobePoint[];
+  triangles: [number, number, number][];
+  outward: GlobePoint[];
+  poses: { origin: GlobePoint; x_axis: GlobePoint; y_axis: GlobePoint; z_axis: GlobePoint }[];
+};
+
 export type GenerationSpec = {
+  globe?: GlobeSpec;
   center_lat: number;
   center_lon: number;
   elevation_source: "mapzen" | "mapterhorn";
@@ -394,6 +412,7 @@ export type Job = {
 };
 
 export type PreviewData = {
+  globe_meshes?: GlobePreviewMesh[];
   width: number;
   height: number;
   values: number[];
