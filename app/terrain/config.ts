@@ -84,11 +84,12 @@ export const defaultGlobe = {
   exterior: "faceted",
   source: "fit_test",
   earth_grid: "quarter_degree",
-  full_shell: false,
+  full_shell: true,
   seam_gap_mm: 0.4,
   wrap_degrees: 110,
   relief_mm: 8,
   full_wrap: false,
+  band_degrees: 120,
   surface_colors: false,
   texture_mm: 0,
   diameter_mm: 200,
@@ -100,6 +101,10 @@ export const defaultGlobe = {
   samples_per_edge: 48,
   batch: null,
   whole_earth_detail: false,
+  key_clearance_mm: 0.15,
+  screw_brackets: false,
+  tile_screws: false,
+  insert: { screw_mm: 3, hole_diameter_mm: 4, length_mm: 4 },
 } as const satisfies NonNullable<GenerationSpec["globe"]>;
 
 export const initialSpec: GenerationSpec = {

@@ -21,12 +21,12 @@ import {
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { GlobePreviewMesh, PreviewData } from "./contracts";
 
-const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", clip: "#d5a258", landmark: "#efae56" };
+const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", key: "#c46f4e", clip: "#d5a258", landmark: "#efae56" };
 
 const partName = (kind: "tile" | "landmark", id: number) => `${kind}-${String(id).padStart(2, "0")}`;
 const scenePoint = ([x, y, z]: [number, number, number]) => new Vector3(x, z, -y);
 
-export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, source, exterior, surfaceSamples, landmarks, status, error, onCancel }: {
+export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, source, exterior, surfaceSamples, landmarks, status, error, onCancel, onResume }: {
   meshes?: GlobePreviewMesh[];
   palette?: Record<number, string>;
   tiles?: number[];
@@ -39,13 +39,16 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
   status: string;
   error?: string | null;
   onCancel?: () => void;
+  onResume?: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [view, setView] = useState("assembled");
   const [rendererError, setRendererError] = useState(false);
   const viewUnavailable = (view === "layout" && !overview)
     || (/^(tile|landmark)-/.test(view) && !meshes?.some((mesh) => mesh.name === view));
-  const visibleView = viewUnavailable ? "assembled" : view;
+  // A globe too large for one job comes back as its layout alone.
+  const overviewOnly = !meshes?.length && Boolean(overview);
+  const visibleView = overviewOnly ? "layout" : viewUnavailable ? "assembled" : view;
   const selectedLandmark = landmarks?.find((site) => partName("landmark", site.id) === visibleView);
   const selectedTile = selectedLandmark ? partName("tile", selectedLandmark.tile)
     : visibleView.startsWith("tile-") ? visibleView : undefined;
@@ -54,7 +57,7 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !meshes?.length) return;
+    if (!canvas || (!meshes?.length && !overviewOnly)) return;
     let renderer: WebGLRenderer;
     try {
       renderer = new WebGLRenderer({ canvas, alpha: true, antialias: true });
@@ -97,7 +100,7 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
       rendered.push(mesh);
       scene.add(mesh);
     }
-    for (const part of meshes) {
+    for (const part of meshes ?? []) {
       if (visibleView === "layout") break;
       const site = sites.get(part.name);
       const owner = site ? partName("tile", site.tile) : undefined;
@@ -105,7 +108,7 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
       if (selectedTile && part.name !== selectedTile && (owner !== selectedTile || (selectedLandmark && part.name !== visibleView))) continue;
       part.poses.forEach((pose, index) => {
         const spread = visibleView === "exploded" && (part.kind === "tile" || owner) ? 32 : 0;
-        const outward = (owner && meshes.find((mesh) => mesh.name === owner)?.outward[0]) || part.outward[index];
+        const outward = (owner && meshes?.find((mesh) => mesh.name === owner)?.outward[0]) || part.outward[index];
         const positions = part.vertices.flatMap(([x, y, z]) => {
           const point = pose.origin.map((origin, axis) => origin + x * pose.x_axis[axis]
             + y * pose.y_axis[axis] + z * pose.z_axis[axis] + spread * outward[axis]);
@@ -197,8 +200,8 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
     controls.target.copy(center);
     controls.minDistance = radius * 0.35;
     controls.maxDistance = radius * 12;
-    const focus = meshes.find((part) => part.name === (selectedTile ?? "tile-01"))
-      ?? meshes.find((part) => part.kind === "tile");
+    const focus = meshes?.find((part) => part.name === (selectedTile ?? "tile-01"))
+      ?? meshes?.find((part) => part.kind === "tile");
     const [x, y, z] = focus?.outward[0] ?? [0.55, -0.55, 0.55];
     const pose = selectedLandmark && focus?.poses[0];
     const direction = pose ? scenePoint(pose.z_axis)
@@ -258,14 +261,14 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
       }
       renderer.dispose();
     };
-  }, [exterior, landmarks, layoutSize, meshes, overview, palette, selectedLandmark, selectedTile, source, surfaceSamples, tiles, visibleView]);
+  }, [exterior, landmarks, layoutSize, meshes, overview, overviewOnly, palette, selectedLandmark, selectedTile, source, surfaceSamples, tiles, visibleView]);
 
   return (
     <section className="relief-shell globe-preview" aria-label="3D globe preview">
       <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} data-globe-samples={surfaceSamples} aria-label="Globe assembly" tabIndex={0} />
       <div className="globe-preview-toolbar">
         {tiles && layoutSize && (
-          <span>{tiles.length === layoutSize ? `${layoutSize} tiles` : `${tiles.length} of ${layoutSize} tiles`}</span>
+          <span>{tiles.length === layoutSize || !tiles.length ? `${layoutSize} tiles` : `${tiles.length} of ${layoutSize} tiles`}</span>
         )}
         <label>
           View
@@ -284,6 +287,7 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
         </label>
         {showOffset && <span>White dots mark requested sites</span>}
         {onCancel && <button type="button" onClick={onCancel}>Cancel preview</button>}
+        {onResume && <button type="button" onClick={onResume}>Resume preview</button>}
         <span role="status">{error ?? (rendererError ? "3D preview requires WebGL." : status)}</span>
       </div>
     </section>

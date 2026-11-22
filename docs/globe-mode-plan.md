@@ -4,14 +4,17 @@ Globe mode makes a complete printable globe from numbered, flat-backed terrain t
 
 ## Run the mechanical prototype
 
-In Studio, open **Model → Globe**. Choose the three-tile fit test or full globe, select a rounded or faceted exterior, and adjust the seam clearance. The preview provides assembled, frame-only, exploded, and single-tile views. **Generate** builds a ZIP with the individual STLs and 3MFs, assembly guide, and assembled OBJ. The plain fit test starts at a 200 mm reference diameter.
+In Studio, open **Model → Globe**. Choose the full globe or a numbered tile batch, select a rounded or faceted exterior, and adjust the seam clearance. The preview provides assembled, frame-only, exploded, and single-tile views. **Generate** builds a ZIP with the individual STLs and 3MFs, assembly guide, and assembled OBJ. The plain globe starts at a 200 mm reference diameter. To test the fit, print a small batch of neighbouring tiles.
 
-Choose **Small World** as the globe source to use the elevation from the map selection. Zoom to set the selection size, then set how far the corners wrap and how tall the relief can print. Elevation fades near the selection edges into the rest of the globe. Small World uses the same back, frame, and snap hardware as the plain prototype, and its job can export an elevation source bundle.
+Choose **Small World** as the globe source to wrap the map selection onto the globe. Studio keeps the map, place search, and the Surface, Buildings, Markers, and Colors sections, so roads, rail, trails, water, buildings, markers, and filament colors work as they do on a flat model. Zoom to set the selection size, then choose how the map covers the globe and how tall the relief can print. Small World uses the same back, frame, and snap hardware as the plain prototype, and its job can export a source bundle.
+
+- **Regional with smooth back** centers the selection on the globe. The wrap angle sets how far its corners reach. The terrain fades into plain ground at the selection edges.
+- **360° band with polar caps** wraps the map once around the globe. Its middle strip, outlined on the map, forms a band of ±72°, ±60°, ±45°, or ±30° latitude. The east and west edges blend where they meet, and the band fades into plain caps at both poles.
 
 ## Print a mapped globe
 
 - **Whole Earth** uses bundled NOAA ETOPO 2022 ice-surface elevations and a print palette derived from Natural Earth I. New Whole Earth setups use a quarter-degree grid and 96 mesh samples per edge. The half-degree map remains available for earlier print sets. **Detailed Earth elevation** downloads and caches five-arc-minute NOAA blocks for the selected tile batch, with a transition to the bundled data very close to the poles. [Data and rebuild instructions](../assets/globe/README.md)
-- **Small World → Full wrap** stretches the map selection around the globe. Elevation and color blend across the longitude join and converge at the poles. Small World uses the configured regional elevation source and ESA WorldCover for mapped forest, open vegetation, bare ground, water, and snow or ice.
+- **Small World** loads the same elevation, map, water, and ground-color data as a flat model of the selection. Its colors and filament palette come from the Colors section.
 - **Mapped surface colors** applies one editable five-color filament palette across every 3MF and every batch made with the same settings. **Tactile texture** changes the geometry in both STL and 3MF. Rock, forest, grass, and snow use different patterns and amplitudes. Water stays smooth away from shores.
 
 ## Add oversized landmarks
@@ -26,29 +29,36 @@ Print each numbered insert separately in the filament of your choice. See `LANDM
 
 Set the globe diameter and the shorter usable side of the print bed. Automatic subdivision picks the lowest frequency that fits while allowing space for elevation. You can also choose a subdivision explicitly. The maximum frequency is 24, giving up to 11,520 numbered tiles. Feasible sizes depend on the bed and the room needed for the screws and clips on each seat.
 
-For a large globe, choose **Numbered tile batch**, select the first tile and how many tiles to print, and set the terrain mesh detail. Use the whole-globe layout preview to see the selected batch, then generate a range-named ZIP. **Next batch** advances by the current batch size. Keep the source, dimensions, subdivision, fit, mesh detail, and colors identical across batches. Changing the batch only changes the exported tile range. Each tile has its own frame module, and the lower-numbered tile owns the bracket joining a pair of modules. This rule avoids missing or duplicate brackets at batch boundaries. Terrain and frame geometry are built only for the requested batch, while the overview shows the rest of the nominal layout. The live preview retains full detail for a 20-tile globe and reduces the preview mesh for larger batches as needed. Export uses the selected mesh detail.
+One job holds a limited number of tiles, set by the source and mesh detail, so memory stays bounded. Mapped tiles carry far more geometry than plain ones. When the full globe is over the limit, the preview shows the whole layout and asks for a batch. For a large globe, choose **Numbered tile batch**, select the first tile and how many tiles to print, and set the terrain mesh detail. Use the whole-globe layout preview to see the selected batch, then generate a range-named ZIP. **Next batch** advances by the current batch size. Keep the source, dimensions, subdivision, fit, mesh detail, and colors identical across batches. Changing the batch only changes the exported tile range. Each tile has its own frame module, and the lower-numbered tile owns the bracket joining a pair of modules. This rule avoids missing or duplicate brackets at batch boundaries. Terrain and frame geometry are built only for the requested batch, while the overview shows the rest of the nominal layout. The live preview retains full detail for a 20-tile globe and reduces the preview mesh for larger batches as needed. Export uses the selected mesh detail.
 
-Use **Frame and snap fit** to set frame depth, clip interference, and locator clearance. The seam control adjusts the gap between tiles. The assembly guide lists the screw length for the chosen frame. The three-tile fixture uses the chosen layout and fit settings, so it can test the same hardware before a larger print. The current frame design and its adjustable fit still need physical validation.
+Use **Frame and snap fit** to set frame depth, clip interference, locator clearance, and dovetail key clearance. The seam control adjusts the gap between tiles.
 
-## Command-line fit test
+Neighbouring frame modules lock together with printed dovetail keys, one per joint. A key drops into keyhole slots in the tops of both modules and slides along their shared edge under the dovetail lips. All of this happens from outside, so the last module goes in the same way as the first. Two options add screws, both into heat-set inserts with a configurable thread, hole diameter, and length:
 
-Generate the default three-tile fixture with the Rust example.
+- **Screw brackets** add a bracket under each joint. Its inserts take screws driven down from outside through recessed holes in the frame modules.
+- **Tile screws** add an insert hole in each tile back and a counterbored hole in its frame module. Each tile is screwed from inside as it goes on. The last few tiles cannot be reached, so their clips hold them.
+
+The assembly guide lists the inserts, screws, and screw lengths for the chosen frame. A small batch uses the chosen layout and fit settings, so it can test the same hardware before a larger print. The current frame design and its adjustable fit still need physical validation.
+
+## Command-line prototype
+
+Generate the plain 20-tile mechanical shell with the Rust example.
 
 ```sh
-cargo run -p toposaic-core --example globe_prototype -- target/globe-fixture
+cargo run -p toposaic-core --example globe_prototype -- target/globe-shell
 ```
 
-Use an empty output directory. The command generates tiles 02, 05, and 01, their frame modules, two joint brackets, and one snap clip model to print three times. The STLs and 3MFs are in print orientation. `ASSEMBLY.md` gives the hardware and install order, and `assembly.obj` shows the assembled parts. The current brackets use low-profile M3 screws and nuts to lock the frame modules at the generated angle.
+Use an empty output directory. The command writes every tile, frame module, and dovetail key, plus one snap clip model to print once per tile. The STLs and 3MFs are in print orientation. `ASSEMBLY.md` gives the install order, and `assembly.obj` shows the assembled parts.
 
-The fixture uses a 200 mm reference globe with a plain exterior for checking fit. Pass `--rounded` for curved tiles, `--gap MM` to adjust the combined inset at the tile backs, or `--full` to generate the 20-tile mechanical shell. Digital checks cover mesh closure, print orientation, and the tile insertion axis. The physical print establishes the clip fit and clearances.
+The shell uses a 200 mm reference globe with a plain exterior. Pass `--batch FIRST COUNT` to write a numbered batch, `--rounded` for curved tiles, or `--gap MM` to adjust the combined inset at the tile backs. Digital checks cover mesh closure, print orientation, the tile insertion axis, and that each installed key sits inside both of its slots. A physical print establishes the clip and key fit and clearances.
 
 ## Model options
 
 | Option | Behavior |
 | --- | --- |
 | Whole Earth | Use global elevation and map colors, with one sea-level reference and a relief setting in millimeters. Ocean surfaces stay at sea level. Bathymetry is a follow-up option. |
-| Small World | Use the area selected on the existing map. Start with a regional globe that centers the selection on the sphere, lets the user set how far it wraps, and blends to a smooth neutral surface outside it. Show the extent and transition in the preview. Give the region one height frame and a relief control in millimeters. |
-| Small World full wrap | Map the selected region around the entire globe. Blend elevation and color where the east and west edges meet and where the north and south boundaries converge at the poles. Inspect the blended result in the assembled preview. |
+| Small World regional | Center the selected area on the sphere with an azimuthal equidistant projection, so distances from the center stay true. The user sets how far the corners wrap. Outside the selection the globe is plain ground. |
+| Small World 360° band | Wrap the map once around the globe with an equirectangular projection. The band's height is a share of the square map, so the land keeps its proportions at the equator. Blend the east and west edges, and fade the band into plain polar caps. |
 | Rounded | Place the reference surface on a sphere. The printer still gets a planar back on each tile. |
 | Faceted | Place the reference surface on the triangular faces of an icosahedron or its geodesic subdivision, with relief applied over each face. |
 
@@ -66,7 +76,7 @@ Tie frame fit to the globe diameter, subdivision, and fit settings. Derive the a
 ## Elevation, color, and surface texture
 
 - **Whole Earth.** NOAA supplies ice-surface elevation, and the Natural Earth raster supplies the print classes. The sampler wraps longitude, and both polar caps converge to one elevation and class mix each. The ocean mask keeps deep ocean terrain at sea level. [Data and rebuild instructions](../assets/globe/README.md)
-- **Small World.** Reuse the configured regional elevation source and ESA WorldCover. A cap has a smooth transition at its outer edges. Full wrap applies the same join and pole transitions to heights and class mixes.
+- **Small World.** Build the flat terrain model of the selection at the globe's scale, so a millimetre on the map is a millimetre of arc at the map center. Each tile traces its seam-inset outline onto the map, and the terrain piece builder fills that outline with terrain, roads, bridges, buildings, markers, and colors. The piece then bends onto the tile: the map's zero-relief surface lands on the sphere or facet, relief rises along globe-center directions, and the piece's base becomes the tile back with its clip socket. A few tiles cannot unfold onto the map: those holding a pole of the band, those across the band's east-west join, and those around the far side of a regional map. They sample heights and colors from the same faded map, without roads or buildings.
 - **Color and texture.** Top triangles use one editable palette across all 3MFs and batches. Sample and blend nearby cover cells before assigning printed classes and texture amplitudes. Tactile patterns use assembled globe coordinates so neighboring tiles share the pattern phase. [Existing color output plan](color-output-plan.md)
 
 ## Studio, jobs, and exports
@@ -77,8 +87,9 @@ Tie frame fit to the globe diameter, subdivision, and fit settings. Derive the a
 
 ## Build and verification milestones
 
-- [ ] **Three-tile snap-fit print.** Generate a fixture with a real frame module joint and install the middle tile last. Measure seam gaps, seating repeatability, insertion and removal force, and clip wear after repeated removal. Choose the clip shape, clearance, and socket depth from the print results.
+- [ ] **Small-batch snap-fit print.** Print a batch of neighbouring tiles with their frame modules and keys, and install the middle tile last. Measure seam gaps, key fit and slide force, seating repeatability, insertion and removal force, and clip wear after repeated removal. Choose the clip shape, key clearance, and socket depth from the print results. Repeat with screw brackets and tile screws to check the insert holes.
 - [ ] **Complete 20-tile faceted globe.** Print and assemble the monochrome 200 mm shell and frame. Confirm that the frame closes, the final tile seats with all neighbors installed, and a removed tile can be replaced. Check each exported solid for manifold geometry, minimum thickness, and a flat print base. Check the sliced overhangs and socket bridges.
 - [ ] **Rounded finish, Whole Earth color, and 80-tile layout.** Verify continuous elevation and class boundaries at a coastline crossing a tile seam, the antimeridian, and both poles. Check that every part fits the selected bed and that 3MF imports retain consistent filament slots across print groups. Physically test at least one higher-frequency seat and its frame joint before committing to a full production print.
-- [ ] **Small World regional mapping, then full wrap.** Print a coastal mountain selection with both a coastline and a ridge crossing tile seams. Verify the fade outside the regional selection, the full-wrap join and pole transitions, and that tiles from a different source can reuse the same frame when the layout and fit settings match. Reprint a single tile from a saved setup and verify its fit.
+- [ ] **Small World regional mapping, then the 360° band.** Print a coastal mountain selection with a coastline, a ridge, and a road crossing tile seams. Verify the fade outside the regional selection, the band's east-west join and polar caps, and that tiles from a different source can reuse the same frame when the layout and fit settings match. Reprint a single tile from a saved setup and verify its fit.
+- [ ] **Small World detail across the band.** The band reads its data from the square map around it, so it loads more area than it prints. Measure load time on large spans and decide whether the map data should follow the band's own shape.
 - [ ] **Tactile texture trial.** Slice and print a sample with adjoining material classes and a seam crossing them. Compare the result with the plain relief and use the print to set texture amplitudes and printable feature sizes.

@@ -72,6 +72,8 @@ export type GlobeSpec = {
   wrap_degrees: number;
   relief_mm: number;
   full_wrap: boolean;
+  /** Latitude span of the 360° Small World band: 144, 120, 90, or 60. */
+  band_degrees: number;
   surface_colors: boolean;
   texture_mm: number;
   diameter_mm: number;
@@ -83,6 +85,13 @@ export type GlobeSpec = {
   samples_per_edge: number;
   batch: { first_tile: number; tile_count: number } | null;
   whole_earth_detail: boolean;
+  /** Play between each dovetail key and its frame slots, per side. */
+  key_clearance_mm: number;
+  /** Screwed brackets under each frame joint, behind the dovetail key. */
+  screw_brackets: boolean;
+  /** Screw each tile to its frame module from inside the globe. */
+  tile_screws: boolean;
+  insert: { screw_mm: number; hole_diameter_mm: number; length_mm: number };
 };
 
 type GlobePoint = [number, number, number];
@@ -106,7 +115,7 @@ export type GlobeLandmarkPlacement = GlobeLandmark & {
 
 export type GlobePreviewMesh = {
   name: string;
-  kind: "tile" | "frame" | "joint" | "clip" | "landmark";
+  kind: "tile" | "frame" | "joint" | "key" | "clip" | "landmark";
   top_triangles?: number;
   vertices: GlobePoint[];
   triangles: [number, number, number][];
@@ -456,6 +465,10 @@ export type PreviewData = {
   globe_source?: GlobeSpec["source"];
   globe_tiles?: number[];
   globe_layout_size?: number;
+  /** Most tiles one job may build at this mesh detail. */
+  globe_batch_limit?: number;
+  /** The full globe is over the limit: only the layout came back. */
+  globe_batch_required?: boolean;
   globe_overview?: [GlobePoint, GlobePoint, GlobePoint][];
   width: number;
   height: number;

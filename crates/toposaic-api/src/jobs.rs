@@ -22,7 +22,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use toposaic_core::globe::{EarthDetail, GlobeData, GlobeSource};
+use toposaic_core::globe::{EarthDetail, GlobeData};
 use toposaic_core::{
     Artifact, FlagMarkerStyle, GenerationSpec, MarkerKind, PreviewDetail, SurfaceField,
     artifact_path, generate_marker_artifacts, generate_project_with_fields_cancellable,
@@ -111,7 +111,7 @@ pub(crate) async fn create_job(
     Json(spec): Json<GenerationSpec>,
 ) -> Result<(StatusCode, Json<Job>), (StatusCode, Json<ApiError>)> {
     spec.validate()
-        .and_then(|()| spec.globe.map_or(Ok(()), |globe| globe.validate_layout()))
+        .and_then(|()| spec.globe.map_or(Ok(()), |globe| globe.validate_job()))
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
 
     let id = Uuid::new_v4().to_string();
@@ -288,18 +288,31 @@ fn run_live_preview(
     detail: PreviewDetail,
     mut on_progress: impl FnMut(&'static str, &'static str, u8) -> Result<()>,
 ) -> Result<serde_json::Value> {
-    if spec.globe.is_some() {
-        let inputs = globe_fields(spec, map_cache_dir, |stage, fraction| {
-            ensure_preview_active(cancellation)?;
-            let label = match stage {
-                "elevation" if spec.globe.is_some_and(|globe| globe.whole_earth_detail) => {
-                    "Loading Earth elevation blocks"
-                }
-                "elevation" => "Loading regional elevation",
-                _ => "Loading regional land cover",
-            };
-            on_progress(stage, label, 4 + (66.0 * fraction) as u8)
-        })?;
+    if let Some(globe) = spec.globe {
+        // A globe too large for one job previews as its layout alone, which
+        // needs no map data.
+        if globe.needs_batch()? {
+            return toposaic_core::globe::build_globe_preview(spec, GlobeData::default(), |_| {
+                ensure_preview_active(cancellation)
+            });
+        }
+        let inputs = globe_fields(
+            spec,
+            map_cache_dir,
+            cancellation,
+            Some(detail),
+            |stage, fraction| {
+                ensure_preview_active(cancellation)?;
+                let label = match stage {
+                    "elevation" if spec.globe.is_some_and(|globe| globe.whole_earth_detail) => {
+                        "Loading Earth elevation blocks"
+                    }
+                    "elevation" => "Loading regional elevation",
+                    _ => "Loading map details",
+                };
+                on_progress(stage, label, 4 + (66.0 * fraction) as u8)
+            },
+        )?;
         on_progress("model", "Building globe and snap-on frame", 75)?;
         let preview =
             toposaic_core::globe::build_globe_preview(spec, inputs.as_data(), |fraction| {
@@ -417,6 +430,7 @@ fn run_live_preview(
 
 #[derive(Default)]
 struct GlobeInputs {
+    map_spec: Option<GenerationSpec>,
     height: Option<toposaic_core::HeightField>,
     cover: Option<SurfaceField>,
     earth_detail: Option<EarthDetail>,
@@ -425,6 +439,7 @@ struct GlobeInputs {
 impl GlobeInputs {
     fn as_data(&self) -> GlobeData<'_> {
         GlobeData {
+            map_spec: self.map_spec.as_ref(),
             height: self.height.as_ref(),
             cover: self.cover.as_ref(),
             earth_detail: self.earth_detail.as_ref(),
@@ -436,9 +451,50 @@ impl GlobeInputs {
     }
 }
 
+/// Loads what a globe needs beyond its own geometry. A Small World runs the
+/// full terrain data pipeline on its flat map: elevation, map overlays,
+/// water levels, and the ground palette, so every terrain option carries
+/// onto the globe. `preview` loads the same data at live-preview detail.
+/// The last Small World map data, keyed by the flat map settings and
+/// preview detail. Globe-only changes — tiles, batches, fit, frame — keep the
+/// same map, so they rebuild geometry without loading the map again.
+static SMALL_WORLD_CACHE: std::sync::Mutex<Option<(String, std::sync::Arc<GlobeInputs>)>> =
+    std::sync::Mutex::new(None);
+
 fn globe_fields(
     spec: &GenerationSpec,
     cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    preview: Option<PreviewDetail>,
+    on_progress: impl FnMut(&'static str, f32) -> Result<()>,
+) -> Result<std::sync::Arc<GlobeInputs>> {
+    let key = toposaic_core::globe::small_world_map_spec(spec)
+        .map(|map| serde_json::to_string(&(map, preview.map(|detail| format!("{detail:?}")))))
+        .transpose()?;
+    if let Some(key) = &key
+        && let Some((cached, inputs)) = SMALL_WORLD_CACHE.lock().expect("cache lock").as_ref()
+        && cached == key
+    {
+        return Ok(inputs.clone());
+    }
+    let inputs = std::sync::Arc::new(load_globe_fields(
+        spec,
+        cache_dir,
+        cancellation,
+        preview,
+        on_progress,
+    )?);
+    if let Some(key) = key {
+        *SMALL_WORLD_CACHE.lock().expect("cache lock") = Some((key, inputs.clone()));
+    }
+    Ok(inputs)
+}
+
+fn load_globe_fields(
+    spec: &GenerationSpec,
+    cache_dir: &std::path::Path,
+    cancellation: &AtomicBool,
+    preview: Option<PreviewDetail>,
     mut on_progress: impl FnMut(&'static str, f32) -> Result<()>,
 ) -> Result<GlobeInputs> {
     let Some(globe) = spec.globe else {
@@ -453,42 +509,46 @@ fn globe_fields(
             ..GlobeInputs::default()
         });
     }
-    if globe.source != GlobeSource::SmallWorld {
+    let Some(map) = toposaic_core::globe::small_world_map_spec(spec) else {
         return Ok(GlobeInputs::default());
-    }
-    let mut region = spec.clone();
-    region.map_frame = None;
-    region.adjacent_columns = 1;
-    region.adjacent_rows = 1;
-    // One regional grid feeds preview and export, so both show the same relief.
-    let size = if globe.samples_per_edge > 48 {
-        256
-    } else {
-        160
     };
-    let needs_cover = globe.surface_colors || globe.texture_mm > 0.0;
-    let elevation_fraction = if needs_cover { 0.65 } else { 1.0 };
-    let field = elevation::fetch_preview_height_field_with_progress(
-        &region,
-        &cache_dir.join("elevation"),
-        size,
-        |fraction| on_progress("elevation", elevation_fraction * fraction),
-    )
+    let map = match preview {
+        Some(detail) => toposaic_core::model_preview_spec(&map, detail),
+        None => map,
+    };
+    let needs_cover = map.needs_surface_field();
+    let elevation_share = if needs_cover { 0.35 } else { 1.0 };
+    let elevation_cache = cache_dir.join("elevation");
+    let mut height = match preview {
+        Some(detail) => elevation::fetch_preview_height_field_with_progress(
+            &map,
+            &elevation_cache,
+            detail.sample_grid(),
+            |fraction| on_progress("elevation", elevation_share * fraction),
+        ),
+        None => elevation::fetch_height_field_with_progress(&map, &elevation_cache, |fraction| {
+            on_progress("elevation", elevation_share * fraction)
+        }),
+    }
     .context("load Small World elevation")?;
-    let cover = if needs_cover {
-        let field = surface::fetch_globe_land_cover(&region, size, cache_dir, |_, fraction| {
-            on_progress(
-                "surface",
-                0.65 + 0.35 * ((fraction - 0.04) / 0.12).clamp(0.0, 1.0),
-            )
-        })?;
-        on_progress("surface", 1.0)?;
-        Some(field)
+    let mut cover = if needs_cover {
+        Some(surface::fetch_surface_field_with_progress_cancellable(
+            &map,
+            &height,
+            cache_dir,
+            cancellation,
+            |_, fraction| on_progress("surface", 0.35 + 0.6 * fraction),
+        )?)
     } else {
         None
     };
+    if let Some(field) = cover.as_mut() {
+        surface::apply_marine_water_cancellable(&map, &mut height, field, cache_dir, cancellation);
+    }
+    on_progress("surface", 1.0)?;
     Ok(GlobeInputs {
-        height: Some(field),
+        map_spec: Some(locked_ground_spec(&map, cover.as_ref())),
+        height: Some(height),
         cover,
         earth_detail: None,
     })
@@ -1109,9 +1169,13 @@ fn run_job(
             Ok(())
         };
         progress(5)?;
-        let inputs = globe_fields(spec, &state.map_cache_dir, |_, fraction| {
-            progress(5 + (35.0 * fraction) as i64)
-        })?;
+        let inputs = globe_fields(
+            spec,
+            &state.map_cache_dir,
+            cancellation,
+            None,
+            |_, fraction| progress(5 + (35.0 * fraction) as i64),
+        )?;
         let geometry_start = if inputs.uses_cached_sources() { 40 } else { 5 };
         let output_dir = state.jobs_dir.join(id);
         let manifest = toposaic_core::globe::generate_globe_project(
@@ -1642,11 +1706,13 @@ mod tests {
         let response = create_preview(State(state.clone()), HeaderMap::new(), Json(spec.clone()))
             .await
             .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), 2_000_000)
+        let body = axum::body::to_bytes(response.into_body(), 50_000_000)
             .await
             .unwrap();
         let preview: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(preview["globe_meshes"].as_array().unwrap().len(), 9);
+        // Every unbatched globe is the full shell: 20 tiles, 20 frame
+        // modules, 30 dovetail keys, and the clip.
+        assert_eq!(preview["globe_meshes"].as_array().unwrap().len(), 71);
 
         let (_, Json(job)) = create_job(State(state.clone()), Json(spec)).await.unwrap();
         let job = tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -1668,7 +1734,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(download.headers()[header::CONTENT_TYPE], "application/zip");
-        let data = axum::body::to_bytes(download.into_body(), 2_000_000)
+        let data = axum::body::to_bytes(download.into_body(), 50_000_000)
             .await
             .unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).unwrap();

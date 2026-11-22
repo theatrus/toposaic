@@ -296,23 +296,6 @@ pub fn fetch_surface_field_with_progress_cancellable(
     )
 }
 
-pub(crate) fn fetch_globe_land_cover(
-    spec: &GenerationSpec,
-    size: usize,
-    map_cache_dir: &Path,
-    on_progress: impl FnMut(&'static str, f32) -> Result<()>,
-) -> Result<SurfaceField> {
-    let (classes, source) = read_world_cover(
-        transform_for(spec),
-        size,
-        size,
-        map_cache_dir,
-        classify_neighborhood_cover,
-        on_progress,
-    )?;
-    SurfaceField::new(size, size, classes, source)
-}
-
 fn read_world_cover(
     transform: GeoTransform,
     width: usize,

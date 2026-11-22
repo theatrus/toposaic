@@ -9,32 +9,89 @@ use super::layout::{Face, Loop, Pose, Vec3, add, dot, scale, sub, unit};
 use super::{GlobeExterior, GlobePrototypeSpec, GlobeSource, Terrain};
 use crate::mesh::{Mesh, MeshBuilder, triangulate_constraints, weld_export_mesh};
 use crate::planar_mesh::{add_horizontal_polygons, closed_ring, polygon_from_outline};
-use crate::spec::SurfaceClass;
+use crate::spec::{PrintMaterial, SurfaceClass};
 
 const FRAME_TOP: f32 = -1.4;
 const FRAME_EDGE_GAP: f32 = 0.4;
 const BRACKET_DEPTH: f32 = 3.8;
-const BOLT_RADIUS: f32 = 1.75;
-const HEAD_RADIUS: f32 = 3.1;
 const HARDWARE_Z: f32 = -4.1;
+/// Bracket screws sit close to the frame edge, beyond both ends of the key
+/// slot, so the brackets stay narrow and clear of the tile screw.
+const BOLT_INWARD: f32 = 5.0;
+const BOLT_ALONG: f32 = 16.0;
+/// Tile screws sit opposite the locator, on the far side of the clip.
+/// How far a bracket reaches along and in from its frame edge.
+const BRACKET_HALF_LENGTH: f32 = BOLT_ALONG + 3.5;
+const BRACKET_REACH: f32 = BOLT_INWARD + 3.0;
+const TILE_SCREW_HEAD_DEPTH: f32 = 2.2;
+/// Dovetail key slot, measured from the frame edge in each module's top.
+/// The slot is a keyhole: the key's foot drops into the open end, then
+/// slides along the edge under the dovetail lips.
+const KEY_INWARD: f32 = 4.2;
+const KEY_NECK: f32 = 3.0;
+const KEY_FOOT: f32 = 5.0;
+const KEY_DEPTH: f32 = 2.5;
+const KEY_LENGTH: f32 = 10.0;
+/// The bridge over the seam sits on the frame tops, under the tile backs.
+const KEY_BRIDGE: f32 = 1.0;
+const KEY_WING: f32 = 1.5;
+const KEY_SLIDE_GAP: f32 = 0.5;
 const SOCKET_Y: f32 = 2.6;
 const SOCKET_DEPTH: f32 = 5.7;
 const CLIP_BARBS_X: f32 = 4.35;
 const FRAME_THROAT_X: f32 = 3.8;
 const LOCATOR_Y: f32 = 8.0;
+/// Half the width of the clip slot in the frame and the clip socket's flare.
+const CLIP_SLOT_HALF_X: f32 = 4.55;
 const MATERIAL: SurfaceClass = SurfaceClass::Rock;
 
 fn frame_bottom(face: &Face, spec: &GlobePrototypeSpec) -> f32 {
     (FRAME_TOP - spec.frame_depth_mm) * face.depth_scale()
 }
 
-pub(super) fn screw_length(spec: &GlobePrototypeSpec, max_depth_scale: f32) -> u32 {
-    let stack = (spec.frame_depth_mm - FRAME_TOP + BRACKET_DEPTH) * max_depth_scale + HARDWARE_Z;
-    // Include a 2.4 mm M3 nut and enough projection to start the threads.
-    [10, 12, 14, 16, 18, 20, 22, 25]
+const SCREW_LENGTHS: [u32; 13] = [4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 30];
+
+/// The shortest stock screw that reaches `clamp` mm of parts and then
+/// threads at least four fifths of the way into the insert.
+fn stock_screw(clamp: f32, insert: f32) -> u32 {
+    let minimum = clamp + 0.8 * insert;
+    SCREW_LENGTHS
         .into_iter()
-        .find(|&length| length as f32 >= stack + 3.4)
-        .unwrap_or(25)
+        .find(|&length| length as f32 >= minimum)
+        .unwrap_or(30)
+}
+
+/// The tile screw sits beside the clip, across from the clip's long side,
+/// as close as its head allows. On subdivided globes the clip sits toward
+/// edge 0, so the space beside it is roomier than the space below it.
+pub(super) fn tile_screw_center(spec: &GlobePrototypeSpec) -> [f32; 2] {
+    [CLIP_SLOT_HALF_X + 1.0 + head_radius(spec), 0.0]
+}
+
+fn bore_radius(spec: &GlobePrototypeSpec) -> f32 {
+    spec.insert.screw_mm / 2.0 + 0.2
+}
+
+fn head_radius(spec: &GlobePrototypeSpec) -> f32 {
+    spec.insert.screw_mm * 0.92 + 0.35
+}
+
+fn bracket_depth(spec: &GlobePrototypeSpec) -> f32 {
+    BRACKET_DEPTH.max(spec.insert.length_mm + 0.6)
+}
+
+/// Screw length for a bracket: from the recessed head through the frame
+/// module into the insert in the bracket below.
+pub(super) fn bracket_screw_length(spec: &GlobePrototypeSpec, max_depth_scale: f32) -> u32 {
+    let below_head = HARDWARE_Z - (FRAME_TOP - spec.frame_depth_mm) * max_depth_scale;
+    stock_screw(below_head, spec.insert.length_mm)
+}
+
+/// Screw length for a tile: from the counterbore under the frame module,
+/// across the gap to the tile back, into the insert in the tile.
+pub(super) fn tile_screw_length(spec: &GlobePrototypeSpec, max_depth_scale: f32) -> u32 {
+    let plate = spec.frame_depth_mm * max_depth_scale - TILE_SCREW_HEAD_DEPTH;
+    stock_screw(plate - FRAME_TOP, spec.insert.length_mm)
 }
 
 fn lift([x, y]: [f32; 2], z: f32) -> Vec3 {
@@ -106,6 +163,21 @@ fn cavity(mesh: &mut MeshBuilder, levels: &[(Loop, f32)]) {
             unreachable!()
         };
         wall(mesh, low, *low_z, high, *high_z, true);
+    }
+}
+
+/// Emit a flat convex polygon whose normal points toward `probe`, a point
+/// on the open side of the face.
+fn oriented_polygon(mesh: &mut MeshBuilder, points: &[Vec3], probe: Vec3) {
+    let normal = super::layout::cross(sub(points[1], points[0]), sub(points[2], points[0]));
+    let flip = dot(normal, sub(probe, points[0])) < 0.0;
+    for i in 1..points.len() - 1 {
+        let [a, b, c] = [points[0], points[i], points[i + 1]];
+        if flip {
+            mesh.triangle(a, c, b, MATERIAL);
+        } else {
+            mesh.triangle(a, b, c, MATERIAL);
+        }
     }
 }
 
@@ -183,9 +255,9 @@ pub(super) fn build_tile(
     let surface = |i: usize, j: usize| surface_positions[i][j];
     let material = |u, v| {
         if spec.surface_colors && mapped {
-            terrain.sample(direction(u, v)).class()
+            terrain.material(direction(u, v))
         } else {
-            MATERIAL
+            MATERIAL.into()
         }
     };
     let holes = landmarks
@@ -273,6 +345,49 @@ pub(super) fn build_tile(
         );
     }
 
+    close_back(&mut mesh, &bottom, spec)?;
+    Ok(Tile {
+        mesh: mesh.finish(format!("tile-{:02}", face.id)),
+        top_triangles,
+        inserts,
+    })
+}
+
+/// A Small World tile built from its piece of the flat map: terrain, roads,
+/// buildings, markers, and colors from the terrain builder, moved onto the
+/// tile and closed with the same back as every other tile.
+pub(super) fn build_map_tile(
+    face: &Face,
+    spec: &GlobePrototypeSpec,
+    map: &super::wrap::WrappedMap,
+    outline: &[[f32; 2]],
+    spacing_mm: f32,
+) -> Result<Tile> {
+    let name = format!("tile-{:02}", face.id);
+    let piece = map.build_piece(outline, spacing_mm, name.clone())?;
+    let wrapped = super::wrap::wrap_piece(&piece, face, spec, map)?;
+    let mut mesh = MeshBuilder::default();
+    for ([a, b, c], material) in wrapped.triangles {
+        let material = if spec.surface_colors {
+            material
+        } else {
+            MATERIAL.into()
+        };
+        mesh.triangle(a, b, c, material);
+    }
+    close_back(&mut mesh, &wrapped.back, spec)?;
+    Ok(Tile {
+        mesh: mesh.finish(name),
+        top_triangles: wrapped.upward,
+        inserts: Vec::new(),
+    })
+}
+
+fn close_back(
+    mesh: &mut MeshBuilder,
+    bottom: &[[f32; 2]],
+    spec: &GlobePrototypeSpec,
+) -> Result<()> {
     // A short throat deflects the clip. The flare inside the back acts as a
     // release ramp, and the small bridge closes the blind socket.
     let socket = [
@@ -289,22 +404,21 @@ pub(super) fn build_tile(
     ];
     let clearance = spec.locator_clearance_mm;
     let locator = rectangle(0.0, LOCATOR_Y, 2.0 + clearance, 1.6 + clearance);
-    cap(
-        &mut mesh,
-        &bottom,
-        &[socket[0].0.clone(), locator.clone()],
-        0.0,
-        true,
-    )?;
-    cavity(&mut mesh, &socket);
-    cap(&mut mesh, &socket[3].0, &[], SOCKET_DEPTH, true)?;
-    wall(&mut mesh, &locator, 0.0, &locator, 2.5, true);
-    cap(&mut mesh, &locator, &[], 2.5, true)?;
-    Ok(Tile {
-        mesh: mesh.finish(format!("tile-{:02}", face.id)),
-        top_triangles,
-        inserts,
-    })
+    let mut holes = vec![socket[0].0.clone(), locator.clone()];
+    if spec.tile_screws {
+        // A blind hole for a heat-set insert, opposite the locator.
+        let insert = circle(tile_screw_center(spec), spec.insert.hole_diameter_mm / 2.0);
+        let depth = spec.insert.length_mm + 0.5;
+        wall(mesh, &insert, 0.0, &insert, depth, true);
+        cap(mesh, &insert, &[], depth, true)?;
+        holes.push(insert);
+    }
+    cap(mesh, bottom, &holes, 0.0, true)?;
+    cavity(mesh, &socket);
+    cap(mesh, &socket[3].0, &[], SOCKET_DEPTH, true)?;
+    wall(mesh, &locator, 0.0, &locator, 2.5, true);
+    cap(mesh, &locator, &[], 2.5, true)?;
+    Ok(())
 }
 
 fn cut_tile_surface(
@@ -313,7 +427,7 @@ fn cut_tile_surface(
     holes: &[&Loop],
     surface_positions: &[Vec<Vec3>],
     surface_at: &impl Fn(f32, f32) -> Vec3,
-    material: &impl Fn(f32, f32) -> SurfaceClass,
+    material: &impl Fn(f32, f32) -> PrintMaterial,
 ) -> Result<usize> {
     let grid = segments as f64;
     let lattice = |position: [f32; 2]| position.map(|p| f64::from(p) * grid);
@@ -411,7 +525,7 @@ fn build_socket(
     face: &Face,
     landmark: &super::GlobeLandmark,
     rim: &[Vec3],
-    rim_materials: &[SurfaceClass],
+    rim_materials: &[PrintMaterial],
     [x, y, z]: Vec3,
 ) -> Result<Insert> {
     let seat_z = rim.iter().map(|point| point[2]).fold(z, f32::min) - 0.18;
@@ -507,6 +621,9 @@ fn landmark_mesh(landmark: &super::GlobeLandmark) -> Result<Mesh> {
 struct FrameEdge {
     midpoint: [f32; 2],
     along: [f32; 2],
+    /// Slot coordinates run from the edge end with the lower layout vertex
+    /// ID, so both modules of a joint agree on where a key enters.
+    sigma: f32,
 }
 
 impl FrameEdge {
@@ -514,10 +631,135 @@ impl FrameEdge {
         let [a, b, c] = face.outline_at(frame_bottom(face, spec), 0.0);
         let [a, b] = [[a, b], [b, c], [c, a]][edge];
         let length = (a[0] - b[0]).hypot(a[1] - b[1]);
+        let sigma = if face.vertices[edge] < face.vertices[(edge + 1) % 3] {
+            1.0
+        } else {
+            -1.0
+        };
         Self {
             midpoint: [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0],
             along: [(b[0] - a[0]) / length, (b[1] - a[1]) / length],
+            sigma,
         }
+    }
+
+    /// A point in slot coordinates: `t` along the edge from the slot's
+    /// installed key position, `w` in from the edge, `z` in the module frame.
+    fn slot(&self, t: f32, w: f32, z: f32) -> Vec3 {
+        lift(self.at(self.sigma * t, w), z)
+    }
+
+    /// Cut the keyhole dovetail slot into a module's top. Returns the hole
+    /// the top cap leaves open.
+    fn cut_key_slot(&self, mesh: &mut MeshBuilder) -> Loop {
+        let entry = -(KEY_LENGTH + 2.0 * KEY_SLIDE_GAP + 0.5);
+        let start = -KEY_SLIDE_GAP;
+        let end = KEY_LENGTH + KEY_SLIDE_GAP;
+        let [low_foot, low_neck, high_neck, high_foot] = [
+            KEY_INWARD - KEY_FOOT / 2.0,
+            KEY_INWARD - KEY_NECK / 2.0,
+            KEY_INWARD + KEY_NECK / 2.0,
+            KEY_INWARD + KEY_FOOT / 2.0,
+        ];
+        let top = FRAME_TOP;
+        let floor = FRAME_TOP - KEY_DEPTH;
+        let mid = (top + floor) / 2.0;
+        let p = |t, w, z| self.slot(t, w, z);
+        let face = |mesh: &mut MeshBuilder, points: &[Vec3], probe: Vec3| {
+            oriented_polygon(mesh, points, probe);
+        };
+        // Floor, in two rectangles so the step line is shared.
+        for [t0, t1] in [[entry, start], [start, end]] {
+            face(
+                mesh,
+                &[
+                    p(t0, low_foot, floor),
+                    p(t1, low_foot, floor),
+                    p(t1, high_foot, floor),
+                    p(t0, high_foot, floor),
+                ],
+                p((t0 + t1) / 2.0, KEY_INWARD, floor + 1.0),
+            );
+        }
+        // The open end the key drops into, and the closed far end.
+        face(
+            mesh,
+            &[
+                p(entry, low_foot, floor),
+                p(entry, high_foot, floor),
+                p(entry, high_foot, top),
+                p(entry, low_foot, top),
+            ],
+            p(entry + 1.0, KEY_INWARD, mid),
+        );
+        face(
+            mesh,
+            &[
+                p(end, low_foot, floor),
+                p(end, high_foot, floor),
+                p(end, high_neck, top),
+                p(end, low_neck, top),
+            ],
+            p(end - 1.0, KEY_INWARD, floor + 0.5),
+        );
+        for (foot, neck) in [(low_foot, low_neck), (high_foot, high_neck)] {
+            let probe_w = KEY_INWARD;
+            // Straight side of the entry.
+            face(
+                mesh,
+                &[
+                    p(entry, foot, floor),
+                    p(start, foot, floor),
+                    p(start, foot, top),
+                    p(entry, foot, top),
+                ],
+                p((entry + start) / 2.0, probe_w, mid),
+            );
+            // Sloped dovetail lip along the slide.
+            face(
+                mesh,
+                &[
+                    p(start, foot, floor),
+                    p(end, foot, floor),
+                    p(end, neck, top),
+                    p(start, neck, top),
+                ],
+                p((start + end) / 2.0, probe_w, floor + 0.5),
+            );
+            // The end of the lip, facing the entry.
+            face(
+                mesh,
+                &[
+                    p(start, foot, floor),
+                    p(start, foot, top),
+                    p(start, neck, top),
+                ],
+                p(start - 0.5, (foot + neck) / 2.0, top - 0.3),
+            );
+        }
+        [
+            [entry, low_foot],
+            [start, low_foot],
+            [start, low_neck],
+            [end, low_neck],
+            [end, high_neck],
+            [start, high_neck],
+            [start, high_foot],
+            [entry, high_foot],
+        ]
+        .map(|[t, w]| self.at(self.sigma * t, w))
+        .to_vec()
+    }
+
+    /// Plan footprint of the key slot with a margin, for keeping windows clear.
+    fn key_slot_keepout(&self, margin: f32) -> Loop {
+        let entry = -(KEY_LENGTH + 2.0 * KEY_SLIDE_GAP + 0.5) - margin;
+        let end = KEY_LENGTH + KEY_SLIDE_GAP + margin;
+        let low = KEY_INWARD - KEY_FOOT / 2.0 - margin;
+        let high = KEY_INWARD + KEY_FOOT / 2.0 + margin;
+        [[entry, low], [end, low], [end, high], [entry, high]]
+            .map(|[t, w]| self.at(self.sigma * t, w))
+            .to_vec()
     }
 
     fn at(&self, along: f32, inward: f32) -> [f32; 2] {
@@ -529,7 +771,7 @@ impl FrameEdge {
     }
 
     fn bolts(&self) -> [[f32; 2]; 2] {
-        [-4.6, 4.6].map(|offset| self.at(offset, 7.0))
+        [-BOLT_ALONG, BOLT_ALONG].map(|offset| self.at(offset, BOLT_INWARD))
     }
 }
 
@@ -560,13 +802,36 @@ pub(super) fn build_frame(
         })
         .collect();
     let locator = rectangle(0.0, LOCATOR_Y, 2.0, 1.6);
-    let bolts: Vec<_> = connected_edges
+    let edges: Vec<_> = connected_edges
         .iter()
-        .flat_map(|&edge| FrameEdge::new(face, edge, spec).bolts())
+        .map(|&edge| FrameEdge::new(face, edge, spec))
         .collect();
+    let bolts: Vec<_> = if spec.screw_brackets {
+        edges.iter().flat_map(FrameEdge::bolts).collect()
+    } else {
+        Vec::new()
+    };
+    let tile_screw = spec.tile_screws.then(|| tile_screw_center(spec));
+    if let (Some(center), true) = (tile_screw, spec.screw_brackets) {
+        // The tile screw is driven into the counterbore under the module, so
+        // no bracket may cover it or cut into its bore.
+        let clear = head_radius(spec) + 1.0;
+        for edge in &edges {
+            let offset = [center[0] - edge.midpoint[0], center[1] - edge.midpoint[1]];
+            let along = offset[0] * edge.along[0] + offset[1] * edge.along[1];
+            let inward = -offset[0] * edge.along[1] + offset[1] * edge.along[0];
+            anyhow::ensure!(
+                along.abs() >= BRACKET_HALF_LENGTH + clear || inward >= BRACKET_REACH + clear,
+                "frame module {:02} is too small for both a tile screw and screw brackets; use fewer subdivisions, a larger globe, or turn one of them off",
+                face.id
+            );
+        }
+    }
     let window_keepouts = bolts
         .iter()
-        .map(|&center| circle(center, HEAD_RADIUS + 1.0))
+        .chain(&tile_screw)
+        .map(|&center| circle(center, head_radius(spec) + 1.0))
+        .chain(edges.iter().map(|edge| edge.key_slot_keepout(1.2)))
         .chain(pads.iter().cloned())
         .chain([
             rectangle(0.0, 0.0, 5.55, SOCKET_Y + 1.0),
@@ -604,9 +869,24 @@ pub(super) fn build_frame(
     let mut top_holes = windows.clone();
     bottom_holes.push(clip_slot[0].0.clone());
     top_holes.push(clip_slot[3].0.clone());
+    for edge in &edges {
+        top_holes.push(edge.cut_key_slot(&mut mesh));
+    }
+    if let Some(center) = tile_screw {
+        // Driven from inside the globe: counterbore under the module, then a
+        // clearance hole up to the tile's insert.
+        let bore = circle(center, bore_radius(spec));
+        let head = circle(center, head_radius(spec));
+        let seat = bottom + TILE_SCREW_HEAD_DEPTH;
+        wall(&mut mesh, &head, bottom, &head, seat, true);
+        cap(&mut mesh, &head, std::slice::from_ref(&bore), seat, true)?;
+        wall(&mut mesh, &bore, seat, &bore, FRAME_TOP, true);
+        bottom_holes.push(head);
+        top_holes.push(bore);
+    }
     for center in bolts {
-        let bore = circle(center, BOLT_RADIUS);
-        let head = circle(center, HEAD_RADIUS);
+        let bore = circle(center, bore_radius(spec));
+        let head = circle(center, head_radius(spec));
         wall(&mut mesh, &bore, bottom, &bore, HARDWARE_Z, true);
         wall(&mut mesh, &head, HARDWARE_Z, &head, FRAME_TOP, true);
         cap(
@@ -687,11 +967,13 @@ pub(super) fn build_clip() -> Result<(Mesh, Pose)> {
 pub(super) fn build_bracket(a: &Face, b: &Face, spec: &GlobePrototypeSpec) -> Result<(Mesh, Pose)> {
     let edge = FrameEdge::new(a, a.edge_with(b).expect("adjacent bracket faces"), spec);
     let top_a = frame_bottom(a, spec);
-    let ends = [-10.0, 10.0].map(|offset| a.pose.to_globe(lift(edge.at(offset, 0.0), top_a)));
+    let ends = [-BRACKET_HALF_LENGTH, BRACKET_HALF_LENGTH]
+        .map(|offset| a.pose.to_globe(lift(edge.at(offset, 0.0), top_a)));
     let normal = unit(add(a.pose.z_axis, b.pose.z_axis));
     let print_z = unit(sub(ends[1], ends[0]));
     let pose = Pose::new(ends[0], normal, print_z);
-    let reduction = BRACKET_DEPTH * a.depth_scale() / (dot(a.pose.origin, a.pose.z_axis) + top_a);
+    let reduction =
+        bracket_depth(spec) * a.depth_scale() / (dot(a.pose.origin, a.pose.z_axis) + top_a);
     let seam_offset = scale(add(ends[0], ends[1]), -0.5 * reduction);
     let mut combined = MeshBuilder::default();
     for (face, neighbor, ends) in [(a, b, ends), (b, a, [ends[1], ends[0]])] {
@@ -705,14 +987,23 @@ pub(super) fn build_bracket(a: &Face, b: &Face, spec: &GlobePrototypeSpec) -> Re
             let [x, y, _] = face.pose.to_local(point);
             [x, y]
         });
-        let upper = [start, end, edge.at(10.0, 13.0), edge.at(-10.0, 13.0)];
+        let upper = [
+            start,
+            end,
+            edge.at(BRACKET_HALF_LENGTH, BRACKET_REACH),
+            edge.at(-BRACKET_HALF_LENGTH, BRACKET_REACH),
+        ];
         let lower = upper.map(|point| {
             let along = (point[0] - edge.midpoint[0]) * edge.along[0]
                 + (point[1] - edge.midpoint[1]) * edge.along[1];
             std::array::from_fn(|i| point[i] - reduction * (point[i] - along * edge.along[i]))
         });
-        let lower_z = top_z - BRACKET_DEPTH * face.depth_scale();
-        let bores = edge.bolts().map(|center| circle(center, BOLT_RADIUS));
+        let lower_z = top_z - bracket_depth(spec) * face.depth_scale();
+        // Heat-set inserts go in from the bracket's top; the screws come down
+        // through the frame module from outside.
+        let bores = edge
+            .bolts()
+            .map(|center| circle(center, spec.insert.hole_diameter_mm / 2.0));
         let mut half = MeshBuilder::default();
         cap(&mut half, &upper, &bores, top_z, false)?;
         cap(&mut half, &lower, &bores, lower_z, true)?;
@@ -758,4 +1049,164 @@ pub(super) fn build_bracket(a: &Face, b: &Face, spec: &GlobePrototypeSpec) -> Re
     let mut mesh = combined.finish(format!("joint-{:02}-{:02}", a.id, b.id));
     weld_export_mesh(&mut mesh);
     Ok((mesh, pose))
+}
+
+/// A dovetail key that locks two neighbouring frame modules together. Each
+/// half is a dovetail foot in one module's slot, and a thin bridge joins the
+/// halves over the seam, resting on the module tops under the tile backs.
+/// The key drops into the open end of both slots and slides along the edge;
+/// it prints standing on its end.
+pub(super) fn build_key(a: &Face, b: &Face, spec: &GlobePrototypeSpec) -> Result<(Mesh, Pose)> {
+    let clearance = spec.key_clearance_mm;
+    let neck = KEY_NECK / 2.0 - clearance;
+    let foot = KEY_FOOT / 2.0 - clearance;
+    let top = FRAME_TOP + KEY_BRIDGE;
+    let wing = KEY_INWARD + neck + KEY_WING;
+    // Cross-section in (w, z), counter-clockwise. The first edge is the seam.
+    let section: Loop = vec![
+        [0.0, top],
+        [0.0, FRAME_TOP],
+        [KEY_INWARD - neck, FRAME_TOP],
+        [KEY_INWARD - foot, FRAME_TOP - KEY_DEPTH + clearance],
+        [KEY_INWARD + foot, FRAME_TOP - KEY_DEPTH + clearance],
+        [KEY_INWARD + neck, FRAME_TOP],
+        [wing, FRAME_TOP],
+        [wing, top],
+    ];
+    let halves = [(a, b), (b, a)].map(|(face, other)| {
+        let edge = FrameEdge::new(
+            face,
+            face.edge_with(other).expect("adjacent key faces"),
+            spec,
+        );
+        (face, edge)
+    });
+    let global = |face: &Face, edge: &FrameEdge, [w, z]: [f32; 2], t: f32| {
+        face.pose.to_globe(edge.slot(t, w, z))
+    };
+    // Both halves meet on the same four seam points.
+    let seam = [0.0, KEY_LENGTH].map(|t| {
+        [top, FRAME_TOP].map(|z| {
+            let [(fa, ea), (fb, eb)] = &halves;
+            let [p, q] = [global(fa, ea, [0.0, z], t), global(fb, eb, [0.0, z], t)];
+            scale(add(p, q), 0.5)
+        })
+    });
+    let (fa, ea) = &halves[0];
+    let print_z = unit(sub(
+        global(fa, ea, [0.0, FRAME_TOP], 1.0),
+        global(fa, ea, [0.0, FRAME_TOP], 0.0),
+    ));
+    let bisector = unit(add(a.pose.z_axis, b.pose.z_axis));
+    let x_axis = unit(sub(bisector, scale(print_z, dot(bisector, print_z))));
+    let pose = Pose::new(seam[0][1], x_axis, print_z);
+    let mut combined = MeshBuilder::default();
+    for (face, edge) in &halves {
+        // Build the half in (w, z, t), then carry it onto the globe.
+        let mut half = MeshBuilder::default();
+        let polygon = polygon_from_outline(&section);
+        add_horizontal_polygons(
+            &mut half,
+            std::slice::from_ref(&polygon),
+            0.0,
+            MATERIAL,
+            true,
+        )?;
+        add_horizontal_polygons(&mut half, &[polygon], KEY_LENGTH, MATERIAL, false)?;
+        for i in 1..section.len() {
+            let next = (i + 1) % section.len();
+            half.quad(
+                lift(section[i], 0.0),
+                lift(section[next], 0.0),
+                lift(section[next], KEY_LENGTH),
+                lift(section[i], KEY_LENGTH),
+                MATERIAL,
+            );
+        }
+        let half = half.finish("key-half");
+        let place = |[w, z, t]: Vec3| {
+            let on_seam = w.abs() < 1.0e-6;
+            let global = if on_seam {
+                let end = usize::from(t > KEY_LENGTH / 2.0);
+                let level = usize::from(z < (top + FRAME_TOP) / 2.0);
+                seam[end][level]
+            } else {
+                global(face, edge, [w, z], t)
+            };
+            let mut point = pose.to_local(global);
+            if point[2].abs() < 0.005 {
+                point[2] = 0.0;
+            }
+            point
+        };
+        // The slot frame can mirror the section; keep the faces outward.
+        let origin = global(face, edge, [0.0, FRAME_TOP], 0.0);
+        let jacobian = [
+            sub(global(face, edge, [1.0, FRAME_TOP], 0.0), origin),
+            sub(global(face, edge, [0.0, FRAME_TOP + 1.0], 0.0), origin),
+            sub(global(face, edge, [0.0, FRAME_TOP], 1.0), origin),
+        ];
+        let mirrored = dot(super::layout::cross(jacobian[0], jacobian[1]), jacobian[2]) < 0.0;
+        for triangle in &half.triangles {
+            let [p, q, r] = triangle.map(|index| place(half.vertices[index as usize]));
+            if mirrored {
+                combined.triangle(p, r, q, MATERIAL);
+            } else {
+                combined.triangle(p, q, r, MATERIAL);
+            }
+        }
+    }
+    let mut mesh = combined.finish(format!("key-{:02}-{:02}", a.id, b.id));
+    weld_export_mesh(&mut mesh);
+    Ok((mesh, pose))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::globe::BACKING_MM;
+
+    /// No point of an installed key may be inside either module's solid:
+    /// below a frame top it must be in the gap between modules or inside
+    /// that module's dovetail slot. The bridge must stay under the tiles.
+    #[test]
+    fn installed_keys_sit_inside_both_dovetail_slots() {
+        let spec = GlobePrototypeSpec::default();
+        for frequency in [1, 3] {
+            let faces = Face::all(spec.diameter_mm * 2.0, BACKING_MM, frequency);
+            let a = &faces[0];
+            let b = faces.iter().find(|face| a.adjacent(face)).unwrap();
+            let (key, pose) = build_key(a, b, &spec).unwrap();
+            let edges = [(a, b), (b, a)].map(|(face, other)| {
+                (
+                    face,
+                    FrameEdge::new(face, face.edge_with(other).unwrap(), &spec),
+                )
+            });
+            for &point in &key.vertices {
+                let global = pose.to_globe(point);
+                let fits = edges.iter().all(|(face, edge)| {
+                    let [x, y, z] = face.pose.to_local(global);
+                    let offset = [x - edge.midpoint[0], y - edge.midpoint[1]];
+                    let t = edge.sigma * (offset[0] * edge.along[0] + offset[1] * edge.along[1]);
+                    let w = -offset[0] * edge.along[1] + offset[1] * edge.along[0];
+                    if z > -0.001 {
+                        return false; // would touch the tile back
+                    }
+                    if z >= FRAME_TOP - 0.001 || w <= FRAME_EDGE_GAP + 0.001 {
+                        return true; // above the module, or in the seam gap
+                    }
+                    let depth = (FRAME_TOP - z) / KEY_DEPTH;
+                    let half = KEY_NECK / 2.0 + (KEY_FOOT - KEY_NECK) / 2.0 * depth;
+                    depth <= 1.0
+                        && (w - KEY_INWARD).abs() <= half + 0.01
+                        && (-KEY_SLIDE_GAP..=KEY_LENGTH + KEY_SLIDE_GAP).contains(&t)
+                });
+                assert!(
+                    fits,
+                    "key point {global:?} at frequency {frequency} is outside its slots"
+                );
+            }
+        }
+    }
 }

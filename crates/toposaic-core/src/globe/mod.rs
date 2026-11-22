@@ -5,8 +5,8 @@ mod ground;
 mod landmarks;
 mod layout;
 mod parts;
-mod region;
 mod world;
+mod wrap;
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -18,15 +18,16 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 
 use self::ground::{CLASSES, Ground};
 use self::layout::{Face, Pose, Vec3, cross, dot, unit};
-use self::region::Region;
+use self::wrap::{MapWrap, TilePlan, WrappedMap};
 use crate::analysis::analyze_mesh_views;
 use crate::export::{ThreeMfWriter, write_binary_stl};
 use crate::mesh::Mesh;
 use crate::project::{Artifact, ProjectManifest, file_artifact};
-use crate::spec::{GenerationSpec, MATERIAL_SLOTS, PaintedClasses};
+use crate::spec::{GenerationSpec, MATERIAL_SLOTS, PaintedClasses, PrintMaterial};
 use crate::{HeightField, SurfaceField};
 
 pub use landmarks::{GlobeLandmark, GlobeLandmarkShape};
+pub use wrap::{BAND_DEGREES, small_world_map_spec};
 
 pub use detail::{EARTH_DETAIL_BLOCK_SIDE, EarthDetail, EarthDetailBlock, earth_detail_blocks};
 
@@ -34,6 +35,8 @@ const REFERENCE_DIAMETER_MM: f32 = 200.0;
 const BACKING_MM: f32 = 8.0;
 const MAX_SUBDIVISION: u8 = 24;
 const MAX_BATCH_TILES: usize = 80;
+/// Terrain triangles one globe job may hold in memory.
+const JOB_TRIANGLE_BUDGET: f32 = 1_500_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,7 +70,11 @@ pub struct GlobePrototypeSpec {
     pub earth_grid: EarthGrid,
     pub wrap_degrees: f32,
     pub relief_mm: f32,
+    /// Small World wraps 360° around the globe as a band of latitude
+    /// instead of a regional cap.
     pub full_wrap: bool,
+    /// Latitude span of the 360° band, from [`BAND_DEGREES`].
+    pub band_degrees: f32,
     pub surface_colors: bool,
     pub texture_mm: f32,
     pub diameter_mm: f32,
@@ -80,9 +87,59 @@ pub struct GlobePrototypeSpec {
     pub clip_fit_mm: f32,
     pub frame_depth_mm: f32,
     pub locator_clearance_mm: f32,
+    /// Kept so older saved setups still load. Every unbatched globe is now
+    /// the full shell; the three-tile fixture is gone.
     pub full_shell: bool,
     /// Combined inset from the two tiles, measured in their back planes.
     pub seam_gap_mm: f32,
+    /// Play between each dovetail key and its slots, per side.
+    pub key_clearance_mm: f32,
+    /// Add screwed brackets under each frame joint, behind the dovetail key.
+    pub screw_brackets: bool,
+    /// Screw each tile to its frame module from inside the globe.
+    pub tile_screws: bool,
+    /// The heat-set inserts the brackets and tiles take.
+    pub insert: HeatSetInsert,
+}
+
+/// A heat-set threaded insert and the screw that goes into it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeatSetInsert {
+    /// Nominal thread diameter: 3 for M3.
+    pub screw_mm: f32,
+    /// The hole the insert is pressed into.
+    pub hole_diameter_mm: f32,
+    pub length_mm: f32,
+}
+
+impl Default for HeatSetInsert {
+    fn default() -> Self {
+        Self {
+            screw_mm: 3.0,
+            hole_diameter_mm: 4.0,
+            length_mm: 4.0,
+        }
+    }
+}
+
+impl HeatSetInsert {
+    fn validate(self) -> Result<()> {
+        ensure!(
+            (2.0..=5.0).contains(&self.screw_mm),
+            "heat-set insert screws must be between M2 and M5"
+        );
+        ensure!(
+            self.hole_diameter_mm > self.screw_mm + 0.3
+                && self.hole_diameter_mm <= self.screw_mm + 3.5,
+            "heat-set insert holes must be wider than the screw and at most 3.5 mm wider"
+        );
+        ensure!(
+            (2.5..=6.5).contains(&self.length_mm),
+            "heat-set inserts must be between 2.5 and 6.5 mm long"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -101,6 +158,16 @@ impl GlobePrototypeSpec {
             (45.0..=140.0).contains(&self.wrap_degrees),
             "Small World wrap must be between 45 and 140 degrees"
         );
+        if self.full_wrap {
+            wrap::validate_band(self.band_degrees)?;
+        }
+        ensure!(
+            (0.05..=0.4).contains(&self.key_clearance_mm),
+            "dovetail key clearance must be between 0.05 and 0.40 mm per side"
+        );
+        if self.screw_brackets || self.tile_screws {
+            self.insert.validate()?;
+        }
         ensure!(
             (0.0..=12.0).contains(&self.relief_mm),
             "globe relief must be between 0 and 12 mm"
@@ -151,6 +218,23 @@ impl GlobePrototypeSpec {
         Ok(())
     }
 
+    /// The most tiles one job may build. Mapped tiles carry far more
+    /// geometry than plain ones, so they get fewer per job; a larger globe
+    /// prints in numbered batches.
+    pub fn tile_limit(self) -> usize {
+        let samples = f32::from(self.samples_per_edge);
+        let per_tile = match self.source {
+            GlobeSource::FitTest => 2.0 * 24.0 * 24.0,
+            GlobeSource::WholeEarth => samples * samples,
+            // Flat map triangles (three per lattice step along an edge),
+            // doubled for roads, buildings, and other overlays.
+            GlobeSource::SmallWorld => {
+                2.0 * EXPORT_MAP_DETAIL * EXPORT_MAP_DETAIL * samples * samples
+            }
+        };
+        ((JOB_TRIANGLE_BUDGET / per_tile) as usize).clamp(1, MAX_BATCH_TILES)
+    }
+
     fn preview_samples(self, tiles: usize) -> u8 {
         // Keep the original detail for a normal globe or a small batch.
         // For a large batch, bound the total top-surface triangles sent to Studio.
@@ -159,7 +243,21 @@ impl GlobePrototypeSpec {
             .min((PREVIEW_TRIANGLES / tiles.max(1) as f32).sqrt() as u8)
     }
 
+    /// Check that the tiles fit the bed and their seats fit the hardware.
+    /// A globe too large for one job still previews as a layout.
     pub fn validate_layout(self) -> Result<()> {
+        self.validate()?;
+        self.layout().map(|_| ())
+    }
+
+    /// Whether the unbatched globe has more tiles than one job may build.
+    pub fn needs_batch(self) -> Result<bool> {
+        Ok(self.batch.is_none() && self.layout()?.len() > self.tile_limit())
+    }
+
+    /// Check everything a generation job needs, including that its tiles
+    /// fit in one job.
+    pub fn validate_job(self) -> Result<()> {
         Layout::new(&self).map(|_| ())
     }
 
@@ -199,6 +297,7 @@ impl Default for GlobePrototypeSpec {
             wrap_degrees: 110.0,
             relief_mm: 8.0,
             full_wrap: false,
+            band_degrees: 120.0,
             surface_colors: false,
             texture_mm: 0.0,
             diameter_mm: REFERENCE_DIAMETER_MM,
@@ -210,8 +309,12 @@ impl Default for GlobePrototypeSpec {
             clip_fit_mm: 0.4,
             frame_depth_mm: 5.0,
             locator_clearance_mm: 0.25,
-            full_shell: false,
+            full_shell: true,
             seam_gap_mm: 0.4,
+            key_clearance_mm: 0.15,
+            screw_brackets: false,
+            tile_screws: false,
+            insert: HeatSetInsert::default(),
         }
     }
 }
@@ -243,7 +346,7 @@ struct PartManifest<'a> {
 
 enum Terrain<'a> {
     Plain,
-    Regional(Region<'a>),
+    Map(WrappedMap<'a>),
     Earth(world::World<'a>),
 }
 
@@ -251,8 +354,15 @@ impl Terrain<'_> {
     fn sample(&self, direction: Vec3) -> Ground {
         match self {
             Self::Plain => Ground::NEUTRAL,
-            Self::Regional(region) => region.sample(direction),
+            Self::Map(map) => map.sample(direction),
             Self::Earth(world) => world.sample(direction),
+        }
+    }
+
+    fn material(&self, direction: Vec3) -> PrintMaterial {
+        match self {
+            Self::Map(map) => map.material(direction),
+            _ => self.sample(direction).class().into(),
         }
     }
 }
@@ -260,48 +370,42 @@ impl Terrain<'_> {
 struct Layout {
     faces: Vec<Face>,
     selected: Vec<usize>,
-    fixture: bool,
 }
 
 impl Layout {
     fn new(spec: &GlobePrototypeSpec) -> Result<Self> {
         spec.validate()?;
         let faces = spec.layout()?;
-        let fixture =
-            spec.batch.is_none() && !spec.full_shell && spec.source != GlobeSource::WholeEarth;
+        let limit = spec.tile_limit();
         let selected = if let Some(batch) = spec.batch {
             ensure!(
                 batch.first_tile <= faces.len(),
                 "first tile exceeds the {}-tile globe layout",
                 faces.len()
             );
+            ensure!(
+                batch.tile_count <= limit,
+                "batches of this globe hold at most {limit} tiles at this mesh detail; choose fewer tiles per batch"
+            );
             let start = batch.first_tile - 1;
             (start..(start + batch.tile_count).min(faces.len())).collect()
-        } else if fixture {
-            let mut neighbors: Vec<_> = (1..faces.len())
-                .filter(|&i| faces[0].adjacent(&faces[i]))
-                .take(2)
-                .collect();
-            neighbors.push(0);
-            neighbors
         } else {
             ensure!(
-                faces.len() <= MAX_BATCH_TILES,
-                "this globe has {} tiles; choose a numbered print batch to limit memory",
+                faces.len() <= limit,
+                "this globe has {} tiles, more than one job can hold at this mesh detail; choose a numbered tile batch of up to {limit} tiles",
                 faces.len()
             );
             (0..faces.len()).collect()
         };
-        Ok(Self {
-            faces,
-            selected,
-            fixture,
-        })
+        Ok(Self { faces, selected })
     }
 }
 
 #[derive(Clone, Copy, Default)]
 pub struct GlobeData<'a> {
+    /// The flat map a Small World globe is cut from, from
+    /// [`small_world_map_spec`] with its ground palette locked.
+    pub map_spec: Option<&'a GenerationSpec>,
     pub height: Option<&'a HeightField>,
     pub cover: Option<&'a SurfaceField>,
     pub earth_detail: Option<&'a EarthDetail>,
@@ -319,16 +423,31 @@ fn globe_parts(
     spec: &GlobePrototypeSpec,
     data: GlobeData,
 ) -> Result<(Vec<Part>, Vec<usize>, usize)> {
-    let build = build_parts(spec, data, &[], |_| Ok(()))?;
+    let build = build_parts(spec, data, &[], EXPORT_MAP_DETAIL, |_| Ok(()))?;
     Ok((build.parts, build.order, build.layout_size))
 }
+
+/// Flat map triangles per lattice sample along a tile edge.
+const EXPORT_MAP_DETAIL: f32 = 3.0;
+const PREVIEW_MAP_DETAIL: f32 = 1.5;
 
 fn build_parts(
     spec: &GlobePrototypeSpec,
     data: GlobeData,
     landmarks: &[GlobeLandmark],
+    map_detail: f32,
     mut on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<GlobeBuild> {
+    // Small World colors and print detail come from the map's own settings.
+    let adjusted = match (spec.source, data.map_spec) {
+        (GlobeSource::SmallWorld, Some(map)) => GlobePrototypeSpec {
+            surface_colors: map.color_output.enabled,
+            texture_mm: 0.0,
+            ..*spec
+        },
+        _ => *spec,
+    };
+    let spec = &adjusted;
     let layout = Layout::new(spec)?;
     let mapping_center = Face::all(spec.diameter_mm / 2.0, BACKING_MM, 1);
     let terrain = match spec.source {
@@ -344,15 +463,16 @@ fn build_parts(
                 data.earth_detail,
             )?)
         }
-        GlobeSource::SmallWorld => Terrain::Regional(Region::new(
-            data.height
-                .context("Small World requires a regional elevation field")?,
-            data.cover,
-            &mapping_center[0],
-            spec.wrap_degrees,
-            spec.relief_mm,
-            spec.full_wrap,
-        )),
+        GlobeSource::SmallWorld => {
+            let map = data
+                .map_spec
+                .context("Small World requires its map settings")?;
+            let height = data
+                .height
+                .context("Small World requires a regional elevation field")?;
+            let wrap = MapWrap::new(mapping_center[0].pose, spec.diameter_mm / 2.0, map, spec);
+            Terrain::Map(WrappedMap::new(wrap, map, height, data.cover))
+        }
     };
     let mut placements = if spec.source == GlobeSource::WholeEarth {
         landmarks::place(landmarks, &layout.faces, spec)
@@ -368,10 +488,7 @@ fn build_parts(
         let neighbors: Vec<_> = layout
             .faces
             .iter()
-            .filter(|candidate| {
-                face.adjacent(candidate)
-                    && (!layout.fixture || layout.selected.contains(&(candidate.id - 1)))
-            })
+            .filter(|candidate| face.adjacent(candidate))
             .collect();
         let edges: Vec<_> = neighbors
             .iter()
@@ -381,7 +498,21 @@ fn build_parts(
             .iter_mut()
             .filter(|placement| placement.tile == face.id)
             .collect::<Vec<_>>();
-        let tile = parts::build_tile(face, spec, &terrain, layout.faces.len(), &mut sites)?;
+        let tile = match &terrain {
+            Terrain::Map(map) => match map.plan(face, spec.seam_gap_mm) {
+                TilePlan::Map(outline) => {
+                    let spacing = (face.edge_width()
+                        / (f32::from(spec.samples_per_edge) * map_detail))
+                        .clamp(0.25, 4.0);
+                    parts::build_map_tile(face, spec, map, &outline, spacing)
+                        .with_context(|| format!("build Small World tile {:02}", face.id))?
+                }
+                TilePlan::Sampled => {
+                    parts::build_tile(face, spec, &terrain, layout.faces.len(), &mut sites)?
+                }
+            },
+            _ => parts::build_tile(face, spec, &terrain, layout.faces.len(), &mut sites)?,
+        };
         verify_tile_insertion(face, &tile.mesh)?;
         parts.push(Part {
             mesh: tile.mesh,
@@ -402,10 +533,15 @@ fn build_parts(
             face.pose.rotate(clip_in_face.z_axis),
         ));
         // The lower tile ID owns each joint, including those that connect to
-        // a seat printed in a different job. Frame bolt holes use every neighbor.
+        // a seat printed in a different job. Every module has a key slot, and
+        // bolt holes when brackets are on, for each neighbor.
         for other in neighbors.into_iter().filter(|other| face.id < other.id) {
-            let (joint, pose) = parts::build_bracket(face, other, spec)?;
-            parts.push(Part::single(joint, pose));
+            let (key, pose) = parts::build_key(face, other, spec)?;
+            parts.push(Part::single(key, pose));
+            if spec.screw_brackets {
+                let (joint, pose) = parts::build_bracket(face, other, spec)?;
+                parts.push(Part::single(joint, pose));
+            }
         }
     }
     parts.push(Part {
@@ -475,14 +611,24 @@ fn validate_part(mesh: &Mesh) -> Result<[f32; 6]> {
 /// Export the synthetic mechanical fixture or full shell. The numbered parts
 /// are ready to slice, and the OBJ and manifest describe the assembled poses.
 pub fn export_globe_prototype(spec: &GlobePrototypeSpec, output: &Path) -> Result<()> {
-    let build = build_parts(spec, GlobeData::default(), &[], |_| Ok(()))?;
-    write_parts(spec, &GenerationSpec::default(), output, &build, |_| Ok(()))?;
+    let build = build_parts(spec, GlobeData::default(), &[], EXPORT_MAP_DETAIL, |_| {
+        Ok(())
+    })?;
+    write_parts(
+        spec,
+        &GenerationSpec::default(),
+        None,
+        output,
+        &build,
+        |_| Ok(()),
+    )?;
     Ok(())
 }
 
 fn write_parts(
     spec: &GlobePrototypeSpec,
     generation: &GenerationSpec,
+    map: Option<&GenerationSpec>,
     output: &Path,
     build: &GlobeBuild,
     mut on_progress: impl FnMut(f32) -> Result<()>,
@@ -504,7 +650,8 @@ fn write_parts(
         "prototype output directory must be empty"
     );
     let mut entries = Vec::new();
-    let print_spec = print_spec(generation, spec);
+    let print_spec = print_spec(generation, spec, map);
+    let exact_palette = map.is_some();
     let plain_print = GenerationSpec::default();
     let mut palette = [false; MATERIAL_SLOTS];
     for class in CLASSES {
@@ -532,6 +679,12 @@ fn write_parts(
                 PaintedClasses::of_mesh(&part.mesh),
                 &three_mf_path,
             )?
+        } else if exact_palette {
+            ThreeMfWriter::new(
+                &print_spec,
+                PaintedClasses::of_mesh(&part.mesh),
+                &three_mf_path,
+            )?
         } else {
             ThreeMfWriter::new(&print_spec, palette, &three_mf_path)?
         };
@@ -556,7 +709,42 @@ fn write_parts(
     } else {
         1.0
     };
-    let screw_length = parts::screw_length(spec, max_depth_scale);
+    let count = |prefix: &str| {
+        parts
+            .iter()
+            .filter(|part| part.mesh.name.starts_with(prefix))
+            .count()
+    };
+    let (keys, brackets) = (count("key-"), count("joint-"));
+    let thread = {
+        let size = spec.insert.screw_mm;
+        if size.fract() == 0.0 {
+            format!("M{size:.0}")
+        } else {
+            format!("M{size}")
+        }
+    };
+    let insert = format!(
+        "{thread} heat-set inserts ({:.1} mm hole, {:.1} mm long)",
+        spec.insert.hole_diameter_mm, spec.insert.length_mm
+    );
+    let bracket_screw = parts::bracket_screw_length(spec, max_depth_scale);
+    let tile_screw = parts::tile_screw_length(spec, max_depth_scale);
+    let mut hardware = Vec::new();
+    if brackets > 0 {
+        hardware.push(format!(
+            "{} {insert} and {} {thread} × {bracket_screw} mm screws for the brackets",
+            4 * brackets,
+            4 * brackets
+        ));
+    }
+    if spec.tile_screws {
+        hardware.push(format!(
+            "{} {insert} and {} {thread} × {tile_screw} mm screws for the tiles",
+            install_order.len(),
+            install_order.len()
+        ));
+    }
     let manifest = serde_json::json!({
         "prototype": spec,
         "diameter_mm": spec.diameter_mm,
@@ -565,7 +753,9 @@ fn write_parts(
         "joint_owner": "lower tile ID",
         "parts": entries,
         "landmarks": included,
-        "joint_hardware_per_bracket": format!("4 low-profile M3 × {screw_length} mm screws and 4 matching nuts"),
+        "dovetail_keys": keys,
+        "screw_brackets": brackets,
+        "hardware": hardware,
         "clip_quantity": install_order.len(),
     });
     let mut file = BufWriter::new(File::create(output.join("assembly.json"))?);
@@ -579,7 +769,7 @@ fn write_parts(
         .join(", ");
     let batch_note = if spec.batch.is_some() {
         format!(
-            "This kit covers tiles {order} of {layout_size}. Keep the same settings across batches. Each joint is included with the lower of the two tile IDs. Collect all frame modules and joint brackets before assembling the globe.\n\n"
+            "This kit covers tiles {order} of {layout_size}. Keep the same settings across batches. Each joint's key and bracket come with the lower of the two tile IDs. Collect every frame module, key, and bracket before you assemble the globe.\n\n"
         )
     } else {
         String::new()
@@ -589,19 +779,48 @@ fn write_parts(
     } else {
         "See LANDMARKS.md for the numbered inserts and their tile locations.\n\n"
     };
+    let hardware_note = if hardware.is_empty() {
+        "No screws are needed.\n\n".to_owned()
+    } else {
+        format!("Hardware: {}.\n\n", hardware.join("; "))
+    };
+    let bracket_step = if brackets > 0 {
+        format!(
+            "2. Press the heat-set inserts into the tops of the brackets with a soldering iron. Hold each bracket under its joint and drive the {thread} × {bracket_screw} mm screws down through the recessed holes in the frame modules.\n"
+        )
+    } else {
+        String::new()
+    };
+    let tile_step = if spec.tile_screws {
+        format!(
+            " Press an insert into the hole in each tile's back first. As you seat each tile, drive a {thread} × {tile_screw} mm screw up through the counterbore under its frame module. The last few tiles cannot be reached from inside, so their clips hold them."
+        )
+    } else {
+        String::new()
+    };
+    let clip_step = if brackets > 0 { 3 } else { 2 };
     let guide = format!(
         "# TopoSaic globe print kit\n\n\
-         {batch_note}Print one copy of each tile, frame module, and joint bracket, plus {} copies of the snap clip. \
+         {batch_note}Print one copy of each tile, frame module, dovetail key{}, plus {} copies of the snap clip. \
+         Print the keys standing on their flat ends. \
          Choose either the STL files or the 3MF files. Mark the frame and tile IDs after printing. \
          Use assembly.obj to inspect the assembled positions.\n\n\
-         1. Join the frame modules with the numbered brackets on the inside. \
-         Each bracket uses four low-profile M3 × {screw_length} mm screws and four M3 nuts. \
-         Insert the screws from the recessed side of the frame.\n\
-         2. Press a clip into each frame seat from the outside until its collar sits against the frame.\n\
-         3. Match each tile to its seat and align the locator before pressing it straight on. \
+         {hardware_note}\
+         1. Lay two neighbouring frame modules edge to edge and line up the slots near their shared edge. \
+         Drop the matching key into the open ends of both slots, then slide it along the edge until it stops. \
+         The dovetails lock the modules together. Join every module this way from the outside.\n\
+         {bracket_step}\
+         {clip_step}. Press a clip into each frame seat from the outside until its collar sits against the frame.\n\
+         {}. Match each tile to its seat and align the locator before pressing it straight on.{tile_step} \
          Install the tiles in this order. {order}.\n\n\
-         {landmark_note}Record seam gaps, seating repeatability, insertion and removal force, and clip wear.\n",
+         {landmark_note}Record seam gaps, key fit, seating repeatability, insertion and removal force, and clip wear.\n",
+        if brackets > 0 {
+            ", and joint bracket"
+        } else {
+            ""
+        },
         install_order.len(),
+        clip_step + 1,
     );
     fs::write(output.join("ASSEMBLY.md"), guide)?;
     if !included.is_empty() {
@@ -655,14 +874,7 @@ pub fn build_globe_preview(
     let spec = generation
         .globe
         .context("globe preview requires globe settings")?;
-    let count = Layout::new(&spec)?.selected.len();
-    let draft = GlobePrototypeSpec {
-        samples_per_edge: spec.preview_samples(count),
-        ..spec
-    };
-    let build = build_parts(&draft, data, &generation.globe_landmarks, on_progress)?;
-    let mut preview = preview_with_parts(&build, &print_spec(generation, &spec), draft)?;
-    if spec.batch.is_some() {
+    let overview = |spec: &GlobePrototypeSpec| -> Result<serde_json::Value> {
         // The overview needs only three nominal points per seat, even for a
         // large job. Actual terrain meshes stay limited to the chosen batch.
         let outline = spec
@@ -673,12 +885,58 @@ pub fn build_globe_preview(
                     .map(|[x, y]| face.pose.to_globe([x, y, BACKING_MM * face.depth_scale()]))
             })
             .collect::<Vec<_>>();
-        preview["globe_overview"] = serde_json::to_value(outline)?;
+        Ok(serde_json::to_value(outline)?)
+    };
+    if spec.batch.is_none() {
+        spec.validate()?;
+        let size = spec.layout()?.len();
+        if spec.needs_batch()? {
+            // Too large for one job: show where the tiles go and ask for a batch.
+            return Ok(serde_json::json!({
+                "globe_batch_required": true,
+                "globe_batch_limit": spec.tile_limit(),
+                "globe_layout_size": size,
+                "globe_overview": overview(&spec)?,
+                "globe_source": spec.source,
+                "globe_exterior": spec.exterior,
+                "globe_tiles": [],
+                "globe_meshes": [],
+                "width": 0, "height": 0, "values": [], "rows": 0, "columns": 0,
+            }));
+        }
+    }
+    let count = Layout::new(&spec)?.selected.len();
+    let draft = GlobePrototypeSpec {
+        samples_per_edge: spec.preview_samples(count),
+        ..spec
+    };
+    let build = build_parts(
+        &draft,
+        data,
+        &generation.globe_landmarks,
+        PREVIEW_MAP_DETAIL,
+        on_progress,
+    )?;
+    let print = print_spec(generation, &spec, data.map_spec);
+    let mut preview = preview_with_parts(&build, &print, data.map_spec.is_some(), draft)?;
+    preview["globe_batch_limit"] = spec.tile_limit().into();
+    if spec.batch.is_some() {
+        preview["globe_overview"] = overview(&spec)?;
     }
     Ok(preview)
 }
 
-fn print_spec(generation: &GenerationSpec, globe: &GlobePrototypeSpec) -> GenerationSpec {
+fn print_spec(
+    generation: &GenerationSpec,
+    globe: &GlobePrototypeSpec,
+    map: Option<&GenerationSpec>,
+) -> GenerationSpec {
+    if globe.source == GlobeSource::SmallWorld
+        && let Some(map) = map
+    {
+        // A Small World prints every color its map can carry.
+        return map.clone();
+    }
     let mut print = GenerationSpec {
         color_output: generation.color_output.clone(),
         ..GenerationSpec::default()
@@ -692,6 +950,7 @@ fn print_spec(generation: &GenerationSpec, globe: &GlobePrototypeSpec) -> Genera
 fn preview_with_parts(
     build: &GlobeBuild,
     print: &GenerationSpec,
+    mapped_palette: bool,
     draft: GlobePrototypeSpec,
 ) -> Result<serde_json::Value> {
     #[derive(Serialize)]
@@ -718,6 +977,8 @@ fn preview_with_parts(
                 "frame"
             } else if part.mesh.name.starts_with("joint-") {
                 "joint"
+            } else if part.mesh.name.starts_with("key-") {
+                "key"
             } else {
                 "clip"
             };
@@ -741,9 +1002,33 @@ fn preview_with_parts(
             }
         })
         .collect::<Vec<_>>();
-    let palette = if print.color_output.enabled {
+    let palette = if print.color_output.enabled && mapped_palette {
+        // A Small World tile can carry any map color: list the ones in use.
+        let ground = print.locked_ground_colors();
+        let mut palette = std::collections::BTreeMap::new();
+        for part in build
+            .parts
+            .iter()
+            .filter(|part| part.mesh.name.starts_with("tile-"))
+        {
+            for material in &part.mesh.materials {
+                let color = match *material {
+                    PrintMaterial::Class(class) => Some(print.class_color(class)),
+                    PrintMaterial::Ground(entry) => {
+                        ground.get(usize::from(entry)).map(String::as_str)
+                    }
+                };
+                if let Some(color) = color {
+                    palette
+                        .entry(material.material_index())
+                        .or_insert_with(|| color.to_owned());
+                }
+            }
+        }
+        palette
+    } else if print.color_output.enabled {
         CLASSES
-            .map(|class| (class.material_index(), print.class_color(class)))
+            .map(|class| (class.material_index(), print.class_color(class).to_owned()))
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>()
     } else {
@@ -774,10 +1059,14 @@ pub fn generate_globe_project(
         .globe
         .context("globe project requires globe settings")?;
     on_progress(0.0)?;
-    let build = build_parts(&globe, data, &spec.globe_landmarks, |fraction| {
-        on_progress(0.3 * fraction)
-    })?;
-    let mut files = write_parts(&globe, spec, output, &build, |fraction| {
+    let build = build_parts(
+        &globe,
+        data,
+        &spec.globe_landmarks,
+        EXPORT_MAP_DETAIL,
+        |fraction| on_progress(0.3 * fraction),
+    )?;
+    let mut files = write_parts(&globe, spec, data.map_spec, output, &build, |fraction| {
         on_progress(0.3 + 0.55 * fraction)
     })?;
     let order = build.order;
@@ -944,7 +1233,14 @@ mod tests {
                 samples_per_edge: 48,
                 ..GlobePrototypeSpec::default()
             };
-            let full = build_parts(&spec, GlobeData::default(), &landmarks, |_| Ok(())).unwrap();
+            let full = build_parts(
+                &spec,
+                GlobeData::default(),
+                &landmarks,
+                EXPORT_MAP_DETAIL,
+                |_| Ok(()),
+            )
+            .unwrap();
             assert_eq!(full.landmarks.len(), landmarks.len());
             for placement in &full.landmarks {
                 assert!(
@@ -970,7 +1266,14 @@ mod tests {
                 first_tile: owner,
                 tile_count: 1,
             });
-            let batch = build_parts(&spec, GlobeData::default(), &landmarks, |_| Ok(())).unwrap();
+            let batch = build_parts(
+                &spec,
+                GlobeData::default(),
+                &landmarks,
+                EXPORT_MAP_DETAIL,
+                |_| Ok(()),
+            )
+            .unwrap();
             assert_eq!(batch.order, [owner]);
             for (whole, partial) in full.landmarks.iter().zip(&batch.landmarks) {
                 assert_eq!(whole.tile, partial.tile);
@@ -1015,15 +1318,41 @@ mod tests {
     }
 
     #[test]
-    fn fixture_contains_two_joints_and_installs_the_middle_tile_last() {
-        let (parts, order, _) =
-            globe_parts(&GlobePrototypeSpec::default(), GlobeData::default()).unwrap();
-        assert_eq!(order, [2, 5, 1]);
-        assert_eq!(parts.len(), 9);
-        assert_eq!(parts.last().unwrap().poses.len(), 3);
-        for part in parts {
-            validate_part(&part.mesh).unwrap();
-        }
+    fn large_mapped_globes_require_batches_within_the_tile_limit() {
+        let mapped = GlobePrototypeSpec {
+            source: GlobeSource::SmallWorld,
+            diameter_mm: 1_000.0,
+            subdivision: 4,
+            ..GlobePrototypeSpec::default()
+        };
+        let limit = mapped.tile_limit();
+        assert!((20..320).contains(&limit));
+        let error = Layout::new(&mapped).err().unwrap().to_string();
+        assert!(error.contains("numbered tile batch"), "{error}");
+        let too_many = GlobePrototypeSpec {
+            batch: Some(GlobeBatch {
+                first_tile: 1,
+                tile_count: limit + 1,
+            }),
+            ..mapped
+        };
+        assert!(Layout::new(&too_many).is_err());
+        let within = GlobePrototypeSpec {
+            batch: Some(GlobeBatch {
+                first_tile: 1,
+                tile_count: limit,
+            }),
+            ..mapped
+        };
+        assert_eq!(Layout::new(&within).unwrap().selected.len(), limit);
+        let generation = GenerationSpec {
+            globe: Some(mapped),
+            ..GenerationSpec::default()
+        };
+        let preview = build_globe_preview(&generation, GlobeData::default(), |_| Ok(())).unwrap();
+        assert_eq!(preview["globe_batch_required"], true);
+        assert_eq!(preview["globe_layout_size"], 320);
+        assert_eq!(preview["globe_overview"].as_array().unwrap().len(), 320);
     }
 
     #[test]
@@ -1059,10 +1388,16 @@ mod tests {
             source: GlobeSource::SmallWorld,
             ..blank
         };
+        let generation = GenerationSpec {
+            globe: Some(spec),
+            ..GenerationSpec::default()
+        };
+        let map = small_world_map_spec(&generation).unwrap();
         assert!(globe_parts(&spec, GlobeData::default()).is_err());
         let (mapped, _, _) = globe_parts(
             &spec,
             GlobeData {
+                map_spec: Some(&map),
                 height: Some(&field),
                 ..GlobeData::default()
             },
@@ -1077,14 +1412,8 @@ mod tests {
             }
         }
         let faces = Face::all(REFERENCE_DIAMETER_MM / 2.0, BACKING_MM, 1);
-        let region = Region::new(
-            &field,
-            None,
-            &faces[0],
-            spec.wrap_degrees,
-            spec.relief_mm,
-            false,
-        );
+        let wrap = MapWrap::new(faces[0].pose, REFERENCE_DIAMETER_MM / 2.0, &map, &spec);
+        let region = WrappedMap::new(wrap, &map, &field, None);
         assert!((region.sample(faces[0].pose.z_axis).height - spec.relief_mm).abs() < 1.0e-5);
         assert_eq!(
             region
@@ -1092,6 +1421,160 @@ mod tests {
                 .height,
             0.0
         );
+    }
+
+    #[test]
+    fn small_world_tiles_carry_map_roads_and_close_watertight() {
+        let field = HeightField::new(
+            5,
+            5,
+            (0..25).map(|i| ((i * 37) % 11) as f32 * 90.0).collect(),
+            "test hills",
+        )
+        .unwrap();
+        for (full_wrap, exterior) in [
+            (false, GlobeExterior::Rounded),
+            (true, GlobeExterior::Rounded),
+            (true, GlobeExterior::Faceted),
+        ] {
+            let globe = GlobePrototypeSpec {
+                source: GlobeSource::SmallWorld,
+                full_wrap,
+                exterior,
+                full_shell: true,
+                samples_per_edge: 16,
+                ..GlobePrototypeSpec::default()
+            };
+            let mut generation = GenerationSpec {
+                globe: Some(globe),
+                ..GenerationSpec::default()
+            };
+            generation.color_output.enabled = true;
+            let map = small_world_map_spec(&generation).unwrap();
+            let mut cover =
+                SurfaceField::new(9, 9, vec![crate::SurfaceClass::Forest; 81], "test").unwrap();
+            // A road through the map center, crossing tile seams.
+            cover.paint_polyline(
+                &[[0.1, 0.5], [0.9, 0.52]],
+                map.width_mm,
+                1.2,
+                crate::SurfaceClass::Road,
+            );
+            let (parts, order, _) = globe_parts(
+                &globe,
+                GlobeData {
+                    map_spec: Some(&map),
+                    height: Some(&field),
+                    cover: Some(&cover),
+                    ..GlobeData::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(order.len(), 20);
+            let mut road_tiles = 0;
+            for part in &parts {
+                validate_part(&part.mesh)
+                    .unwrap_or_else(|error| panic!("{}: {error:#}", part.mesh.name));
+                if part.mesh.name.starts_with("tile-")
+                    && part
+                        .mesh
+                        .materials
+                        .contains(&PrintMaterial::Class(crate::SurfaceClass::Road))
+                {
+                    road_tiles += 1;
+                }
+            }
+            assert!(
+                road_tiles >= 2,
+                "the road should cross at least one seam ({full_wrap}, {exterior:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn screw_brackets_and_tile_inserts_stay_watertight_and_list_their_hardware() {
+        for exterior in [GlobeExterior::Faceted, GlobeExterior::Rounded] {
+            let spec = GlobePrototypeSpec {
+                exterior,
+                screw_brackets: true,
+                tile_screws: true,
+                insert: HeatSetInsert {
+                    screw_mm: 3.0,
+                    hole_diameter_mm: 4.2,
+                    length_mm: 5.0,
+                },
+                ..GlobePrototypeSpec::default()
+            };
+            let (parts, order, _) = globe_parts(&spec, GlobeData::default()).unwrap();
+            assert_eq!(order.len(), 20);
+            // Tiles, frame modules, keys, brackets, and the clip.
+            assert_eq!(parts.len(), 20 + 20 + 30 + 30 + 1);
+            for part in &parts {
+                validate_part(&part.mesh)
+                    .unwrap_or_else(|error| panic!("{}: {error:#}", part.mesh.name));
+            }
+        }
+        let output =
+            std::env::temp_dir().join(format!("toposaic-globe-inserts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let spec = GlobePrototypeSpec {
+            screw_brackets: true,
+            tile_screws: true,
+            ..GlobePrototypeSpec::default()
+        };
+        export_globe_prototype(&spec, &output).unwrap();
+        let guide = fs::read_to_string(output.join("ASSEMBLY.md")).unwrap();
+        assert!(guide.contains("120 M3 heat-set inserts"), "{guide}");
+        assert!(guide.contains("20 M3 heat-set inserts"), "{guide}");
+        assert!(guide.contains("dovetail key"), "{guide}");
+        fs::remove_dir_all(&output).unwrap();
+    }
+
+    #[test]
+    fn smallest_seats_fit_m3_screws_beside_brackets_and_refuse_m5() {
+        // Both screw options on the smallest seat any layout allows. M3
+        // hardware must clear itself; M5 needs more room and is refused.
+        let m3 = GlobePrototypeSpec {
+            diameter_mm: 1_000.0,
+            screw_brackets: true,
+            tile_screws: true,
+            ..GlobePrototypeSpec::default()
+        };
+        let (subdivision, tile) = (1..=MAX_SUBDIVISION)
+            .filter_map(|subdivision| {
+                let faces = GlobePrototypeSpec { subdivision, ..m3 }.layout().ok()?;
+                let face = faces
+                    .iter()
+                    .min_by(|a, b| a.inradius().total_cmp(&b.inradius()))?;
+                Some((face.inradius(), subdivision, face.id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, subdivision, tile)| (subdivision, tile))
+            .expect("a valid layout");
+        let m3 = GlobePrototypeSpec {
+            subdivision,
+            batch: Some(GlobeBatch {
+                first_tile: tile,
+                tile_count: 1,
+            }),
+            ..m3
+        };
+        for part in globe_parts(&m3, GlobeData::default()).unwrap().0 {
+            validate_part(&part.mesh).unwrap();
+        }
+        let m5 = GlobePrototypeSpec {
+            insert: HeatSetInsert {
+                screw_mm: 5.0,
+                hole_diameter_mm: 6.4,
+                length_mm: 6.0,
+            },
+            ..m3
+        };
+        let error = globe_parts(&m5, GlobeData::default())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("too small for both"), "{error}");
     }
 
     #[test]
@@ -1126,12 +1609,12 @@ mod tests {
         assert!(
             first
                 .iter()
-                .any(|part| part.mesh.name.starts_with("joint-01-"))
+                .any(|part| part.mesh.name.starts_with("key-01-"))
         );
         assert!(
             second
                 .iter()
-                .all(|part| !part.mesh.name.starts_with("joint-01-"))
+                .all(|part| !part.mesh.name.starts_with("key-01-"))
         );
         for part in first.iter().chain(&second) {
             let bounds = validate_part(&part.mesh).unwrap();
@@ -1190,7 +1673,17 @@ mod tests {
         let field = HeightField::new(2, 2, vec![100.0, 400.0, 0.0, 200.0], "test slope").unwrap();
         let faces = Face::all(100.0, BACKING_MM, 1);
         let pose = faces[0].pose;
-        let region = Region::new(&field, None, &faces[0], 110.0, 8.0, true);
+        let band = GlobePrototypeSpec {
+            source: GlobeSource::SmallWorld,
+            full_wrap: true,
+            ..GlobePrototypeSpec::default()
+        };
+        let generation = GenerationSpec {
+            globe: Some(band),
+            ..GenerationSpec::default()
+        };
+        let map = small_world_map_spec(&generation).unwrap();
+        let region = WrappedMap::new(MapWrap::new(pose, 100.0, &map, &band), &map, &field, None);
         let west = unit(layout::add(
             layout::scale(pose.z_axis, -1.0),
             layout::scale(pose.x_axis, -0.0001),

@@ -1,8 +1,21 @@
 import type { GenerationSpec, GlobeSpec } from "../contracts";
 
+/** Latitude spans offered for the 360° band. Each wraps the middle strip of
+ * the map, as tall as this share of a full turn. */
+export const BAND_DEGREES = [144, 120, 90, 60] as const;
+
+/** Common heat-set inserts: thread, hole diameter, and length in mm. */
+const INSERT_PRESETS = [
+  ["M2", 2, 3.2, 3],
+  ["M2.5", 2.5, 3.6, 3.5],
+  ["M3", 3, 4, 4],
+  ["M4", 4, 5.6, 5],
+] as const;
+
 export function ModelTypePanel({
   hidden,
   globeLayoutSize,
+  globeBatchLimit,
   onModelTypeChange,
   setPieceLayout,
   spec,
@@ -10,6 +23,7 @@ export function ModelTypePanel({
 }: {
   hidden: boolean;
   globeLayoutSize?: number;
+  globeBatchLimit?: number;
   onModelTypeChange: (type: "puzzle" | "solid" | "globe") => void;
   setPieceLayout: (count: number) => void;
   spec: GenerationSpec;
@@ -80,6 +94,7 @@ export function ModelTypePanel({
           globe={spec.globe}
           colors={spec.color_output}
           layoutSize={globeLayoutSize}
+          batchLimit={globeBatchLimit}
           update={(globe) => update("globe", globe)}
           updateColors={(colors) => update("color_output", colors)}
         />
@@ -202,24 +217,33 @@ export function ModelTypePanel({
   );
 }
 
-function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors }: {
+function GlobeControls({ hidden, globe, colors, layoutSize, batchLimit, update, updateColors }: {
   hidden: boolean;
   globe: GlobeSpec;
   colors: GenerationSpec["color_output"];
   layoutSize?: number;
+  batchLimit?: number;
   update: (globe: GlobeSpec) => void;
   updateColors: (colors: GenerationSpec["color_output"]) => void;
 }) {
   const mapped = globe.source !== "fit_test";
-  const printLayout = globe.batch ? "batch" : globe.full_shell || globe.source === "whole_earth" ? "full" : "fixture";
+  const printLayout = globe.batch ? "batch" : "full";
+  const maxBatch = batchLimit ?? 80;
   const batch = globe.batch;
   const setLayout = (layout: string) => update({
     ...globe,
-    full_shell: layout !== "fixture",
-    batch: layout === "batch" ? batch ?? { first_tile: 1, tile_count: 8 } : null,
+    full_shell: true,
+    batch: layout === "batch" ? batch ?? { first_tile: 1, tile_count: Math.min(8, maxBatch) } : null,
     whole_earth_detail: layout === "batch" && globe.whole_earth_detail,
   });
-  const range = (key: "seam_gap_mm" | "wrap_degrees" | "relief_mm" | "texture_mm" | "diameter_mm" | "bed_mm" | "clip_fit_mm" | "locator_clearance_mm" | "frame_depth_mm", label: string, min: number, max: number, step: number, decimals = 0, unit = " mm") => (
+  const insert = globe.insert ?? { screw_mm: 3, hole_diameter_mm: 4, length_mm: 4 };
+  const insertRange = (key: "hole_diameter_mm" | "length_mm", label: string, min: number, max: number) => (
+    <label className="road-detail-field">
+      {label} · {insert[key].toFixed(1)} mm
+      <input aria-label={label} type="range" min={min} max={max} step={0.1} value={insert[key]} onChange={(event) => update({ ...globe, insert: { ...insert, [key]: event.target.valueAsNumber } })} />
+    </label>
+  );
+  const range = (key: "seam_gap_mm" | "wrap_degrees" | "relief_mm" | "texture_mm" | "diameter_mm" | "bed_mm" | "clip_fit_mm" | "locator_clearance_mm" | "frame_depth_mm" | "key_clearance_mm", label: string, min: number, max: number, step: number, decimals = 0, unit = " mm") => (
     <label className="road-detail-field">
       {label} · {globe[key].toFixed(decimals)}{unit}
       <input aria-label={label} type="range" min={min} max={max} step={step} value={globe[key]} onChange={(event) => update({ ...globe, [key]: event.target.valueAsNumber })} />
@@ -233,12 +257,12 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
         <select aria-label="Globe source" value={globe.source} onChange={(event) => {
           const source = event.target.value as GlobeSpec["source"];
           const withTerrain = source !== "fit_test";
-          update({ ...globe, source, full_shell: withTerrain || globe.full_shell,
+          update({ ...globe, source, full_shell: true,
             whole_earth_detail: source === "whole_earth" && globe.whole_earth_detail,
             samples_per_edge: globe.source !== "whole_earth" && source === "whole_earth" ? 96 : globe.samples_per_edge,
             surface_colors: globe.source === "fit_test" && withTerrain ? true : globe.surface_colors });
         }}>
-          <option value="fit_test">Plain fit test</option>
+          <option value="fit_test">Plain shell</option>
           <option value="small_world">Small World</option>
           <option value="whole_earth">Whole Earth</option>
         </select>
@@ -253,7 +277,6 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
       <label className="road-detail-field">
         Print layout
         <select aria-label="Print layout" value={printLayout} onChange={(event) => setLayout(event.target.value)}>
-          {globe.source !== "whole_earth" && <option value="fixture">3-tile fit test</option>}
           <option value="full">Full globe</option>
           <option value="batch">Numbered tile batch</option>
         </select>
@@ -291,10 +314,10 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
           </label>
           <label className="road-detail-field">
             Tiles in batch
-            <input aria-label="Tiles in batch" type="number" min="1" max="80" value={batch.tile_count} onChange={(event) => {
-              if (Number.isInteger(event.target.valueAsNumber) && event.target.valueAsNumber >= 1 && event.target.valueAsNumber <= 80) update({ ...globe, batch: { ...batch, tile_count: event.target.valueAsNumber } });
+            <input aria-label="Tiles in batch" type="number" min="1" max={maxBatch} value={batch.tile_count} onChange={(event) => {
+              if (Number.isInteger(event.target.valueAsNumber) && event.target.valueAsNumber >= 1 && event.target.valueAsNumber <= maxBatch) update({ ...globe, batch: { ...batch, tile_count: event.target.valueAsNumber } });
             }} />
-            <small>Each kit includes matching frame modules and the joints owned by its tiles.</small>
+            <small>Up to {maxBatch} tiles per batch at this mesh detail. Each kit includes matching frame modules and the joints owned by its tiles.</small>
           </label>
           <div className="adjacent-actions globe-batch-actions" role="group" aria-label="Change globe batch">
             <button type="button" disabled={batch.first_tile === 1} onClick={() => update({ ...globe, batch: { ...batch, first_tile: Math.max(1, batch.first_tile - batch.tile_count) } })}>Previous batch</button>
@@ -309,11 +332,21 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
             Map coverage
             <select aria-label="Map coverage" value={globe.full_wrap ? "full" : "regional"} onChange={(event) => update({ ...globe, full_wrap: event.target.value === "full" })}>
               <option value="regional">Regional with smooth back</option>
-              <option value="full">Full wrap</option>
+              <option value="full">360° band with polar caps</option>
             </select>
-            {globe.full_wrap && <small>The east and west edges blend together. The top and bottom edges converge at the poles.</small>}
+            {globe.full_wrap && <small>The map wraps once around the globe. Its middle strip, outlined on the map, forms the band. The east and west edges blend where they meet, and the band fades into plain polar caps.</small>}
           </label>
-          {!globe.full_wrap && range("wrap_degrees", "Regional wrap", 45, 140, 5, 0, "°")}
+          {globe.full_wrap ? (
+            <label className="road-detail-field">
+              Band height
+              <select aria-label="Band height" value={globe.band_degrees ?? 120} onChange={(event) => update({ ...globe, band_degrees: Number(event.target.value) })}>
+                {BAND_DEGREES.map((degrees) => (
+                  <option key={degrees} value={degrees}>±{degrees / 2}° latitude</option>
+                ))}
+              </select>
+            </label>
+          ) : range("wrap_degrees", "Regional wrap", 45, 140, 5, 0, "°")}
+          <p className="globe-map-note">Roads, buildings, water, markers, and colors come from the Surface, Buildings, Markers, and Colors sections, as on a flat model.</p>
         </>
       )}
       {mapped && (
@@ -340,11 +373,13 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
             </label>
           )}
           {range("relief_mm", "Terrain relief", 0, 12, 0.5, 1)}
-          {range("texture_mm", "Tactile texture", 0, 0.9, 0.05, 2)}
-          <label className="option-toggle feature-enable-toggle globe-color-toggle">
-            <input type="checkbox" checked={globe.surface_colors} onChange={(event) => update({ ...globe, surface_colors: event.target.checked })} />
-            <span><strong>Mapped surface colors</strong><small>Paint the tiles in 3MF with a shared filament palette.</small></span>
-          </label>
+          {globe.source === "whole_earth" && range("texture_mm", "Tactile texture", 0, 0.9, 0.05, 2)}
+          {globe.source === "whole_earth" && (
+            <label className="option-toggle feature-enable-toggle globe-color-toggle">
+              <input type="checkbox" checked={globe.surface_colors} onChange={(event) => update({ ...globe, surface_colors: event.target.checked })} />
+              <span><strong>Mapped surface colors</strong><small>Paint the tiles in 3MF with a shared filament palette.</small></span>
+            </label>
+          )}
         </>
       )}
       <details className="globe-detail">
@@ -353,9 +388,34 @@ function GlobeControls({ hidden, globe, colors, layoutSize, update, updateColors
           {range("frame_depth_mm", "Frame depth", 4.5, 12, 0.5, 1)}
           {range("clip_fit_mm", "Clip interference", 0.15, 0.6, 0.05, 2)}
           {range("locator_clearance_mm", "Locator clearance per side", 0.1, 0.6, 0.05, 2)}
+          {range("key_clearance_mm", "Dovetail key clearance per side", 0.05, 0.4, 0.05, 2)}
+          <p className="globe-map-note">Dovetail keys lock neighbouring frame modules together. Each key drops into slots in both modules and slides along their shared edge.</p>
+          <label className="option-toggle feature-enable-toggle globe-color-toggle">
+            <input type="checkbox" checked={globe.screw_brackets ?? false} onChange={(event) => update({ ...globe, screw_brackets: event.target.checked })} />
+            <span><strong>Screw brackets</strong><small>Add a bracket under each joint, screwed down from outside into heat-set inserts.</small></span>
+          </label>
+          <label className="option-toggle feature-enable-toggle globe-color-toggle">
+            <input type="checkbox" checked={globe.tile_screws ?? false} onChange={(event) => update({ ...globe, tile_screws: event.target.checked })} />
+            <span><strong>Tile screws</strong><small>Screw each tile to its frame from inside, into a heat-set insert in the tile back. The last few tiles rely on their clips.</small></span>
+          </label>
+          {(globe.screw_brackets || globe.tile_screws) && (
+            <>
+              <label className="road-detail-field">
+                Heat-set insert
+                <select aria-label="Heat-set insert" value={insert.screw_mm} onChange={(event) => {
+                  const preset = INSERT_PRESETS.find(([, screw]) => screw === Number(event.target.value));
+                  if (preset) update({ ...globe, insert: { screw_mm: preset[1], hole_diameter_mm: preset[2], length_mm: preset[3] } });
+                }}>
+                  {INSERT_PRESETS.map(([label, screw]) => <option key={label} value={screw}>{label}</option>)}
+                </select>
+              </label>
+              {insertRange("hole_diameter_mm", "Insert hole diameter", insert.screw_mm + 0.4, insert.screw_mm + 3.5)}
+              {insertRange("length_mm", "Insert length", 2.5, 6.5)}
+            </>
+          )}
         </div>
       </details>
-      {mapped && globe.surface_colors && (
+      {globe.source === "whole_earth" && globe.surface_colors && (
         <details className="globe-detail">
           <summary>Filament colors</summary>
           <div className="globe-detail-fields">

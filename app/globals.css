@@ -888,6 +888,14 @@ a {
   font-size: 12px;
 }
 
+.globe-controls .globe-map-note {
+  align-self: start;
+  color: var(--muted);
+  font-size: 12px;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .globe-controls input[type="range"] {
   accent-color: var(--moss);
 }

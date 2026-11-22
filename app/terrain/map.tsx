@@ -111,6 +111,7 @@ export function TerrainMap({
   onGroundSpanChange,
   onOutlineChange,
   recallCount,
+  selectionHeightFraction = 1,
 }: {
   spec: GenerationSpec;
   markerPlacementMode: "place" | "move" | null;
@@ -120,6 +121,8 @@ export function TerrainMap({
   onOutlineChange: (points: [number, number][]) => void;
   // Bumped each time a saved setup is recalled.
   recallCount: number;
+  /** Show only the middle strip of the area, e.g. a 360° Small World band. */
+  selectionHeightFraction?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
@@ -193,12 +196,12 @@ export function TerrainMap({
         cells.push({
           row,
           column,
-          corners: superTileCorners(mapSpec, row, column),
+          corners: superTileCorners(mapSpec, row, column, selectionHeightFraction),
         });
       }
     }
     return cells;
-  }, [mapSpec, superTileColumns, superTileRows]);
+  }, [mapSpec, selectionHeightFraction, superTileColumns, superTileRows]);
   const baseAnchorWorld = projectToWorld(
     mapSpec.center_lon,
     mapSpec.center_lat,

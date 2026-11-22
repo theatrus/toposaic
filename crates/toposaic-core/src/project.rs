@@ -314,9 +314,11 @@ fn generate_project_inner(
     on_progress: &(dyn Fn(f32) -> Result<()> + Sync),
 ) -> Result<ProjectManifest> {
     if spec.globe.is_some() {
+        let map = crate::globe::small_world_map_spec(spec);
         return crate::globe::generate_globe_project(
             spec,
             crate::globe::GlobeData {
+                map_spec: map.as_ref(),
                 height: height_field,
                 cover: surface_field,
                 earth_detail: None,

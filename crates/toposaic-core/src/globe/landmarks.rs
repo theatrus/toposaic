@@ -175,9 +175,15 @@ pub(super) fn place(
             let keepout = socket_half(landmark) + 0.9;
             let seat = offsets.iter().find_map(|&(_, dx, dy)| {
                 let center = [requested[0] + dx as f32, requested[1] + dy as f32];
-                // The recess and its registration terrace have to clear the back-side clip and locator.
+                // The recess and its registration terrace have to clear the
+                // back-side clip, locator, and tile-screw insert.
+                let insert = spec.insert.hole_diameter_mm / 2.0 + 0.8;
+                let screw = super::parts::tile_screw_center(spec);
                 if (center[0].abs() < 4.6 + keepout && center[1].abs() < 2.6 + keepout)
                     || (center[0].abs() < 2.7 + keepout && (center[1] - 8.0).abs() < 2.3 + keepout)
+                    || (spec.tile_screws
+                        && (center[0] - screw[0]).abs() < insert + keepout
+                        && (center[1] - screw[1]).abs() < insert + keepout)
                     || visited.iter().any(|&(other, radius)| {
                         (center[0] - other[0])
                             .abs()

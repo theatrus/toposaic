@@ -20,6 +20,7 @@ export function ModelPanel({
   heightScaleReadout,
   hidden,
   lockHeightFrame,
+  mapOnly = false,
   moveToAdjacentTile,
   placeMessage,
   placeQuery,
@@ -41,6 +42,8 @@ export function ModelPanel({
   heightFrameLocked: boolean;
   hidden: boolean;
   lockHeightFrame: () => boolean;
+  /** Show only place search and map position, for a Small World globe. */
+  mapOnly?: boolean;
   moveToAdjacentTile: (direction: AdjacentDirection) => void;
   placeMessage: string | null;
   placeQuery: string;
@@ -165,7 +168,7 @@ export function ModelPanel({
               />
             </label>
           </div>
-          <div className="tile-position-block">
+          {!mapOnly && <div className="tile-position-block">
             <div className="tile-position-heading">
               <span>
                 <strong>Matching tile position</strong>
@@ -237,9 +240,9 @@ export function ModelPanel({
                 />
               </label>
             </div>
-          </div>
+          </div>}
         </div>
-        <div
+        {!mapOnly && <div
           className="adjacent-tiles"
           role="group"
           aria-label="Super-tile mode"
@@ -376,8 +379,9 @@ export function ModelPanel({
           {adjacentMessage && (
             <p className="adjacent-message">{adjacentMessage}</p>
           )}
-        </div>
+        </div>}
       </div>
+      {!mapOnly && (<>
       <details className="puzzle-seed-advanced">
         <summary>Advanced puzzle identity</summary>
         <div className="puzzle-seed-row" aria-label="Puzzle identity">
@@ -695,6 +699,7 @@ export function ModelPanel({
           onChange={(value) => update("clearance_mm", value)}
         />
       )}
+      </>)}
     </section>
   );
 }
