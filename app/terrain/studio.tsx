@@ -2032,7 +2032,7 @@ export function TerrainStudio() {
     });
   }, [job]);
 
-  const preview = useMemo(() => {
+  const preview = (() => {
     // Mesh material indexes and discovered ground palettes form one payload.
     // Never combine a live mesh with a generated job's independently sampled
     // palette: the same index can name a different filament in the two passes.
@@ -2047,7 +2047,7 @@ export function TerrainStudio() {
     if (elevationPreview?.model_meshes?.length) return elevationPreview;
     return (generatedPreview?.globe_meshes ? null : generatedPreview)
       ?? (elevationPreview?.globe_meshes ? null : elevationPreview);
-  }, [elevationPreview, generatedPreview, job?.spec.globe, spec.globe]);
+  })();
   const currentSpecKey = previewKey(spec, previewDetail, previewTile);
   const previewPaused = previewCanceledSpecKey === currentSpecKey;
   const previewStale =

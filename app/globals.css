@@ -888,6 +888,10 @@ a {
   font-size: 12px;
 }
 
+.globe-controls input[type="range"] {
+  accent-color: var(--moss);
+}
+
 .visual-resizer::before {
   background: rgba(48, 64, 57, 0.28);
   border-radius: 999px;

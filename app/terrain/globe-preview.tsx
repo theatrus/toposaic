@@ -11,7 +11,6 @@ import {
   MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
-  Sphere,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -75,7 +74,17 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
         scene.add(mesh);
       });
     }
-    const { center, radius } = bounds.getBoundingSphere(new Sphere());
+    const center = bounds.getCenter(new Vector3());
+    const point = new Vector3();
+    let radiusSquared = 0;
+    for (const mesh of rendered) {
+      const positions = mesh.geometry.getAttribute("position");
+      for (let index = 0; index < positions.count; index += 1) {
+        point.fromBufferAttribute(positions, index);
+        radiusSquared = Math.max(radiusSquared, point.distanceToSquared(center));
+      }
+    }
+    const radius = Math.sqrt(radiusSquared);
     controls.target.copy(center);
     controls.minDistance = radius * 0.35;
     controls.maxDistance = radius * 12;
@@ -100,9 +109,25 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     controls.addEventListener("change", draw);
+    const onKeyDown = (event: KeyboardEvent) => {
+      switch (event.key) {
+        case "ArrowLeft": controls.rotateLeft(0.12); break;
+        case "ArrowRight": controls.rotateLeft(-0.12); break;
+        case "ArrowUp": controls.rotateUp(0.12); break;
+        case "ArrowDown": controls.rotateUp(-0.12); break;
+        case "+":
+        case "=": controls.dollyOut(1.1); break;
+        case "-": controls.dollyIn(1.1); break;
+        default: return;
+      }
+      event.preventDefault();
+      controls.update();
+    };
+    canvas.addEventListener("keydown", onKeyDown);
     resize();
     return () => {
       observer.disconnect();
+      canvas.removeEventListener("keydown", onKeyDown);
       controls.dispose();
       for (const mesh of rendered) {
         mesh.geometry.dispose();
@@ -114,7 +139,7 @@ export function GlobePreview({ meshes, status, error, onCancel }: {
 
   return (
     <section className="relief-shell globe-preview" aria-label="3D globe preview">
-      <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} aria-label="Globe assembly" />
+      <canvas ref={canvasRef} className="relief-canvas" data-globe-parts={meshes?.length ?? 0} aria-label="Globe assembly" tabIndex={0} />
       <div className="globe-preview-toolbar">
         <label>
           View
