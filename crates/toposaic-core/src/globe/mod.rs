@@ -2,6 +2,7 @@
 
 mod detail;
 mod ground;
+mod landmarks;
 mod layout;
 mod parts;
 mod region;
@@ -24,6 +25,8 @@ use crate::mesh::Mesh;
 use crate::project::{Artifact, ProjectManifest, file_artifact};
 use crate::spec::{GenerationSpec, MATERIAL_SLOTS, PaintedClasses};
 use crate::{HeightField, SurfaceField};
+
+pub use landmarks::{GlobeLandmark, GlobeLandmarkShape};
 
 pub use detail::{EARTH_DETAIL_BLOCK_SIDE, EarthDetail, EarthDetailBlock, earth_detail_blocks};
 
@@ -216,6 +219,7 @@ impl Default for GlobePrototypeSpec {
 struct Part {
     mesh: Mesh,
     poses: Vec<Pose>,
+    top_triangles: usize,
 }
 
 impl Part {
@@ -223,6 +227,7 @@ impl Part {
         Self {
             mesh,
             poses: vec![pose],
+            top_triangles: 0,
         }
     }
 }
@@ -302,18 +307,28 @@ pub struct GlobeData<'a> {
     pub earth_detail: Option<&'a EarthDetail>,
 }
 
+struct GlobeBuild {
+    parts: Vec<Part>,
+    order: Vec<usize>,
+    layout_size: usize,
+    landmarks: Vec<landmarks::Placement>,
+}
+
+#[cfg(test)]
 fn globe_parts(
     spec: &GlobePrototypeSpec,
     data: GlobeData,
 ) -> Result<(Vec<Part>, Vec<usize>, usize)> {
-    build_parts(spec, data, |_| Ok(()))
+    let build = build_parts(spec, data, &[], |_| Ok(()))?;
+    Ok((build.parts, build.order, build.layout_size))
 }
 
 fn build_parts(
     spec: &GlobePrototypeSpec,
     data: GlobeData,
+    landmarks: &[GlobeLandmark],
     mut on_progress: impl FnMut(f32) -> Result<()>,
-) -> Result<(Vec<Part>, Vec<usize>, usize)> {
+) -> Result<GlobeBuild> {
     let layout = Layout::new(spec)?;
     let mapping_center = Face::all(spec.diameter_mm / 2.0, BACKING_MM, 1);
     let terrain = match spec.source {
@@ -339,6 +354,11 @@ fn build_parts(
             spec.full_wrap,
         )),
     };
+    let mut placements = if spec.source == GlobeSource::WholeEarth {
+        landmarks::place(landmarks, &layout.faces, spec)
+    } else {
+        Vec::new()
+    };
     let mut parts = Vec::new();
     let (clip, clip_in_face) = parts::build_clip()?;
     let mut clip_poses = Vec::new();
@@ -357,9 +377,22 @@ fn build_parts(
             .iter()
             .filter_map(|other| face.edge_with(other))
             .collect();
-        let tile = parts::build_tile(face, spec, &terrain, layout.faces.len())?;
-        verify_tile_insertion(face, &tile)?;
-        parts.push(Part::single(tile, face.pose));
+        let mut sites = placements
+            .iter_mut()
+            .filter(|placement| placement.tile == face.id)
+            .collect::<Vec<_>>();
+        let tile = parts::build_tile(face, spec, &terrain, layout.faces.len(), &mut sites)?;
+        verify_tile_insertion(face, &tile.mesh)?;
+        parts.push(Part {
+            mesh: tile.mesh,
+            poses: vec![face.pose],
+            top_triangles: tile.top_triangles,
+        });
+        parts.extend(
+            tile.inserts
+                .into_iter()
+                .map(|insert| Part::single(insert.mesh, insert.pose)),
+        );
         let (frame, pose) = parts::build_frame(face, &edges, spec)?;
         parts.push(Part::single(frame, pose));
         let origin = face.pose.to_globe(clip_in_face.origin);
@@ -378,17 +411,19 @@ fn build_parts(
     parts.push(Part {
         mesh: clip,
         poses: clip_poses,
+        top_triangles: 0,
     });
     on_progress(1.0)?;
-    Ok((
+    Ok(GlobeBuild {
         parts,
-        layout
+        order: layout
             .selected
             .iter()
             .map(|i| layout.faces[*i].id)
             .collect(),
-        layout.faces.len(),
-    ))
+        layout_size: layout.faces.len(),
+        landmarks: placements,
+    })
 }
 
 fn verify_tile_insertion(face: &Face, tile: &Mesh) -> Result<()> {
@@ -440,16 +475,8 @@ fn validate_part(mesh: &Mesh) -> Result<[f32; 6]> {
 /// Export the synthetic mechanical fixture or full shell. The numbered parts
 /// are ready to slice, and the OBJ and manifest describe the assembled poses.
 pub fn export_globe_prototype(spec: &GlobePrototypeSpec, output: &Path) -> Result<()> {
-    let (parts, install_order, layout_size) = globe_parts(spec, GlobeData::default())?;
-    write_parts(
-        spec,
-        &GenerationSpec::default(),
-        output,
-        &parts,
-        &install_order,
-        layout_size,
-        |_| Ok(()),
-    )?;
+    let build = build_parts(spec, GlobeData::default(), &[], |_| Ok(()))?;
+    write_parts(spec, &GenerationSpec::default(), output, &build, |_| Ok(()))?;
     Ok(())
 }
 
@@ -457,11 +484,20 @@ fn write_parts(
     spec: &GlobePrototypeSpec,
     generation: &GenerationSpec,
     output: &Path,
-    parts: &[Part],
-    install_order: &[usize],
-    layout_size: usize,
+    build: &GlobeBuild,
     mut on_progress: impl FnMut(f32) -> Result<()>,
 ) -> Result<Vec<Artifact>> {
+    let GlobeBuild {
+        parts,
+        order: install_order,
+        layout_size,
+        landmarks,
+    } = build;
+    let layout_size = *layout_size;
+    let included = landmarks
+        .iter()
+        .filter(|site| install_order.contains(&site.tile))
+        .collect::<Vec<_>>();
     fs::create_dir_all(output).with_context(|| format!("create {}", output.display()))?;
     ensure!(
         output.read_dir()?.next().is_none(),
@@ -469,6 +505,7 @@ fn write_parts(
     );
     let mut entries = Vec::new();
     let print_spec = print_spec(generation, spec);
+    let plain_print = GenerationSpec::default();
     let mut palette = [false; MATERIAL_SLOTS];
     for class in CLASSES {
         palette[class.material_index() as usize] = true;
@@ -489,7 +526,15 @@ fn write_parts(
         let stl_path = output.join(&stl);
         let three_mf_path = output.join(&three_mf);
         write_binary_stl(&part.mesh, &stl_path)?;
-        let mut writer = ThreeMfWriter::new(&print_spec, palette, &three_mf_path)?;
+        let mut writer = if part.mesh.name.starts_with("landmark-") {
+            ThreeMfWriter::new(
+                &plain_print,
+                PaintedClasses::of_mesh(&part.mesh),
+                &three_mf_path,
+            )?
+        } else {
+            ThreeMfWriter::new(&print_spec, palette, &three_mf_path)?
+        };
         writer.write_mesh(&part.mesh)?;
         writer.finish()?;
         artifacts.push(file_artifact(&stl_path, "model/stl")?);
@@ -519,6 +564,7 @@ fn write_parts(
         "layout_tile_count": layout_size,
         "joint_owner": "lower tile ID",
         "parts": entries,
+        "landmarks": included,
         "joint_hardware_per_bracket": format!("4 low-profile M3 × {screw_length} mm screws and 4 matching nuts"),
         "clip_quantity": install_order.len(),
     });
@@ -538,6 +584,11 @@ fn write_parts(
     } else {
         String::new()
     };
+    let landmark_note = if included.is_empty() {
+        ""
+    } else {
+        "See LANDMARKS.md for the numbered inserts and their tile locations.\n\n"
+    };
     let guide = format!(
         "# TopoSaic globe print kit\n\n\
          {batch_note}Print one copy of each tile, frame module, and joint bracket, plus {} copies of the snap clip. \
@@ -549,10 +600,42 @@ fn write_parts(
          2. Press a clip into each frame seat from the outside until its collar sits against the frame.\n\
          3. Match each tile to its seat and align the locator before pressing it straight on. \
          Install the tiles in this order. {order}.\n\n\
-         Record seam gaps, seating repeatability, insertion and removal force, and clip wear.\n",
+         {landmark_note}Record seam gaps, seating repeatability, insertion and removal force, and clip wear.\n",
         install_order.len(),
     );
     fs::write(output.join("ASSEMBLY.md"), guide)?;
+    if !included.is_empty() {
+        let path = output.join("LANDMARKS.md");
+        let mut guide = String::from(
+            "# Globe landmark key\n\nPrint each insert separately in your choice of filament. Match the clipped corner of its peg to the socket, then press the insert in from the outside.\n\n",
+        );
+        for site in included {
+            use std::fmt::Write as _;
+            let name = site
+                .landmark
+                .name
+                .replace(['<', '>', '[', ']', '`', '*'], "");
+            writeln!(
+                guide,
+                "- **{:02} · {}** on tile {:02} · site {:.4}°, {:.4}°",
+                site.landmark.id, name, site.tile, site.landmark.latitude, site.landmark.longitude
+            )?;
+            if let Some(seat) = &site.seat {
+                writeln!(
+                    guide,
+                    "  Seat {:.4}°, {:.4}° · {:.1} mm from the site",
+                    seat.latitude, seat.longitude, seat.offset_mm
+                )?;
+            } else {
+                writeln!(
+                    guide,
+                    "  No insert in this kit. The socket could not clear the seam or frame attachment."
+                )?;
+            }
+        }
+        fs::write(&path, guide)?;
+        artifacts.push(file_artifact(&path, "text/markdown")?);
+    }
     for (name, mime) in [
         ("ASSEMBLY.md", "text/markdown"),
         ("assembly.obj", "model/obj"),
@@ -577,14 +660,8 @@ pub fn build_globe_preview(
         samples_per_edge: spec.preview_samples(count),
         ..spec
     };
-    let (parts, order, layout_size) = build_parts(&draft, data, on_progress)?;
-    let mut preview = preview_with_parts(
-        &parts,
-        &print_spec(generation, &spec),
-        &order,
-        layout_size,
-        draft,
-    )?;
+    let build = build_parts(&draft, data, &generation.globe_landmarks, on_progress)?;
+    let mut preview = preview_with_parts(&build, &print_spec(generation, &spec), draft)?;
     if spec.batch.is_some() {
         // The overview needs only three nominal points per seat, even for a
         // large job. Actual terrain meshes stay limited to the chosen batch.
@@ -613,16 +690,15 @@ fn print_spec(generation: &GenerationSpec, globe: &GlobePrototypeSpec) -> Genera
 }
 
 fn preview_with_parts(
-    parts: &[Part],
+    build: &GlobeBuild,
     print: &GenerationSpec,
-    tiles: &[usize],
-    layout_size: usize,
     draft: GlobePrototypeSpec,
 ) -> Result<serde_json::Value> {
     #[derive(Serialize)]
     struct PreviewPart<'a> {
         name: String,
         kind: &'static str,
+        top_triangles: usize,
         outward: Vec<[f32; 3]>,
         vertices: &'a [[f32; 3]],
         triangles: &'a [[u32; 3]],
@@ -630,11 +706,14 @@ fn preview_with_parts(
         #[serde(skip_serializing_if = "Vec::is_empty")]
         materials: Vec<u32>,
     }
-    let meshes = parts
+    let meshes = build
+        .parts
         .iter()
         .map(|part| {
             let kind = if part.mesh.name.starts_with("tile-") {
                 "tile"
+            } else if part.mesh.name.starts_with("landmark-") {
+                "landmark"
             } else if part.mesh.name.starts_with("frame-") {
                 "frame"
             } else if part.mesh.name.starts_with("joint-") {
@@ -645,6 +724,7 @@ fn preview_with_parts(
             PreviewPart {
                 name: part.mesh.name.clone(),
                 kind,
+                top_triangles: part.top_triangles,
                 outward: part.poses.iter().map(|pose| unit(pose.origin)).collect(),
                 vertices: &part.mesh.vertices,
                 triangles: &part.mesh.triangles,
@@ -674,8 +754,9 @@ fn preview_with_parts(
         "globe_surface_samples": parts::tile_segments(&draft),
         "globe_exterior": draft.exterior,
         "globe_source": draft.source,
-        "globe_tiles": tiles,
-        "globe_layout_size": layout_size,
+        "globe_tiles": build.order,
+        "globe_layout_size": build.layout_size,
+        "globe_landmarks": build.landmarks,
         "width": 0, "height": 0, "values": [], "rows": 0, "columns": 0,
         "globe_meshes": meshes,
     }))
@@ -693,18 +774,14 @@ pub fn generate_globe_project(
         .globe
         .context("globe project requires globe settings")?;
     on_progress(0.0)?;
-    let (parts, order, layout_size) =
-        build_parts(&globe, data, |fraction| on_progress(0.3 * fraction))?;
-    let mut files = write_parts(
-        &globe,
-        spec,
-        output,
-        &parts,
-        &order,
-        layout_size,
-        |fraction| on_progress(0.3 + 0.55 * fraction),
-    )?;
-    drop(parts);
+    let build = build_parts(&globe, data, &spec.globe_landmarks, |fraction| {
+        on_progress(0.3 * fraction)
+    })?;
+    let mut files = write_parts(&globe, spec, output, &build, |fraction| {
+        on_progress(0.3 + 0.55 * fraction)
+    })?;
+    let order = build.order;
+    drop(build.parts);
     let preview_path = output.join("preview.json");
     fs::write(
         &preview_path,
@@ -805,6 +882,117 @@ fn write_assembled_obj(parts: &[Part], mut writer: impl Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn landmarks_cut_watertight_sockets_and_keep_their_tile_in_batches() {
+        let [x, y, z] = Face::all(100.0, BACKING_MM, 1)[0].pose.z_axis;
+        let landmarks = [
+            (
+                1,
+                "Eiffel Tower",
+                GlobeLandmarkShape::Tower,
+                48.8583,
+                2.2945,
+                7.0,
+                13.0,
+            ),
+            (
+                2,
+                "Great Pyramid of Giza",
+                GlobeLandmarkShape::Pyramid,
+                29.9792,
+                31.1342,
+                9.0,
+                5.0,
+            ),
+            (
+                3,
+                "Sydney",
+                GlobeLandmarkShape::CityMarker,
+                -33.8672,
+                151.2075,
+                6.0,
+                4.0,
+            ),
+            (
+                4,
+                "Frame clearance",
+                GlobeLandmarkShape::CityMarker,
+                f64::from(z).asin().to_degrees(),
+                f64::from(y).atan2(f64::from(x)).to_degrees(),
+                6.0,
+                4.0,
+            ),
+        ]
+        .map(
+            |(id, name, shape, latitude, longitude, width_mm, height_mm)| GlobeLandmark {
+                id,
+                name: name.into(),
+                shape,
+                latitude,
+                longitude,
+                width_mm,
+                height_mm,
+            },
+        );
+        for exterior in [GlobeExterior::Faceted, GlobeExterior::Rounded] {
+            let mut spec = GlobePrototypeSpec {
+                source: GlobeSource::WholeEarth,
+                full_shell: true,
+                exterior,
+                earth_grid: EarthGrid::QuarterDegree,
+                samples_per_edge: 48,
+                ..GlobePrototypeSpec::default()
+            };
+            let full = build_parts(&spec, GlobeData::default(), &landmarks, |_| Ok(())).unwrap();
+            assert_eq!(full.landmarks.len(), landmarks.len());
+            for placement in &full.landmarks {
+                assert!(
+                    placement.insert_position.is_some(),
+                    "{}",
+                    placement.landmark.name
+                );
+                let id = placement.landmark.id;
+                let owner = placement.tile;
+                for name in [format!("tile-{owner:02}"), format!("landmark-{id:02}")] {
+                    let part = full
+                        .parts
+                        .iter()
+                        .find(|part| part.mesh.name == name)
+                        .unwrap();
+                    validate_part(&part.mesh).unwrap();
+                }
+            }
+            assert!(full.landmarks[3].seat.as_ref().unwrap().offset_mm > 0.5);
+
+            let owner = full.landmarks[0].tile;
+            spec.batch = Some(GlobeBatch {
+                first_tile: owner,
+                tile_count: 1,
+            });
+            let batch = build_parts(&spec, GlobeData::default(), &landmarks, |_| Ok(())).unwrap();
+            assert_eq!(batch.order, [owner]);
+            for (whole, partial) in full.landmarks.iter().zip(&batch.landmarks) {
+                assert_eq!(whole.tile, partial.tile);
+                assert_eq!(
+                    whole.seat.as_ref().unwrap().uv,
+                    partial.seat.as_ref().unwrap().uv
+                );
+                assert_eq!(partial.insert_position.is_some(), partial.tile == owner);
+            }
+            for part in batch.parts.iter().filter(|part| {
+                part.mesh.name.starts_with("landmark-") || part.mesh.name.starts_with("tile-")
+            }) {
+                let original = full
+                    .parts
+                    .iter()
+                    .find(|whole| whole.mesh.name == part.mesh.name)
+                    .unwrap();
+                assert_eq!(part.mesh.vertices, original.mesh.vertices);
+                assert_eq!(part.mesh.triangles, original.mesh.triangles);
+            }
+        }
+    }
 
     #[test]
     fn whole_earth_preview_keeps_print_detail_for_twenty_tiles() {

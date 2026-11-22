@@ -4096,3 +4096,35 @@ fieldset.control-section .road-options {
 .globe-batch-actions button:disabled {
   opacity: 0.45;
 }
+
+.globe-landmarks .globe-landmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.globe-landmarks button {
+  align-self: end;
+  background: transparent;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  min-height: 34px;
+  padding: 4px 10px;
+}
+
+.globe-landmarks button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.globe-landmarks summary {
+  cursor: pointer;
+}
+
+.globe-landmarks details > p {
+  color: var(--muted);
+  font-size: 12px;
+}

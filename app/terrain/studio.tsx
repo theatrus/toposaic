@@ -85,6 +85,7 @@ import { useOutsideDismiss } from "./use-outside-dismiss";
 import { BuildingsPanel } from "./panels/buildings-panel";
 import { ColorsPanel } from "./panels/colors-panel";
 import { ModelPanel } from "./panels/model-panel";
+import { GlobeLandmarksPanel } from "./panels/globe-landmarks-panel";
 import { ModelTypePanel } from "./panels/model-type-panel";
 import { MountingPanel } from "./panels/mounting-panel";
 import { MarkersPanel } from "./panels/markers-panel";
@@ -2633,6 +2634,7 @@ export function TerrainStudio() {
                 source={preview?.globe_source}
                 exterior={preview?.globe_exterior}
                 surfaceSamples={preview?.globe_surface_samples}
+                landmarks={preview?.globe_landmarks}
                 status={globePreviewStatus}
                 error={currentPreviewFailure}
                 onCancel={currentPreviewActivity ? cancelPreview : undefined}
@@ -2755,6 +2757,15 @@ export function TerrainStudio() {
             spec={spec}
             update={update}
           />
+
+          {spec.globe?.source === "whole_earth" && (
+            <GlobeLandmarksPanel
+              hidden={visibleSection !== "model"}
+              landmarks={spec.globe_landmarks ?? []}
+              placements={preview?.globe_landmarks}
+              update={(landmarks) => update("globe_landmarks", landmarks.length ? landmarks : undefined)}
+            />
+          )}
 
           <ModelPanel
             adjacentMessage={adjacentMessage}

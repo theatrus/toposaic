@@ -87,9 +87,27 @@ export type GlobeSpec = {
 
 type GlobePoint = [number, number, number];
 
+export type GlobeLandmark = {
+  id: number;
+  name: string;
+  shape: "tower" | "pyramid" | "city_marker";
+  latitude: number;
+  longitude: number;
+  width_mm: number;
+  height_mm: number;
+};
+
+export type GlobeLandmarkPlacement = GlobeLandmark & {
+  tile: number;
+  seat: { latitude: number; longitude: number; offset_mm: number } | null;
+  requested_position: GlobePoint;
+  insert_position: GlobePoint | null;
+};
+
 export type GlobePreviewMesh = {
   name: string;
-  kind: "tile" | "frame" | "joint" | "clip";
+  kind: "tile" | "frame" | "joint" | "clip" | "landmark";
+  top_triangles?: number;
   vertices: GlobePoint[];
   triangles: [number, number, number][];
   outward: GlobePoint[];
@@ -99,6 +117,7 @@ export type GlobePreviewMesh = {
 
 export type GenerationSpec = {
   globe?: GlobeSpec;
+  globe_landmarks?: GlobeLandmark[];
   center_lat: number;
   center_lon: number;
   elevation_source: "mapzen" | "mapterhorn";
@@ -430,6 +449,7 @@ export type Job = {
 
 export type PreviewData = {
   globe_meshes?: GlobePreviewMesh[];
+  globe_landmarks?: GlobeLandmarkPlacement[];
   globe_palette?: Record<number, string>;
   globe_surface_samples?: number;
   globe_exterior?: GlobeSpec["exterior"];

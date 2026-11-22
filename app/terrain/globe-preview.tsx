@@ -8,19 +8,25 @@ import {
   DirectionalLight,
   Float32BufferAttribute,
   HemisphereLight,
+  Line,
+  LineBasicMaterial,
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
+  SphereGeometry,
   Vector3,
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { GlobePreviewMesh, PreviewData } from "./contracts";
 
-const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", clip: "#d5a258" };
+const PART_COLORS = { tile: "#8ba589", frame: "#526c73", joint: "#a78058", clip: "#d5a258", landmark: "#efae56" };
 
-export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, source, exterior, surfaceSamples, status, error, onCancel }: {
+const partName = (kind: "tile" | "landmark", id: number) => `${kind}-${String(id).padStart(2, "0")}`;
+const scenePoint = ([x, y, z]: [number, number, number]) => new Vector3(x, z, -y);
+
+export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, source, exterior, surfaceSamples, landmarks, status, error, onCancel }: {
   meshes?: GlobePreviewMesh[];
   palette?: Record<number, string>;
   tiles?: number[];
@@ -29,6 +35,7 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
   source?: PreviewData["globe_source"];
   exterior?: PreviewData["globe_exterior"];
   surfaceSamples?: number;
+  landmarks?: PreviewData["globe_landmarks"];
   status: string;
   error?: string | null;
   onCancel?: () => void;
@@ -37,8 +44,13 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
   const [view, setView] = useState("assembled");
   const [rendererError, setRendererError] = useState(false);
   const viewUnavailable = (view === "layout" && !overview)
-    || (view.startsWith("tile-") && !meshes?.some((mesh) => mesh.name === view));
+    || (/^(tile|landmark)-/.test(view) && !meshes?.some((mesh) => mesh.name === view));
   const visibleView = viewUnavailable ? "assembled" : view;
+  const selectedLandmark = landmarks?.find((site) => partName("landmark", site.id) === visibleView);
+  const selectedTile = selectedLandmark ? partName("tile", selectedLandmark.tile)
+    : visibleView.startsWith("tile-") ? visibleView : undefined;
+  const showOffset = landmarks?.some((site) => site.insert_position && (site.seat?.offset_mm ?? 0) > 0.3
+    && (visibleView === "assembled" || visibleView === partName("landmark", site.id) || visibleView === partName("tile", site.tile)));
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -60,6 +72,8 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
     scene.add(key, new HemisphereLight(0xf3f7ff, 0x5e675d, 1.85));
     const bounds = new Box3();
     const rendered: Mesh[] = [];
+    const guides: Line<BufferGeometry, LineBasicMaterial>[] = [];
+    const sites = new Map(landmarks?.map((site) => [partName("landmark", site.id), site]));
     if (visibleView === "layout" && overview) {
       const highlights = new Set(tiles);
       const selected = new Color("#e2a346");
@@ -85,19 +99,22 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
     }
     for (const part of meshes) {
       if (visibleView === "layout") break;
-      if (visibleView === "frame" && part.kind === "tile") continue;
-      if (visibleView.startsWith("tile-") && part.name !== visibleView) continue;
+      const site = sites.get(part.name);
+      const owner = site ? partName("tile", site.tile) : undefined;
+      if (visibleView === "frame" && (part.kind === "tile" || part.kind === "landmark")) continue;
+      if (selectedTile && part.name !== selectedTile && (owner !== selectedTile || (selectedLandmark && part.name !== visibleView))) continue;
       part.poses.forEach((pose, index) => {
-        const spread = visibleView === "exploded" && part.kind === "tile" ? 32 : 0;
+        const spread = visibleView === "exploded" && (part.kind === "tile" || owner) ? 32 : 0;
+        const outward = (owner && meshes.find((mesh) => mesh.name === owner)?.outward[0]) || part.outward[index];
         const positions = part.vertices.flatMap(([x, y, z]) => {
           const point = pose.origin.map((origin, axis) => origin + x * pose.x_axis[axis]
-            + y * pose.y_axis[axis] + z * pose.z_axis[axis] + spread * part.outward[index][axis]);
+            + y * pose.y_axis[axis] + z * pose.z_axis[axis] + spread * outward[axis]);
           return [point[0], point[2], -point[1]];
         });
         const geometry = new BufferGeometry();
         const painted = Boolean(part.materials?.length && palette);
-        const topTriangles = part.kind === "tile" && exterior === "rounded" && surfaceSamples
-          ? Math.min(surfaceSamples ** 2, part.triangles.length)
+        const topTriangles = part.kind === "tile" && exterior === "rounded"
+          ? Math.min(part.top_triangles ?? (surfaceSamples ?? 0) ** 2, part.triangles.length)
           : 0;
         const sourcePositions = new Float32BufferAttribute(positions, 3);
         let topGeometry: BufferGeometry | undefined;
@@ -146,26 +163,49 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
         scene.add(mesh);
       });
     }
+    for (const site of sites.values()) {
+      if (!site.insert_position || (site.seat?.offset_mm ?? 0) <= 0.3
+        || (visibleView !== "assembled" && visibleView !== partName("landmark", site.id) && visibleView !== partName("tile", site.tile))) continue;
+      const seat = scenePoint(site.insert_position);
+      const requested = scenePoint(site.requested_position);
+      requested.setLength(Math.max(seat.length(), requested.length()) + 1.5);
+      const dot = new Mesh(new SphereGeometry(1, 12, 8), new MeshStandardMaterial({ color: "#fff3dc", emissive: "#a4977d" }));
+      dot.position.copy(requested);
+      rendered.push(dot);
+      const line = new Line(new BufferGeometry().setFromPoints([requested, seat]), new LineBasicMaterial({ color: "#fff3dc" }));
+      guides.push(line);
+      scene.add(dot, line);
+    }
     const center = bounds.getCenter(new Vector3());
     const point = new Vector3();
     let radiusSquared = 0;
     for (const mesh of rendered) {
       const positions = mesh.geometry.getAttribute("position");
       for (let index = 0; index < positions.count; index += 1) {
-        point.fromBufferAttribute(positions, index);
+        point.fromBufferAttribute(positions, index).add(mesh.position);
         radiusSquared = Math.max(radiusSquared, point.distanceToSquared(center));
       }
     }
-    const radius = Math.sqrt(radiusSquared);
+    let radius = Math.sqrt(radiusSquared);
+    if (selectedLandmark?.insert_position) {
+      const seat = scenePoint(selectedLandmark.insert_position);
+      center.copy(seat).addScaledVector(seat.clone().normalize(), selectedLandmark.height_mm * 0.45);
+      radius = Math.max(selectedLandmark.width_mm, selectedLandmark.height_mm) * 1.25 + (selectedLandmark.seat?.offset_mm ?? 0) * 0.65;
+    }
     camera.near = Math.max(0.05, radius / 1000);
     camera.far = radius * 30;
     controls.target.copy(center);
     controls.minDistance = radius * 0.35;
     controls.maxDistance = radius * 12;
-    const focus = meshes.find((part) => part.name === (visibleView.startsWith("tile-") ? visibleView : "tile-01"))
+    const focus = meshes.find((part) => part.name === (selectedTile ?? "tile-01"))
       ?? meshes.find((part) => part.kind === "tile");
     const [x, y, z] = focus?.outward[0] ?? [0.55, -0.55, 0.55];
-    const direction = source === "whole_earth" && visibleView === "assembled" && tiles?.length === layoutSize
+    const pose = selectedLandmark && focus?.poses[0];
+    const direction = pose ? scenePoint(pose.z_axis)
+      .addScaledVector(scenePoint(pose.x_axis), 0.55)
+      .addScaledVector(scenePoint(pose.y_axis), -1.0)
+      .normalize()
+      : source === "whole_earth" && visibleView === "assembled" && tiles?.length === layoutSize
       ? new Vector3(1, 0.35, -0.44).normalize()
       : new Vector3(x + 0.25, z + 0.32, -y + 0.15).normalize();
     let initialSize = true;
@@ -212,9 +252,13 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
         mesh.geometry.dispose();
         (mesh.material as MeshStandardMaterial).dispose();
       }
+      for (const guide of guides) {
+        guide.geometry.dispose();
+        guide.material.dispose();
+      }
       renderer.dispose();
     };
-  }, [exterior, layoutSize, meshes, overview, palette, source, surfaceSamples, tiles, visibleView]);
+  }, [exterior, landmarks, layoutSize, meshes, overview, palette, selectedLandmark, selectedTile, source, surfaceSamples, tiles, visibleView]);
 
   return (
     <section className="relief-shell globe-preview" aria-label="3D globe preview">
@@ -233,8 +277,12 @@ export function GlobePreview({ meshes, palette, tiles, layoutSize, overview, sou
             {meshes?.filter((mesh) => mesh.kind === "tile").map((mesh) => (
               <option key={mesh.name} value={mesh.name}>Tile {mesh.name.slice(5)}</option>
             ))}
+            {landmarks?.filter((site) => site.insert_position).map((site) => (
+              <option key={site.id} value={partName("landmark", site.id)}>{site.name} · Tile {site.tile}</option>
+            ))}
           </select>
         </label>
+        {showOffset && <span>White dots mark requested sites</span>}
         {onCancel && <button type="button" onClick={onCancel}>Cancel preview</button>}
         <span role="status">{error ?? (rendererError ? "3D preview requires WebGL." : status)}</span>
       </div>

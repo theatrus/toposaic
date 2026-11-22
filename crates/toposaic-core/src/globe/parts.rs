@@ -1,9 +1,13 @@
 use anyhow::Result;
-use geo::{Intersects, Polygon};
+use geo::{Intersects, Point, Polygon};
+use spade::{Point2, Triangulation};
 
+use super::landmarks::{
+    GlobeLandmarkShape, Insert, PEG_DEPTH, Placement, insert_pose, keyed_ring, socket_half,
+};
 use super::layout::{Face, Loop, Pose, Vec3, add, dot, scale, sub, unit};
 use super::{GlobeExterior, GlobePrototypeSpec, GlobeSource, Terrain};
-use crate::mesh::{Mesh, MeshBuilder, weld_export_mesh};
+use crate::mesh::{Mesh, MeshBuilder, triangulate_constraints, weld_export_mesh};
 use crate::planar_mesh::{add_horizontal_polygons, closed_ring, polygon_from_outline};
 use crate::spec::SurfaceClass;
 
@@ -119,12 +123,29 @@ pub(super) fn tile_segments(spec: &GlobePrototypeSpec) -> usize {
     }
 }
 
+pub(super) struct Tile {
+    pub(super) mesh: Mesh,
+    pub(super) top_triangles: usize,
+    pub(super) inserts: Vec<Insert>,
+}
+
+fn edge_points(segments: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..3).flat_map(move |edge| {
+        (0..segments).map(move |i| match edge {
+            0 => (i, 0),
+            1 => (segments - i, i),
+            _ => (0, segments - i),
+        })
+    })
+}
+
 pub(super) fn build_tile(
     face: &Face,
     spec: &GlobePrototypeSpec,
     terrain: &Terrain,
     face_count: usize,
-) -> Result<Mesh> {
+    landmarks: &mut [&mut Placement],
+) -> Result<Tile> {
     let outline = face.outline_at(0.0, spec.seam_gap_mm / 2.0);
     let nominal_outline = face.outline_at(0.0, 0.0);
     let mapped = spec.source != GlobeSource::FitTest;
@@ -135,62 +156,96 @@ pub(super) fn build_tile(
         let [x, y] = weights(nominal_outline, [1.0 - u - v, u, v]);
         unit(face.pose.to_globe([x, y, 0.0]))
     };
+    let surface_at = |u, v| {
+        let [x, y] = weights(outline, [1.0 - u - v, u, v]);
+        let length = x.hypot(y).hypot(base_radius);
+        let mut factor = match spec.exterior {
+            GlobeExterior::Faceted => face.chord_radius / base_radius,
+            GlobeExterior::Rounded => face.radius / length,
+        };
+        if mapped {
+            let direction = direction(u, v);
+            let ground = terrain.sample(direction);
+            let frequency = (face_count as f32 / 20.0).sqrt();
+            let wavelength = (spec.diameter_mm / (20.0 * frequency)).max(4.0);
+            let texture = ground.texture(direction, face.radius, wavelength, spec.texture_mm);
+            factor += (ground.height + texture) / length;
+        }
+        [x * factor, y * factor, base_radius * (factor - 1.0)]
+    };
     let surface_positions = (0..=segments)
         .map(|i| {
             (0..=segments - i)
-                .map(|j| {
-                    let u = i as f32 / segments as f32;
-                    let v = j as f32 / segments as f32;
-                    let [x, y] = weights(outline, [1.0 - u - v, u, v]);
-                    let length = x.hypot(y).hypot(base_radius);
-                    let mut factor = match spec.exterior {
-                        GlobeExterior::Faceted => face.chord_radius / base_radius,
-                        GlobeExterior::Rounded => face.radius / length,
-                    };
-                    if mapped {
-                        // Sample the uncut triangle before applying the seam clearance.
-                        let direction = direction(u, v);
-                        let ground = terrain.sample(direction);
-                        let frequency = (face_count as f32 / 20.0).sqrt();
-                        let wavelength = (spec.diameter_mm / (20.0 * frequency)).max(4.0);
-                        let texture =
-                            ground.texture(direction, face.radius, wavelength, spec.texture_mm);
-                        factor += (ground.height + texture) / length;
-                    }
-                    [x * factor, y * factor, base_radius * (factor - 1.0)]
-                })
+                .map(|j| surface_at(i as f32 / segments as f32, j as f32 / segments as f32))
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
     let surface = |i: usize, j: usize| surface_positions[i][j];
     let material = |u, v| {
         if spec.surface_colors && mapped {
-            terrain
-                .sample(direction(u / segments as f32, v / segments as f32))
-                .class()
+            terrain.sample(direction(u, v)).class()
         } else {
             MATERIAL
         }
     };
-    for i in 0..segments {
-        for j in 0..segments - i {
-            let a = surface(i, j);
-            let b = surface(i + 1, j);
-            let c = surface(i, j + 1);
-            mesh.triangle(
-                a,
-                b,
-                c,
-                material(i as f32 + 1.0 / 3.0, j as f32 + 1.0 / 3.0),
-            );
-            if i + j + 1 < segments {
-                mesh.triangle(
-                    b,
-                    surface(i + 1, j + 1),
-                    c,
-                    material(i as f32 + 2.0 / 3.0, j as f32 + 2.0 / 3.0),
-                );
+    let holes = landmarks
+        .iter()
+        .filter_map(|placement| placement.seat.as_ref().map(|seat| &seat.rim))
+        .collect::<Vec<_>>();
+    let top_triangles = if holes.is_empty() {
+        for i in 0..segments {
+            for j in 0..segments - i {
+                let a = surface(i, j);
+                let b = surface(i + 1, j);
+                let c = surface(i, j + 1);
+                let material_at = |offset| {
+                    material(
+                        (i as f32 + offset) / segments as f32,
+                        (j as f32 + offset) / segments as f32,
+                    )
+                };
+                mesh.triangle(a, b, c, material_at(1.0 / 3.0));
+                if i + j + 1 < segments {
+                    mesh.triangle(b, surface(i + 1, j + 1), c, material_at(2.0 / 3.0));
+                }
             }
+        }
+        segments * segments
+    } else {
+        cut_tile_surface(
+            &mut mesh,
+            segments,
+            &holes,
+            &surface_positions,
+            &surface_at,
+            &material,
+        )?
+    };
+    let mut inserts = Vec::new();
+    for placement in landmarks {
+        if let Some(seat) = &placement.seat {
+            let rim = seat
+                .rim
+                .iter()
+                .map(|&[u, v]| surface_at(u, v))
+                .collect::<Vec<_>>();
+            let center = surface_at(seat.uv[0], seat.uv[1]);
+            let rim_materials = seat
+                .rim
+                .iter()
+                .zip(seat.rim.iter().cycle().skip(1))
+                .map(|([u, v], [next_u, next_v])| material((u + next_u) / 2.0, (v + next_v) / 2.0))
+                .collect::<Vec<_>>();
+            let insert = build_socket(
+                &mut mesh,
+                face,
+                &placement.landmark,
+                &rim,
+                &rim_materials,
+                center,
+            )?;
+            placement.insert_position = Some(insert.location);
+            inserts.push(insert);
         }
     }
     let mut bottom = Vec::with_capacity(segments * 3);
@@ -245,7 +300,208 @@ pub(super) fn build_tile(
     cap(&mut mesh, &socket[3].0, &[], SOCKET_DEPTH, true)?;
     wall(&mut mesh, &locator, 0.0, &locator, 2.5, true);
     cap(&mut mesh, &locator, &[], 2.5, true)?;
-    Ok(mesh.finish(format!("tile-{:02}", face.id)))
+    Ok(Tile {
+        mesh: mesh.finish(format!("tile-{:02}", face.id)),
+        top_triangles,
+        inserts,
+    })
+}
+
+fn cut_tile_surface(
+    mesh: &mut MeshBuilder,
+    segments: usize,
+    holes: &[&Loop],
+    surface_positions: &[Vec<Vec3>],
+    surface_at: &impl Fn(f32, f32) -> Vec3,
+    material: &impl Fn(f32, f32) -> SurfaceClass,
+) -> Result<usize> {
+    let grid = segments as f64;
+    let lattice = |position: [f32; 2]| position.map(|p| f64::from(p) * grid);
+    let rings = holes
+        .iter()
+        .map(|ring| ring.iter().copied().map(lattice).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let polygons = rings
+        .iter()
+        .map(|ring| {
+            use geo::{Coord, LineString};
+            let path = ring
+                .iter()
+                .chain(ring.first())
+                .map(|&[x, y]| Coord { x, y })
+                .collect::<Vec<_>>();
+            Polygon::new(LineString::new(path), vec![])
+        })
+        .collect::<Vec<_>>();
+    let mut points = Vec::new();
+    let mut constraints = Vec::new();
+    let mut surface = std::collections::HashMap::new();
+    let mut add_ring = |ring: &[[f64; 2]], position: &dyn Fn(usize) -> Vec3| {
+        let start = points.len();
+        for (i, &[x, y]) in ring.iter().enumerate() {
+            points.push(Point2::new(x, y));
+            surface.insert((x.to_bits(), y.to_bits()), position(i));
+            constraints.push([start + i, start + (i + 1) % ring.len()]);
+        }
+    };
+    let perimeter = edge_points(segments).collect::<Vec<_>>();
+    let edges = perimeter
+        .iter()
+        .map(|&(u, v)| [u as f64, v as f64])
+        .collect::<Vec<_>>();
+    add_ring(&edges, &|i| {
+        let (u, v) = perimeter[i];
+        surface_positions[u][v]
+    });
+    for (ring, uv) in rings.iter().zip(holes) {
+        add_ring(ring, &|i| surface_at(uv[i][0], uv[i][1]));
+    }
+    for (i, row) in surface_positions.iter().enumerate().skip(1) {
+        for (j, &point) in row
+            .iter()
+            .enumerate()
+            .take(row.len().saturating_sub(1))
+            .skip(1)
+        {
+            let (x, y) = (i as f64, j as f64);
+            // Keep grid vertices away from the socket rim to avoid sliver triangles.
+            let near_ring = rings.iter().any(|ring| {
+                ring.iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .any(|(&a, &b)| {
+                        let [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+                        let t = (((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy))
+                            .clamp(0.0, 1.0);
+                        (x - a[0] - t * dx).hypot(y - a[1] - t * dy) < 0.035
+                    })
+            });
+            if near_ring
+                || polygons
+                    .iter()
+                    .any(|polygon| polygon.intersects(&Point::new(x, y)))
+            {
+                continue;
+            }
+            points.push(Point2::new(x, y));
+            surface.insert((x.to_bits(), y.to_bits()), point);
+        }
+    }
+    let triangulation =
+        triangulate_constraints(points, constraints, "triangulate globe landmark sockets")?;
+    let mut count = 0;
+    for face in triangulation.inner_faces() {
+        let points = face.vertices().map(|vertex| vertex.position());
+        let x = points.iter().map(|p| p.x / 3.0).sum::<f64>();
+        let y = points.iter().map(|p| p.y / 3.0).sum::<f64>();
+        if polygons
+            .iter()
+            .any(|polygon| polygon.intersects(&Point::new(x, y)))
+        {
+            continue;
+        }
+        let [a, b, c] = points.map(|p| surface[&(p.x.to_bits(), p.y.to_bits())]);
+        mesh.triangle(a, b, c, material((x / grid) as f32, (y / grid) as f32));
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn build_socket(
+    mesh: &mut MeshBuilder,
+    face: &Face,
+    landmark: &super::GlobeLandmark,
+    rim: &[Vec3],
+    rim_materials: &[SurfaceClass],
+    [x, y, z]: Vec3,
+) -> Result<Insert> {
+    let seat_z = rim.iter().map(|point| point[2]).fold(z, f32::min) - 0.18;
+    let pocket_bottom = seat_z - PEG_DEPTH - 0.35;
+    anyhow::ensure!(
+        pocket_bottom > 2.0,
+        "{} has insufficient shell thickness for its landmark socket",
+        landmark.name
+    );
+    let pocket = keyed_ring([x, y], socket_half(landmark));
+    let platform = keyed_ring([x, y], socket_half(landmark) + 0.75);
+    for (i, &material) in rim_materials.iter().enumerate() {
+        let next = (i + 1) % rim.len();
+        mesh.quad(
+            rim[i],
+            rim[next],
+            lift(platform[next], seat_z),
+            lift(platform[i], seat_z),
+            material,
+        );
+    }
+    cap(
+        mesh,
+        &platform,
+        std::slice::from_ref(&pocket),
+        seat_z,
+        false,
+    )?;
+    wall(mesh, &pocket, pocket_bottom, &pocket, seat_z, true);
+    cap(mesh, &pocket, &[], pocket_bottom, false)?;
+    Ok(Insert {
+        mesh: landmark_mesh(landmark)?,
+        pose: insert_pose(face, [x, y], seat_z),
+        location: face.pose.to_globe([x, y, seat_z]),
+    })
+}
+
+fn landmark_mesh(landmark: &super::GlobeLandmark) -> Result<Mesh> {
+    let mut mesh = MeshBuilder::default();
+    let peg = landmark.peg_half();
+    let half = landmark.width_mm * 0.5;
+    let plinth = PEG_DEPTH + (half - peg).max(0.8);
+    let height = landmark.height_mm;
+    let silhouette = match landmark.shape {
+        GlobeLandmarkShape::Tower => vec![
+            (plinth, half),
+            (plinth + 0.08 * height, half),
+            (plinth + 0.30 * height, half * 0.57),
+            (plinth + 0.37 * height, half * 0.57),
+            (plinth + 0.70 * height, half * 0.28),
+            (plinth + 0.85 * height, half * 0.26),
+            (plinth + height, (half * 0.12).max(0.45)),
+        ],
+        GlobeLandmarkShape::Pyramid => vec![
+            (plinth, half),
+            (plinth + 0.10 * height, half),
+            (plinth + height, 0.0),
+        ],
+        GlobeLandmarkShape::CityMarker => vec![
+            (plinth, half),
+            (plinth + 0.25 * height, half),
+            (plinth + 0.65 * height, half * 0.90),
+            (plinth + height, half * 0.58),
+        ],
+    };
+    let mut ring = keyed_ring([0.0, 0.0], peg * 0.9);
+    let mut z = 0.0;
+    cap(&mut mesh, &ring, &[], z, true)?;
+    for (next_z, radius) in [(0.35, peg), (PEG_DEPTH, peg)]
+        .into_iter()
+        .chain(silhouette)
+    {
+        if radius == 0.0 {
+            for i in 0..ring.len() {
+                mesh.triangle(
+                    lift(ring[i], z),
+                    lift(ring[(i + 1) % ring.len()], z),
+                    [0.0, 0.0, next_z],
+                    MATERIAL,
+                );
+            }
+            return Ok(mesh.finish(format!("landmark-{:02}", landmark.id)));
+        }
+        let next = keyed_ring([0.0, 0.0], radius);
+        wall(&mut mesh, &ring, z, &next, next_z, false);
+        ring = next;
+        z = next_z;
+    }
+    cap(&mut mesh, &ring, &[], z, false)?;
+    Ok(mesh.finish(format!("landmark-{:02}", landmark.id)))
 }
 
 struct FrameEdge {

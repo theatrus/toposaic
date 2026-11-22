@@ -14,6 +14,14 @@ Choose **Small World** as the globe source to use the elevation from the map sel
 - **Small World → Full wrap** stretches the map selection around the globe. Elevation and color blend across the longitude join and converge at the poles. Small World uses the configured regional elevation source and ESA WorldCover for mapped forest, open vegetation, bare ground, water, and snow or ice.
 - **Mapped surface colors** applies one editable five-color filament palette across every 3MF and every batch made with the same settings. **Tactile texture** changes the geometry in both STL and 3MF. Rock, forest, grass, and snow use different patterns and amplitudes. Water stays smooth away from shores.
 
+## Add oversized landmarks
+
+In **Whole Earth → Landmarks**, add the Eiffel Tower, Great Pyramid of Giza, and Sydney examples, or make a custom landmark from latitude and longitude. Choose a stylized tower, pyramid, or city marker and set its printed width and figure height in millimeters. The inserts stay readable when the diameter or tile subdivision changes. [Eiffel Tower site](https://www.wikidata.org/wiki/Q243) · [Great Pyramid survey](https://www.giza-pyramids.com/documents/pdf/GPP_K-TheGPSLocationOfTheGreatPyramid.pdf) · [Sydney city centre](https://www.wikidata.org/wiki/Q1852577)
+
+The owning tile has a shallow, keyed socket. If the requested position is too close to a tile seam or a frame attachment, Studio looks for room on the same tile within 14 mm and shows both coordinates and the displacement. A white dot marks a displaced landmark's requested site in the 3D preview. Choose a landmark in the preview's **View** menu to inspect it on its tile. If there is no room, the landmark is listed in the guide so you can adjust the site or width.
+
+Print each numbered insert separately in the filament of your choice. See `LANDMARKS.md` in the kit for its tile, orientation, and coordinates. A landmark STL and 3MF are included with the tile that has its socket. Keep the same landmark settings across batches so you can reprint that tile and its insert together. The keyed peg clearance still needs a physical print test.
+
 ## Print a superglobe in batches
 
 Set the globe diameter and the shorter usable side of the print bed. Automatic subdivision picks the lowest frequency that fits while allowing space for elevation. You can also choose a subdivision explicitly. The maximum frequency is 24, giving up to 11,520 numbered tiles. Feasible sizes depend on the bed and the room needed for the screws and clips on each seat.

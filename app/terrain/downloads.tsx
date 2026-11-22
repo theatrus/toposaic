@@ -199,7 +199,7 @@ export function ArtifactDownloads({
   const printFiles = job.artifacts.filter(
     (artifact) =>
       job.spec.globe
-        ? ["globe-print-kit.zip", "ASSEMBLY.md", "manifest.json"].includes(artifact.name)
+        ? ["globe-print-kit.zip", "ASSEMBLY.md", "LANDMARKS.md", "manifest.json"].includes(artifact.name)
           || (artifact.name.startsWith("globe-tiles-") && artifact.name.endsWith(".zip"))
         : artifact.name.endsWith(".3mf") || artifact.name === "manifest.json",
   );
