@@ -8,18 +8,19 @@ TopoSaic is a local-first topographic puzzle generator. Its Rust engine
 samples worldwide elevation data, builds watertight pieces with round jigsaw
 tabs and sockets, and stores job state in SQLite. The desktop app lets you
 choose a place and tune the printable model beside a live 3D preview: mesh
-detail, surface colors, mapped lines, buildings, trays, and export style.
+detail, surface colors, mapped lines, buildings, trays, and export style. It
+can also build snap-together globes, from the whole Earth or a wrapped map.
 
 ## Download
 
 The current desktop release is
-[TopoSaic v0.8.3](https://github.com/theatrus/toposaic/releases/tag/v0.8.3).
+[TopoSaic v0.9.0](https://github.com/theatrus/toposaic/releases/tag/v0.9.0).
 
 | Platform | Downloads |
 | --- | --- |
-| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-windows-x64.msi) |
-| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-macos-aarch64.app.zip) |
-| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.8.3/TopoSaic-0.8.3-x86_64.AppImage) |
+| Windows x64 | [Setup `.exe`](https://github.com/theatrus/toposaic/releases/download/v0.9.0/TopoSaic-0.9.0-windows-x64.exe) · [`.msi` installer](https://github.com/theatrus/toposaic/releases/download/v0.9.0/TopoSaic-0.9.0-windows-x64.msi) |
+| macOS Apple silicon | [`.dmg` disk image](https://github.com/theatrus/toposaic/releases/download/v0.9.0/TopoSaic-0.9.0-macos-aarch64.dmg) · [`.app.zip` archive](https://github.com/theatrus/toposaic/releases/download/v0.9.0/TopoSaic-0.9.0-macos-aarch64.app.zip) |
+| Linux x86-64 | [Portable `.AppImage`](https://github.com/theatrus/toposaic/releases/download/v0.9.0/TopoSaic-0.9.0-x86_64.AppImage) |
 
 macOS releases use a Developer ID signature, Apple notarization, and stapled
 tickets. Windows installers use the GUI subsystem and do not open a terminal
